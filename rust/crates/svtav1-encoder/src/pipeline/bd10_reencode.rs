@@ -866,6 +866,10 @@ fn stamp_inter_mi_grid(
                 partition,
                 interp_filters: ic.map_or(0, |i| i.interp_filters),
                 skip_mode: ic.is_some_and(|i| i.skip_mode),
+                // `block_mi.skip` (`!block_has_coeff`); the bd10 re-encode
+                // only feeds this grid to neighbour reads the light path
+                // never reaches at hbd_md, so the luma-eob proxy is enough.
+                skip: ic.is_some_and(|i| i.skip_mode) || d.eob == 0,
                 comp_group_idx: ic.map_or(0, |i| i.comp_group_idx),
                 compound_idx: ic.map_or(0, |i| i.compound_idx),
             };

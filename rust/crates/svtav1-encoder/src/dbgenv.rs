@@ -191,6 +191,12 @@ presence_flags! {
     /// Delete it when PD0 does inter compensation; a byte count it produces is
     /// NEVER a parity result.
     pd0_nosplit => "SVTAV1_PD0_NOSPLIT",
+    /// `SVTAV1_LPD1DBG`: per-superblock Light-PD1 dispatch dump — the
+    /// `RLPD1-FRAME`/`RLPD1` lines reporting `pic_lpd1_lvl`, the resolved
+    /// per-SB level, the PD0 root eval the detector read, and the
+    /// post-detector level. Joins against the C `CLVL`/`CDET`/`CLPD1` lines
+    /// the `SVT_LPD1DBG` interposer emits (reference enc_dec_process.c).
+    lpd1dbg => "SVTAV1_LPD1DBG",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same

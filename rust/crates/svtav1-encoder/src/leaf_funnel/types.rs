@@ -354,6 +354,13 @@ pub(crate) struct FunnelCtx<'a> {
     /// `ibc_mvp` does: it is state that crosses blocks, and C keeps it on the
     /// mode-decision context for exactly that reason.
     pub inter_sq_me: Option<&'a mut crate::inter_search_arm::SqMeState>,
+    /// C `ctx->lpd1_ctrls.pd1_level > REGULAR_PD1` for this superblock —
+    /// the Light-PD1 mode-decision lane (`md_encode_block_light_pd1`,
+    /// product_coding_loop.c:9111). `Some` routes `evaluate_leaf` to the
+    /// light candidate set + light MDS0 + light full loop instead of the
+    /// regular NIC/MDS1/MDS3 funnel. `None` (and every still picture) keeps
+    /// the pre-existing path byte-identical.
+    pub lpd1: Option<crate::leaf_funnel::light::Lpd1Leaf>,
 }
 
 /// C `BlockSize` enum index from pixel dims (definitions.h block order) —

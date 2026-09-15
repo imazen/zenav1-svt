@@ -274,6 +274,12 @@ pub struct InterMdFrame<'a> {
     pub factor_update_type: crate::port_rc_process::FrameUpdateType,
     /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
     pub alt_lambda_factors: bool,
+    /// C `av1_lambda_assign_md`'s LAMBDA_MOD_INTRA arm (md_process.c:730-745)
+    /// — 138 when `stats_based_sb_lambda_modulation && temporal_layer_index
+    /// > 0 && ref_intra_percentage < (alt ? 65 : 50)`, else the 128
+    /// identity. Frame-level; applied inside `update_lambda`'s output before
+    /// `lambda_weight`, for both `full_lambda_md` and `fast_lambda_md`.
+    pub lambda_mod_intra: i64,
     /// C `frm_hdr->skip_mode_params.skip_mode_flag`
     /// (`pd_process.c:4958` = `skip_mode_allowed`), the frame bit the MDS0
     /// rate reads.
@@ -908,8 +914,16 @@ pub fn build_inter_candidates(
     merge_inter_cands_mult: u8,
     prelude: BlockPrelude,
     warp_out: &mut WarpRefineBlock,
+    // C `generate_md_stage_0_cand_light_pd1`: when the per-SB `pd1_level` is
+    // above `REGULAR_PD1` the inter candidate set is the STRICT subset
+    // `inject_inter_candidates_light_pd1` emits (MVP + ME-NEWMV only — no
+    // global, no bipred-3x3, no unipred-3x3, no PME, no non-simple/compound
+    // expansion; mode_decision.c:3526-3562).
+    light: bool,
 ) -> Vec<InterCandOut> {
-    use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
+    use crate::port_md::inject::{
+        CandArray, InjectCtx, WmCtrls, inject_inter_candidates, inject_inter_candidates_light_pd1,
+    };
     use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef};
 
     let BlockPrelude {
@@ -1151,6 +1165,7 @@ pub fn build_inter_candidates(
         // is derived too. Wired anyway so the pair is one unported input
         // rather than two.
         use_neighbouring_mode_ctrls_enabled: f.cand_reduction.use_neighbouring_mode_enabled != 0,
+        lpd1_mvp_best_me_list: f.cand_reduction.lpd1_mvp_best_me_list != 0,
         is_intra_bordered: false,
         has_overlappable_candidates: b.overlappable_neighbors != 0,
         allow_warped_motion: f.allow_warped_motion,
@@ -1195,8 +1210,15 @@ pub fn build_inter_candidates(
     // re-pick must use the SAME stack the injector priced against.
     warp_out.mvp_stacks.clear();
     warp_out.mvp_stacks.extend_from_slice(&stacks);
-    let mut hooks = WarpHooks { blk: warp_out };
-    inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
+    if light {
+        // C `inject_inter_candidates_light_pd1` takes no warp hooks — the
+        // light path never refines an MV at injection (`read_refine_me_mvs_
+        // light_pd1` runs the light refine, not the MDS1 warp lane).
+        inject_inter_candidates_light_pd1(&inj, &mut cands, &mut log);
+    } else {
+        let mut hooks = WarpHooks { blk: warp_out };
+        inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
+    }
 
     let mut out = Vec::new();
     for c in cands.as_slice() {
@@ -2221,6 +2243,7 @@ pub fn neighbors_from_grid(
             interp_filters: e.interp_filters,
             use_intrabc: e.use_intrabc,
             skip_mode: e.skip_mode,
+            skip: e.skip,
             comp_group_idx: e.comp_group_idx,
             compound_idx: e.compound_idx,
             bsize: e.bsize,

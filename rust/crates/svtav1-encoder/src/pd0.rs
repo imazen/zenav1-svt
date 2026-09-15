@@ -414,6 +414,13 @@ pub(crate) fn inter_full_lambda_8bit(
     factor_update_type: crate::port_rc_process::FrameUpdateType,
     alt_lambda_factors: bool,
     qdiff_vs_base: i32,
+    // C `av1_lambda_assign_md`'s LAMBDA_MOD_INTRA arm (md_process.c:730-745):
+    // `!rtc && stats_based_sb_lambda_modulation && temporal_layer_index > 0 &&
+    //  ref_intra_percentage < (alt_lambda_factors ? 65 : LAMBDA_MOD_INTRA_TH)`
+    // scales BOTH `full_lambda_md` and `fast_lambda_md` by
+    // `LAMBDA_MOD_INTRA_SCALING_FACTOR` (138) BEFORE `lambda_weight`. 128 is
+    // the arm-not-taken identity.
+    lambda_mod_intra: i64,
     lambda_weight: u32,
 ) -> u32 {
     use crate::port_rc_process::FrameUpdateType as U;
@@ -459,6 +466,9 @@ pub(crate) fn inter_full_lambda_8bit(
         128
     };
     rdmult = (rdmult * stats_factor) >> 7;
+    // md_process.c:739-742 — inside `av1_lambda_assign_md`, between
+    // `svt_aom_compute_rd_mult` and the `lambda_weight` multiply.
+    rdmult = (rdmult * lambda_mod_intra) >> 7;
     let mut lambda = rdmult as u32;
     if lambda_weight != 0 {
         lambda = ((u64::from(lambda) * u64::from(lambda_weight)) >> 7) as u32;
@@ -1915,6 +1925,40 @@ pub struct Pd0Eval {
     /// exclusive with `tested`/`split`. Never set on a 64-aligned frame.
     pub off: bool,
     pub children: Option<Box<[Pd0Eval; 4]>>,
+    /// The ROOT node's block-MD data (`pc_tree->block_data[PART_N][0]`) that
+    /// `lpd1_detector_post_pd0` reads — meaningful only on the root eval. `None`
+    /// on every child and on key frames (PD0's inter arm never ran).
+    pub root_det: Option<Pd0RootDet>,
+}
+
+/// The ROOT node's `lpd1_detector_post_pd0` inputs — `pc_tree->rdc.rd_cost`
+/// plus the `block_data[PART_N][0]` block payload that exists only when the
+/// 64x64 PART_N block was costed at PD0.
+#[derive(Clone, Copy, Debug)]
+pub struct Pd0RootDet {
+    /// `pc_tree->rdc.rd_cost` — the root node's CHOSEN cost (the min of its
+    /// PART_N leaf and SPLIT children), i.e. the `total` [`Pd0Ctx::pick`]
+    /// returns for org `(0,0)`. Filled by the top-level driver after `pick`.
+    pub rd_cost: u64,
+    /// `pc_tree->block_data[PART_N][0]` — `Some` only when the root 64x64
+    /// PART_N block was costed (`tested_blk[PART_N][0]`). `None` reads as
+    /// C's `nz_coeffs = ~0` / MV-test-skipped arm.
+    pub blk: Option<Pd0RootBlk>,
+}
+
+/// C `pc_tree->block_data[PART_N][0]` fields `lpd1_detector_post_pd0` reads —
+/// the root 64x64 block's winning mode/MV/coefficient count.
+#[derive(Clone, Copy, Debug)]
+pub struct Pd0RootBlk {
+    /// `is_inter_mode(block_mi.mode)` — false when PD0's intra arm won.
+    pub is_inter: bool,
+    /// `block_mi.mv[0/1]` in quarter-pel units (`mv1 == ZERO` for unipred).
+    pub mv0: svtav1_types::motion::Mv,
+    pub mv1: svtav1_types::motion::Mv,
+    /// `has_second_ref(&block_mi)` — the winner was a compound (bipred) block.
+    pub bipred: bool,
+    /// `cnt_nz_coeff` — the root block's `eob` after `tx_quant_core`.
+    pub nz: u32,
 }
 
 impl Pd0Eval {
@@ -1927,6 +1971,7 @@ impl Pd0Eval {
             split: false,
             off: false,
             children: None,
+            root_det: None,
         }
     }
 
@@ -1940,6 +1985,7 @@ impl Pd0Eval {
             split: false,
             off: true,
             children: None,
+            root_det: None,
         }
     }
 
@@ -2265,6 +2311,11 @@ pub struct Pd0InterRef<'a> {
     /// (`rc_process.c:437-446`), which is what makes `full_lambda_md` and
     /// `fast_lambda_md` per-superblock. 0 reproduces the frame-level lambda.
     pub me_qdiff: i32,
+    /// C `av1_lambda_assign_md`'s LAMBDA_MOD_INTRA arm (md_process.c:730-745)
+    /// — 138 when `tl > 0 && ref_intra_percentage` is below its threshold
+    /// under `stats_based_sb_lambda_modulation`, else the 128 identity.
+    /// Frame-level; see [`inter_full_lambda_8bit`].
+    pub lambda_mod_intra: i64,
 }
 
 /// C `av1_lambda_assign_md`'s per-SUPERBLOCK output on an INTER frame
@@ -2447,6 +2498,56 @@ struct Pd0Ctx<'a> {
     /// the packed transform region must read as zero and is `fill(0)`ed by
     /// its consumer.
     scratch: Pd0Scratch,
+    /// The ROOT block's (64x64 PART_N, org `(0,0)`) MD outputs that C's
+    /// `lpd1_detector_post_pd0` reads off `pc_tree->block_data[PART_N][0]`:
+    /// `block_mi`'s inter flag + the two quarter-pel MVs, and `cnt_nz_coeff`
+    /// (the winner's `eob`). `blk` is filled by [`Pd0Ctx::note_root_mv`] /
+    /// [`Pd0Ctx::note_root_eob`]; `rd_cost` is stamped by the top-level
+    /// driver and the whole thing surfaced on [`Pd0Eval::root_det`].
+    root_det: Pd0RootDet,
+}
+
+impl Pd0Ctx<'_> {
+    /// `lpd1_detector_post_pd0`'s PART_N block payload, recorded when the
+    /// 64x64 root block is costed (org `(0,0)` in SB coords).
+    fn note_root_mv(
+        &mut self,
+        bw: usize,
+        bh: usize,
+        org_x: usize,
+        org_y: usize,
+        is_inter: bool,
+        mv0: svtav1_types::motion::Mv,
+        mv1: svtav1_types::motion::Mv,
+        bipred: bool,
+    ) {
+        if bw == 64 && bh == 64 && org_x == 0 && org_y == 0 {
+            self.root_det.blk = Some(Pd0RootBlk {
+                is_inter,
+                mv0,
+                mv1,
+                bipred,
+                nz: u32::MAX,
+            });
+        }
+    }
+
+    /// The root block's `cnt_nz_coeff` — `tx_quant_core`'s `eob`, folded into
+    /// the payload [`Pd0Ctx::note_root_mv`] opened (or a fresh intra one).
+    fn note_root_eob(&mut self, bw: usize, bh: usize, abs_x: usize, abs_y: usize, eob: u16) {
+        if bw == 64 && bh == 64 && abs_x == self.sb_x && abs_y == self.sb_y {
+            self.root_det
+                .blk
+                .get_or_insert(Pd0RootBlk {
+                    is_inter: false,
+                    mv0: svtav1_types::motion::Mv::ZERO,
+                    mv1: svtav1_types::motion::Mv::ZERO,
+                    bipred: false,
+                    nz: u32::MAX,
+                })
+                .nz = u32::from(eob);
+        }
+    }
 }
 
 /// Reused block-cost buffers for [`Pd0Ctx::scratch`]. All start empty and
@@ -2631,8 +2732,10 @@ impl<'a> Pd0Ctx<'a> {
         let mut pred_buf = core::mem::take(&mut self.scratch.pred);
         if let Some(ir) = self.inter {
             let mut cand = core::mem::take(&mut self.scratch.cand);
-            self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred_buf, &mut cand);
+            let (mv0, mv1, bip) =
+                self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred_buf, &mut cand);
             self.scratch.cand = cand;
+            self.note_root_mv(bw, bh, org_x, org_y, true, mv0, mv1, bip);
         } else {
             // `pd0_use_src_samples` (enc_mode_config.c:7309) is `allintra ||
             // hbd_md`. TRUE — no canvas — means C copies the SOURCE row/column into
@@ -2721,6 +2824,7 @@ impl<'a> Pd0Ctx<'a> {
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
         let (eob, dist, _c_tx) =
             tx_quant_core(&mut self.scratch, bw, tx_h, qindex_off, self.qm_level, step);
+        self.note_root_eob(bw, bh, abs_x, abs_y, eob);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
         // 100*eob. The resolution factor is a per-picture constant (0 for
@@ -2962,6 +3066,7 @@ impl<'a> Pd0Ctx<'a> {
             self.qm_level,
             step,
         );
+        self.note_root_eob(bw, bh, abs_x, abs_y, eob);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
         // loop.c:4501-4508): `th = (bwidth*bheight)>>5` where `bwidth =
@@ -3099,6 +3204,11 @@ impl<'a> Pd0Ctx<'a> {
     /// the winning `bw * bh` prediction (or the zero-MV fallback) and `cand`
     /// is the per-candidate working buffer. A win SWAPS the two — the loser's
     /// contents are overwritten before they are ever read.
+    /// Returns the winning candidate's quarter-pel `(mv0, mv1, is_bipred)` —
+    /// `mv1` is `Mv::ZERO` and `is_bipred` false for a unipred winner.
+    /// `lpd1_detector_post_pd0`'s `block_mi.mv[0/1]`/`has_second_ref` tests
+    /// read these; [`Pd0Ctx::lvl1_block_cost_inter`] stores them on the ROOT
+    /// block only.
     fn inter_best_pred_into(
         &self,
         ir: &Pd0InterRef<'_>,
@@ -3108,7 +3218,7 @@ impl<'a> Pd0Ctx<'a> {
         abs_y: usize,
         best: &mut Vec<u8>,
         cand: &mut Vec<u8>,
-    ) {
+    ) -> (svtav1_types::motion::Mv, svtav1_types::motion::Mv, bool) {
         let bsize = pd0_bsize(bw, bh);
         let cands = ir.me.cands_for(abs_x, abs_y, bsize);
         // C `inject_inter_candidates_pd0` (mode_decision.c:2828): compound is
@@ -3118,10 +3228,18 @@ impl<'a> Pd0Ctx<'a> {
         let n = bw * bh;
         let mut best_var = u64::MAX;
         let mut have_best = false;
+        let mut best_mv0 = svtav1_types::motion::Mv::ZERO;
+        let mut best_mv1 = svtav1_types::motion::Mv::ZERO;
+        let mut best_bipred = false;
         let mut injected = 0u32;
         for (i, c) in cands.iter().enumerate() {
             let dir = c.direction();
             let mv_dbg;
+            // `cmv0` is assigned on every path that reaches the cost compare
+            // (both non-`continue` arms), so it needs no initializer.
+            let cmv0;
+            let mut cmv1 = svtav1_types::motion::Mv::ZERO;
+            let cbip = dir >= crate::inter_me::context::BI_PRED;
             if dir < crate::inter_me::context::BI_PRED {
                 let Some((_d, mv_fp)) = ir.me.cand_mv_for(abs_x, abs_y, bsize, i) else {
                     continue;
@@ -3133,6 +3251,10 @@ impl<'a> Pd0Ctx<'a> {
                 };
                 let rf = crate::port_picstruct::get_ref_frame_type(dir, ref_idx);
                 mv_dbg = (mv_fp.y * 8, mv_fp.x * 8, rf);
+                cmv0 = svtav1_types::motion::Mv {
+                    x: mv_fp.x.saturating_mul(8),
+                    y: mv_fp.y.saturating_mul(8),
+                };
                 self.inter_pred_into(ir, bw, bh, abs_x, abs_y, mv_fp, rf, scratch_u8(cand, n));
             } else if allow_bipred {
                 let Some(((mv0, rf0), (mv1, rf1))) = ir.me.cand_bipred_mvs(abs_x, abs_y, bsize, i)
@@ -3140,6 +3262,14 @@ impl<'a> Pd0Ctx<'a> {
                     continue;
                 };
                 mv_dbg = (mv0.y * 8, mv0.x * 8, rf0);
+                cmv0 = svtav1_types::motion::Mv {
+                    x: mv0.x.saturating_mul(8),
+                    y: mv0.y.saturating_mul(8),
+                };
+                cmv1 = svtav1_types::motion::Mv {
+                    x: mv1.x.saturating_mul(8),
+                    y: mv1.y.saturating_mul(8),
+                };
                 self.inter_pred_into_bipred(
                     ir,
                     bw,
@@ -3173,6 +3303,9 @@ impl<'a> Pd0Ctx<'a> {
             if var < best_var {
                 best_var = var;
                 core::mem::swap(best, cand);
+                best_mv0 = cmv0;
+                best_mv1 = cmv1;
+                best_bipred = cbip;
                 have_best = true;
             }
             injected += 1;
@@ -3207,6 +3340,7 @@ impl<'a> Pd0Ctx<'a> {
                 scratch_u8(best, n),
             );
         }
+        (best_mv0, best_mv1, best_bipred)
     }
 
     /// C `compute_lpd0_cost_inter` (product_coding_loop.c:8267) — the
@@ -3344,8 +3478,19 @@ impl<'a> Pd0Ctx<'a> {
     ) -> u64 {
         let mut pred = core::mem::take(&mut self.scratch.pred);
         let mut cand = core::mem::take(&mut self.scratch.cand);
-        self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred, &mut cand);
+        let (mv0, mv1, bip) =
+            self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred, &mut cand);
         self.scratch.cand = cand;
+        self.note_root_mv(
+            bw,
+            bh,
+            abs_x - self.sb_x,
+            abs_y - self.sb_y,
+            true,
+            mv0,
+            mv1,
+            bip,
+        );
         let cost = self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, &pred, None);
         self.scratch.pred = pred;
         cost
@@ -3757,6 +3902,7 @@ impl<'a> Pd0Ctx<'a> {
                 split: true,
                 off: false,
                 children: Some(Box::new(ch)),
+                root_det: None,
             };
             return Some((total, eval, None));
         }
@@ -3818,6 +3964,7 @@ impl<'a> Pd0Ctx<'a> {
             split: false,
             off: false,
             children: None,
+            root_det: None,
         };
 
         let split_flag = sq_size > self.min_sq;
@@ -4182,6 +4329,10 @@ pub fn pd0_pick_sb_partition(
         inter: None,
         pending_recon: None,
         scratch: Pd0Scratch::default(),
+        root_det: Pd0RootDet {
+            rd_cost: 0,
+            blk: None,
+        },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4290,6 +4441,10 @@ pub fn pd0_pick_sb_partition_lvl0(
         inter: None,
         pending_recon: None,
         scratch: Pd0Scratch::default(),
+        root_det: Pd0RootDet {
+            rd_cost: 0,
+            blk: None,
+        },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4384,6 +4539,10 @@ pub fn pd0_pick_sb_partition_m6(
         inter: None,
         pending_recon: None,
         scratch: Pd0Scratch::default(),
+        root_det: Pd0RootDet {
+            rd_cost: 0,
+            blk: None,
+        },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4427,6 +4586,7 @@ fn pd0_frame_lambda_and_min_sq(
                 ir.factor_update_type,
                 ir.alt_lambda_factors,
                 ir.me_qdiff,
+                ir.lambda_mod_intra,
                 lambda_weight,
             ) as u64,
             ir.min_sq,
@@ -4585,8 +4745,20 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         inter,
         pending_recon: None,
         scratch: Pd0Scratch::default(),
+        root_det: Pd0RootDet {
+            rd_cost: 0,
+            blk: None,
+        },
     };
-    let (_cost, eval) = ctx.pick(64, 0, 0);
+    let (rd_cost, mut eval) = ctx.pick(64, 0, 0);
+    // `lpd1_detector_post_pd0` reads the PART_N root block at every
+    // `pd0_level < PD0_LVL_6` — including the 0..=2 levels this entry point
+    // serves — so surface it the same way `pd0_pick_sb_partition_video_eval`
+    // does.
+    eval.root_det = Some(Pd0RootDet {
+        rd_cost,
+        blk: ctx.root_det.blk,
+    });
     eval
 }
 
@@ -4866,8 +5038,17 @@ pub fn pd0_pick_sb_partition_video_eval(
         inter,
         pending_recon: None,
         scratch: Pd0Scratch::default(),
+        root_det: Pd0RootDet {
+            rd_cost: 0,
+            blk: None,
+        },
     };
-    ctx.pick(64, 0, 0).1
+    let (rd_cost, mut eval) = ctx.pick(64, 0, 0);
+    eval.root_det = Some(Pd0RootDet {
+        rd_cost,
+        blk: ctx.root_det.blk,
+    });
+    eval
 }
 
 #[cfg(test)]
@@ -4889,13 +5070,38 @@ mod inter_lambda_tests {
     /// which the KF builder already reproduced.
     #[test]
     fn the_low_delay_p_inter_lambda_matches_cs_measured_value() {
-        // The two selectors C actually uses on that frame.
+        // The two selectors C actually uses on that frame. A flat low-delay
+        // GOP's frame 1 is `temporal_layer_index == 0`, so the
+        // LAMBDA_MOD_INTRA arm does not fire — the 128 identity.
         assert_eq!(
-            inter_full_lambda_8bit(160, U::LfUpdate, U::ArfUpdate, false, 0, 150),
+            inter_full_lambda_8bit(160, U::LfUpdate, U::ArfUpdate, false, 0, 128, 150),
             241_378
         );
         // The KEY frame, for the same cell, from the same dump.
         assert_eq!(kf_full_lambda_8bit_lw(67, 150), 18_500);
+    }
+
+    /// The LAMBDA_MOD_INTRA arm (`lambda_mod_intra == 138`) pinned to a
+    /// measured C value: `diag 64x64 q40 p8 hier=3`, picture poc=4
+    /// (`tl=1` → the INTNL_ARF factor row, `ref_intra_percentage` below the
+    /// 50 threshold on that content, `stats_based_sb_lambda_modulation` on at
+    /// M8). C's trellis `rdmult` for that frame is 206 584 — recovered from
+    /// `av1_optimize_b`'s RDCOST on identical rate/distortion inputs — which
+    /// is `(51646 * 16 + 2) >> 2` under `rdoq_rdmult_full`'s video/inter/luma
+    /// weight. Without the arm the port computed 47 905 / 191 620 and kept a
+    /// marginal coefficient C dropped (`eob` 7 vs 6).
+    #[test]
+    fn the_lambda_mod_intra_arm_matches_cs_measured_value() {
+        assert_eq!(
+            inter_full_lambda_8bit(106, U::LfUpdate, U::IntnlArfUpdate, false, 0, 138, 150),
+            51_646
+        );
+        // Same frame with the arm NOT taken — the value the port computed
+        // before the arm was wired.
+        assert_eq!(
+            inter_full_lambda_8bit(106, U::LfUpdate, U::IntnlArfUpdate, false, 0, 128, 150),
+            47_905
+        );
     }
 
     /// **The port already HAD a correct transcription, and this function is a
@@ -4954,7 +5160,7 @@ mod inter_lambda_tests {
                             factor_tl,
                         );
                         assert_eq!(
-                            inter_full_lambda_8bit(qindex, base, factor, false, qd, lw),
+                            inter_full_lambda_8bit(qindex, base, factor, false, qd, 128, lw),
                             want,
                             "qindex {qindex} base {base:?} tl {factor_tl} lw {lw} qdiff {qd}"
                         );
@@ -4971,12 +5177,12 @@ mod inter_lambda_tests {
     fn one_update_type_for_both_halves_does_not_reproduce_c() {
         // ARF for both: the value `docs/INTER-ENCODE-PLAN.md` §1y recorded.
         assert_eq!(
-            inter_full_lambda_8bit(160, U::ArfUpdate, U::ArfUpdate, false, 0, 150),
+            inter_full_lambda_8bit(160, U::ArfUpdate, U::ArfUpdate, false, 0, 128, 150),
             244_792
         );
         // LF for both: factor 180 instead of 150.
         assert_eq!(
-            inter_full_lambda_8bit(160, U::LfUpdate, U::LfUpdate, false, 0, 150),
+            inter_full_lambda_8bit(160, U::LfUpdate, U::LfUpdate, false, 0, 128, 150),
             289_654
         );
         // And the KF chain at the same qindex, which is what a caller that
@@ -5105,6 +5311,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         assert_eq!(ctx.lambda, 25650);
         // (sq, org_x, org_y, C full_cost)
@@ -5230,6 +5440,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -5283,6 +5497,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -5449,6 +5667,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -5498,6 +5720,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -5543,6 +5769,10 @@ mod tests {
             inter: None,
             pending_recon: None,
             scratch: Pd0Scratch::default(),
+            root_det: Pd0RootDet {
+                rd_cost: 0,
+                blk: None,
+            },
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),

@@ -561,6 +561,109 @@ pub fn cdef_skip_gate(skip_th: u8, base_q_idx: u8, ref_skip_percentage: u8) -> b
     ref_skip_percentage >= adjusted
 }
 
+/// C `disable_cdef_th` (`md_config_process.c:775`), indexed
+/// `[zero_filter_strength_lvl][input_resolution]`.
+const DISABLE_CDEF_TH: [[u32; 7]; 4] = [
+    [0, 0, 0, 0, 0, 0, 0],
+    [100, 200, 500, 800, 1000, 1000, 1000],
+    [900, 1000, 2000, 3000, 4000, 4000, 4000],
+    [6000, 7000, 8000, 9000, 10000, 10000, 10000],
+];
+
+/// The one per-reference field `me_based_cdef_skip` reads beyond
+/// `tmp_layer_idx`: `EbReferenceObject::cdef_dist_dev`
+/// (`reference_object.h:50`), which `rest_process.c:205` copies from the
+/// picture at end of pipeline. **-1 is "never computed"** — `cdef_process.c`
+/// seeds it there and only the RD search (`enc_cdef.c:1057`) or the
+/// all-zero-strengths rule (`cdef_process.c:699-702`) overwrite it — and the
+/// reader SKIPS a -1 slot rather than averaging it in.
+pub struct RefCdefDist {
+    /// `ref_obj->cdef_dist_dev`.
+    pub cdef_dist_dev: i32,
+    /// `ref_obj->tmp_layer_idx` — a higher-layer reference is not allowed to
+    /// demote a lower-layer picture's CDEF.
+    pub tmp_layer_idx: u8,
+}
+
+/// Inputs to [`me_based_cdef_skip`], the first of C's three CDEF-off gates.
+pub struct CdefMeSkipInputs<'a> {
+    /// `pcs->slice_type == I_SLICE` (early `return false`).
+    pub is_intra_slice: bool,
+    /// `ppcs->hierarchical_levels` — selects the `mult` ladder.
+    pub hierarchical_levels: u8,
+    /// `pcs->temporal_layer_index`.
+    pub temporal_layer_index: u8,
+    /// `frame_is_boosted(ppcs)` — the flat-GOP `mult` arm.
+    pub frame_is_boosted: bool,
+    /// `frame_is_leaf(ppcs)` — `update_type == LF_UPDATE`.
+    pub frame_is_leaf: bool,
+    /// `ppcs->input_resolution`.
+    pub input_resolution: crate::port_enc_mode_config::ResolutionRange,
+    /// `cdef_recon_ctrls.zero_filter_strength_lvl` — a 0 level disables the
+    /// whole gate (C reads `disable_cdef_th[0][..]` which is all zero).
+    pub zero_filter_strength_lvl: u8,
+    /// `cdef_recon_ctrls.prev_cdef_dist_th`.
+    pub prev_cdef_dist_th: u16,
+    /// The picture's SINGLE-reference entries (C `ref_frame_type_arr`
+    /// restricted to `rf[1] == NONE_FRAME`), in `set_all_ref_frame_type`
+    /// order — list 0 then list 1.
+    pub refs: &'a [RefCdefDist],
+    /// C `average_me_sad` = `sum(ppcs->rc_me_distortion[b64]) /
+    /// b64_total_count` (`md_config_process.c:797-803`).
+    pub avg_me_sad: u32,
+}
+
+/// C `me_based_cdef_skip` (`md_config_process.c:781-834`), the first disjunct
+/// of the `pcs->ppcs->cdef_level = 0` gate at `:980`. Returns true = CDEF off.
+///
+/// Structure mirrors `dlf_arm::me_based_dlf_skip` — the DLF twin — but note
+/// the differences: the `disable_cdef_th` table, and the `prev_cdef_dist`
+/// loop DOES carry C's `tmp_layer_idx <= temporal_layer_index` clause
+/// (`:819`), the one the DLF reader keeps and the OTHER DLF loop drops.
+#[must_use]
+pub fn me_based_cdef_skip(i: &CdefMeSkipInputs<'_>) -> bool {
+    if i.is_intra_slice {
+        return false;
+    }
+    // "For flat, mult should be based on update_type since all pics are
+    // temporal layer 0" (C's own comment, md_config_process.c:788).
+    let mult: i32 = if i.hierarchical_levels != 0 {
+        i32::from(i.temporal_layer_index) + 1
+    } else if i.frame_is_boosted {
+        1
+    } else if i.frame_is_leaf {
+        3
+    } else {
+        2
+    };
+    let row = DISABLE_CDEF_TH
+        .get(i.zero_filter_strength_lvl as usize)
+        .unwrap_or(&DISABLE_CDEF_TH[0]);
+    let use_zero_strength_th = row[i.input_resolution.as_u8() as usize] * mult as u32;
+    if use_zero_strength_th == 0 {
+        return false;
+    }
+
+    let mut prev_cdef_dist: i32 = 0;
+    if i.prev_cdef_dist_th != 0 {
+        let mut tot_refs = 0i32;
+        for r in i.refs {
+            if r.cdef_dist_dev >= 0 && r.tmp_layer_idx <= i.temporal_layer_index {
+                prev_cdef_dist += r.cdef_dist_dev;
+                tot_refs += 1;
+            }
+        }
+        if tot_refs != 0 {
+            prev_cdef_dist /= tot_refs;
+        }
+    }
+
+    if i.prev_cdef_dist_th == 0 || prev_cdef_dist < i32::from(i.prev_cdef_dist_th) * mult {
+        return i.avg_me_sad < use_zero_strength_th;
+    }
+    false
+}
+
 #[cfg(test)]
 mod skip_gate_tests {
     use super::cdef_skip_gate;
@@ -607,6 +710,180 @@ mod skip_gate_tests {
         // A large one at qindex 255 would go to 100 + 31 = 131; clipped to 100.
         assert!(cdef_skip_gate(100, 255, 100));
         assert!(!cdef_skip_gate(100, 255, 99));
+    }
+}
+
+#[cfg(test)]
+mod me_skip_tests {
+    use super::{CdefMeSkipInputs, RefCdefDist, ResolutionRange, me_based_cdef_skip};
+
+    /// The measured `gradient 64x64 q40 p13` poc-4 cell, hierarchical
+    /// low-delay: `cdef_recon_level` 3 (`zlvl = 3`, `prev_cdef_dist_th = 10`),
+    /// `input_resolution` 240p, a temporal-layer-0 picture so `mult = 1` and
+    /// `use_zero_strength_th = 6000`. C's `me_based_cdef_skip` fired on every
+    /// inter frame of this sequence (`avg_me_sad = 0` — the content tracks
+    /// perfectly), which is what left `cdef_damping` at its 0 initialiser and
+    /// wrote the `01` field the port used to get wrong.
+    fn p13_base_frame(avg_me_sad: u32, refs: &[RefCdefDist]) -> CdefMeSkipInputs<'_> {
+        CdefMeSkipInputs {
+            is_intra_slice: false,
+            hierarchical_levels: 4,
+            temporal_layer_index: 0,
+            frame_is_boosted: false,
+            frame_is_leaf: false,
+            input_resolution: ResolutionRange::R240p,
+            zero_filter_strength_lvl: 3,
+            prev_cdef_dist_th: 10,
+            refs,
+            avg_me_sad,
+        }
+    }
+
+    #[test]
+    fn the_measured_p13_base_frame_skips_cdef() {
+        // poc 4: the references all measured dist_dev 0 (their own CDEF was
+        // off), so prev_cdef_dist = 0 < 10 * 1, and avg_me_sad 0 < 6000.
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 0,
+            tmp_layer_idx: 0,
+        }];
+        assert!(me_based_cdef_skip(&p13_base_frame(0, &refs)));
+        // A nonzero ME residual under the threshold still skips.
+        assert!(me_based_cdef_skip(&p13_base_frame(5999, &refs)));
+        assert!(!me_based_cdef_skip(&p13_base_frame(6000, &refs)));
+    }
+
+    #[test]
+    fn an_i_slice_never_skips() {
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 0,
+            tmp_layer_idx: 0,
+        }];
+        let mut i = p13_base_frame(0, &refs);
+        i.is_intra_slice = true;
+        assert!(!me_based_cdef_skip(&i));
+    }
+
+    #[test]
+    fn a_zero_strength_level_disables_the_gate() {
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 0,
+            tmp_layer_idx: 0,
+        }];
+        let mut i = p13_base_frame(0, &refs);
+        i.zero_filter_strength_lvl = 0;
+        assert!(!me_based_cdef_skip(&i));
+    }
+
+    /// `prev_cdef_dist_th == 0` collapses the reference-history clause — the
+    /// skip decision rests on `avg_me_sad` alone (C `md_config_process.c:830`,
+    /// `!prev_cdef_dist_th ||`).
+    #[test]
+    fn a_zero_prev_dist_th_ignores_reference_history() {
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 999,
+            tmp_layer_idx: 0,
+        }];
+        let mut i = p13_base_frame(0, &refs);
+        i.prev_cdef_dist_th = 0;
+        assert!(me_based_cdef_skip(&i));
+        i.avg_me_sad = 6000;
+        assert!(!me_based_cdef_skip(&i));
+    }
+
+    /// A strong recent CDEF gain KEEPS CDEF on: `prev_cdef_dist >=
+    /// prev_cdef_dist_th * mult` fails the whole gate even when the picture
+    /// itself is perfectly predicted.
+    #[test]
+    fn a_reference_with_real_cdef_gain_blocks_the_skip() {
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 271, // poc 0's measured dev on this very cell
+            tmp_layer_idx: 0,
+        }];
+        // 271 >= 10 * 1 -> gate does not fire.
+        assert!(!me_based_cdef_skip(&p13_base_frame(0, &refs)));
+    }
+
+    /// The two exclusions in C's average: a `-1` ("never computed") slot is
+    /// skipped entirely, and a reference from a HIGHER temporal layer cannot
+    /// demote a lower-layer picture (`tmp_layer_idx <= temporal_layer_index`,
+    /// `md_config_process.c:818-819`).
+    #[test]
+    fn minus_one_and_higher_layer_refs_do_not_count() {
+        // tl=1 picture, mult=2, prev_cdef_dist_th=10 -> needs pcd < 20.
+        let refs = [
+            // Higher layer than the picture: excluded.
+            RefCdefDist {
+                cdef_dist_dev: 0,
+                tmp_layer_idx: 2,
+            },
+            // Never computed: excluded.
+            RefCdefDist {
+                cdef_dist_dev: -1,
+                tmp_layer_idx: 0,
+            },
+            // Eligible: counted.
+            RefCdefDist {
+                cdef_dist_dev: 30,
+                tmp_layer_idx: 1,
+            },
+        ];
+        let mut i = p13_base_frame(0, &refs);
+        i.temporal_layer_index = 1;
+        // Only the dev=30 ref counts -> pcd=30 >= 20 -> no skip.
+        assert!(!me_based_cdef_skip(&i));
+        // Drop the counted ref to 19 -> 19 < 20 -> skip fires.
+        let refs = [
+            RefCdefDist {
+                cdef_dist_dev: 0,
+                tmp_layer_idx: 2,
+            },
+            RefCdefDist {
+                cdef_dist_dev: -1,
+                tmp_layer_idx: 0,
+            },
+            RefCdefDist {
+                cdef_dist_dev: 19,
+                tmp_layer_idx: 1,
+            },
+        ];
+        assert!(me_based_cdef_skip(&p13_base_frame_with_tl(0, &refs, 1)));
+    }
+
+    fn p13_base_frame_with_tl<'a>(
+        avg_me_sad: u32,
+        refs: &'a [RefCdefDist],
+        tl: u8,
+    ) -> CdefMeSkipInputs<'a> {
+        let mut i = p13_base_frame(avg_me_sad, refs);
+        i.temporal_layer_index = tl;
+        i
+    }
+
+    /// The flat-GOP `mult` ladder (`update_type`, since every picture is tl=0):
+    /// boosted 1, leaf 3, else 2 — C `md_config_process.c:788-791`.
+    #[test]
+    fn the_flat_gop_mult_ladder() {
+        let refs = [RefCdefDist {
+            cdef_dist_dev: 0,
+            tmp_layer_idx: 0,
+        }];
+        let mut i = p13_base_frame(0, &refs);
+        i.hierarchical_levels = 0;
+        // Leaf (mult 3): th = 6000*3 = 18000, pcd bound = 10*3 = 30.
+        i.frame_is_leaf = true;
+        assert!(me_based_cdef_skip(&i));
+        // Boosted (mult 1): th = 6000, bound 10 — same as the p13 base cell.
+        i.frame_is_leaf = false;
+        i.frame_is_boosted = true;
+        assert!(me_based_cdef_skip(&i));
+        // Neither (mult 2): th = 12000 — an avg_me_sad of 7000 distinguishes
+        // this arm from boosted (6000): skip under mult 2, not under mult 1.
+        i.frame_is_boosted = false;
+        i.avg_me_sad = 7000;
+        assert!(me_based_cdef_skip(&i));
+        i.frame_is_boosted = true;
+        assert!(!me_based_cdef_skip(&i));
     }
 }
 

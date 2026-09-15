@@ -80,6 +80,7 @@ fn neighbor(r: &mut Rng) -> ([i32; cref::NB_FIELDS], NeighborMi, bool) {
         interp_filters: (r.below(3) as u32) | ((r.below(3) as u32) << 16),
         use_intrabc: r.flag(),
         skip_mode: r.flag(),
+        skip: false,
         comp_group_idx: (r.next() & 1) as u8,
         compound_idx: (r.next() & 1) as u8,
         bsize: r.below(BLOCK_SIZES_ALL as u64) as u8,

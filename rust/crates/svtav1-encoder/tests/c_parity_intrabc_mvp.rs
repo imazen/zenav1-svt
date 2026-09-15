@@ -98,6 +98,7 @@ fn random_grid(rng: &mut Rng, rows: usize, cols: usize, ibc_pct: u64) -> Vec<mvp
                 partition: rng.below(10) as u8,
                 interp_filters: 0,
                 skip_mode: false,
+                skip: false,
                 comp_group_idx: 0,
                 compound_idx: 0,
             };
@@ -342,6 +343,7 @@ fn compose_dv_ref_matches_c_semantics() {
             partition: 0,
             interp_filters: 0,
             skip_mode: false,
+            skip: false,
             comp_group_idx: 0,
             compound_idx: 0,
         };
@@ -398,6 +400,7 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
             partition: part,
             interp_filters: 0,
             skip_mode: false,
+            skip: false,
             comp_group_idx: 0,
             compound_idx: 0,
         };

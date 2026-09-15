@@ -70,6 +70,7 @@ fn neighbor_cases() -> Vec<(p::NeighborMi, cref::NeighborDesc)> {
                         interp_filters: ((pi as u32 % 3) << 16) | (mi as u32 % 3),
                         use_intrabc: ibc,
                         skip_mode: (pi % 2) == 1,
+                        skip: false,
                         comp_group_idx: (pi % 2) as u8,
                         compound_idx: (mi % 2) as u8,
                         bsize,

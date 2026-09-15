@@ -2802,6 +2802,7 @@ mod find_warp_samples_tests {
             partition: 0,
             interp_filters: 0,
             skip_mode: false,
+            skip: false,
             comp_group_idx: 0,
             compound_idx: 0,
         }

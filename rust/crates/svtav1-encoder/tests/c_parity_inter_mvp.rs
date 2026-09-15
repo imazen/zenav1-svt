@@ -127,6 +127,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                     partition: rng.below(10) as u8,
                     interp_filters: 0,
                     skip_mode: false,
+                    skip: false,
                     comp_group_idx: 0,
                     compound_idx: 0,
                 }
@@ -144,6 +145,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                     partition: rng.below(10) as u8,
                     interp_filters: 0,
                     skip_mode: false,
+                    skip: false,
                     comp_group_idx: 0,
                     compound_idx: 0,
                 }
@@ -157,6 +159,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                     partition: rng.below(10) as u8,
                     interp_filters: 0,
                     skip_mode: false,
+                    skip: false,
                     comp_group_idx: 0,
                     compound_idx: 0,
                 }
@@ -793,6 +796,7 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
         partition: 0,
         interp_filters: 0,
         skip_mode: false,
+        skip: false,
         comp_group_idx: 0,
         compound_idx: 0,
     };

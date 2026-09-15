@@ -2304,6 +2304,33 @@ pub fn get_mini_gop_stats(mini_gop_index: usize) -> MiniGopStats {
     MINI_GOP_STATS_ARRAY[mini_gop_index]
 }
 
+/// C `g_prediction_structure_config_array[hier].entry_array[pos].temporal_layer_index`
+/// (`pred_structure.c:77-462`, selected by `hierarchical_levels` at
+/// `pred_structure.c:464-470`).
+///
+/// The temporal-layer column of C's six prediction-structure tables. The SAME
+/// tables serve low delay and random access — for LOW_DELAY only this column
+/// is read (the `decode_order` column reorders the random-access mini-GOP,
+/// which the low-delay pipeline never does), and `pred_struct_position`
+/// advances linearly through it.
+pub const PRED_STRUCT_TEMPORAL_LAYER: [&[u8]; 6] = [
+    // flat_pred_struct
+    &[0],
+    // two_level_hierarchical_pred_struct
+    &[0, 1],
+    // three_level_hierarchical_pred_struct
+    &[0, 2, 1, 2],
+    // four_level_hierarchical_pred_struct
+    &[0, 3, 2, 3, 1, 3, 2, 3],
+    // five_level_hierarchical_pred_struct
+    &[0, 4, 3, 4, 2, 4, 3, 4, 1, 4, 3, 4, 2, 4, 3, 4],
+    // six_level_hierarchical_pred_struct
+    &[
+        0, 5, 4, 5, 3, 5, 4, 5, 2, 5, 4, 5, 3, 5, 4, 5, 1, 5, 4, 5, 3, 5, 4, 5, 2, 5, 4, 5, 3, 5,
+        4, 5,
+    ],
+];
+
 /// The `EncodeContext` fields the mini-GOP and pred-struct derivation reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EncCtxPicParams {

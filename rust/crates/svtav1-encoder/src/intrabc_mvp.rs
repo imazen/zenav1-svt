@@ -92,6 +92,11 @@ pub struct MvpMiEntry {
     /// winner must stamp it or the next block prices and codes the symbol
     /// from the wrong CDF row.
     pub skip_mode: bool,
+    /// C `block_mi.skip` (`block_has_coeff == 0`) — read off the NEIGHBOUR by
+    /// `lpd1_should_perform_tx`'s `both_neighbors_skip`
+    /// (product_coding_loop.c:6359). Distinct from `skip_mode` (the compound
+    /// skip-mode flag), which is a different field on a different struct.
+    pub skip: bool,
     /// C `block_mi.comp_group_idx` / `compound_idx` — read off the
     /// NEIGHBOUR by `comp_group_idx_context` / `comp_index_context` during
     /// compound rate estimation.
@@ -111,6 +116,7 @@ impl Default for MvpMiEntry {
             partition: 0,
             interp_filters: 0,
             skip_mode: false,
+            skip: false,
             comp_group_idx: 0,
             compound_idx: 0,
         }
@@ -950,6 +956,7 @@ mod tests {
                     partition: 0,
                     interp_filters: 0,
                     skip_mode: false,
+                    skip: false,
                     comp_group_idx: 0,
                     compound_idx: 0,
                 };

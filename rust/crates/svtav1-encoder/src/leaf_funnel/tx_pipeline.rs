@@ -32,6 +32,16 @@ pub(super) enum RateMode {
     /// the closed form here instead is the SAME ARITHMETIC, so no deadness
     /// argument is involved.
     Lvl0Closed,
+    /// C `perform_dct_dct_tx_light_pd1`'s luma coefficient-rate tier
+    /// (product_coding_loop.c:5539-5564), parameterized by the LIGHT signal's
+    /// `coeff_rate_est_lvl` (NOT `frame.cfg.coeff_rate_est_lvl`):
+    ///   `th = (txbwidth*txbheight) >> 6` (the 32-capped TX dims);
+    ///   `eob < th && (lvl >= 2 || lvl == 0)` -> `6000 + eob*1000`;
+    ///   `eob >= th && lvl == 0`              -> `6000 + eob*400`;
+    ///   otherwise (lvl 1, or lvl >= 2 with `eob >= th`) -> the exact
+    ///   `cost_coeffs_txb`. The `eob == 0` early exit (dists 0, bits 6000) is
+    ///   the caller's, not this tier's.
+    LightPd1(u8),
 }
 
 pub(super) struct TxUnitOut {
@@ -939,20 +949,40 @@ pub(super) fn tx_unit_inner(
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
             let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
+            let o_rdmult = crate::quant::rdoq_rdmult_full(
+                frame.lambda as u32,
+                plane_type,
+                frame.sharpness,
+                false,
+                frame.sharp_tx_active && plane_type == 0,
+                frame.rdoq_allintra_rd_mult,
+                // C `pred_mode >= NEARESTMV` — real inter only, so
+                // the IBC sentinel stays on the intra axis.
+                intra_dir == INTER_TXT_DIR,
+            );
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_RDOQDBG").is_some() && plane_type == 0 {
+                std::eprintln!(
+                    "RDOQCTX lam={} rdmult={} sharp={} sflag={} alli={} iinter={} lvl={} cut=({},{}), qm={} tsc={} dsc={} eob0={}",
+                    frame.lambda,
+                    o_rdmult,
+                    frame.sharpness,
+                    frame.sharp_tx_active && plane_type == 0,
+                    frame.rdoq_allintra_rd_mult,
+                    intra_dir == INTER_TXT_DIR,
+                    frame.rdoq_level,
+                    cut_off_num,
+                    cut_off_denum,
+                    qm.is_some(),
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    e,
+                );
+            }
             let o = crate::quant::OptimizeCtx {
                 txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
                 eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
-                rdmult: crate::quant::rdoq_rdmult_full(
-                    frame.lambda as u32,
-                    plane_type,
-                    frame.sharpness,
-                    false,
-                    frame.sharp_tx_active && plane_type == 0,
-                    frame.rdoq_allintra_rd_mult,
-                    // C `pred_mode >= NEARESTMV` — real inter only, so
-                    // the IBC sentinel stays on the intra axis.
-                    intra_dir == INTER_TXT_DIR,
-                ),
+                rdmult: o_rdmult,
                 sharpness_flag: frame.sharp_tx_active && plane_type == 0,
                 iwt: qm.map(|(_, iwt)| iwt),
                 tx_size: c_tx,
@@ -1203,6 +1233,30 @@ pub(super) fn tx_unit_inner(
                 6000 + eob as i32 * 1000
             } else {
                 3000 + eob as i32 * 100
+            }
+        }
+        RateMode::LightPd1(lvl) => {
+            // `th` is over the 32-CAPPED transform dims (C's `txbwidth` /
+            // `txbheight` = `tx_depth_to_tx_size[0][bsize]`), which `pw`/`ph`
+            // already carry — NOT the block dims (`w*h` would read 64 for a
+            // 64x64 where C's txb is 32x32).
+            let th = (pw * ph) >> 6;
+            if (lvl >= 2 || lvl == 0) && (eob as usize) < th {
+                6000 + eob as i32 * 1000
+            } else if lvl == 0 {
+                6000 + eob as i32 * 400
+            } else {
+                cost_coeffs_txb(
+                    qcoeff,
+                    eob,
+                    c_tx,
+                    tx_type,
+                    plane_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    intra_dir,
+                    rates,
+                )
             }
         }
         RateMode::Exact if closed_lvl2 => 6000 + eob as i32 * 1000,

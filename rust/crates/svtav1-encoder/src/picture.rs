@@ -368,6 +368,21 @@ pub struct ReferenceFrame {
     /// enc_dec_process.c:3099). EMPTY on a picture whose walk did not
     /// accumulate.
     pub sb_skip: alloc::vec::Vec<u8>,
+    /// C `EbReferenceObject::sb_me_64x64_dist[sb]` — the open-loop ME 64x64
+    /// distortion of THIS picture's own SBs, saved so a later frame's
+    /// `lpd1_detector_skip_pd0` can compare `me_64x64_distortion` against it
+    /// (`enc_dec_process.c:2255/2285`). EMPTY on a key frame (no ME ran).
+    pub sb_me_64x64_dist: alloc::vec::Vec<u32>,
+    /// C `EbReferenceObject::sb_me_8x8_cost_var[sb]` — same idea for the 8x8
+    /// cost variance (`enc_dec_process.c:2259/2289`).
+    pub sb_me_8x8_cost_var: alloc::vec::Vec<u32>,
+    /// C `EbReferenceObject::sb_64x64_mvp[sb]` — 1 when this picture's
+    /// superblock committed as a single 64x64 inter block on a non-new-MV
+    /// mode (`coding_loop.c:1629`, copied to the ref at rest_process.c:216).
+    /// A later frame's `svt_aom_sig_deriv_enc_dec_light_pd1_default` reads it
+    /// through `ref_obj` (enc_mode_config.c:7403/7603). EMPTY on a picture
+    /// whose walk did not accumulate.
+    pub sb_64x64_mvp: alloc::vec::Vec<u8>,
     /// C `EbReferenceObject::slice_type` — I_SLICE or not. Every
     /// `get_ref_*_percentage` reader gates on it first (rc_process.c:66-140),
     /// and a key-frame reference contributes ZERO to all three.
@@ -410,6 +425,20 @@ pub struct ReferenceFrame {
     /// number would trip the `prev_dlf_dist < 5` shut-off on every frame
     /// that follows a fast-path one.
     pub dlf_dist_dev: i32,
+    /// C `EbReferenceObject::cdef_dist_dev` (`reference_object.h:50`,
+    /// written by `rest_process.c:205` from `pcs->cdef_dist_dev`) — the
+    /// per-mille RD-cost improvement this picture's own CDEF search
+    /// measured, or 0 when its signalled strengths are all zero
+    /// (`cdef_process.c:699-702`).
+    ///
+    /// **-1 means "never computed"**, exactly like [`Self::dlf_dist_dev`]:
+    /// `cdef_process.c` seeds it there and neither the `use_qp_strength`
+    /// nor the `use_reference_cdef_fs` arm of `finish_cdef_search`
+    /// overwrites it (both return early). A later frame's
+    /// `me_based_cdef_skip` (`md_config_process.c:811-824`) SKIPS a -1 slot
+    /// rather than averaging it in — the fast paths do not count as
+    /// evidence that filtering helps.
+    pub cdef_dist_dev: i32,
     /// Frame width.
     pub width: u32,
     /// Frame height.
@@ -616,9 +645,13 @@ mod tests {
             hp_coded_area: 0,
             sb_intra: alloc::vec![],
             sb_skip: alloc::vec![],
+            sb_me_64x64_dist: alloc::vec![],
+            sb_me_8x8_cost_var: alloc::vec![],
+            sb_64x64_mvp: alloc::vec![],
             is_islice: false,
             lf_levels: [0; 4],
             dlf_dist_dev: -1,
+            cdef_dist_dev: -1,
             width: 64,
             height: 64,
             display_order: 0,
@@ -652,9 +685,13 @@ mod tests {
             hp_coded_area: 0,
             sb_intra: alloc::vec![],
             sb_skip: alloc::vec![],
+            sb_me_64x64_dist: alloc::vec![],
+            sb_me_8x8_cost_var: alloc::vec![],
+            sb_64x64_mvp: alloc::vec![],
             is_islice: false,
             lf_levels: [0; 4],
             dlf_dist_dev: -1,
+            cdef_dist_dev: -1,
             width: 4,
             height: 4,
             display_order: 0,

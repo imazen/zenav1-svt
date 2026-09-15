@@ -535,6 +535,15 @@ pub struct FrameMeParams {
     pub hierarchical_levels: u8,
     /// C `pcs->sc_class5` — the screen-content class that gates HME level 2.
     pub sc_class5: u8,
+    /// C `pcs->temporal_layer_index` — copied into `me_ctx` at
+    /// `me_process.c:214`, where `set_final_search_centre_sb` and the HME
+    /// level drivers read it: a non-zero layer gives LIST-1 references the
+    /// HME-derived search centre instead of (0, 0).
+    pub temporal_layer_index: u8,
+    /// C `pcs->is_ref` — copied into `me_ctx` beside it (`me_process.c:215`),
+    /// gating `check_00_center` and the `enable_me_sr_adjustment == 2` area
+    /// halving in `integer_search_b64`.
+    pub is_ref: bool,
     /// C `scs->mrp_ctrls.only_l_bwd` — restrict bipred pairs to (L0,BWD).
     /// Set from `set_mrp_ctrl` (`enc_handle.c:3574`); 1 at presets 3..=9.
     pub only_l_bwd: bool,
@@ -732,11 +741,15 @@ pub fn run_frame_me_into(
             // per-list ref counts the picture decision offered.
             me.num_of_list_to_search = 2;
             me.num_of_ref_pic_to_search = num_of_ref_pic_to_search;
-            // C `me_process.c:213` — every picture of a low-delay P GOP is a
-            // reference. INERT at every preset this arm runs today, because
-            // `me_early_exit_th != 0` takes the other arm of
-            // `motion_estimation.c:1261`; set for faithfulness, not effect.
-            me.is_ref = true;
+            // C `me_process.c:214-215` — `temporal_layer_index` decides whether
+            // a LIST-1 reference gets its HME-derived search centre in
+            // `set_final_search_centre_sb` (and the same gate inside each
+            // `hme_level*` driver), and `is_ref` gates `check_00_center` plus
+            // the `enable_me_sr_adjustment == 2` area halving. Both were
+            // hard-coded (0 / true) — inert on a flat GOP where every frame is
+            // layer 0, but wrong on any hierarchical one.
+            me.temporal_layer_index = p.temporal_layer_index;
+            me.is_ref = p.is_ref;
             me.me_type = MeType::OpenLoop;
             let out_b64 = &mut out.per_b64[b64_index];
             b64_index += 1;
@@ -788,8 +801,10 @@ pub fn run_frame_me_into(
                         c.ref1_list()
                     );
                 }
+                let rpoc =
+                    |li: usize, ri: usize| refs.arr[li][ri].map_or(-1, |d| d.picture_number as i64);
                 eprintln!(
-                    "MEDBG b64={bi} org=({ox},{oy}) l0sad={} l0mv=({},{}) l1sad={} l1mv=({},{}) n={n} c=[{cs}] mvarr0=({},{}) mvarrl1=({},{})",
+                    "MEDBG b64={bi} org=({ox},{oy}) l0sad={} l0mv=({},{}) l1sad={} l1mv=({},{}) n={n} c=[{cs}] mvarr0=({},{}) mvarrl1=({},{}) refpoc=({},{}) ns={:?}",
                     me.p_sb_best_sad[0][0][0],
                     p(l0),
                     q(l0),
@@ -800,6 +815,9 @@ pub fn run_frame_me_into(
                     out_b64.me_mv_array[0].y as i32,
                     out_b64.me_mv_array[MAX_L0 as usize].x as i32,
                     out_b64.me_mv_array[MAX_L0 as usize].y as i32,
+                    rpoc(0, 0),
+                    rpoc(1, 0),
+                    me.num_of_ref_pic_to_search,
                 );
             }
         }
@@ -876,6 +894,8 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                temporal_layer_index: 0,
+                is_ref: true,
                 // C `scs->mrp_ctrls` at this test's preset (level 6 for
                 // enc_mode <= M8).
                 only_l_bwd: true,
@@ -918,6 +938,8 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                temporal_layer_index: 0,
+                is_ref: true,
                 // C `scs->mrp_ctrls` at this test's preset (level 6 for
                 // enc_mode <= M8).
                 only_l_bwd: true,
@@ -994,6 +1016,8 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                temporal_layer_index: 0,
+                is_ref: true,
                 // C `scs->mrp_ctrls` at this test's preset (level 6 for
                 // enc_mode <= M8).
                 only_l_bwd: true,
@@ -1087,6 +1111,8 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                temporal_layer_index: 0,
+                is_ref: true,
                 // C `scs->mrp_ctrls` at this test's preset (level 6 for
                 // enc_mode <= M8).
                 only_l_bwd: true,
@@ -1151,6 +1177,8 @@ mod tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            temporal_layer_index: 0,
+            is_ref: true,
             // C `scs->mrp_ctrls` at this test's preset (level 6 for
             // enc_mode <= M8).
             only_l_bwd: true,
@@ -1458,6 +1486,8 @@ mod recycle_tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            temporal_layer_index: 0,
+            is_ref: true,
             // C `scs->mrp_ctrls` at this test's preset (level 6 for
             // enc_mode <= M8).
             only_l_bwd: true,
@@ -1561,6 +1591,8 @@ mod recycle_tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            temporal_layer_index: 0,
+            is_ref: true,
             // C `scs->mrp_ctrls` at this test's preset (level 6 for
             // enc_mode <= M8).
             only_l_bwd: true,

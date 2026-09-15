@@ -582,11 +582,18 @@ pub(super) fn inject_candidates(
     // at cand_reduction levels 0/1 (enabled == 0).
     let mut dc_only = dc_only;
     if let Some((prelude, ..)) = &inter_pre {
-        let elim = &fx
-            .inter
-            .expect("inter_pre is built exactly when the inter arm is armed")
-            .cand_reduction
-            .cand_elimination_ctrls;
+        // C reads `ctx->cand_reduction_ctrls.cand_elimination_ctrls` — the
+        // LIGHT-PD1 signal's copy on the light lane (its cand_reduction_level
+        // is raised above the picture's), the frame's otherwise.
+        let elim = &fx.lpd1.as_ref().map_or_else(
+            || {
+                &fx.inter
+                    .expect("inter_pre is built exactly when the inter arm is armed")
+                    .cand_reduction
+                    .cand_elimination_ctrls
+            },
+            |l| &l.sig.cand_reduction.cand_elimination_ctrls,
+        );
         if elim.enabled != 0 {
             let (me, pme) = (prelude.search.md_me_dist(), prelude.search.md_pme_dist());
             if me != u32::MAX || pme != u32::MAX {
@@ -1717,9 +1724,18 @@ pub(super) fn inject_candidates(
                 sq_me: fx.inter_sq_me.as_deref_mut(),
             },
             lambda,
-            cfg.merge_inter_cands_mult,
+            // `generate_md_stage_0_cand_light_pd1` reads the nic-level
+            // `merge_inter_cands_mult`; on the light path it is the light
+            // signal's copy (the funnel's `cfg` is the nic one — identical
+            // at the levels this lane reaches).
+            fx.lpd1
+                .as_ref()
+                .map_or(cfg.merge_inter_cands_mult, |l| l.merge_inter_cands_mult),
             prelude,
             warp_blk,
+            // Light-PD1 replaces the inter candidate set with the strict
+            // MVP + ME-NEWMV subset (see `build_inter_candidates`).
+            fx.lpd1.is_some(),
         );
         for c in built {
             // MDS0's distortion is the SAME arm the intra candidates take:

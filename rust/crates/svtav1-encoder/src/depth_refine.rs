@@ -1151,7 +1151,7 @@ impl NsqCfg {
     /// only ones it emits.
     #[cfg(test)]
     pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, cli_qp: u32) -> Self {
-        Self::for_arm_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
+        Self::for_arm_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal, 0)
     }
 
     pub(crate) fn for_arm_with_coeff(
@@ -1159,9 +1159,18 @@ impl NsqCfg {
         preset: i8,
         cli_qp: u32,
         coeff_level: crate::quant::CoeffLvl,
+        // C `pcs->temporal_layer_index` — the nsq_search_level ladder reads it
+        // (`get_nsq_search_level_default`, enc_mode_config.c:8258).
+        temporal_layer: u8,
     ) -> Self {
         Self::for_levels(
-            crate::part_arm::nsq_search_level_with_coeff(arm, preset, cli_qp, coeff_level),
+            crate::part_arm::nsq_search_level_with_coeff(
+                arm,
+                preset,
+                cli_qp,
+                coeff_level,
+                temporal_layer,
+            ),
             crate::part_arm::nsq_geom_level(arm, preset),
             crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
             cli_qp,
@@ -3240,6 +3249,7 @@ mod tests {
     fn pred_part_only_scan_equals_pd0_tree() {
         // A PRED_PART_ONLY refinement must mark exactly the PD0 leaves.
         let eval = Pd0Eval {
+            root_det: None,
             sq: 64,
             tested: true,
             sq_tested: true,
@@ -3248,6 +3258,7 @@ mod tests {
             off: false,
             children: Some(Box::new([
                 Pd0Eval {
+                    root_det: None,
                     sq: 32,
                     tested: true,
                     sq_tested: true,
@@ -3257,6 +3268,7 @@ mod tests {
                     children: None,
                 },
                 Pd0Eval {
+                    root_det: None,
                     sq: 32,
                     tested: true,
                     sq_tested: true,
@@ -3266,6 +3278,7 @@ mod tests {
                     children: None,
                 },
                 Pd0Eval {
+                    root_det: None,
                     sq: 32,
                     tested: true,
                     sq_tested: true,
@@ -3275,6 +3288,7 @@ mod tests {
                     children: None,
                 },
                 Pd0Eval {
+                    root_det: None,
                     sq: 32,
                     tested: true,
                     sq_tested: true,
@@ -3311,6 +3325,7 @@ mod tests {
         // A 32x32 PD0 leaf that was tested and not split: `set_start_end_depth`
         // may hand it a parent depth unless `sq == max_sq`.
         let leaf32 = |cost: u64| Pd0Eval {
+            root_det: None,
             sq: 32,
             tested: true,
             sq_tested: true,
@@ -3320,6 +3335,7 @@ mod tests {
             children: None,
         };
         let eval = Pd0Eval {
+            root_det: None,
             sq: 64,
             tested: true,
             sq_tested: true,
@@ -3496,6 +3512,7 @@ mod partial_sb_edge_tests {
         let tables = crate::pd0::build_m6_pd0_tables(160);
         let ctrls = DrCtrls::for_preset(4); // ADAPTIVE, s1 = e1 = 15
         let kid16 = || crate::pd0::Pd0Eval {
+            root_det: None,
             sq: 16,
             tested: true,
             sq_tested: true,
@@ -3508,6 +3525,7 @@ mod partial_sb_edge_tests {
         // cheaper — `is_child_to_current_deviation_small` admits the child
         // depth (e = 1) whenever the SQ cost is available.
         let leaf32 = |sq_tested: bool| crate::pd0::Pd0Eval {
+            root_det: None,
             sq: 32,
             tested: true,
             sq_tested,
@@ -3517,6 +3535,7 @@ mod partial_sb_edge_tests {
             children: Some(alloc::boxed::Box::new([kid16(), kid16(), kid16(), kid16()])),
         };
         let mk = |sq_tested: bool| crate::pd0::Pd0Eval {
+            root_det: None,
             sq: 64,
             tested: true,
             sq_tested: true,

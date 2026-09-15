@@ -1300,6 +1300,15 @@ fn update_coeff_eob<const TC: usize>(
             dist = dist_low;
         }
 
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_TRELLIS").is_some() {
+            std::eprintln!(
+                "TREL si={si} ci={ci} qc={qc} ctx={coeff_ctx} ctxE={coeff_ctx_new_eob} ar={} ad={} rate={rate} dist={dist} rd={rd} rdlow={rd_low} rdn={rd_new_eob} nec={new_eob_cost} rm={}",
+                *accu_rate,
+                *accu_dist,
+                o.rdmult
+            );
+        }
         // C gate: `sharpness == 0 && rd_new_eob < rd` (sharp-tx sets 1).
         if !o.sharpness_flag && rd_new_eob < if rd_low < rd { rd_low } else { rd } {
             for &last_ci in nz_ci.iter().take(*nz_num) {

@@ -86,6 +86,10 @@ pub(crate) fn commit_leaf(
                 // here is the post-commit OR (`committed_skm` above), not
                 // the stage-eval flag.
                 skip_mode: committed_skm,
+                // C `block_mi.skip` (`!block_has_coeff`, and always set on a
+                // committed skip-mode winner) — `lpd1_should_perform_tx`
+                // reads it off this cell as `both_neighbors_skip`.
+                skip: committed_skm || !ev.win.block_has_coeff,
                 comp_group_idx: ic.map_or(0, |i| i.comp_group_idx),
                 compound_idx: ic.map_or(0, |i| i.compound_idx),
             };
@@ -206,6 +210,23 @@ pub(crate) fn commit_leaf(
     // skip-mode branch zeroes `block_has_coeff` — a committed skip_mode
     // winner is always `skip` for the coefficient-context neighbours.
     let skip = committed_skm || !cand.block_has_coeff;
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_WINDBG").is_some() {
+        if let Some(i) = cand.inter.as_deref() {
+            eprintln!(
+                "RWIN blk=({abs_x},{abs_y}) {w}x{h} imode={} rf={:?} mv=({},{}) drl={} skip={skip} skm={} bhc={} cost={} yd={}",
+                i.mode as u8,
+                i.ref_frame,
+                i.mv[0].y,
+                i.mv[0].x,
+                i.drl_index,
+                i.skip_mode,
+                cand.block_has_coeff,
+                cand.mds3_cost,
+                cand.y_dist,
+            );
+        }
+    }
     fx.ectx
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
     // IBC chunk 9 (Root 6 twin, MD side): stamp the inter-neighbour dims

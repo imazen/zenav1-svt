@@ -50,6 +50,7 @@ fn cqp_qindex_calc_matches_the_base_q_idx_c_writes() {
         let got = cqp_qindex_calc(
             qindex, /*allintra=*/ false, /*slice_is_intra=*/ true, /*is_ref=*/ true,
             /*idr_flag=*/ true, /*temporal_layer_index=*/ 0, hier, /*bit_depth=*/ 8,
+            /*ld_non_base_boost=*/ None,
         );
         assert_eq!(got, expected, "qindex {qindex} hier {hier}");
     }
@@ -90,12 +91,12 @@ fn qdelta_and_qindex_to_q_match_c() {
 fn still_and_flat_gop_early_returns_are_identity() {
     for qindex in 0..=255i32 {
         assert_eq!(
-            cqp_qindex_calc(qindex, true, true, true, true, 0, 0, 8),
+            cqp_qindex_calc(qindex, true, true, true, true, 0, 0, 8, None),
             qindex,
             "allintra must not scale the qindex (the still envelope depends on this)"
         );
         assert_eq!(
-            cqp_qindex_calc(qindex, false, false, true, false, 0, 0, 8),
+            cqp_qindex_calc(qindex, false, false, true, false, 0, 0, 8, None),
             qindex,
             "hierarchical_levels == 0 and a non-intra slice returns the qindex unchanged"
         );

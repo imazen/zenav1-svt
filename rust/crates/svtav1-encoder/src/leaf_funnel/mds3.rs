@@ -972,8 +972,48 @@ fn eval_candidate(
                         .filter(|&(_, &v)| v != 0)
                         .map(|(i, v)| alloc::format!("{i}:{v}"))
                         .collect();
+                    // `SVTAV1_QLEV_CO` additionally prints C QLEV's `co=`
+                    // field — the PRE-quant packed coefficients — recomputed
+                    // here from the same (src, pred, tx_type) triple
+                    // `tx_unit_inner` consumed: residual + fwd 2D + the
+                    // 64-dim fold to `pw x ph`.
+                    let mut co_field = alloc::string::String::new();
+                    if std::env::var_os("SVTAV1_QLEV_CO").is_some() {
+                        let n = txw * txh;
+                        let mut res = alloc::vec![0i32; n];
+                        svtav1_dsp::residual::residual_i32(
+                            &y_src[y_src_off + tx_y * y_src_stride + tx_x..],
+                            y_src_stride,
+                            &txb_pred[..],
+                            txw,
+                            txw,
+                            txh,
+                            &mut res,
+                        );
+                        let mut cf = alloc::vec![0i32; n];
+                        let c_tx = cc::tx_size_from_dims(txw, txh);
+                        let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                            &res,
+                            &mut cf,
+                            txw,
+                            tx_pipeline::TX_SIZE_FROM_C[c_tx],
+                            tx_pipeline::TX_TYPE_FROM_C[txt],
+                        );
+                        debug_assert!(ok, "fwd txfm {txw}x{txh} type {txt}");
+                        let (pw, ph) = (txw.min(32), txh.min(32));
+                        let mut v = alloc::vec::Vec::new();
+                        for r in 0..ph {
+                            for (i, &val) in cf[r * txw..r * txw + pw].iter().enumerate() {
+                                if val != 0 {
+                                    v.push(alloc::format!("{}:{val}", r * pw + i));
+                                }
+                            }
+                        }
+                        co_field = alloc::format!(" co=[{}]", v.join(","));
+                    }
                     eprintln!(
-                        "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} eob={} nz=[{}]",
+                        "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} dq={:?} lam={lambda} eob={} nz=[{}]{co_field}",
+                        qt.dequant,
                         eob_d,
                         nz.join(",")
                     );
@@ -2890,10 +2930,27 @@ fn eval_candidate(
             best_dist + uv_dist10,
         );
         let skip_cost = rdcost(lambda3, rates.skip[skip_ctx][1] as u64, skip_y + skip_uv);
+        if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+            eprintln!(
+                "RSKIP blk=({abs_x},{abs_y}) yb={best_bits} ub={u_bits10} vb={v_bits10} nstx={non_skip_tx_bits} sf0={} sf1={} yres={best_dist} uvres={uv_dist10} ypred={skip_y} uvpred={skip_uv} nsc={non_skip_cost} sc={skip_cost} lam={lambda3} -> {}",
+                rates.skip[skip_ctx][0],
+                rates.skip[skip_ctx][1],
+                if skip_cost < non_skip_cost {
+                    "SKIP"
+                } else {
+                    "KEEP"
+                }
+            );
+        }
         if skip_cost < non_skip_cost {
             skip_dist = Some((skip_y, skip_uv));
             block_has_coeff = false;
         }
+    } else if std::env::var_os("SVTAV1_SKIPDBG").is_some() && cand.inter.is_some() {
+        eprintln!(
+            "RSKIP blk=({abs_x},{abs_y}) ARM-MISS bhc={block_has_coeff} has_uv={has_uv} pred_dists={}",
+            pred_dists.is_some()
+        );
     }
     // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
     // IntraBC: svt_aom_full_cost prices non_skip_tx_size_bits = the

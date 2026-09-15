@@ -838,7 +838,14 @@ pub enum CdefSearchPick {
     AllSkip,
     /// The RD pick: `cdef_bits` strength sets + the per-fb indices
     /// (finish_cdef_search, enc_cdef.c:1369-1435).
-    Picked(CdefPick),
+    Picked {
+        pick: CdefPick,
+        /// C `pcs->cdef_dist_dev` (`enc_cdef.c:1057`): the per-mille RD-cost
+        /// improvement the search measured, BEFORE the all-zero-strengths
+        /// override to 0 (`cdef_process.c:699-702`) — the caller applies
+        /// that once the final pick is known.
+        dist_dev: i32,
+    },
 }
 
 /// Chroma second-pass rows carry the `default_mse_uv * 64` sentinel
@@ -1051,7 +1058,7 @@ fn finish_cdef_rd(
     mse: &[MseRow],
     n_cand: usize,
     qindex: u8,
-) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
+) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>, i32) {
     finish_cdef_rd_bd(mse, n_cand, qindex, 8)
 }
 
@@ -1066,7 +1073,7 @@ fn finish_cdef_rd_bd(
     n_cand: usize,
     qindex: u8,
     bit_depth: u8,
-) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
+) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>, i32) {
     let sb_count = mse.len();
     debug_assert!(sb_count > 0);
     let lambda = match bit_depth {
@@ -1074,6 +1081,13 @@ fn finish_cdef_rd_bd(
         10 => crate::pd0::kf_full_lambda_bd10_unweighted(qindex) as u64,
         _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope)"),
     };
+    // C `enc_cdef.c:1030-1034`: the zero-strength cost feeds this picture's
+    // `cdef_dist_dev`, read by a LATER frame's `me_based_cdef_skip` through
+    // its reference object. `mse[..][0]` is candidate slot 0 = strength 0,
+    // already `zero_fs_cost_bias`-scaled by the caller exactly like C's
+    // in-place update.
+    let zero_dist: u64 = mse.iter().map(|row| row[0][0] + row[1][0]).sum();
+    let zero_cost = rdc(lambda, (6 * 2) << 9, zero_dist << 4);
     let mut best_cost = 1u64 << 63;
     let mut best_bits = 0usize;
     let mut best_lev0: alloc::vec::Vec<usize> = alloc::vec![0];
@@ -1093,7 +1107,12 @@ fn finish_cdef_rd_bd(
             best_lev1 = lev1[..nb].iter().map(|&v| v as usize).collect();
         }
     }
-    (best_bits, best_lev0, best_lev1)
+    // C `enc_cdef.c:1057`: `1000 - 1000 * best_tot_mse / zero_cost` (both are
+    // RDCOST values despite the `mse` name), 0 when `zero_cost` is 0.
+    let dist_dev = (1000u64 * best_cost)
+        .checked_div(zero_cost)
+        .map_or(0, |q| (1000 - q) as i32);
+    (best_bits, best_lev0, best_lev1, dist_dev)
 }
 
 /// One fb's packed filter pass: C `svt_cdef_filter_fb` with `dstride = 0`
@@ -1488,7 +1507,7 @@ pub(crate) fn cdef_search_still_with_stop(
         return Ok(CdefSearchPick::AllSkip);
     }
     apply_zero_fs_cost_bias(&mut mse, cfg.zero_fs_cost_bias);
-    let (bits, lev0, lev1) = finish_cdef_rd(&mse, n_cand, qindex);
+    let (bits, lev0, lev1, dist_dev) = finish_cdef_rd(&mse, n_cand, qindex);
     // Diagnostic aid (SVTAV1_CDEF_DBG): dump the per-fb candidate-slot mse
     // rows (luma + joint UV) + the aggregate sums + the RD pick, to diff
     // against the instrumented C `cdef_seg_search`/`finish_cdef_search`
@@ -1538,13 +1557,16 @@ pub(crate) fn cdef_search_still_with_stop(
     let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
-    Ok(CdefSearchPick::Picked(CdefPick {
-        damping: 3 + (qindex >> 6),
-        bits: bits as u8,
-        strengths,
-        fb_idx,
-        nhfb,
-    }))
+    Ok(CdefSearchPick::Picked {
+        pick: CdefPick {
+            damping: 3 + (qindex >> 6),
+            bits: bits as u8,
+            strengths,
+            fb_idx,
+            nhfb,
+        },
+        dist_dev,
+    })
 }
 
 /// Highbd twin of [`cdef_search_still`] — C `cdef_seg_search` with
@@ -1759,7 +1781,7 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
     if mse.is_empty() {
         return Ok(CdefSearchPick::AllSkip);
     }
-    let (bits, lev0, lev1) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
+    let (bits, lev0, lev1, dist_dev) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
     #[cfg(feature = "std")]
     if crate::dbgenv::cdef_dbg() {
         let mut ysum = alloc::vec![0u64; n_cand];
@@ -1798,13 +1820,16 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
     let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
-    Ok(CdefSearchPick::Picked(CdefPick {
-        damping: 3 + (qindex >> 6),
-        bits: bits as u8,
-        strengths,
-        fb_idx,
-        nhfb,
-    }))
+    Ok(CdefSearchPick::Picked {
+        pick: CdefPick {
+            damping: 3 + (qindex >> 6),
+            bits: bits as u8,
+            strengths,
+            fb_idx,
+            nhfb,
+        },
+        dist_dev,
+    })
 }
 
 #[cfg(test)]
@@ -2016,20 +2041,20 @@ mod tests {
             [885_020, 900_992, 875_920, 892_836],
             [0, 0, 66_585_600, 66_585_600],
         )];
-        assert_eq!(
-            finish_cdef_rd(&m55, 4, 220),
-            (0, alloc::vec![2], alloc::vec![0])
-        );
+        assert_eq!(finish_cdef_rd(&m55, 4, 220).0, 0);
+        assert_eq!(finish_cdef_rd(&m55, 4, 220).1, alloc::vec![2]);
+        assert_eq!(finish_cdef_rd(&m55, 4, 220).2, alloc::vec![0]);
         // g64 q40 (qindex 160): pick y index 3 (strength 62 = pri 15 /
         // sec 2).
         let m40 = [row(
             [271_716, 257_812, 260_308, 251_848],
             [0, 0, 66_585_600, 66_585_600],
         )];
-        assert_eq!(
-            finish_cdef_rd(&m40, 4, 160),
-            (0, alloc::vec![3], alloc::vec![0])
-        );
+        let (b40, l0_40, l1_40, dev40) = finish_cdef_rd(&m40, 4, 160);
+        assert_eq!((b40, l0_40, l1_40), (0, alloc::vec![3], alloc::vec![0]));
+        // `cdef_dist_dev` (enc_cdef.c:1057): the pick reduces RD cost vs the
+        // zero-strength arm, so dev is positive and bounded by 1000.
+        assert!((0..1000).contains(&dev40));
         // g128 q20 (qindex 80), 4 filter blocks: pick y index 2
         // (strength 2), uv 0, bits 0 (CDEFPICK y=[2]).
         let uvrow = [0u64, 0, 66_585_600, 66_585_600];
@@ -2039,10 +2064,9 @@ mod tests {
             row([52_756, 49_508, 48_144, 49_800], uvrow),
             row([52_028, 48_140, 46_548, 48_664], uvrow),
         ];
-        assert_eq!(
-            finish_cdef_rd(&m20, 4, 80),
-            (0, alloc::vec![2], alloc::vec![0])
-        );
+        let (b20, l0_20, l1_20, dev20) = finish_cdef_rd(&m20, 4, 80);
+        assert_eq!((b20, l0_20, l1_20), (0, alloc::vec![2], alloc::vec![0]));
+        assert!((0..1000).contains(&dev20));
     }
 
     /// Damping steps exactly at the C breakpoints.

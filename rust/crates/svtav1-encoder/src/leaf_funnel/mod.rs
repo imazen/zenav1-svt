@@ -99,6 +99,7 @@ mod commit;
 mod detect;
 mod ifs;
 mod inject;
+pub(crate) mod light;
 mod mds1;
 mod mds3;
 mod nic;
@@ -676,6 +677,27 @@ pub(crate) fn evaluate_leaf(
         &mut ind_uv,
         &mut warp_blk,
     );
+
+    // -- Light-PD1 leaf lane (C `md_encode_block_light_pd1`) --
+    // When the per-SB `pd1_level` resolved above `REGULAR_PD1` the whole
+    // regular NIC/MDS1/MDS3 spine is replaced by the light lane: a single
+    // fast pass picks the best candidate and ONE freq-domain full loop
+    // prices it. See [`light`]. `inject_candidates` already injected the
+    // light inter candidate set (`fx.lpd1.is_some()` selected it inside
+    // `build_inter_candidates`); this arm only swaps the evaluation.
+    if fx.lpd1.is_some() {
+        return light::finish_lpd1(
+            fx,
+            &geom,
+            &cx,
+            &qt,
+            lambda,
+            cands,
+            y_src,
+            y_src_stride,
+            y_src_off,
+        );
+    }
 
     // -- MDS0 -> MDS1 staging: replacement pool, per-class sort, dev-prune --
     // C `md_stage_0` + `sort_fast_cost_based_candidates` +

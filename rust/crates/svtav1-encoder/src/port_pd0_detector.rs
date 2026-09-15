@@ -128,7 +128,21 @@ pub use crate::port_rc_process::SliceType;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RefSbInfo {
     /// `ref_obj->sb_intra[sb_index]` for the usable reference, or `None`.
+    ///
+    /// `Some`/`None` doubles as the "reference is usable" flag — the caller
+    /// only fills it when C's `count_try` + `is_ref_same_size` +
+    /// `tmp_layer_idx <= temporal_layer` gates all hold, which is also the
+    /// `refs++` condition `lpd1_detector_skip_pd0`'s score loop needs.
     pub was_intra: Option<u8>,
+    /// `ref_obj->sb_skip[sb_index]` — `lpd1_detector_skip_pd0` only.
+    pub was_skip: Option<bool>,
+    /// `ref_obj->slice_type != I_SLICE` is false → the score arm adds a flat
+    /// 10 (`lpd1_detector_skip_pd0`). `false` = inter reference.
+    pub is_intra_slice: bool,
+    /// `ref_obj->sb_me_64x64_dist[sb_index]` — `lpd1_detector_skip_pd0` only.
+    pub me_64x64_dist: Option<u32>,
+    /// `ref_obj->sb_me_8x8_cost_var[sb_index]` — `lpd1_detector_skip_pd0` only.
+    pub me_8x8_cost_var: Option<u32>,
 }
 
 impl RefSbInfo {
@@ -407,7 +421,206 @@ pub fn pd0_detector(ctrls: &Pd0Ctrls, sb: &Pd0SbInput) -> Pd0Level {
     level
 }
 
-/// The `(q_weight, q_weight_denom)` pair C's EXPORTED
+// ---------------------------------------------------------------------------
+// lpd1_detector_* — the light-PD1 analogues
+// ---------------------------------------------------------------------------
+
+/// C `RDCOST` (rd_cost.h:36) as the lpd1 detectors evaluate their
+/// `low_th` bound — `ROUND_POWER_OF_TWO(rate * lambda, 9) + dist << 7`.
+#[inline]
+fn rdcost_lpd1(lambda: u64, rate: u64, dist: u64) -> u64 {
+    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
+}
+
+/// C `lpd1_detector_post_pd0` (`enc_dec_process.c:2105`) — the light-PD1
+/// classifier used when PD0 ran a real transform, i.e. `cnt_nz_coeff` and the
+/// root block's `block_mi` are available off `pc_tree->block_data[PART_N][0]`.
+///
+/// Walks `pd1_lvl` down from `LPD1_LEVELS - 1` like [`pd0_detector`]; at each
+/// level matching `ctrls.pd1_level` it may demote to `pd1_lvl - 1` and the
+/// loop re-tests the next level down. Mutates `ctrls` in place — both the
+/// `pd1_level` and, on the "one intra reference" arm, the level's own
+/// thresholds (`cost_th_*`, `me_8x8_cost_variance_th`, `nz_coeff_th`), which a
+/// LATER, lower level's iteration would then read.
+///
+/// `root` is [`crate::pd0::Pd0Eval::root_det`] — `rdc.rd_cost` and the
+/// `block_data[PART_N][0]` payload. `lambda_8bit` is
+/// `full_sb_lambda_md[EB_8_BIT_MD]` (light-PD1 assumes 8-bit MD).
+pub fn lpd1_detector_post_pd0(
+    ctrls: &mut crate::port_enc_mode_config::common::Lpd1Ctrls,
+    pd1_lvl_refinement: i32,
+    sb: &Pd0SbInput,
+    root: &crate::pd0::Pd0RootDet,
+    lambda_8bit: u32,
+) {
+    use crate::port_enc_mode_config::common::{LPD1_LEVELS, REGULAR_PD1};
+    for pd1_lvl in (0..LPD1_LEVELS as i32).rev() {
+        if pd1_lvl <= pd1_lvl_refinement - 1 {
+            break;
+        }
+        if i32::from(ctrls.pd1_level) != pd1_lvl {
+            continue;
+        }
+        let lvl = pd1_lvl as usize;
+        if !ctrls.rows[lvl].use_lpd1_detector {
+            continue;
+        }
+        // Use info from ref frames (if available). `ref_l{0,1}` already fold
+        // in C's `count_try` / `is_ref_same_size` / `tmp_layer_idx` gates — a
+        // `was_intra` of `None` is C's `l{0,1}_refs == 0`.
+        if ctrls.rows[lvl].use_ref_info != 0 && !sb.slice_type_is_intra {
+            let (l0_refs, l0_was_intra) = (sb.ref_l0.refs(), sb.ref_l0.was_intra());
+            let (l1_refs, l1_was_intra) = (sb.ref_l1.refs(), sb.ref_l1.was_intra());
+            if (l0_refs || l1_refs)
+                && (!l0_refs || l0_was_intra != 0)
+                && (!l1_refs || l1_was_intra != 0)
+            {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+                continue;
+            } else if (l0_refs && l0_was_intra != 0) || (l1_refs && l1_was_intra != 0) {
+                ctrls.rows[lvl].cost_th_dist >>= 2;
+                ctrls.rows[lvl].cost_th_rate >>= 2;
+                ctrls.rows[lvl].me_8x8_cost_variance_th >>= 1;
+                ctrls.rows[lvl].nz_coeff_th >>= 1;
+            }
+        }
+
+        // The 64x64 cost + nz-coeff test. `nz_coeffs` reads as `~0` when the
+        // PART_N block was never costed (C `tested_blk[PART_N][0]` NULL arm).
+        let pd0_cost = root.rd_cost;
+        let nz_coeffs = root.blk.map_or(u32::MAX, |b| b.nz);
+        // `dist << 14` == `64 * 64 * 4 * dist` (per-pixel SSD at the 64x64
+        // block, times the perform_tx_pd0 <<2 shift).
+        let low_th = rdcost_lpd1(
+            u64::from(lambda_8bit),
+            u64::from(ctrls.rows[lvl].cost_th_rate),
+            u64::from(ctrls.rows[lvl].cost_th_dist) << 14,
+        );
+        if pd0_cost > low_th && nz_coeffs >= ctrls.rows[lvl].nz_coeff_th {
+            ctrls.pd1_level = (pd1_lvl - 1) as i8;
+        }
+
+        // If the best PD0 mode was INTER, check the MV length. C's `MV.x` is
+        // `int32_t`; the port's [`svtav1_types::motion::Mv`] is `i16`, so a
+        // `max_mv_length` above 32767 (level 5/6's `2048*16`) can never trip —
+        // the widened compare is faithful for every threshold that fits.
+        if let Some(b) = root.blk {
+            if b.is_inter && ctrls.rows[lvl].max_mv_length != u16::MAX {
+                let max_mv = i32::from(ctrls.rows[lvl].max_mv_length);
+                if i32::from(b.mv0.x) > max_mv || i32::from(b.mv0.y) > max_mv {
+                    ctrls.pd1_level = (pd1_lvl - 1) as i8;
+                }
+                if b.bipred && (i32::from(b.mv1.x) > max_mv || i32::from(b.mv1.y) > max_mv) {
+                    ctrls.pd1_level = (pd1_lvl - 1) as i8;
+                }
+            }
+        }
+
+        if !sb.slice_type_is_intra {
+            let th = ctrls.rows[lvl].me_8x8_cost_variance_th;
+            // C guards on `th < ((uint32_t)~0) >> 2` so
+            // `(th >> 5) * (73 - picture_qp)` cannot overflow.
+            if th < (u32::MAX >> 2) && sb.me_8x8_cost_variance > (th >> 5) * (73 - sb.picture_qp) {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+            }
+        }
+        let _ = REGULAR_PD1;
+    }
+}
+
+/// C `lpd1_detector_skip_pd0` (`enc_dec_process.c:2221`) — the classifier used
+/// when PD0 was skipped or ran no transform (`skip_pd_pass_0` or
+/// `pd0_level == PD0_LVL_6`), so no per-block cost/coeff info exists. Same
+/// downward level ladder; demotes on a ref-frame complexity score, an edge
+/// distortion bound, an ME-variance bound, or neighbour `sb_intra`/`sb_skip`.
+pub fn lpd1_detector_skip_pd0(
+    ctrls: &mut crate::port_enc_mode_config::common::Lpd1Ctrls,
+    pd1_lvl_refinement: i32,
+    sb: &Pd0SbInput,
+) {
+    use crate::port_enc_mode_config::common::{LPD1_LEVELS, REGULAR_PD1};
+    for pd1_lvl in (0..LPD1_LEVELS as i32).rev() {
+        if pd1_lvl <= pd1_lvl_refinement - 1 {
+            break;
+        }
+        if i32::from(ctrls.pd1_level) != pd1_lvl {
+            continue;
+        }
+        let lvl = pd1_lvl as usize;
+        if !ctrls.rows[lvl].use_lpd1_detector {
+            continue;
+        }
+        // Use info from ref frames — a per-SB complexity score. `RefSbInfo`
+        // carries only the usable (count_try + same-size + tmp_layer) refs.
+        if ctrls.rows[lvl].use_ref_info != 0 && !sb.slice_type_is_intra {
+            let mut score: i16 = 0;
+            let mut refs = 0u8;
+            for r in [sb.ref_l0, sb.ref_l1] {
+                let Some(_w) = r.was_intra else { continue };
+                if !r.is_intra_slice {
+                    score += i16::from(r.was_intra.unwrap_or(0) != 0) * 5;
+                    score += i16::from(!r.was_skip.unwrap_or(true)) * 5;
+                    if u64::from(sb.me_64x64_distortion)
+                        > u64::from(r.me_64x64_dist.unwrap_or(0)) * 3
+                    {
+                        score += 5;
+                    }
+                    if u64::from(sb.me_8x8_cost_variance)
+                        > u64::from(r.me_8x8_cost_var.unwrap_or(0)) * 3
+                    {
+                        score += 5;
+                    }
+                } else {
+                    score += 10;
+                }
+                refs += 1;
+            }
+            if refs != 0 && score >= 10 * i16::from(refs) {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+                continue;
+            }
+        }
+
+        // I_SLICE has no ME info.
+        if sb.slice_type_is_intra {
+            continue;
+        }
+        if sb.is_edge_sb {
+            if sb.me_64x64_distortion > ctrls.rows[lvl].skip_pd0_edge_dist_th {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+            }
+            let th = ctrls.rows[lvl].me_8x8_cost_variance_th;
+            if th < (u32::MAX >> 2) && sb.me_8x8_cost_variance > (th >> 5) * (73 - sb.picture_qp) {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+            }
+        } else {
+            let shift = ctrls.rows[lvl].skip_pd0_me_shift;
+            let shift_ok = shift != u16::MAX;
+            let dist_sum = sb
+                .left_me_64x64_distortion
+                .wrapping_add(sb.top_me_64x64_distortion)
+                .wrapping_shl(u32::from(shift));
+            let var_sum = sb
+                .left_me_8x8_cost_variance
+                .wrapping_add(sb.top_me_8x8_cost_variance)
+                .wrapping_shl(u32::from(shift));
+            if shift_ok && sb.me_64x64_distortion > dist_sum {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+            } else if shift_ok && sb.me_8x8_cost_variance > var_sum {
+                ctrls.pd1_level = (pd1_lvl - 1) as i8;
+            } else if ctrls.rows[lvl].use_ref_info != 0 {
+                // Neighbouring SBs.
+                let both_intra = sb.left_sb_intra && sb.top_sb_intra;
+                let one_intra_none_skipped =
+                    !sb.left_sb_skip && !sb.top_sb_skip && (sb.left_sb_intra || sb.top_sb_intra);
+                if both_intra || one_intra_none_skipped {
+                    ctrls.pd1_level = (pd1_lvl - 1) as i8;
+                }
+            }
+        }
+        let _ = REGULAR_PD1;
+    }
+}
 /// `svt_aom_get_qp_based_th_scaling_factors` (`enc_mode_config.c:25`)
 /// produces.
 ///
@@ -631,6 +844,7 @@ mod tests {
             slice_type_is_intra: false,
             ref_l0: RefSbInfo {
                 was_intra: Some(was_intra),
+                ..RefSbInfo::default()
             },
             // Deliberately EXTREME, so that if the reference arm did not fire
             // the ME arm certainly would and the test could not pass by
@@ -761,8 +975,14 @@ mod tests {
             let mut c = ctrls_at(Pd0Level::Lvl4);
             c.use_ref_info[4] = arm;
             let mut sb = inter_sb();
-            sb.ref_l0 = RefSbInfo { was_intra: l0 };
-            sb.ref_l1 = RefSbInfo { was_intra: l1 };
+            sb.ref_l0 = RefSbInfo {
+                was_intra: l0,
+                ..RefSbInfo::default()
+            };
+            sb.ref_l1 = RefSbInfo {
+                was_intra: l1,
+                ..RefSbInfo::default()
+            };
             sb.ref_intra_percentage = ref_intra_pct;
             pd0_detector(&c, &sb)
         };

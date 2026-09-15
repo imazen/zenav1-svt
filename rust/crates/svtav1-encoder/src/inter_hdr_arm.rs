@@ -213,6 +213,24 @@ pub fn inter_signal(
     let order_hint = u8::try_from(u64::from(pic.cur_order_hint) & order_hint_mask)
         .expect("order_hint_bits <= 8 in this envelope");
 
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_FHDBG").is_some() {
+        eprintln!(
+            "FHDBG poc={} tl={} picidx rps={:?} refresh={:02x} erm={} oh={} prf={} refsel={} skip={:?} awm={:?} mfmv={:?} ifilter={:?}",
+            pic.picture_number,
+            pic.temporal_layer_index,
+            pic.rps.ref_dpb_index,
+            pic.rps.refresh_frame_mask,
+            error_resilient_mode,
+            order_hint,
+            primary_ref_frame,
+            reference_select,
+            skip_mode_present,
+            allow_warped_motion,
+            use_ref_frame_mvs,
+            sigs.interpolation_filter,
+        );
+    }
     Ok(InterSignal {
         // The caller fills `global_motion` / `ref_global_motion` and then calls
         // `sync_is_global`; this function has no access to the search.
@@ -392,12 +410,11 @@ pub fn md_config_inputs(
     // silent mismatch.
     use crate::port_rc_process::{SliceType, get_ref_hp_percentage};
 
-    // `interpolation_search_level` consults `ref_skip_percentage` only on the
-    // `enc_mode > ENC_M8`, non-base arm (`enc_mode_config.c:9088-9096`).
-    // M8 is enc_mode 8.
-    if p.enc_mode > 8 && p.temporal_layer_index != 0 {
-        return None;
-    }
+    // `interpolation_search_level` consults `ref_skip_percentage` on the
+    // `enc_mode > ENC_M8`, non-base arm (`enc_mode_config.c:9088-9096`) — the
+    // stats it reads (`ref_l0`/`ref_l1`'s `skip_coded_area`) are populated on
+    // every stored reference, so a non-base layer is no longer outside the
+    // envelope. M8 is enc_mode 8.
     let slice = if p.is_islice {
         SliceType::I
     } else {

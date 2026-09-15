@@ -3024,6 +3024,7 @@ mod intra_inter_context_tests {
             interp_filters: 0,
             use_intrabc: false,
             skip_mode: false,
+            skip: false,
             comp_group_idx: 0,
             compound_idx: 0,
             bsize: 3,

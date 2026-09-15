@@ -475,6 +475,10 @@ pub struct InjectCtx<'a> {
     pub updated_enable_pme: bool,
     pub reduce_unipred_candidates: u8,
     pub use_neighbouring_mode_ctrls_enabled: bool,
+    /// C `ctx->cand_reduction_ctrls.lpd1_mvp_best_me_list` — read only by
+    /// [`inject_mvp_candidates_ii_light_pd1`], which keeps an MVP candidate
+    /// only on the list ME's first candidate already used.
+    pub lpd1_mvp_best_me_list: bool,
     pub is_intra_bordered: bool,
     /// C `blk_ptr->overlappable_neighbors != 0`.
     pub has_overlappable_candidates: bool,
@@ -1843,6 +1847,296 @@ pub fn inject_inter_candidates(
 }
 
 // ---------------------------------------------------------------------------
+// Light-PD1
+// ---------------------------------------------------------------------------
+
+/// C `inject_inter_candidates_light_pd1` (mode_decision.c:2836-2865).
+///
+/// The light-PD1 inter injection is a strict SUBSET of
+/// [`inject_inter_candidates`]: MVP and ME-NEW candidates only. There is no
+/// global, no bipred-3x3, no unipred-3x3, no PME, and none of the
+/// `inj_non_simple_modes`/`inj_comp_modes` expansions — the light path prices
+/// `SIMPLE_TRANSLATION` and `COMPOUND_AVERAGE` only. The neighbour/WM-sample
+/// work C does at the head of the function is (as with the regular entry) an
+/// input on [`InjectCtx`] here, not a step.
+pub fn inject_inter_candidates_light_pd1(
+    ctx: &InjectCtx<'_>,
+    cands: &mut CandArray,
+    log: &mut InjectedMvLog,
+) {
+    let allow_bipred = ctx.allow_bipred();
+    if ctx.new_nearest_injection
+        && !(ctx.is_intra_bordered && ctx.use_neighbouring_mode_ctrls_enabled)
+    {
+        inject_mvp_candidates_ii_light_pd1(ctx, cands, log, allow_bipred);
+    }
+    if ctx.inject_new_me {
+        inject_new_candidates_light_pd1(ctx, cands, log, allow_bipred);
+    }
+}
+
+/// C `inject_mvp_candidates_ii_light_pd1` (mode_decision.c:1328-1471).
+///
+/// Differences from [`inject_mvp_candidates_ii`]:
+/// * `lpd1_mvp_best_me_list` keeps a single-ref MVP only when ME's first
+///   candidate already used that list (a bipred ME candidate suppresses BOTH
+///   single-ref MVP lanes).
+/// * No ref pruning — `is_valid_unipred_ref`/`is_valid_bipred_ref` are not
+///   consulted.
+/// * The NEAR/NEAR_NEAR DRL walk reads `ref_mv_stack[1+drli].{this,comp}_mv`
+///   directly; this equals what `get_av1_mv_pred_drl` returns for
+///   NEARMV/NEAR_NEARMV at `drli`, so the MVs are identical.
+/// * Compound candidates hardcode `comp_group_idx=0`, `compound_idx=1`,
+///   `interinter_comp.type=COMPOUND_AVERAGE` (what `determine_compound_mode(_,0,_)`
+///   produces) and never run `inj_non_simple_modes`/`inj_comp_modes`.
+pub fn inject_mvp_candidates_ii_light_pd1(
+    ctx: &InjectCtx<'_>,
+    cands: &mut CandArray,
+    log: &mut InjectedMvLog,
+    allow_bipred: bool,
+) {
+    for &ref_pair in ctx.ref_frame_type_arr {
+        let rf = av1_set_ref_frame(ref_pair);
+        if rf[1] == NONE_FRAME {
+            let frame_type = rf[0];
+            let list_idx = get_list_idx(rf[0]) as u8;
+            if ctx.lpd1_mvp_best_me_list {
+                // C reads `me_candidate_array[me_cand_offset].direction` — the
+                // FIRST ME candidate for this block.
+                if ctx.total_me_cnt != 0 && list_idx != ctx.me_cands[0].direction {
+                    continue;
+                }
+            }
+            let stack = &ctx.ref_mv_stack[frame_type.max(0) as usize];
+            // NEAREST — the first inter MV injected, so no dedup check.
+            let to_inj_mv = stack.stack[0].this_mv;
+            let mut cand = InterCandidate {
+                mode: PredictionMode::NearestMv,
+                motion_mode: MotionMode::SimpleTranslation,
+                is_interintra_used: false,
+                use_intrabc: false,
+                skip_mode_allowed: false,
+                drl_index: 0,
+                ref_frame: rf,
+                num_proj_ref: ctx.wm_sample_num[frame_type.max(0) as usize],
+                ..Default::default()
+            };
+            cand.mv[0] = to_inj_mv;
+            cands.push(cand);
+            log.push([to_inj_mv, Mv::ZERO], frame_type as u8);
+
+            // NEAR
+            let max_drl_index = get_max_drl_index(
+                ctx.ref_mv_count[frame_type.max(0) as usize],
+                PredictionMode::NearMv,
+            );
+            let cap = if ctx.near_count_ctrls.enabled {
+                ctx.near_count_ctrls.near_count.min(max_drl_index)
+            } else {
+                0
+            };
+            for drli in 0..cap {
+                let to_inj_mv = stack.stack[1 + usize::from(drli)].this_mv;
+                if already_injected(ctx, log, to_inj_mv, to_inj_mv, frame_type) {
+                    continue;
+                }
+                let mut cand = InterCandidate {
+                    mode: PredictionMode::NearMv,
+                    motion_mode: MotionMode::SimpleTranslation,
+                    is_interintra_used: false,
+                    use_intrabc: false,
+                    skip_mode_allowed: false,
+                    drl_index: drli,
+                    ref_frame: rf,
+                    num_proj_ref: ctx.wm_sample_num[frame_type.max(0) as usize],
+                    ..Default::default()
+                };
+                cand.mv[0] = to_inj_mv;
+                cands.push(cand);
+                log.push([to_inj_mv, Mv::ZERO], frame_type as u8);
+            }
+        } else if allow_bipred {
+            let stack = &ctx.ref_mv_stack[ref_pair.max(0) as usize];
+            // NEAREST_NEAREST — first bipred candidate, no dedup check.
+            let to_inj_mv0 = stack.stack[0].this_mv;
+            let to_inj_mv1 = stack.stack[0].comp_mv;
+            let is_skip_mode = !ctx.is_lossless_segment
+                && ctx.skip_mode_flag
+                && rf[0] == ctx.skip_mode_ref_frame_idx_0
+                && rf[1] == ctx.skip_mode_ref_frame_idx_1;
+            let mut cand = InterCandidate {
+                mode: PredictionMode::NearestNearestMv,
+                motion_mode: MotionMode::SimpleTranslation,
+                is_interintra_used: false,
+                use_intrabc: false,
+                skip_mode_allowed: is_skip_mode,
+                drl_index: 0,
+                ref_frame: rf,
+                // C writes COMPOUND_AVERAGE literally (comp_group_idx=0,
+                // compound_idx=1) — determine_compound_mode(_,0,_) verbatim.
+                comp_group_idx: 0,
+                compound_idx: 1,
+                interinter_comp_type: TO_AV1_COMPOUND_LUT[0],
+                ..Default::default()
+            };
+            cand.mv = [to_inj_mv0, to_inj_mv1];
+            cands.push(cand);
+            log.push([to_inj_mv0, to_inj_mv1], ref_pair as u8);
+
+            // NEAR_NEAR
+            let max_drl_index = get_max_drl_index(
+                ctx.ref_mv_count[ref_pair.max(0) as usize],
+                PredictionMode::NearNearMv,
+            );
+            let cap = if ctx.near_count_ctrls.enabled {
+                ctx.near_count_ctrls.near_near_count.min(max_drl_index)
+            } else {
+                0
+            };
+            for drli in 0..cap {
+                let to_inj_mv0 = stack.stack[1 + usize::from(drli)].this_mv;
+                let to_inj_mv1 = stack.stack[1 + usize::from(drli)].comp_mv;
+                if already_injected(ctx, log, to_inj_mv0, to_inj_mv1, ref_pair) {
+                    continue;
+                }
+                let mut cand = InterCandidate {
+                    mode: PredictionMode::NearNearMv,
+                    motion_mode: MotionMode::SimpleTranslation,
+                    is_interintra_used: false,
+                    use_intrabc: false,
+                    skip_mode_allowed: false,
+                    drl_index: drli,
+                    ref_frame: rf,
+                    comp_group_idx: 0,
+                    compound_idx: 1,
+                    interinter_comp_type: TO_AV1_COMPOUND_LUT[0],
+                    ..Default::default()
+                };
+                cand.mv = [to_inj_mv0, to_inj_mv1];
+                cands.push(cand);
+                log.push([to_inj_mv0, to_inj_mv1], ref_pair as u8);
+            }
+        }
+    }
+}
+
+/// C `inject_new_candidates_light_pd1` (mode_decision.c:2372-2477).
+///
+/// Differences from [`inject_new_candidates`]:
+/// * `reduce_unipred_candidates` thresholds are `> 1` (level >= 2) / `> 3`
+///   (level 1), vs the regular path's flat `> 3`.
+/// * No ref pruning (`is_valid_unipred_ref`/`is_valid_bipred_ref` skipped).
+/// * The bipred arm additionally requires `inter_direction == 2` explicitly
+///   (the regular path reaches it via `else if allow_bipred`).
+/// * Compound candidates hardcode `COMPOUND_AVERAGE` and never run
+///   `inj_comp_modes`.
+pub fn inject_new_candidates_light_pd1(
+    ctx: &InjectCtx<'_>,
+    cands: &mut CandArray,
+    log: &mut InjectedMvLog,
+    allow_bipred: bool,
+) {
+    for me_cand in ctx.me_cands.iter().take(ctx.total_me_cnt) {
+        let inter_direction = me_cand.direction;
+        let list0_ref_index = me_cand.ref_idx_l0;
+        let list1_ref_index = me_cand.ref_idx_l1;
+
+        if ctx.reduce_unipred_candidates >= 2 {
+            if ctx.total_me_cnt > 1 && inter_direction != 2 {
+                continue;
+            }
+        } else if ctx.reduce_unipred_candidates != 0 && ctx.total_me_cnt > 3 && inter_direction != 2
+        {
+            continue;
+        }
+
+        if inter_direction < BI_PRED {
+            let list_idx = usize::from(inter_direction);
+            let ref_idx = usize::from(if inter_direction != 0 {
+                list1_ref_index
+            } else {
+                list0_ref_index
+            });
+            let to_inj_mv = ctx.sb_me_mv[list_idx][ref_idx];
+            let to_inject_ref_type = get_ref_frame_type(list_idx as u8, ref_idx as u8) as i8;
+            if already_injected(ctx, log, to_inj_mv, to_inj_mv, to_inject_ref_type) {
+                continue;
+            }
+            let (drl_index, best_pred_mv) = ctx.choose_drl(
+                to_inject_ref_type,
+                PredictionMode::NewMv,
+                to_inj_mv,
+                Mv::ZERO,
+            );
+            if ctx.corrupted_mv_check
+                && !is_valid_mv_diff(best_pred_mv, to_inj_mv, to_inj_mv, false)
+            {
+                continue;
+            }
+            let mut cand = InterCandidate {
+                mode: PredictionMode::NewMv,
+                motion_mode: MotionMode::SimpleTranslation,
+                is_interintra_used: false,
+                use_intrabc: false,
+                skip_mode_allowed: false,
+                drl_index,
+                ref_frame: [to_inject_ref_type, NONE_FRAME],
+                num_proj_ref: ctx.wm_sample_num[to_inject_ref_type.max(0) as usize],
+                ..Default::default()
+            };
+            cand.mv[0] = to_inj_mv;
+            cand.pred_mv[0] = best_pred_mv[0];
+            cands.push(cand);
+            log.push([to_inj_mv, Mv::ZERO], to_inject_ref_type as u8);
+        } else if allow_bipred
+            && inter_direction == 2
+            && !(ctx.is_intra_bordered && ctx.use_neighbouring_mode_ctrls_enabled)
+        {
+            let to_inj_mv0 =
+                ctx.sb_me_mv[usize::from(me_cand.ref0_list)][usize::from(list0_ref_index)];
+            let to_inj_mv1 =
+                ctx.sb_me_mv[usize::from(me_cand.ref1_list)][usize::from(list1_ref_index)];
+            let rf = [
+                get_ref_frame_type(me_cand.ref0_list, list0_ref_index) as i8,
+                get_ref_frame_type(me_cand.ref1_list, list1_ref_index) as i8,
+            ];
+            let to_inject_ref_type = av1_ref_frame_type(rf);
+            if already_injected(ctx, log, to_inj_mv0, to_inj_mv1, to_inject_ref_type) {
+                continue;
+            }
+            let (drl_index, best_pred_mv) = ctx.choose_drl(
+                to_inject_ref_type,
+                PredictionMode::NewNewMv,
+                to_inj_mv0,
+                to_inj_mv1,
+            );
+            if ctx.corrupted_mv_check
+                && !is_valid_mv_diff(best_pred_mv, to_inj_mv0, to_inj_mv1, true)
+            {
+                continue;
+            }
+            let mut cand = InterCandidate {
+                mode: PredictionMode::NewNewMv,
+                motion_mode: MotionMode::SimpleTranslation,
+                is_interintra_used: false,
+                use_intrabc: false,
+                skip_mode_allowed: false,
+                drl_index,
+                ref_frame: rf,
+                comp_group_idx: 0,
+                compound_idx: 1,
+                interinter_comp_type: TO_AV1_COMPOUND_LUT[0],
+                ..Default::default()
+            };
+            cand.mv = [to_inj_mv0, to_inj_mv1];
+            cand.pred_mv = best_pred_mv;
+            cands.push(cand);
+            log.push([to_inj_mv0, to_inj_mv1], to_inject_ref_type as u8);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PD0
 // ---------------------------------------------------------------------------
 
@@ -2103,6 +2397,7 @@ mod tests {
                 updated_enable_pme: false,
                 reduce_unipred_candidates: 0,
                 use_neighbouring_mode_ctrls_enabled: false,
+                lpd1_mvp_best_me_list: false,
                 is_intra_bordered: false,
                 has_overlappable_candidates: false,
                 allow_warped_motion: false,

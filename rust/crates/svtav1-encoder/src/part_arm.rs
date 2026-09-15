@@ -170,7 +170,7 @@ pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: i8) -> bool {
 #[must_use]
 #[cfg(test)]
 pub(crate) fn nsq_search_level(arm: ScArm, preset: i8, cli_qp: u32) -> u8 {
-    nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
+    nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal, 0)
 }
 
 /// The `quant::CoeffLvl` -> `InputCoeffLvl` bridge — the `InputCoeffLvl`
@@ -189,6 +189,10 @@ pub(crate) fn nsq_search_level_with_coeff(
     preset: i8,
     cli_qp: u32,
     coeff_level: crate::quant::CoeffLvl,
+    // C `pcs->temporal_layer_index` — `get_nsq_search_level_default` reads it
+    // for the M0 `is_base` row and the r0 modulation table
+    // (enc_mode_config.c:8258-8290). 0 on a flat GOP's every picture.
+    temporal_layer: u8,
 ) -> u8 {
     let coeff = input_coeff_lvl(coeff_level);
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
@@ -208,11 +212,11 @@ pub(crate) fn nsq_search_level_with_coeff(
                 coeff
             },
             cli_qp,
-            /*ppcs_temporal_layer_index=*/ 0,
+            temporal_layer,
             /*r0_gen=*/ false,
             /*r0=*/ 0.0,
             is_islice,
-            /*temporal_layer_index=*/ 0,
+            temporal_layer,
             SEQ_QP_MOD,
         ),
     }
@@ -456,6 +460,37 @@ mod tests {
 /// (`svt_aom_is_ref_same_size`, enc_mode_config.c:2857), and
 /// `tmp_layer_idx <= temporal_layer_index`. The CALLER folds all three into
 /// the `Option`, so `None` here is exactly C's `l{0,1}_refs == 0`.
+/// The usable colocated reference's per-SB statistics — the `Some`/`None` on
+/// [`Pd0DetFrame::l0`]/[`Pd0DetFrame::l1`] folds in C's `count_try` +
+/// `is_ref_same_size` + `tmp_layer_idx <= temporal_layer` gates, so a present
+/// entry is exactly C's "`l{0,1}_refs == 1`" arm of both `pd0_detector` and
+/// `lpd1_detector_*`.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RefSbStats<'a> {
+    /// Whether the list's index-0 reference is usable
+    /// (`svt_aom_is_ref_same_size`, enc_mode_config.c:2857, with the
+    /// `count_try` and `tmp_layer_idx <= temporal_layer` gates folded in) —
+    /// `svt_aom_sig_deriv_enc_dec_light_pd1_default`'s `is_ref_l0_avail`.
+    /// `false` on the `Default` the caller returns when no ref qualifies.
+    pub avail: bool,
+    /// `ref_obj->sb_intra` — `pd0_detector`'s `use_ref_info` and both
+    /// `lpd1_detector_*` read it.
+    pub sb_intra: Option<&'a [u8]>,
+    /// `ref_obj->sb_skip` — `lpd1_detector_skip_pd0`'s score only.
+    pub sb_skip: Option<&'a [u8]>,
+    /// `ref_obj->sb_me_64x64_dist` — `lpd1_detector_skip_pd0`'s score only.
+    pub me_64x64_dist: Option<&'a [u32]>,
+    /// `ref_obj->sb_me_8x8_cost_var` — `lpd1_detector_skip_pd0`'s score only.
+    pub me_8x8_cost_var: Option<&'a [u32]>,
+    /// `ref_obj->sb_64x64_mvp` — `svt_aom_sig_deriv_enc_dec_light_pd1_default`
+    /// reads it (enc_mode_config.c:7403/7603); not consulted by either
+    /// detector.
+    pub mvp_64x64: Option<&'a [u8]>,
+    /// `ref_obj->slice_type == I_SLICE` — `lpd1_detector_skip_pd0`'s score
+    /// adds a flat 10 for an intra reference.
+    pub is_islice: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Pd0DetFrame<'a> {
     /// C `ppcs->transition_present == 1`.
@@ -469,10 +504,10 @@ pub(crate) struct Pd0DetFrame<'a> {
     /// C `pcs->ref_intra_percentage` (`get_ref_intra_percentage`,
     /// rc_process.c:66).
     pub ref_intra_percentage: u8,
-    /// See the struct comment.
-    pub l0_sb_intra: Option<&'a [u8]>,
-    /// See the struct comment.
-    pub l1_sb_intra: Option<&'a [u8]>,
+    /// List 0's usable colocated reference, per [`RefSbStats`].
+    pub l0: RefSbStats<'a>,
+    /// List 1's.
+    pub l1: RefSbStats<'a>,
 }
 
 /// The `svt_aom_sig_deriv_enc_dec_pd0` (enc_mode_config.c:7207) inputs that
@@ -527,6 +562,9 @@ pub(crate) fn video_pd0_params(
     // — NOT the `NORMAL_LVL` arms, so the `VIDEO_ISLICE_COEFF_LVL` stand-in
     // that is sound in the NSQ ladders is wrong here.
     coeff_lvl: InputCoeffLvl,
+    // C `ppcs->temporal_layer_index` — `set_pic_pd0_lvl_default`'s `is_base`
+    // (enc_mode_config.c:8594). 0 on a flat GOP's every picture.
+    temporal_layer: u8,
     sb: &crate::port_pd0_detector::Pd0SbInput,
     sig: &Pd0SigDerivInput,
     // `(pd0_level, coeff_rate_est_lvl, use_accurate_part_ctx, subres_step,
@@ -537,8 +575,8 @@ pub(crate) fn video_pd0_params(
     let is_islice = sb.slice_type_is_intra;
     let pic_pd0_lvl = leaf::set_pic_pd0_lvl_default(
         m,
-        // Every video picture this port encodes is at temporal_layer_index 0.
-        true,
+        // `ppcs->temporal_layer_index == 0` (enc_mode_config.c:8594).
+        temporal_layer == 0,
         is_islice,
         false,
         if is_islice {
@@ -787,6 +825,7 @@ mod video_pd0_level_tests {
             // `pcs->coeff_lvl` on a video I-slice is INVALID_LVL; the
             // function resolves that itself, so this argument is inert here.
             crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+            0,
             &Pd0SbInput {
                 slice_type_is_intra: true,
                 ..Pd0SbInput::default()
@@ -812,6 +851,7 @@ mod video_pd0_level_tests {
             32,
             568 * 568,
             crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+            0,
             &Pd0SbInput {
                 slice_type_is_intra: true,
                 ..Pd0SbInput::default()
@@ -835,6 +875,7 @@ mod video_pd0_level_tests {
                 40,
                 64 * 64,
                 crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+                0,
                 &Pd0SbInput {
                     slice_type_is_intra: true,
                     ..Pd0SbInput::default()
@@ -852,6 +893,7 @@ mod video_pd0_level_tests {
                 40,
                 64 * 64,
                 crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+                0,
                 &Pd0SbInput {
                     slice_type_is_intra: true,
                     ..Pd0SbInput::default()

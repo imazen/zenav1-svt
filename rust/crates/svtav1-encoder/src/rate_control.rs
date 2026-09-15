@@ -534,9 +534,9 @@ const QP_OFFSET_PERCENTS: [[i32; 6]; 2] = [[75, 70, 60, 20, 15, 0], [76, 60, 30,
 /// `offset_idx` follows C: -1 when the picture is not a reference (target ==
 /// source, no scaling), 0 for an IDR, else `min(temporal_layer_index + 1, 5)`.
 /// The LOW_DELAY `non_base_boost` arm (rc_crf_cqp.c:371) applies only to
-/// non-base temporal layers and is NOT ported — it needs the reference
-/// picture's per-SB intra counts, which the port has no DPB for. A key frame
-/// never reaches it; anything that does must not use this function yet.
+/// non-base temporal layers — `ld_non_base_boost` carries the caller's
+/// `non_base_boost(pcs)` result (`None` for a non-low-delay pred structure or
+/// a base-layer picture).
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn cqp_qindex_calc(
@@ -548,6 +548,7 @@ pub fn cqp_qindex_calc(
     temporal_layer_index: u8,
     hierarchical_levels: u8,
     bit_depth: u8,
+    ld_non_base_boost: Option<i8>,
 ) -> i32 {
     if allintra {
         return qindex;
@@ -563,13 +564,46 @@ pub fn cqp_qindex_calc(
     } else {
         i32::from(temporal_layer_index + 1).min(5)
     };
-    let q_val_target = if offset_idx < 0 {
+    let mut q_val_target = if offset_idx < 0 {
         q_val
     } else {
         let p = QP_OFFSET_PERCENTS[usize::from(hierarchical_levels <= 4)][offset_idx as usize];
         (q_val - (q_val * f64::from(p) / 100.0)).max(0.0)
     };
+    // rc_crf_cqp.c:439-444 — LOW_DELAY only, and only non-base layers. The
+    // boost shrinks the target q (a COARSER quantizer) by the L0 reference's
+    // intra-coded fraction. Note the guard is `temporal_layer_index != 0`,
+    // applied even when `offset_idx == -1` (non-ref non-base).
+    if let Some(boost) = ld_non_base_boost
+        && temporal_layer_index != 0
+        && boost != 0
+    {
+        q_val_target = (q_val_target - (f64::from(boost) * q_val_target) / 100.0).max(0.0);
+    }
     qindex + compute_qdelta(q_val, q_val_target, bit_depth)
+}
+
+/// C `non_base_boost` (rc_crf_cqp.c:371) — static.
+///
+/// The L0 reference's intra-coded fraction `>> 2`. `sb_intra` is the stored
+/// reference's per-SB intra flags (`EbReferenceObject::sb_intra`,
+/// `coding_loop.c:1606`); an I_SLICE reference or an empty array (a picture
+/// whose coded-area walk never armed the accumulator) contributes 0 — C's
+/// own `sb_intra` read is likewise skipped for an I_SLICE reference, and an
+/// unwritten array there holds its calloc'd zeros.
+#[must_use]
+pub fn non_base_boost(l0_is_islice: bool, l0_sb_intra: &[u8]) -> i8 {
+    if l0_is_islice || l0_sb_intra.is_empty() {
+        return 0;
+    }
+    let intra_sbs: u64 = l0_sb_intra.iter().map(|&v| u64::from(v)).sum();
+    if intra_sbs == 0 {
+        return 0;
+    }
+    // C: `intra_percentage = (l0_was_intra * 100) / pcs->sb_total_count` —
+    // `sb_intra.len()` IS sb_total_count (one flag per SB, same dimensions).
+    let intra_percentage = intra_sbs * 100 / l0_sb_intra.len() as u64;
+    (intra_percentage >> 2) as i8
 }
 
 /// C `cqp_qindex_calc`'s **fork** (`SVT_HDR_MODE`) arm, kept because this repo

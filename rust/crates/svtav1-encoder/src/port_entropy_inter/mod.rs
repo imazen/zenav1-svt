@@ -89,6 +89,10 @@ pub struct NeighborMi {
     pub use_intrabc: bool,
     /// C `block_mi.skip_mode`.
     pub skip_mode: bool,
+    /// C `block_mi.skip` (`!block_has_coeff`) — `lpd1_should_perform_tx`'s
+    /// `both_neighbors_skip` reads it off the left/above mi
+    /// (product_coding_loop.c:6359).
+    pub skip: bool,
     /// C `block_mi.comp_group_idx`.
     pub comp_group_idx: u8,
     /// C `block_mi.compound_idx`.
