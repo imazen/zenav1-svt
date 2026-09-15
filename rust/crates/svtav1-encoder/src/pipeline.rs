@@ -9625,7 +9625,7 @@ fn encode_block_syntax(
             );
             let _ = writeln!(
                 f,
-                "PDV mi=({},{}) dvr={} dvc={} dvrefr={} dvrefc={} txt={} inter={} mvr={} mvc={} rf={} mode={}",
+                "PDV mi=({},{}) dvr={} dvc={} dvrefr={} dvrefc={} txt={} inter={} mvr={} mvc={} rf={} rf1={} mode={} cg={} ci={} ct={} mm={}",
                 block_y / 4,
                 block_x / 4,
                 decision.dv.y,
@@ -9644,7 +9644,15 @@ fn encode_block_syntax(
                 decision.inter.as_deref().map_or(0, |b| b.mv[0].y),
                 decision.inter.as_deref().map_or(0, |b| b.mv[0].x),
                 decision.inter.as_deref().map_or(0, |b| b.ref_frame[0]),
+                decision.inter.as_deref().map_or(0, |b| b.ref_frame[1]),
                 decision.inter.as_deref().map_or(0, |b| b.mode as u8),
+                decision.inter.as_deref().map_or(0, |b| b.comp_group_idx),
+                decision.inter.as_deref().map_or(0, |b| b.compound_idx),
+                decision
+                    .inter
+                    .as_deref()
+                    .map_or(0, |b| b.interinter_comp_type),
+                decision.inter.as_deref().map_or(0, |b| b.motion_mode as u8),
             );
         }
     }

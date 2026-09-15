@@ -270,6 +270,11 @@ pub(crate) fn evaluate_leaf(
     // `txs_lvl6_gate` is set.
     sb_is_lvl6: bool,
 ) -> LeafEval {
+    // C product_coding_loop.c:9355-9358 — the per-leaf reset of the OBMC
+    // ready flags. Without it the neighbour-prediction cache can serve a
+    // different frame's (or a stale grid state's) predictions for a leaf
+    // whose geometry repeats.
+    crate::obmc_pred_arm::begin_leaf();
     let frame = fx.frame;
     let rates = fx.rates;
     let lambda = frame.lambda;

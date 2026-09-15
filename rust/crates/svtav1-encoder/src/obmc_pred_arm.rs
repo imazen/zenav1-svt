@@ -149,6 +149,22 @@ thread_local! {
         core::cell::RefCell::new(ObmcBuffers::default());
 }
 
+/// C's per-leaf reset of `obmc_weighted_pred_ready` /
+/// `obmc_neighbor_{luma,chroma}_pred_ready` at the top of `md_encode_block`
+/// (product_coding_loop.c:9355-9358). `NeighbourKey` carries no frame or
+/// mi-grid identity, so without this a leaf whose geometry matches one
+/// already evaluated — the SAME block shape at the SAME origin on the NEXT
+/// frame, or a depth-refine re-evaluation after a neighbour was recommitted
+/// — would blend neighbour predictions built from a different reference
+/// picture or a stale MV, which the decoder cannot reproduce.
+pub(crate) fn begin_leaf() {
+    OBMC_BUFFERS.with(|cell| {
+        let mut bufs = cell.borrow_mut();
+        bufs.ready = None;
+        bufs.weighted = None;
+    });
+}
+
 /// One mi cell as the OBMC walk reads it: the neighbour's shape, whether it is
 /// overlappable, and the motion to predict with.
 #[derive(Debug, Clone, Copy)]
