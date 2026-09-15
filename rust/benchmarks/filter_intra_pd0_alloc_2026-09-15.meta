@@ -1,0 +1,70 @@
+SMALL ALLOCATION/LOCALITY SWEEP ON THE STILL PATH: three byte-identical
+commits, each with a deterministic callgrind reduction on the photo_cid
+512x512 qp40 p6 cell. Combined 1.2960G -> 1.2710G Ir (-1.9%). Wall-clock
+is ~1-2% on pinned P-core runs; the unpinned perf_ab medians sit inside
+this host's hybrid-CPU migration noise (both binaries swing 25.7/33.5ms
+bimodal on gradient 512 p6 — p25/p75 straddle 1.0 when unpinned).
+
+date:   2026-09-15
+host:   i265 (x86_64-linux, hybrid P/E cores; callgrind Ir is the
+        deterministic metric, wall-clock numbers were taken pinned to
+        cpu0 after the unpinned grid showed the bimodality).
+tools:  valgrind callgrind (1-encode runs), rust/tools/perf_ab.sh
+        (interleaved paired rounds, neither side niced), taskset -c 0
+        for the pinned wall-clock spot checks.
+base:   main@origin 15e5cade7.
+cells:  photo cid22 512x512 yuv (/home/lilith/tmp/svtprof/in.yuv),
+        qp 40, still config, presets 2/6/10; synthetic `gradient`
+        64/256/512 for the perf_ab grid.
+
+commits (all on main@origin):
+  c5cd004d perf(entropy): inline encode_cdf_q15
+    The port's range-coder symbol write was an out-of-line call ~464K
+    times/encode (~28M Ir self + call overhead around ~25 insns of
+    work); C reaches the same body through `static INLINE`
+    aom_write_symbol. With no LTO at default codegen-units the cross-CGU
+    boundary kept it a call. 1.2960G -> 1.2837G Ir (-0.95%),
+    byte-identical.
+  29e5d0c8 perf(dsp): filter-intra predicts in place, no bounce buffer
+    predict_filter_intra{,_hbd} staged every block through a 33x33 temp
+    (init + border copy + copy-out). All interior cells are
+    write-before-read, so the temp can be dst itself: row-0 taps are
+    above[], col-0 taps are left[], later sub-blocks read pixels earlier
+    sub-blocks already wrote. split_at_mut per row pair keeps it safe;
+    the first 4-column block is peeled (its taps straddle the border)
+    and the interior loop is branch-free. predict_filter_intra self Ir
+    22.1M -> 19.1M; program total 1.2837G -> 1.2799G (-0.3%).
+    Byte-identical; c_parity_filter_intra (14 sizes incl. rects, random
+    strides) green.
+  114fedcc perf(pd0): reuse per-ctx scratch instead of per-block vec!s
+    The PD0 block-cost path allocated pred/residual/coeffs/qcoeff/
+    dqcoeff (plus full/inv on the recon arm) for every block —
+    alloc_zeroed calls 32032 -> 4832/encode. Pd0Scratch on Pd0Ctx, grown
+    once and reused; quantize_b/quantize_b_qm split into _into variants
+    (vec-returning forms kept for tests); tx_quant_core leaves outputs
+    in the scratch; inter_best_pred_into swaps best/cand on a win.
+    quantize_b_qm and the recon `full` buffer keep their required zero
+    fills; every other buffer is write-before-read. 1.2799G -> 1.2710G
+    Ir (-0.7%), byte-identical on the full grid.
+
+data:   filter_intra_pd0_alloc_2026-09-15.still.tsv — pe_base vs pe_fi2
+        (inline + filter-intra together), gradient 64/256/512 x p2/6/10
+        + cid22 512 p2/p6.
+        filter_intra_pd0_alloc_2026-09-15.pd0_still.tsv — pe_fi2 vs
+        pe_pd0 (PD0 scratch alone), same gradient grid.
+
+measured-but-not-taken, still open:
+  - build_md_rates / build_coeff_cost_tables_from_fc: ~67KB alloc+zero
+    per SB (~130x/encode) into a fresh Box<MdRates>. Reuse is SAFE for
+    every field EXCEPT cfl_alpha_fac_bits, whose rows are conditionally
+    written then += folded — a reused box needs explicit fill(0)
+    else-arms there before it is sound.
+  - txfm_simd_drivers fwd/inv kernels: `[0i32; N*N]` scratch memset per
+    call (~3.2M Ir/encode) — every element is written before read, but
+    eliding the init needs unsafe or a signature-wide scratch plumbing.
+  - tx_unit_inner memset edge ~3.6M Ir/encode (small per-call).
+  - The dominant remaining gap vs C is unchanged: optimize_b ~1.27x,
+    cost_coeffs_txb ~1.43x, the coeff writer ~2.7x, and C's SIMD still
+    does more work per instruction (port runs FEWER total instructions
+    than C yet is slower — an IPC/SIMD-width gap, not an instruction-
+    count gap, at the top level).
