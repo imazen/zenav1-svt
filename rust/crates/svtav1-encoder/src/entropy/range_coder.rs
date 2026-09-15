@@ -82,6 +82,15 @@ impl OdEcEnc {
     /// `[s > 0 ? (32768 - icdf[s-1]) : 0, 32768 - icdf[s])`. The values must
     /// be monotonically decreasing and `icdf[nsyms-1]` must be 0 (C layout;
     /// the adaptation counter lives one past it at `icdf[nsyms]`).
+    ///
+    /// `#[inline]` is load-bearing: C reaches this body through the `static
+    /// INLINE` `aom_write_symbol`, so in the reference the whole symbol write
+    /// folds into its caller. This workspace builds without LTO at the
+    /// default codegen units, so without the hint the function stays
+    /// out-of-line — ~464K calls on the photo_cid 512² qp40 p6 encode
+    /// (2026-09-15 callgrind, ~28 M Ir self plus call/ret + `self`
+    /// spill/reload per call around ~25 instructions of work).
+    #[inline]
     pub fn encode_cdf_q15(&mut self, s: usize, icdf: &[AomCdfProb], nsyms: usize) {
         #[cfg(feature = "symtrace")]
         std::eprintln!(
