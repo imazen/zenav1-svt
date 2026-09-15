@@ -33,7 +33,7 @@
 //! steps changes which neighbour's motion the OBMC prediction uses.
 
 use crate::obmc::{obmc_blend_above, obmc_blend_left};
-use crate::port_masked_compound::highbd_blend_a64_hmask_16bit;
+use crate::port_masked_compound::{highbd_blend_a64_hmask_16bit, highbd_blend_a64_vmask_16bit};
 use crate::port_obmc_data::{MI_SIZE, block_size_high, block_size_wide, skip_u4x4_pred_in_obmc};
 use alloc::vec::Vec;
 use svtav1_types::block::BlockSize;
@@ -419,6 +419,51 @@ pub fn build_obmc_inter_pred_left(
     }
 }
 
+/// `build_obmc_inter_pred_above`'s 10-bit arm — the sole caller of
+/// `svt_aom_highbd_blend_a64_vmask_16bit`.
+///
+/// The mask is `svt_av1_get_obmc_mask(bh)` — indexed by ROW, the mirror of
+/// the left pass — so it is supplied by the caller like the left twin's.
+pub fn build_obmc_inter_pred_above_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    tmp: &[u16],
+    tmp_stride: usize,
+    bsize: BlockSize,
+    rel_mi_col: usize,
+    above_mi_width: usize,
+    ss: usize,
+    mask: &[u8],
+) {
+    let overlap = block_size_high(bsize).min(64) >> 1;
+    let bw = (above_mi_width * MI_SIZE) >> ss;
+    let bh = overlap >> ss;
+    if skip_u4x4_pred_in_obmc(bsize, 0, ss, ss) != 0 {
+        return;
+    }
+    let plane_col = (rel_mi_col * MI_SIZE) >> ss;
+    // C blends dst with itself as src0 (`dst, dst_stride, dst, dst_stride,
+    // tmp, ...`), so the destination is both an input and the output.
+    let src0: alloc::vec::Vec<u16> = (0..bh)
+        .flat_map(|r| {
+            let base = plane_col + r * dst_stride;
+            dst[base..base + bw].to_vec()
+        })
+        .collect();
+    let mut out = alloc::vec![0u16; bw * bh];
+    let src1: alloc::vec::Vec<u16> = (0..bh)
+        .flat_map(|r| {
+            let base = plane_col + r * tmp_stride;
+            tmp[base..base + bw].to_vec()
+        })
+        .collect();
+    highbd_blend_a64_vmask_16bit(&mut out, bw, &src0, bw, &src1, bw, mask, bw, bh);
+    for r in 0..bh {
+        let base = plane_col + r * dst_stride;
+        dst[base..base + bw].copy_from_slice(&out[r * bw..r * bw + bw]);
+    }
+}
+
 /// `build_obmc_inter_pred_left`'s 10-bit arm — the sole caller of
 /// `svt_aom_highbd_blend_a64_hmask_16bit`.
 pub fn build_obmc_inter_pred_left_hbd(
@@ -497,6 +542,76 @@ pub fn build_obmc_inter_prediction(
             nb.nb_mi_size,
             component_mask,
         );
+    }
+}
+
+/// One plane's destination and neighbour-prediction buffers, 10-bit.
+pub struct ObmcPlanesHbd<'a> {
+    /// `final_dst_ptr_*` per plane.
+    pub dst: [&'a mut [u16]; 3],
+    /// `final_dst_stride_*` per plane.
+    pub dst_stride: [usize; 3],
+}
+
+/// The neighbour predictions the OBMC blend reads, 10-bit.
+pub struct ObmcAdjacentHbd<'a> {
+    /// `ctxt->adjacent[plane]`.
+    pub plane: [&'a [u16]; 3],
+    /// `ctxt->adjacent_stride[plane]`.
+    pub stride: [usize; 3],
+}
+
+/// `av1_build_obmc_inter_prediction`'s `is16bit` arm (enc_inter_prediction.c
+/// :1525): the above pass over its neighbours, then the left pass over its
+/// own, blending u16 predictions with `svt_aom_highbd_blend_a64_{v,h}mask_16bit`.
+pub fn build_obmc_inter_prediction_hbd(
+    planes: &mut ObmcPlanesHbd<'_>,
+    above: &ObmcAdjacentHbd<'_>,
+    above_nbs: &[VisitedNb],
+    left: &ObmcAdjacentHbd<'_>,
+    left_nbs: &[VisitedNb],
+    bsize: BlockSize,
+    component_mask: u32,
+) {
+    let (start_plane, end_plane) = plane_range(component_mask);
+    let overlap_above = block_size_high(bsize).min(64) >> 1;
+    let overlap_left = block_size_wide(bsize).min(64) >> 1;
+    for nb in above_nbs {
+        for plane in start_plane..end_plane {
+            let ss = usize::from(plane > 0);
+            // C `svt_av1_get_obmc_mask(bh)` — the mask is indexed by the
+            // plane's blend HEIGHT for the above pass.
+            let mask = crate::obmc::obmc_mask(overlap_above >> ss);
+            build_obmc_inter_pred_above_hbd(
+                planes.dst[plane],
+                planes.dst_stride[plane],
+                above.plane[plane],
+                above.stride[plane],
+                bsize,
+                nb.rel_mi,
+                nb.nb_mi_size,
+                ss,
+                mask,
+            );
+        }
+    }
+    for nb in left_nbs {
+        for plane in start_plane..end_plane {
+            let ss = usize::from(plane > 0);
+            // `svt_av1_get_obmc_mask(bw)` — indexed by the blend WIDTH here.
+            let mask = crate::obmc::obmc_mask(overlap_left >> ss);
+            build_obmc_inter_pred_left_hbd(
+                planes.dst[plane],
+                planes.dst_stride[plane],
+                left.plane[plane],
+                left.stride[plane],
+                bsize,
+                nb.rel_mi,
+                nb.nb_mi_size,
+                ss,
+                mask,
+            );
+        }
     }
 }
 

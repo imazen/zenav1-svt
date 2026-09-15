@@ -761,6 +761,119 @@ fn bd10_reencode_node(
     }
 }
 
+/// Stamps the post-pass's own mode-info grid, read by
+/// `inter_md_arm::predict_inter_chroma_sub8_hbd`: C's `inter_chroma_4xn_pred`
+/// takes the covered 4x4 cells' motion out of `mi_grid` — which on this pass
+/// is the COMMITTED tree, walked once into the same `MvpMiEntry` layout
+/// `commit_leaf` maintains during MD. Intra leaves keep the default entry
+/// (`ref_frame = {INTRA_FRAME, NONE_FRAME}` -> `!is_inter` -> the stitcher's
+/// whole-area fallback, matching C's covered-cell check). The child-origin
+/// derivation is `bd10_reencode_chroma_node`'s exactly.
+fn stamp_inter_mi_grid(
+    tree: &crate::partition::PartitionTree,
+    x: usize,
+    y: usize,
+    partition: u8,
+    grid: &mut [crate::intrabc_mvp::MvpMiEntry],
+    stride: usize,
+    lframe_w: usize,
+    lframe_h: usize,
+) {
+    use crate::partition::PartitionTree as Tr;
+    use crate::partition::PartitionType as PT;
+    match tree {
+        Tr::Leaf(d) => {
+            let (bw, bh) = (d.width as usize, d.height as usize);
+            let ic = d.inter.as_deref();
+            let entry = crate::intrabc_mvp::MvpMiEntry {
+                bsize: crate::leaf_funnel::c_bsize_index(bw, bh) as u8,
+                mode: ic.map_or(d.intra_mode, |i| i.mode as u8),
+                use_intrabc: d.use_intrabc,
+                ref_frame: ic.map_or([0, -1], |i| i.ref_frame),
+                mv: match (ic, d.use_intrabc) {
+                    (Some(i), _) => i.mv,
+                    (None, true) => [d.dv, svtav1_types::motion::Mv::default()],
+                    (None, false) => [svtav1_types::motion::Mv::default(); 2],
+                },
+                partition,
+                interp_filters: ic.map_or(0, |i| i.interp_filters),
+                skip_mode: ic.is_some_and(|i| i.skip_mode),
+                comp_group_idx: ic.map_or(0, |i| i.comp_group_idx),
+                compound_idx: ic.map_or(0, |i| i.compound_idx),
+            };
+            let (mi_x, mi_y) = (x / 4, y / 4);
+            for my in mi_y..(mi_y + bh / 4).min(grid.len() / stride) {
+                for cell in grid
+                    [my * stride + mi_x..(my * stride + mi_x + bw / 4).min((my + 1) * stride)]
+                    .iter_mut()
+                {
+                    *cell = entry;
+                }
+            }
+        }
+        Tr::Split {
+            partition_type,
+            width,
+            height,
+            children,
+        } => {
+            let nw = *width as usize;
+            let nh = *height as usize;
+            let (hw, hh, qw, qh) = (nw / 2, nh / 2, nw / 4, nh / 4);
+            let child_part = match partition_type {
+                PT::VertA => svtav1_types::partition::PartitionType::VertA,
+                PT::VertB => svtav1_types::partition::PartitionType::VertB,
+                _ => svtav1_types::partition::PartitionType::None,
+            } as u8;
+            let mut rec = |child: &crate::partition::PartitionTree, cx, cy| {
+                stamp_inter_mi_grid(child, cx, cy, child_part, grid, stride, lframe_w, lframe_h);
+            };
+            match *partition_type {
+                PT::Split => {
+                    let mut ci = 0usize;
+                    for i in 0..4usize {
+                        let cx = x + (i & 1) * hw;
+                        let cy = y + (i >> 1) * hh;
+                        if cx >= lframe_w || cy >= lframe_h {
+                            continue;
+                        }
+                        rec(&children[ci], cx, cy);
+                        ci += 1;
+                    }
+                }
+                PT::Horz => {
+                    rec(&children[0], x, y);
+                    if let Some(bot) = children.get(1) {
+                        rec(bot, x, y + hh);
+                    }
+                }
+                PT::Vert => {
+                    rec(&children[0], x, y);
+                    if let Some(right) = children.get(1) {
+                        rec(right, x + hw, y);
+                    }
+                }
+                ext => {
+                    let offs: &[(usize, usize)] = match ext {
+                        PT::HorzA => &[(0, 0), (hw, 0), (0, hh)],
+                        PT::HorzB => &[(0, 0), (0, hh), (hw, hh)],
+                        PT::VertA => &[(0, 0), (0, hh), (hw, 0)],
+                        PT::VertB => &[(0, 0), (hw, 0), (hw, hh)],
+                        PT::Horz4 => &[(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                        PT::Vert4 => &[(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                        other => {
+                            panic!("bd10 chroma reencode: unsupported partition {other:?}")
+                        }
+                    };
+                    for (child, &(dx, dy)) in children.iter().zip(offs) {
+                        rec(child, x + dx, y + dy);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// bd10 CHROMA re-encode (task #94). The luma re-encode (`bd10_reencode_luma`)
 /// recomputes only luma levels; chroma stays at the u8 MD decision
 /// (`chroma_dec`). For content whose CHROMA has a coded residual (e.g. the
@@ -865,10 +978,33 @@ pub(super) fn bd10_reencode_chroma(
     // sequence header's edge filter dropped the whole frame out of the
     // re-encode. Sized on LUMA coordinates because the walk carries those.
     let mut mode_neighbors = Bd10ModeNeighbors::new(cframe_w * 2, cframe_h * 2)?;
+    // The committed mode-info grid `inter_chroma_4xn_pred` reads for a sub-8
+    // leaf's covered cells — the MD funnel stamps `commit_leaf`'s; this pass
+    // rebuilds it from the committed trees (`stamp_inter_mi_grid`). Built only
+    // when the frame can carry inter leaves (the chroma post-pass's INTER arm
+    // is what reads it).
+    let mi_stride = w / 4;
+    let mut mi_grid =
+        svtav1_types::try_vec![crate::intrabc_mvp::MvpMiEntry::default(); mi_stride * (h / 4)]?;
+    if inter_refs.is_some() {
+        for (sb_idx, tree) in all_trees.iter().enumerate() {
+            let sb_col = sb_idx % sb_cols;
+            let sb_row = sb_idx / sb_cols;
+            stamp_inter_mi_grid(
+                tree,
+                sb_col * sb_size,
+                sb_row * sb_size,
+                svtav1_types::partition::PartitionType::None as u8,
+                &mut mi_grid,
+                mi_stride,
+                w,
+                h,
+            );
+        }
+    }
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
-        let tile_mi_c = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size / 2, cframe_w, cframe_h);
         // The grid is LUMA-indexed, so it takes the LUMA tile bounds.
         let tile_mi_l =
             tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, cframe_w * 2, cframe_h * 2);
@@ -896,8 +1032,12 @@ pub(super) fn bd10_reencode_chroma(
             cframe_h,
             bd,
             qm_uv,
-            tile_mi_c,
+            tile_mi_l,
+            svtav1_types::partition::PartitionType::None,
+            chroma_qindex == 0,
             inter_refs,
+            &mi_grid,
+            mi_stride,
             &mut mode_neighbors,
         );
     }
@@ -1079,12 +1219,24 @@ fn bd10_reencode_chroma_node(
     cframe_h: usize,
     bd: u8,
     qm_uv: [u8; 2],
-    // ISSUE #18: this superblock's tile, in the CHROMA plane's own pixel
-    // domain (the geom below is `ss: 0` over `cframe_*`). Was
-    // `TileMi::whole_frame(cframe_w, cframe_h)`.
-    tile_mi_c: crate::intra_edge::TileMi,
+    // ISSUE #18: this superblock's tile, in LUMA mi units — `UnitGeom::tile`
+    // is a luma-mi bound regardless of plane; `TileMi::top_px(ss)` does the
+    // plane shift.
+    tile_mi: crate::intra_edge::TileMi,
+    // The leaf's parent partition type, selecting the has_top_right /
+    // has_bottom_left table row — the decoder reads the LUMA partition the
+    // chroma block was coded under (`xd->mi[0]->partition`), so this mirrors
+    // `bd10_reencode_node`'s threading exactly.
+    parent_partition: svtav1_types::partition::PartitionType,
+    // Frame lossless (chroma_qindex == 0): `av1_get_tx_type`'s early return
+    // forces DCT_DCT for the inter chroma-follows-luma read too.
+    lossless: bool,
     // The DPB's reference pictures, for the INTER arm. `None` on a key frame.
     inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The committed mode-info grid (`stamp_inter_mi_grid`) a sub-8 inter
+    // leaf's chroma stitch reads its covered cells' motion from.
+    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
     // The neighbour MODE grid `get_filt_type(xd, 1)` reads.
     mode_neighbors: &mut Bd10ModeNeighbors,
 ) {
@@ -1113,7 +1265,34 @@ fn bd10_reencode_chroma_node(
             // prediction comes from the 10-bit LUMA recon rather than the
             // chroma neighbours. `uv_tx_type` already maps mode 13 -> DCT_DCT,
             // so only the prediction changes.
-            let uv_tt = crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch);
+            // Inter-classified leaves take the same arm the syntax writer
+            // uses (`encode_block_syntax`, pipeline.rs): the decoder derives
+            // the chroma tx_type from `tx_type_map` at the luma block origin
+            // (`av1_get_tx_type` UV arm, blockd.h:1296-1309) — the coded luma
+            // type, gated by the inter ext-tx set for the chroma tx size.
+            // Using the intra `uv_tx_type` arm here applied a coded V_DCT DC
+            // as a flat DCT_DCT DC, which is exactly the column-structured
+            // recon divergence seen against dav1d on inter chroma.
+            let uv_tt = if d.is_inter || d.use_intrabc {
+                // The decoder derives the chroma type from tx_type_map,
+                // which holds the covering luma txb's CODED type: DCT_DCT
+                // when that txb coded no coefficients (read_coeffs_txb's
+                // all-zero arm, decodetxb.c:148-154) or on lossless
+                // (blockd.h:1288). The decision's tx_type can hold a
+                // non-DCT search winner on an all-zero luma txb —
+                // `inter_uv_tx_type` applies the map semantics.
+                let (cover_eob, cover_tt) = if d.tx_depth == 0 {
+                    (d.eob, d.tx_type)
+                } else {
+                    (
+                        d.txb_eobs.first().copied().unwrap_or(0),
+                        d.txb_tx_types.first().copied().unwrap_or(0),
+                    )
+                };
+                crate::leaf_funnel::inter_uv_tx_type(cover_eob, cover_tt, lossless, cw, ch)
+            } else {
+                crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch)
+            };
             let cfl_ac: Option<alloc::vec::Vec<i16>> = if d.uv_mode == 13 {
                 let mut ac = alloc::vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * ch.max(1)];
                 crate::leaf_funnel::cfl_ac_from_frame_recon_hbd(
@@ -1135,19 +1314,31 @@ fn bd10_reencode_chroma_node(
                     crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1),
                 )
             });
+            // `UnitGeom` is a LUMA-domain contract: luma mi position, luma
+            // block dims, `ss` the plane subsampling, LUMA frame px and a
+            // luma-mi tile (predict.rs:14-35), mirroring the MD funnel's
+            // `uv_geom` (leaf_funnel/mod.rs) — ROUND_UV-pair-aligned mi and
+            // `w.max(8)` pair dims so a sub-8 leaf's chroma unit is the pair.
+            // The previous chroma-domain `ss: 0` shim left xr/yd/right_
+            // available coincidentally right (they scale linearly) but fed
+            // `has_top_right`/`has_bottom_left` the chroma mi coords and a
+            // hardcoded `None` partition where the decoder indexes by LUMA
+            // mi, the scaled chroma bsize, and the coded partition — so
+            // `have_bottom_left`/`have_top_right` were wrong and directional
+            // chroma pred fabricated the extended edge the decoder read as
+            // real recon. MEASURED: vidyo1 p10 q20, f0 chroma ramp drift
+            // growing toward block bottom-left.
             let geom = crate::leaf_funnel::UnitGeom {
-                partition: svtav1_types::partition::PartitionType::None,
-                mi_row: cy >> 2,
-                mi_col: cx >> 2,
-                bw_px: cw,
-                bh_px: ch,
+                partition: parent_partition,
+                mi_row: ((y >> 3) << 3) >> 2,
+                mi_col: ((x >> 3) << 3) >> 2,
+                bw_px: bw.max(8),
+                bh_px: bh.max(8),
                 sb_mi_size,
-                ss: 0,
-                frame_w: cframe_w,
-                frame_h: cframe_h,
-                // ISSUE #18: see the luma twin above. Was
-                // `TileMi::whole_frame(cframe_w, cframe_h)`.
-                tile: tile_mi_c,
+                ss: 1,
+                frame_w: cframe_w * 2,
+                frame_h: cframe_h * 2,
+                tile: tile_mi,
             };
             // THE INTER ARM, chroma half. Built once for both planes because
             // C's chroma prediction is one call with a halved origin over the
@@ -1162,6 +1353,13 @@ fn bd10_reencode_chroma_node(
                     let mut y_scratch = alloc::vec![0u16; bw * bh];
                     let mut u = alloc::vec![0u16; cw * ch];
                     let mut v = alloc::vec![0u16; cw * ch];
+                    // A sub-8 luma block's chroma covers the parent 8x8 and C
+                    // stitches it from the covered cells' own MVs
+                    // (`inter_chroma_4xn_pred`), exactly like the MD funnel's
+                    // `predict_inter_chroma_sub8` — the luma-shaped leaf arm
+                    // would predict `bw/2 x bh/2` at this block's own origin,
+                    // which is neither the right area nor the right motion.
+                    let sub8 = bw < 8 || bh < 8;
                     predict_inter_leaf_hbd_any(
                         inter_refs.expect(
                             "an inter leaf reached the bd10 chroma re-encode on a frame with no DPB",
@@ -1175,13 +1373,46 @@ fn bd10_reencode_chroma_node(
                         cframe_w * 2,
                         cframe_h * 2,
                         bd,
-                        true,
+                        !sub8,
                         &mut y_scratch,
                         bw,
                         &mut u,
                         &mut v,
                         cw,
                     );
+                    if sub8 {
+                        // `inter_chroma_4xn_pred` is uni-prediction only —
+                        // C asserts `!is_compound` on the sub-8 arm and the
+                        // funnel's `allow_bipred` rejects 4-wide/4-tall
+                        // blocks, so a compound sub-8 leaf cannot be
+                        // committed.
+                        debug_assert!(
+                            ic.ref_frame[1] <= 0,
+                            "a compound sub-8 inter leaf reached the bd10 chroma re-encode"
+                        );
+                        crate::inter_md_arm::predict_inter_chroma_sub8_hbd(
+                            inter_refs.expect(
+                                "an inter leaf reached the bd10 chroma re-encode on a frame \
+                                 with no DPB",
+                            ),
+                            mi_grid,
+                            mi_stride as i32,
+                            x,
+                            y,
+                            bw,
+                            bh,
+                            ic.ref_frame[0],
+                            ic.mv[0],
+                            ic.interp_filters,
+                            sb_mi_size * 4,
+                            cframe_w * 2,
+                            cframe_h * 2,
+                            bd,
+                            &mut u,
+                            &mut v,
+                            cw,
+                        );
+                    }
                     (Some(u), Some(v))
                 }
                 None => (None, None),
@@ -1313,8 +1544,16 @@ fn bd10_reencode_chroma_node(
                     bd,
                     qm_uv,
                     // Children share the superblock, hence the tile (issue #18).
-                    tile_mi_c,
+                    tile_mi,
+                    match partition_type {
+                        PT::VertA => svtav1_types::partition::PartitionType::VertA,
+                        PT::VertB => svtav1_types::partition::PartitionType::VertB,
+                        _ => svtav1_types::partition::PartitionType::None,
+                    },
+                    lossless,
                     inter_refs,
+                    mi_grid,
+                    mi_stride,
                     mode_neighbors,
                 );
             };
@@ -1690,5 +1929,77 @@ mod tests {
             recon10.iter().all(|&s| s == 512),
             "skip_mode leaf reconstructs as its prediction"
         );
+    }
+
+    /// The sub-8 chroma stitch (`predict_inter_chroma_sub8_hbd`) reads the
+    /// SIBLING's motion out of the mi grid the post-pass rebuilds from the
+    /// committed tree — `inter_chroma_4xn_pred`'s covered-cell walk. Two 16x4
+    /// inter leaves stacked under a Horz split are the minimal shape: the
+    /// second (odd-mi) leaf's chroma covers the pair and must see the first
+    /// leaf's reference/MV/filter, not a default intra cell.
+    #[test]
+    fn stamp_inter_mi_grid_carries_covered_sibling_motion() {
+        let leaf = |mv: Mv, rf: i8, filt: u32| {
+            PartitionTree::Leaf(BlockDecision {
+                is_inter: true,
+                inter: Some(alloc::boxed::Box::new(InterDecision {
+                    mode: PredictionMode::NearestMv,
+                    ref_frame: [rf, -1],
+                    mv: [mv, Mv::default()],
+                    drl_index: 0,
+                    interp_filters: filt,
+                    motion_mode: crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+                    num_proj_ref: 0,
+                    overlappable_neighbors: 0,
+                    skip_mode: false,
+                    comp_group_idx: 0,
+                    compound_idx: 1,
+                    interinter_comp_type: 0,
+                    wm_params: WarpedMotionParams::default(),
+                    wm_params_l1: WarpedMotionParams::default(),
+                })),
+                width: 16,
+                height: 4,
+                ..Default::default()
+            })
+        };
+        // A 16x8 node split Horz into two 16x4 leaves at luma y=0 and y=4 —
+        // mi rows 0 and 1, i.e. one chroma pair at chroma (0,0) 8x4.
+        let tree = PartitionTree::Split {
+            partition_type: crate::partition::PartitionType::Horz,
+            width: 16,
+            height: 8,
+            children: alloc::vec![
+                leaf(Mv { x: 8, y: 16 }, 1, 0x10001),
+                leaf(Mv { x: -8, y: 0 }, 2, 0x20002),
+            ],
+        };
+        let stride = 4usize; // 16px / 4 = 4 mi cols, 2 mi rows
+        let mut grid = alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); stride * 2];
+        stamp_inter_mi_grid(
+            &tree,
+            0,
+            0,
+            svtav1_types::partition::PartitionType::Horz as u8,
+            &mut grid,
+            stride,
+            16,
+            8,
+        );
+        // The covered cell the stitcher reads for the second leaf is
+        // (mi_row 1 + dr=-1, mi_col 0) -> row 0: the FIRST leaf's motion.
+        let e = &grid[0];
+        assert!(
+            e.use_intrabc || e.ref_frame[0] > 0,
+            "sibling must read inter"
+        );
+        assert_eq!(e.ref_frame[0], 1);
+        assert_eq!((e.mv[0].x, e.mv[0].y), (8, 16));
+        assert_eq!(e.interp_filters, 0x10001);
+        // Row 1 carries the second leaf's own params.
+        let e = &grid[stride];
+        assert_eq!(e.ref_frame[0], 2);
+        assert_eq!((e.mv[0].x, e.mv[0].y), (-8, 0));
+        assert_eq!(e.interp_filters, 0x20002);
     }
 }

@@ -1182,15 +1182,17 @@ fn eval_candidate(
         // chroma arm reuses the luma block's `compute_subpel_params` result
         // at a halved origin, so predicting it here would be different
         // arithmetic. The tx-type rule is the INTER one, identical to the
-        // IntraBC arm below (tx_type_search, product_coding_loop.c:5087).
-        let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
-        let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
-        let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
-        let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
-            luma_tt
-        } else {
-            cc::DCT_DCT
-        };
+        // IntraBC arm below (tx_type_search, product_coding_loop.c:5087),
+        // INCLUDING the decoder's tx_type_map semantics: the map holds
+        // DCT_DCT for an all-zero covering luma txb (decodetxb.c:148-154),
+        // which `inter_uv_tx_type` reproduces from `best_txb_eob[0]`.
+        let tt = inter_uv_tx_type(
+            best_txb_eob.first().copied().unwrap_or(0),
+            best_txb_type.first().copied().unwrap_or(0),
+            frame.coded_lossless,
+            cw,
+            chh,
+        );
         let u_out = tx_unit(
             fx.u_src,
             fx.c_stride,
@@ -1244,7 +1246,9 @@ fn eval_candidate(
         // from the chroma recon canvases (enc_inter_prediction chroma
         // arm, sf_identity), with the INTER chroma tx type rule: the
         // luma winner's txb-0 type when the chroma ext set allows it,
-        // else DCT (tx_type_search, product_coding_loop.c:5087-5096).
+        // else DCT (tx_type_search, product_coding_loop.c:5087-5096) —
+        // with the decoder's map semantics: an all-zero covering luma txb
+        // reads DCT_DCT (decodetxb.c:148-154).
         // No CfL, no ind-uv, no detector (all intra-only).
         let mut u_pred = dirty_pool::<u8>(cw * chh);
         let mut v_pred = dirty_pool::<u8>(cw * chh);
@@ -1273,14 +1277,13 @@ fn eval_candidate(
             dv,
             &mut v_pred,
         );
-        let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
-        let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
-        let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
-        let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
-            luma_tt
-        } else {
-            cc::DCT_DCT
-        };
+        let tt = inter_uv_tx_type(
+            best_txb_eob.first().copied().unwrap_or(0),
+            best_txb_type.first().copied().unwrap_or(0),
+            frame.coded_lossless,
+            cw,
+            chh,
+        );
         let u_out = tx_unit(
             fx.u_src,
             fx.c_stride,
@@ -1356,14 +1359,13 @@ fn eval_candidate(
                  chroma prediction; it is empty, which means the DPB carried no \
                  10-bit twin of this reference"
             );
-            let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
-            let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
-            let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
-            let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
-                luma_tt
-            } else {
-                cc::DCT_DCT
-            };
+            let tt = inter_uv_tx_type(
+                best_txb_eob.first().copied().unwrap_or(0),
+                best_txb_type.first().copied().unwrap_or(0),
+                frame.coded_lossless,
+                cw,
+                chh,
+            );
             Some(chroma::eval_uv_inter_hbd(
                 cx,
                 fx,
@@ -3078,6 +3080,15 @@ fn eval_candidate(
             .expect("the skip decision only runs for an inter candidate");
         let (u_pred, v_pred) = (ic.u_pred.clone(), ic.v_pred.clone());
         let pred = cand.pred.clone();
+        // The 10-bit twins of the recon=pred writeback below — a decoder
+        // reconstructs a skip block as prediction only, at the sequence's
+        // bit depth. `cand.pred10` is that prediction at true depth
+        // (post-IFS/-refinement, matching the signaled interp_filters/MV);
+        // leaving `y_recon10` empty would drop the winner into the intra
+        // `predict_unit_hbd` fallback in `evaluate_leaf`, which predicts a
+        // DC block where C codes motion compensation.
+        let pred10 = cand.pred10[..].to_vec();
+        let (u_pred10, v_pred10) = (ic.u_pred10.clone(), ic.v_pred10.clone());
         cand.mds3_cost = full;
         cand.total_rate = total_rate;
         cand.full_dist = dist;
@@ -3103,6 +3114,17 @@ fn eval_candidate(
         cand.v_cul = 0;
         cand.u_recon = crate::vecpool::PoolVec::from_slice(&u_pred);
         cand.v_recon = crate::vecpool::PoolVec::from_slice(&v_pred);
+        // Populate the 10-bit recons only where a 10-bit canvas consumes
+        // them — `commit_leaf` asserts a canvas exists for every non-empty
+        // chroma recon, and the pred10 buffers can be populated on paths
+        // (e.g. the bd10 post-pass presets) whose canvases are absent.
+        if fx.y_recon10.is_some() {
+            cand.y_recon10 = pred10;
+        }
+        if fx.u_recon10.is_some() && fx.v_recon10.is_some() {
+            cand.u_recon10 = u_pred10;
+            cand.v_recon10 = v_pred10;
+        }
         cand.block_has_coeff = false;
         return;
     }

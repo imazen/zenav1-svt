@@ -967,12 +967,25 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < g.tile.mi_col_end;
     let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < g.tile.mi_row_end;
 
-    let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
+    // The availability tables take C `scale_chroma_bsize(bsize, ss_x, ss_y)`
+    // (reconintra.c:1685-1734), applied only when `ss_x || ss_y`. Despite the
+    // name it never scales down: it bumps SUB-8 luma blocks up to the 8px
+    // table granularity (4x4→8x8, 4x8→8x8, 8x4→8x8, 4x16→8x16, 16x4→16x8)
+    // and returns every other bsize unchanged — the LUMA block dims.
+    // `mi_row`/`mi_col` stay in LUMA mi and `ss` stays the real subsampling.
+    // `g.bw_px`/`g.bh_px` are the LUMA block dims (`DrGeom` contract), so the
+    // clamp happens here, not at the call site.
+    let (bs_w, bs_h) = if g.ss == 0 {
+        (g.bw_px, g.bh_px)
+    } else {
+        (g.bw_px.max(8), g.bh_px.max(8))
+    };
+    let shape_ok = is_av1_block_shape(bs_w, bs_h);
     let have_top_right = shape_ok
         && has_top_right(
             g.sb_mi_size,
-            g.bw_px,
-            g.bh_px,
+            bs_w,
+            bs_h,
             g.mi_row,
             g.mi_col,
             have_top,
@@ -987,8 +1000,8 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     let have_bottom_left = shape_ok
         && has_bottom_left(
             g.sb_mi_size,
-            g.bw_px,
-            g.bh_px,
+            bs_w,
+            bs_h,
             g.mi_row,
             g.mi_col,
             bottom_available,
@@ -1230,12 +1243,25 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < g.tile.mi_col_end;
     let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < g.tile.mi_row_end;
 
-    let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
+    // The availability tables take C `scale_chroma_bsize(bsize, ss_x, ss_y)`
+    // (reconintra.c:1685-1734), applied only when `ss_x || ss_y`. Despite the
+    // name it never scales down: it bumps SUB-8 luma blocks up to the 8px
+    // table granularity (4x4→8x8, 4x8→8x8, 8x4→8x8, 4x16→8x16, 16x4→16x8)
+    // and returns every other bsize unchanged — the LUMA block dims.
+    // `mi_row`/`mi_col` stay in LUMA mi and `ss` stays the real subsampling.
+    // `g.bw_px`/`g.bh_px` are the LUMA block dims (`DrGeom` contract), so the
+    // clamp happens here, not at the call site.
+    let (bs_w, bs_h) = if g.ss == 0 {
+        (g.bw_px, g.bh_px)
+    } else {
+        (g.bw_px.max(8), g.bh_px.max(8))
+    };
+    let shape_ok = is_av1_block_shape(bs_w, bs_h);
     let have_top_right = shape_ok
         && has_top_right(
             g.sb_mi_size,
-            g.bw_px,
-            g.bh_px,
+            bs_w,
+            bs_h,
             g.mi_row,
             g.mi_col,
             have_top,
@@ -1250,8 +1276,8 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     let have_bottom_left = shape_ok
         && has_bottom_left(
             g.sb_mi_size,
-            g.bw_px,
-            g.bh_px,
+            bs_w,
+            bs_h,
             g.mi_row,
             g.mi_col,
             bottom_available,

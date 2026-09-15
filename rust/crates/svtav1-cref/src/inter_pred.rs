@@ -1471,6 +1471,18 @@ unsafe extern "C" {
         h: c_int,
         bd: c_int,
     );
+    fn ref_highbd_blend_a64_vmask_16bit(
+        dst: *mut u16,
+        dst_stride: u32,
+        src0: *const u16,
+        src0_stride: u32,
+        src1: *const u16,
+        src1_stride: u32,
+        mask: *const u8,
+        w: c_int,
+        h: c_int,
+        bd: c_int,
+    );
 }
 
 /// Reference `svt_aom_is_masked_compound_type` (inter_prediction.c:34).
@@ -1668,6 +1680,37 @@ pub fn highbd_blend_a64_hmask_16bit(
     assert!(dst.len() >= (h - 1) * dst_stride + w && mask.len() >= w);
     unsafe {
         ref_highbd_blend_a64_hmask_16bit(
+            dst.as_mut_ptr(),
+            dst_stride as u32,
+            src0.as_ptr(),
+            src0_stride as u32,
+            src1.as_ptr(),
+            src1_stride as u32,
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_aom_highbd_blend_a64_vmask_16bit_c` (blend_a64_mask_c.c:15).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_blend_a64_vmask_16bit(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    w: usize,
+    h: usize,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w && mask.len() >= h);
+    unsafe {
+        ref_highbd_blend_a64_vmask_16bit(
             dst.as_mut_ptr(),
             dst_stride as u32,
             src0.as_ptr(),

@@ -95,6 +95,14 @@ pub(crate) struct ObmcBuffers {
     buf0: Vec<u8>,
     /// C `ctx->obmc_buff_1` — the LEFT neighbours'.
     buf1: Vec<u8>,
+    /// The same two buffers at `hbd_md`'s `bits = 2` — C sizes
+    /// `sb_size * sb_size * bits * MAX_PLANES` BYTES, which for a u16 lane is
+    /// `sb_size * sb_size * MAX_PLANES` elements. Kept as a separate pair
+    /// rather than one byte buffer cast both ways; a thread runs one depth
+    /// per frame, so they never alias live data.
+    hbuf0: Vec<u16>,
+    /// The LEFT neighbours', 10-bit.
+    hbuf1: Vec<u16>,
     /// C `ctx->obmc_conv_buf`.
     conv: Vec<u16>,
     /// C `ctx->wsrc_buf` — the OBMC-weighted source the MV refinement scores
@@ -109,6 +117,8 @@ pub(crate) struct ObmcBuffers {
     /// The block the contents of `buf0`/`buf1` belong to, or `None` when they
     /// hold another block's. C's `obmc_neighbor_{luma,chroma}_pred_ready`.
     ready: Option<NeighbourKey>,
+    /// The same ready flag for the `hbuf` pair.
+    hready: Option<NeighbourKey>,
     /// The superblock edge this was sized for; a larger one regrows.
     sb_size: usize,
 }
@@ -116,23 +126,36 @@ pub(crate) struct ObmcBuffers {
 impl ObmcBuffers {
     /// C `md_process.c:374-381`'s allocation, deferred to the first OBMC block
     /// this thread predicts. A frame that never reaches OBMC pays nothing,
-    /// which is C's `if (obmc_allowed)` guard.
-    fn ensure(&mut self, sb_size: usize) {
-        if self.sb_size >= sb_size {
-            return;
-        }
+    /// which is C's `if (obmc_allowed)` guard. `hbd` selects C's `bits` term:
+    /// the same byte size lands as `Vec<u16>` at `bits = 2`.
+    ///
+    /// The two depths' sets grow independently: a thread that ran an 8-bit
+    /// frame at one superblock size and then a 10-bit one at the same size
+    /// must still allocate `hbuf*`, so the regrow test is on the buffer's own
+    /// length, not only `sb_size`.
+    fn ensure(&mut self, sb_size: usize, hbd: bool) {
         let n = sb_size * sb_size;
-        // `bits` is 1 here: this arm is the 8-bit one. C sizes for
-        // `hbd_md ? 2 : 1`, so a future 10-bit arm doubles these two.
-        self.buf0.resize(n * MAX_PLANES, 0);
-        self.buf1.resize(n * MAX_PLANES, 0);
-        self.conv.resize(n, 0);
-        self.wsrc.resize(n, 0);
-        self.mask.resize(n, 0);
-        self.sb_size = sb_size;
-        // The contents are now meaningless for whatever block they described.
-        self.ready = None;
-        self.weighted = None;
+        let want = n * MAX_PLANES;
+        if self.conv.len() < n {
+            self.conv.resize(n, 0);
+        }
+        if hbd {
+            if self.hbuf0.len() < want {
+                self.hbuf0.resize(want, 0);
+                self.hbuf1.resize(want, 0);
+                self.hready = None;
+            }
+        } else if self.buf0.len() < want {
+            self.buf0.resize(want, 0);
+            self.buf1.resize(want, 0);
+            self.wsrc.resize(n, 0);
+            self.mask.resize(n, 0);
+            // The contents are now meaningless for whatever block they
+            // described.
+            self.ready = None;
+            self.weighted = None;
+        }
+        self.sb_size = self.sb_size.max(sb_size);
     }
 
     /// True when `buf0`/`buf1` already hold THIS block's neighbour
@@ -161,6 +184,7 @@ pub(crate) fn begin_leaf() {
     OBMC_BUFFERS.with(|cell| {
         let mut bufs = cell.borrow_mut();
         bufs.ready = None;
+        bufs.hready = None;
         bufs.weighted = None;
     });
 }
@@ -305,7 +329,7 @@ pub(crate) fn predict_obmc_in_place(
     };
     OBMC_BUFFERS.with(|cell| {
         let mut bufs = cell.borrow_mut();
-        bufs.ensure(ctx.sb_size);
+        bufs.ensure(ctx.sb_size, false);
 
         // C `use_precomputed_obmc`: the neighbour predictions depend on the
         // NEIGHBOURS, never on this candidate's MV, so they are built once per
@@ -350,6 +374,156 @@ pub(crate) fn predict_obmc_in_place(
             dst_stride: [y_stride, uv_stride, uv_stride],
         };
         build_obmc_inter_prediction(
+            &mut planes,
+            &above,
+            &above_nbs[..n_above],
+            &left,
+            &left_nbs[..n_left],
+            bsize,
+            component_mask,
+        );
+    });
+}
+
+/// [`predict_obmc_in_place`]'s 10-bit arm — `av1_inter_prediction_obmc` with
+/// `is16bit` set (enc_inter_prediction.c:2925+).
+///
+/// Identical walk and cache discipline; the differences are C's own: the
+/// neighbour predictions land in u16 scratch built from each reference's
+/// `hbd` twin (`get_single_prediction_for_obmc_{luma,chroma}_hbd`, :791/:853)
+/// and the blend is `svt_aom_highbd_blend_a64_{v,h}mask_16bit`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_obmc_in_place_hbd(
+    ctx: &ObmcCtx<'_>,
+    bsize: BlockSize,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    bit_depth: u8,
+    y: &mut [u16],
+    y_stride: usize,
+    u: &mut [u16],
+    v: &mut [u16],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_obmc_pred::{
+        ObmcAdjacentHbd, ObmcPlanesHbd, build_obmc_inter_prediction_hbd,
+    };
+
+    let has_uv = !u.is_empty();
+    let component_mask = if has_uv {
+        COMPONENT_LUMA | COMPONENT_CHROMA
+    } else {
+        COMPONENT_LUMA
+    };
+    let mi_row = (org_y / 4) as i32;
+    let mi_col = (org_x / 4) as i32;
+    let n4_w = bw / 4;
+    let n4_h = bh / 4;
+
+    let mut above_nbs = [VisitedNb {
+        rel_mi: 0,
+        nb_mi_size: 0,
+        mi_index: 0,
+    }; MAX_VISITED_NB];
+    let mut left_nbs = above_nbs;
+    let mut above_cells = [NB_MI_INTRA; MAX_NB_SPAN];
+    let mut left_cells = [NB_MI_INTRA; MAX_NB_SPAN];
+    let n_above_cells = ctx.above_row.len().min(MAX_NB_SPAN);
+    let n_left_cells = ctx.left_col.len().min(MAX_NB_SPAN);
+    for (dst, c) in above_cells
+        .iter_mut()
+        .zip(ctx.above_row.iter().take(n_above_cells))
+    {
+        *dst = NbMi {
+            bsize: c.bsize,
+            overlappable: c.overlappable,
+        };
+    }
+    for (dst, c) in left_cells
+        .iter_mut()
+        .zip(ctx.left_col.iter().take(n_left_cells))
+    {
+        *dst = NbMi {
+            bsize: c.bsize,
+            overlappable: c.overlappable,
+        };
+    }
+    let above_cells = &above_cells[..n_above_cells];
+    let left_cells = &left_cells[..n_left_cells];
+    let n_above = foreach_overlappable_nb_above_into(
+        ctx.up_available,
+        above_cells,
+        mi_col as usize,
+        n4_w,
+        ctx.mi_cols,
+        nb_max_above(bsize),
+        &mut above_nbs,
+    );
+    let n_left = foreach_overlappable_nb_left_into(
+        ctx.left_available,
+        left_cells,
+        mi_row as usize,
+        n4_h,
+        ctx.mi_rows,
+        nb_max_left(bsize),
+        &mut left_nbs,
+    );
+    if n_above == 0 && n_left == 0 {
+        return;
+    }
+
+    let key = NeighbourKey {
+        org_x,
+        org_y,
+        bw,
+        bh,
+        component_mask,
+    };
+    OBMC_BUFFERS.with(|cell| {
+        let mut bufs = cell.borrow_mut();
+        bufs.ensure(ctx.sb_size, true);
+        if bufs.hready != Some(key) {
+            build_neighbour_predictions_hbd(
+                ctx,
+                &mut bufs,
+                bsize,
+                mi_row,
+                mi_col,
+                bw,
+                bh,
+                &above_nbs[..n_above],
+                &left_nbs[..n_left],
+                component_mask,
+                bit_depth,
+            );
+            bufs.hready = Some(key);
+        }
+
+        let plane_len = bw * bh;
+        let (b0, b1) = (&bufs.hbuf0, &bufs.hbuf1);
+        let above = ObmcAdjacentHbd {
+            plane: [
+                &b0[..plane_len],
+                &b0[plane_len..plane_len * 2],
+                &b0[plane_len * 2..plane_len * 3],
+            ],
+            stride: [bw, bw, bw],
+        };
+        let left = ObmcAdjacentHbd {
+            plane: [
+                &b1[..plane_len],
+                &b1[plane_len..plane_len * 2],
+                &b1[plane_len * 2..plane_len * 3],
+            ],
+            stride: [bw, bw, bw],
+        };
+        let mut planes = ObmcPlanesHbd {
+            dst: [y, u, v],
+            dst_stride: [y_stride, uv_stride, uv_stride],
+        };
+        build_obmc_inter_prediction_hbd(
             &mut planes,
             &above,
             &above_nbs[..n_above],
@@ -457,7 +631,7 @@ pub(crate) fn with_obmc_weighted_pred<R>(
     };
     OBMC_BUFFERS.with(|cell| {
         let mut bufs = cell.borrow_mut();
-        bufs.ensure(ctx.sb_size);
+        bufs.ensure(ctx.sb_size, false);
         if !bufs.neighbours_ready_for(key) {
             build_neighbour_predictions(
                 ctx,
@@ -659,6 +833,144 @@ fn build_neighbour_predictions(
     }
 }
 
+/// [`build_neighbour_predictions`]'s 10-bit arm — C's
+/// `build_prediction_by_{above,left}_preds` with `is16bit` set, so the
+/// neighbour predictions come from each reference's `hbd` twin and land in
+/// `hbuf0`/`hbuf1`.
+#[allow(clippy::too_many_arguments)]
+fn build_neighbour_predictions_hbd(
+    ctx: &ObmcCtx<'_>,
+    bufs: &mut ObmcBuffers,
+    bsize: BlockSize,
+    mi_row: i32,
+    mi_col: i32,
+    bw: usize,
+    bh: usize,
+    above_nbs: &[VisitedNb],
+    left_nbs: &[VisitedNb],
+    component_mask: u32,
+    bit_depth: u8,
+) {
+    let plane_len = bw * bh;
+    for (side, nbs) in [(NbSide::Above, above_nbs), (NbSide::Left, left_nbs)] {
+        for nb in nbs {
+            // `mi_index`, NOT `rel_mi`: for a 4-wide neighbour C takes the
+            // GEOMETRY from the start of the pair and the MODE INFO from the
+            // pair's second half. See `VisitedNb::mi_index`.
+            let cell = match side {
+                NbSide::Above => ctx.above_row[nb.mi_index.min(ctx.above_row.len() - 1)],
+                NbSide::Left => ctx.left_col[nb.mi_index.min(ctx.left_col.len() - 1)],
+            };
+            let Some(reference) = ctx.padded_by_ref[cell.ref_frame.max(0) as usize] else {
+                // An overlappable neighbour names a reference this frame does
+                // not carry. C cannot reach it — the mi grid and the reference
+                // table are filled from the same list — so it is a wiring bug.
+                panic!(
+                    "an OBMC neighbour names reference {} with no DPB picture",
+                    cell.ref_frame
+                );
+            };
+            let Some(hbd) = reference.hbd.as_ref() else {
+                // The block's own 10-bit prediction already required this
+                // reference's `hbd` twin; a neighbour naming a different
+                // reference that lacks one is the same class of wiring bug.
+                panic!(
+                    "an OBMC neighbour names reference {} with no 10-bit DPB twin",
+                    cell.ref_frame
+                );
+            };
+            let Some((refu, refv)) = hbd.uv.as_ref() else {
+                continue;
+            };
+
+            // C rewrites the edges TWICE per walk — see the 8-bit twin for
+            // the two-step comment; the geometry is depth-independent.
+            let mut e = PredEdges {
+                to_left: ctx.edges.to_left,
+                to_right: ctx.edges.to_right,
+                to_top: ctx.edges.to_top,
+                to_bottom: ctx.edges.to_bottom,
+            };
+            match side {
+                NbSide::Above => {
+                    e.to_bottom += above_preds_edge_adjust((bh / 4) as i32);
+                    setup_build_prediction_by_above_pred(
+                        &mut e,
+                        mi_col,
+                        nb.rel_mi as i32,
+                        nb.nb_mi_size as i32,
+                        (bw / 4) as i32,
+                        ctx.edges.to_right,
+                    );
+                }
+                NbSide::Left => {
+                    e.to_right += left_preds_edge_adjust((bw / 4) as i32);
+                    setup_build_prediction_by_left_pred(
+                        &mut e,
+                        mi_row,
+                        nb.rel_mi as i32,
+                        nb.nb_mi_size as i32,
+                        (bh / 4) as i32,
+                        ctx.edges.to_bottom,
+                    );
+                }
+            }
+            let edges = MbEdges {
+                to_left: e.to_left,
+                to_right: e.to_right,
+                to_top: e.to_top,
+                to_bottom: e.to_bottom,
+            };
+
+            let dst = match side {
+                NbSide::Above => &mut bufs.hbuf0,
+                NbSide::Left => &mut bufs.hbuf1,
+            };
+            let (p0, rest) = dst.split_at_mut(plane_len);
+            let (p1, rest2) = rest.split_at_mut(plane_len);
+            let (p2, _) = rest2.split_at_mut(plane_len);
+
+            let _ = build_prediction_by_nb_pred(
+                side,
+                ObmcRefPic {
+                    y: SrcPlanes::Hbd(&hbd.y.buf),
+                    u: SrcPlanes::Hbd(&refu.buf),
+                    v: SrcPlanes::Hbd(&refv.buf),
+                    stride: [hbd.y.stride, refu.stride, refv.stride],
+                    dims: (hbd.y.width as i32, hbd.y.height as i32),
+                },
+                [hbd.y.origin, refu.origin, refv.origin],
+                ObmcScratch {
+                    y: DstPlane::Hbd(p0),
+                    u: DstPlane::Hbd(p1),
+                    v: DstPlane::Hbd(p2),
+                    stride: [bw, bw, bw],
+                },
+                (ctx.frame_w as i32, ctx.frame_h as i32),
+                ctx.sb_size,
+                bsize,
+                mi_row,
+                mi_col,
+                Neighbour {
+                    mv: svtav1_dsp::port_subpel_params::Mv {
+                        x: cell.mv.x,
+                        y: cell.mv.y,
+                    },
+                    interp_filters: cell.interp_filters,
+                    extent_mi: nb.nb_mi_size,
+                    rel_mi: nb.rel_mi,
+                },
+                &edges,
+                1,
+                1,
+                component_mask,
+                &mut bufs.conv,
+                bit_depth as i32,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod scratch_tests {
     use super::*;
@@ -676,7 +988,7 @@ mod scratch_tests {
         let mut b = ObmcBuffers::default();
         assert_eq!(b.buf0.len(), 0, "nothing is allocated before the first use");
 
-        b.ensure(64);
+        b.ensure(64, false);
         assert_eq!(b.buf0.len(), 64 * 64 * MAX_PLANES);
         assert_eq!(b.buf1.len(), 64 * 64 * MAX_PLANES);
         assert_eq!(b.conv.len(), 64 * 64);
@@ -687,7 +999,7 @@ mod scratch_tests {
         // A second block at the same superblock size REUSES the buffers —
         // this is the property that makes it C's memory model and not a
         // per-block allocation wearing a thread-local's clothes.
-        b.ensure(64);
+        b.ensure(64, false);
         assert_eq!(b.buf0.as_ptr(), p0, "re-entry reallocated buf0");
         assert_eq!(b.buf1.as_ptr(), p1, "re-entry reallocated buf1");
 
@@ -700,7 +1012,7 @@ mod scratch_tests {
             bh: 16,
             component_mask: 7,
         });
-        b.ensure(128);
+        b.ensure(128, false);
         assert_eq!(b.buf0.len(), 128 * 128 * MAX_PLANES);
         assert_eq!(b.wsrc.len(), 128 * 128);
         assert_eq!(b.mask.len(), 128 * 128);
@@ -718,7 +1030,7 @@ mod scratch_tests {
     #[test]
     fn the_neighbour_cache_is_keyed_on_the_block() {
         let mut b = ObmcBuffers::default();
-        b.ensure(64);
+        b.ensure(64, false);
         let key = NeighbourKey {
             org_x: 32,
             org_y: 16,

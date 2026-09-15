@@ -394,6 +394,34 @@ pub fn highbd_blend_a64_hmask_16bit(
     }
 }
 
+/// `svt_aom_highbd_blend_a64_vmask_16bit_c` (blend_a64_mask_c.c:15) — the
+/// 10-bit OBMC ABOVE blend (its only caller is `build_obmc_inter_pred_above`).
+///
+/// The mask is indexed by ROW only (`mask[i]`), which is what makes it the
+/// vertical-mask variant; `bd` is accepted and unused there too.
+pub fn highbd_blend_a64_vmask_16bit(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    w: usize,
+    h: usize,
+) {
+    for i in 0..h {
+        let m = mask[i] as i32;
+        for j in 0..w {
+            dst[i * dst_stride + j] = aom_blend_a64(
+                m,
+                src0[i * src0_stride + j] as i32,
+                src1[i * src1_stride + j] as i32,
+            ) as u16;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

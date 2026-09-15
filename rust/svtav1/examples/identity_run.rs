@@ -986,6 +986,35 @@ fn main() {
                         std::fs::write(format!("{path}.f{f}.pre.bin"), &b)
                             .expect("write SVTAV1_RECON_STAGES");
                     }
+                    // The 10-bit twin of the `.pre.bin` dump: the post-MD
+                    // 10-bit canvas BEFORE the loop filters, packed exactly as
+                    // the FINAL_RECON dump so `dav1d --inloopfilters none`
+                    // output compares byte-for-byte.
+                    if let Ok(path) = std::env::var("SVTAV1_RECON_STAGES")
+                        && bd == 10
+                        && let (Some(py), Some((pu, pv))) = (
+                            pipeline.last_recon10_y.as_ref(),
+                            pipeline.last_recon10_uv.as_ref(),
+                        )
+                    {
+                        let aw = pipeline.width as usize;
+                        let (tw2, th2) =
+                            (pipeline.true_width as usize, pipeline.true_height as usize);
+                        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
+                        fn crop16(p: &[u16], stride: usize, cw: usize, chh: usize) -> Vec<u16> {
+                            let mut o = Vec::with_capacity(cw * chh);
+                            for r in 0..chh {
+                                o.extend_from_slice(&p[r * stride..r * stride + cw]);
+                            }
+                            o
+                        }
+                        let mut s = crop16(py, aw, tw2, th2);
+                        s.extend_from_slice(&crop16(pu, acw, tcw2, tch2));
+                        s.extend_from_slice(&crop16(pv, acw, tcw2, tch2));
+                        let b: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
+                        std::fs::write(format!("{path}.f{f}.pre10.bin"), &b)
+                            .expect("write SVTAV1_RECON_STAGES 10-bit");
+                    }
                     all.extend_from_slice(&bytes);
                 }
                 Err(e) => {

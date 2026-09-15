@@ -110,6 +110,7 @@ pub(super) fn ifs_at_mds3(
     let Cand {
         inter,
         pred,
+        pred10,
         flr,
         ibc,
         ..
@@ -505,10 +506,14 @@ pub(super) fn ifs_at_mds3(
                 cw,
             );
         }
-        if obmc {
-            let spans = crate::inter_md_arm::obmc_nb_spans(
+        // Hoisted so the 10-bit twin below blends the SAME neighbours the
+        // 8-bit arm does (same split as `inter_md_arm::predict_and_price`).
+        let obmc_spans = obmc.then(|| {
+            crate::inter_md_arm::obmc_nb_spans(
                 grid, im.mi_cols, im.mi_rows, im.mi_cols, abs_x, abs_y, w, h,
-            );
+            )
+        });
+        if let Some(spans) = &obmc_spans {
             crate::obmc_pred_arm::predict_obmc_in_place(
                 &crate::obmc_pred_arm::ObmcCtx {
                     padded_by_ref: &im.padded_by_ref,
@@ -536,6 +541,200 @@ pub(super) fn ifs_at_mds3(
                 &mut ic.v_pred,
                 cw,
             );
+        }
+        // The TRUE-10-bit twin of the prediction the u8 arm just rebuilt.
+        // `cand.pred10` / `ic.{u,v}_pred10` still hold the INJECTOR's pair
+        // (packed 0, EIGHTTAP_REGULAR both ways): the bd10 full-RD loop
+        // computes its residual and recon against them, so a pair change
+        // here would code `src10 - pred10(old_pair)` against a bitstream
+        // that signals `ic.interp_filters` — the decoder adds that
+        // residual to a DIFFERENT prediction and every subpel block
+        // drifts. C never has two predictions to desynchronize (at hbd_md
+        // the 16-bit reference IS the only picture); the port's u8/hbd
+        // split makes this twin rebuild necessary. The dispatch mirrors
+        // `inter_md_arm::predict_and_price`'s hbd arm — same functions,
+        // same order, same OBMC tail.
+        if let Some(hbd) = padded.hbd.as_ref() {
+            if !pred10.is_empty() {
+                let hbd1 = padded1.and_then(|p| p.hbd.as_ref());
+                let want_uv10 = g.has_uv
+                    && hbd.uv.is_some()
+                    && hbd1.is_none_or(|h10| h10.uv.is_some())
+                    && !ic.u_pred10.is_empty();
+                fn uv_of<'p>(
+                    p10: &'p crate::picture::PaddedRefHbd,
+                    want: bool,
+                ) -> Option<(
+                    &'p crate::picture::PaddedPlaneHbd,
+                    &'p crate::picture::PaddedPlaneHbd,
+                )> {
+                    if want {
+                        p10.uv.as_ref().map(|(u, v)| (u, v))
+                    } else {
+                        None
+                    }
+                }
+                if let Some(h1) = hbd1 {
+                    let iw10 = [
+                        crate::inter_pred_arm::inter_pred_uses_warp(
+                            ic.motion_mode,
+                            ic.mode as u8,
+                            w,
+                            h,
+                            &ic.wm_params,
+                        ),
+                        crate::inter_pred_arm::inter_pred_uses_warp(
+                            ic.motion_mode,
+                            ic.mode as u8,
+                            w,
+                            h,
+                            &ic.wm_params_l1,
+                        ),
+                    ];
+                    if iw10[0] || iw10[1] {
+                        let mut wm0 = ic.wm_params;
+                        let mut wm1 = ic.wm_params_l1;
+                        crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd(
+                            [
+                                (&hbd.y, uv_of(hbd, want_uv10)),
+                                (&h1.y, uv_of(h1, want_uv10)),
+                            ],
+                            &mut wm0,
+                            &mut wm1,
+                            iw10,
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            ic.mv,
+                            ic.interp_filters,
+                            im.sb_size,
+                            im.frame_w,
+                            im.frame_h,
+                            im.bit_depth,
+                            &mut pred10[..],
+                            w,
+                            &mut ic.u_pred10,
+                            &mut ic.v_pred10,
+                            cw,
+                        );
+                    } else {
+                        crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
+                            [
+                                (&hbd.y, uv_of(hbd, want_uv10)),
+                                (&h1.y, uv_of(h1, want_uv10)),
+                            ],
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            ic.mv,
+                            ic.interp_filters,
+                            im.sb_size,
+                            im.frame_w,
+                            im.frame_h,
+                            im.bit_depth,
+                            &mut pred10[..],
+                            w,
+                            &mut ic.u_pred10,
+                            &mut ic.v_pred10,
+                            cw,
+                        );
+                    }
+                } else {
+                    // OBMC's base is the plain inter prediction; the blend
+                    // is the tail below — same split as the 8-bit arm and
+                    // `predict_and_price`'s hbd arm.
+                    let mm_base = if obmc {
+                        crate::port_entropy_inter::modes::MotionMode::SimpleTranslation
+                    } else {
+                        ic.motion_mode
+                    };
+                    let is_wm10 = crate::inter_pred_arm::inter_pred_uses_warp(
+                        ic.motion_mode,
+                        ic.mode as u8,
+                        w,
+                        h,
+                        &ic.wm_params,
+                    );
+                    // Sub-8 chroma covers the parent 8x8 and is stitched
+                    // from the covered cells' MVs (`inter_chroma_4xn_pred`)
+                    // — the same split the u8 arm above makes.
+                    crate::inter_pred_arm::predict_inter_leaf_hbd(
+                        &hbd.y,
+                        uv_of(hbd, want_uv10 && !sub8),
+                        mm_base,
+                        is_wm10,
+                        ic.wm_params,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        ic.mv[0],
+                        ic.interp_filters,
+                        im.sb_size,
+                        im.frame_w,
+                        im.frame_h,
+                        im.bit_depth,
+                        &mut pred10[..],
+                        w,
+                        &mut ic.u_pred10,
+                        &mut ic.v_pred10,
+                        cw,
+                    );
+                    if want_uv10 && sub8 {
+                        crate::inter_md_arm::predict_inter_chroma_sub8_hbd(
+                            &im.padded_by_ref,
+                            grid,
+                            im.mi_cols,
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            ic.ref_frame[0],
+                            ic.mv[0],
+                            ic.interp_filters,
+                            im.sb_size,
+                            im.frame_w,
+                            im.frame_h,
+                            im.bit_depth,
+                            &mut ic.u_pred10,
+                            &mut ic.v_pred10,
+                            cw,
+                        );
+                    }
+                }
+                if let Some(spans) = &obmc_spans {
+                    crate::obmc_pred_arm::predict_obmc_in_place_hbd(
+                        &crate::obmc_pred_arm::ObmcCtx {
+                            padded_by_ref: &im.padded_by_ref,
+                            above_row: &spans.above[..spans.n_above],
+                            left_col: &spans.left[..spans.n_left],
+                            up_available: abs_y > 0,
+                            left_available: abs_x > 0,
+                            mi_cols: im.mi_cols.max(0) as usize,
+                            mi_rows: im.mi_rows.max(0) as usize,
+                            sb_size: im.sb_size,
+                            frame_w: im.frame_w,
+                            frame_h: im.frame_h,
+                            edges: crate::inter_pred_arm::block_mb_edges(
+                                abs_x, abs_y, w, h, im.frame_w, im.frame_h,
+                            ),
+                        },
+                        bsize,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        im.bit_depth,
+                        &mut pred10[..],
+                        w,
+                        &mut ic.u_pred10,
+                        &mut ic.v_pred10,
+                        cw,
+                    );
+                }
+            }
         }
     }
     // :2205-2208 withdraws `skip_mode_allowed` when the IFS result is a

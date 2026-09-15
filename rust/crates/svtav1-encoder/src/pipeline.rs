@@ -10676,20 +10676,23 @@ fn encode_block_syntax(
             // symptom, because chroma is derived and codes no tx-type symbol
             // of its own.
             let uv_tt = if use_intrabc || decision.is_inter {
-                let luma_tt = if decision.tx_depth == 0 {
-                    decision.tx_type
+                // The decoder's tx_type_map cell at the leaf origin holds
+                // the covering luma txb's CODED type — DCT_DCT when that
+                // txb was all-zero (`read_coeffs_txb`, decodetxb.c:148-154)
+                // or the block is lossless. Using the raw decision tx_type
+                // here scanned chroma levels in a different order than the
+                // decoder applied them (vidyo1 256x256 q20 p10 f3: the
+                // luma-eob-0 leaf at x176 y128 committed tx_type 3 while
+                // the map read DCT_DCT).
+                let (cover_eob, cover_tt) = if decision.tx_depth == 0 {
+                    (decision.eob, decision.tx_type)
                 } else {
-                    decision.txb_tx_types.first().copied().unwrap_or(0)
-                } as usize;
-                let uv_tx = crate::entropy::coeff_c::adjusted_tx_size(
-                    crate::entropy::coeff_c::tx_size_from_dims(cw, ch),
-                );
-                let uv_set = crate::entropy::coeff_c::ext_tx_set_type(uv_tx, true, false);
-                if crate::leaf_funnel::ext_tx_used(uv_set, luma_tt) {
-                    luma_tt
-                } else {
-                    0
-                }
+                    (
+                        decision.txb_eobs.first().copied().unwrap_or(0),
+                        decision.txb_tx_types.first().copied().unwrap_or(0),
+                    )
+                };
+                crate::leaf_funnel::inter_uv_tx_type(cover_eob, cover_tt, base_q_idx == 0, cw, ch)
             } else {
                 crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch)
             };
@@ -10709,11 +10712,19 @@ fn encode_block_syntax(
                 };
                 let sum_of = |q: &[i32]| q.iter().map(|c| c.unsigned_abs() as u64).sum::<u64>();
                 eprintln!(
-                    "CODEDUV x{block_x} y{block_y} cw{cw} ch{ch} u_eob={} v_eob={} u_sum={} v_sum={}",
+                    "CODEDUV x{block_x} y{block_y} cw{cw} ch{ch} u_eob={} v_eob={} u_sum={} v_sum={} tt={uv_tt} u_nz={:?} v_nz={:?}",
                     eob_of(u_q),
                     eob_of(v_q),
                     sum_of(u_q),
                     sum_of(v_q),
+                    u_q.iter()
+                        .enumerate()
+                        .filter(|(_, c)| **c != 0)
+                        .collect::<Vec<_>>(),
+                    v_q.iter()
+                        .enumerate()
+                        .filter(|(_, c)| **c != 0)
+                        .collect::<Vec<_>>(),
                 );
             }
             write_chroma_txb(
@@ -11433,19 +11444,15 @@ fn bd10_tree_supported(
                 Some(ic) => {
                     // A SUB-8 inter leaf's chroma covers the parent 8x8 and C
                     // stitches it from the covered cells' own MVs
-                    // (`inter_chroma_4xn_pred`). The 8-bit arm ports that
-                    // (`inter_md_arm::predict_inter_chroma_sub8`); the 10-bit
-                    // post-pass has no mi grid to walk, so it would predict
-                    // the whole area from THIS block's MV — the right samples
-                    // in the wrong places wherever the sibling chose a
-                    // different vector. Dropping the frame back to the u8
-                    // output is the same fall-back-don't-miscode contract
-                    // every other clause here has.
-                    let sub8_chroma = d.width < 8 || d.height < 8;
+                    // (`inter_chroma_4xn_pred`); the post-pass rebuilds the mi
+                    // grid from the committed trees (`stamp_inter_mi_grid`)
+                    // and calls `predict_inter_chroma_sub8_hbd`, so sub-8 is
+                    // in-envelope here. OBMC is not — the blend reads the live
+                    // MD neighbour spans, which this pass does not carry.
                     !matches!(
                         ic.motion_mode,
                         crate::port_entropy_inter::modes::MotionMode::ObmcCausal
-                    ) && !sub8_chroma
+                    )
                 }
                 None => true,
             };

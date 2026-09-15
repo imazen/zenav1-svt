@@ -1255,6 +1255,210 @@ fn chroma_unit(
     .expect("the chroma unit takes an 8-bit plane into an 8-bit destination");
 }
 
+/// The 10-bit twin of [`chroma_unit`]: one chroma plane of one rectangle at
+/// true depth (`SrcPlanes::Hbd` -> `DstPlane::Hbd`, C's `is16bit` arm of
+/// `svt_aom_enc_make_inter_predictor`).
+#[allow(clippy::too_many_arguments)]
+fn chroma_unit_hbd(
+    r: &crate::picture::PaddedPlaneHbd,
+    plane: usize,
+    cx: usize,
+    cy: usize,
+    cwidth: usize,
+    cheight: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sf: &ScaleFactors,
+    geom: RefGeometry,
+    edges: &svtav1_dsp::port_subpel_params::MbEdges,
+    conv_buf: &mut [u16],
+    dst: &mut [u16],
+    dst_stride: usize,
+    bit_depth: u8,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+    let cp = ConvolveParams::no_round(false, 64, false, i32::from(bit_depth));
+    enc_make_inter_predictor(
+        SrcPlanes::Hbd(&r.buf),
+        r.origin,
+        r.stride,
+        DstPlane::Hbd(dst),
+        dst_stride,
+        conv_buf,
+        cy as i32,
+        cx as i32,
+        DspMv { x: mv.x, y: mv.y },
+        sf,
+        &cp,
+        interp_filters,
+        None,
+        None,
+        geom,
+        cwidth,
+        cheight,
+        edges,
+        plane,
+        1,
+        1,
+        i32::from(bit_depth),
+        false,
+        false,
+    )
+    .expect("the hbd chroma unit takes a u16 plane into a u16 destination");
+}
+
+/// The 10-bit twin of [`predict_inter_chroma_sub8x8`] — C's
+/// `inter_chroma_4xn_pred` reads `is16bit` and runs the same cell walk on the
+/// 16-bit reference picture, so only the plane/dst types and the convolve
+/// params' `bd` differ.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn predict_inter_chroma_sub8x8_hbd(
+    refs_by_frame: &[Option<(
+        &crate::picture::PaddedPlaneHbd,
+        &crate::picture::PaddedPlaneHbd,
+    )>; 8],
+    mis: &[[Sub8ChromaMi; 2]; 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) -> bool {
+    if bw >= 8 && bh >= 8 {
+        return false;
+    }
+    let row_start: i32 = if bh == 4 { -1 } else { 0 };
+    let col_start: i32 = if bw == 4 { -1 } else { 0 };
+    for row in row_start..=0 {
+        for col in col_start..=0 {
+            if !mis[(row + 1) as usize][(col + 1) as usize].is_inter {
+                return false;
+            }
+        }
+    }
+    let (b4_w, b4_h) = (bw >> 1, bh >> 1);
+    let (b8_w, b8_h) = (bw.max(8) >> 1, bh.max(8) >> 1);
+    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+
+    let mut row = row_start;
+    let mut y = 0;
+    while y < b8_h {
+        let mut col = col_start;
+        let mut x = 0;
+        while x < b8_w {
+            let mi = mis[(row + 1) as usize][(col + 1) as usize];
+            let Some((uref, vref)) = refs_by_frame[mi.ref_frame.max(0) as usize] else {
+                panic!(
+                    "a sub-8 chroma neighbour names reference {} with no DPB picture",
+                    mi.ref_frame
+                );
+            };
+            for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+                chroma_unit_hbd(
+                    r,
+                    plane,
+                    cx + x,
+                    cy + y,
+                    b4_w,
+                    b4_h,
+                    mi.mv,
+                    mi.interp_filters,
+                    &sf,
+                    geom,
+                    &edges,
+                    &mut conv_buf,
+                    &mut dst[y * uv_stride + x..],
+                    uv_stride,
+                    bit_depth,
+                );
+            }
+            col += 1;
+            x += b4_w;
+        }
+        row += 1;
+        y += b4_h;
+    }
+    true
+}
+
+/// The 10-bit twin of [`predict_inter_chroma_whole`] — the `!sub8x8_inter`
+/// chroma arm over the whole ROUND_UV reference area with this block's own MV.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_chroma_whole_hbd(
+    uref: &crate::picture::PaddedPlaneHbd,
+    vref: &crate::picture::PaddedPlaneHbd,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    let (cw, chh) = (bw.max(8) >> 1, bh.max(8) >> 1);
+    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+        chroma_unit_hbd(
+            r,
+            plane,
+            cx,
+            cy,
+            cw,
+            chh,
+            mv,
+            interp_filters,
+            &sf,
+            geom,
+            &edges,
+            &mut conv_buf,
+            dst,
+            uv_stride,
+            bit_depth,
+        );
+    }
+}
+
 /// C `inter_chroma_4xn_pred` (`enc_inter_prediction.c:3023-3200`) — the chroma
 /// of a 4xN / Nx4 inter block.
 ///

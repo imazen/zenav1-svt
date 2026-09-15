@@ -1342,6 +1342,107 @@ pub(crate) fn predict_inter_chroma_sub8(
     }
 }
 
+/// The 10-bit twin of [`predict_inter_chroma_sub8`]: same covered-cell walk
+/// (`inter_chroma_4xn_pred` reads `is16bit` and runs the identical walk on
+/// the 16-bit picture), sourcing each cell's reference from the `hbd` DPB
+/// twin instead of the 8-bit plane.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_inter_chroma_sub8_hbd(
+    padded_by_ref: &[Option<&crate::picture::PaddedRef>; 8],
+    grid: &[crate::intrabc_mvp::MvpMiEntry],
+    grid_stride: i32,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    ref_frame: i8,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    let padded = padded_by_ref[ref_frame.max(0) as usize]
+        .expect("a sub-8 inter block names a reference with no DPB picture");
+    let Some(hbd) = padded.hbd.as_ref() else {
+        return;
+    };
+    let Some((refu, refv)) = hbd.uv.as_ref() else {
+        return;
+    };
+    let mut refs_by_frame: [Option<(
+        &crate::picture::PaddedPlaneHbd,
+        &crate::picture::PaddedPlaneHbd,
+    )>; 8] = [None; 8];
+    for (i, slot) in refs_by_frame.iter_mut().enumerate() {
+        *slot = padded_by_ref[i]
+            .and_then(|p| p.hbd.as_ref())
+            .and_then(|h| h.uv.as_ref().map(|(u, v)| (u, v)));
+    }
+    let mut mis = [[crate::inter_pred_arm::Sub8ChromaMi::default(); 2]; 2];
+    let row_start: i32 = if bh == 4 { -1 } else { 0 };
+    let col_start: i32 = if bw == 4 { -1 } else { 0 };
+    for dr in row_start..=0 {
+        for dc in col_start..=0 {
+            mis[(dr + 1) as usize][(dc + 1) as usize] = if dr == 0 && dc == 0 {
+                crate::inter_pred_arm::Sub8ChromaMi {
+                    is_inter: true,
+                    ref_frame,
+                    mv,
+                    interp_filters,
+                }
+            } else {
+                let idx = ((org_y / 4) as i32 + dr) * grid_stride + (org_x / 4) as i32 + dc;
+                let e = &grid[idx as usize];
+                crate::inter_pred_arm::Sub8ChromaMi {
+                    is_inter: e.use_intrabc || e.ref_frame[0] > 0,
+                    ref_frame: e.ref_frame[0],
+                    mv: e.mv[0],
+                    interp_filters: e.interp_filters,
+                }
+            };
+        }
+    }
+    let stitched = crate::inter_pred_arm::predict_inter_chroma_sub8x8_hbd(
+        &refs_by_frame,
+        &mis,
+        org_x,
+        org_y,
+        bw,
+        bh,
+        sb_size,
+        frame_w,
+        frame_h,
+        bit_depth,
+        u_out,
+        v_out,
+        uv_stride,
+    );
+    if !stitched {
+        crate::inter_pred_arm::predict_inter_chroma_whole_hbd(
+            refu,
+            refv,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            mv,
+            interp_filters,
+            sb_size,
+            frame_w,
+            frame_h,
+            bit_depth,
+            u_out,
+            v_out,
+            uv_stride,
+        );
+    }
+}
+
 /// The ABOVE row and LEFT column the OBMC walk reads, projected out of the mi
 /// grid into caller-owned arrays.
 ///
@@ -1686,9 +1787,10 @@ fn predict_and_price(
     // The blend runs AFTER the block's own prediction and rewrites its edges
     // in place, so it sits here rather than as a third arm of the dispatch
     // above. It is re-applied wherever the prediction is rebuilt -- see
-    // `leaf_funnel::ifs`.
-    if mm == MotionMode::ObmcCausal {
-        let spans = obmc_nb_spans(
+    // `leaf_funnel::ifs`. The spans are hoisted so the 10-bit arm below
+    // blends the SAME neighbours the 8-bit one does.
+    let obmc_spans = (mm == MotionMode::ObmcCausal).then(|| {
+        obmc_nb_spans(
             b.grid,
             b.grid_stride,
             f.mi_rows,
@@ -1697,7 +1799,9 @@ fn predict_and_price(
             b.org_y,
             b.bw,
             b.bh,
-        );
+        )
+    });
+    if let Some(spans) = &obmc_spans {
         crate::obmc_pred_arm::predict_obmc_in_place(
             &crate::obmc_pred_arm::ObmcCtx {
                 padded_by_ref: &f.padded_by_ref,
@@ -1817,14 +1921,31 @@ fn predict_and_price(
                 );
             }
         } else {
+            // C's OBMC block predicts with the PLAIN inter path first and
+            // blends the neighbours in after — `predict_inter_leaf_hbd`'s
+            // OBMC assert guards the committed-leaf post-pass, so the base
+            // prediction here is taken as SIMPLE_TRANSLATION and the blend
+            // is applied below, exactly as the 8-bit arm does.
+            let mm_base = if mm == MotionMode::ObmcCausal {
+                MotionMode::SimpleTranslation
+            } else {
+                mm
+            };
+            // A sub-8 luma block's chroma covers the parent 8x8 and is
+            // stitched from the covered cells' own MVs
+            // (`inter_chroma_4xn_pred`), exactly as the 8-bit arm's
+            // `predict_inter_chroma_sub8` — the luma-shaped hbd leaf would
+            // predict `bw/2 x bh/2` at the block's own origin, which is
+            // neither the right area nor the right motion.
+            let sub8 = b.bw < 8 || b.bh < 8;
             crate::inter_pred_arm::predict_inter_leaf_hbd(
                 &hbd.y,
-                if want_uv {
+                if want_uv && !sub8 {
                     hbd.uv.as_ref().map(|(u, v)| (u, v))
                 } else {
                     None
                 },
-                mm,
+                mm_base,
                 is_wm,
                 c.wm_params_l0,
                 b.org_x,
@@ -1836,6 +1957,61 @@ fn predict_and_price(
                 f.sb_size,
                 f.frame_w,
                 f.frame_h,
+                f.bit_depth,
+                &mut y_pred10,
+                b.bw,
+                &mut u_pred10,
+                &mut v_pred10,
+                cw,
+            );
+            if want_uv && sub8 {
+                predict_inter_chroma_sub8_hbd(
+                    &f.padded_by_ref,
+                    b.grid,
+                    b.grid_stride,
+                    b.org_x,
+                    b.org_y,
+                    b.bw,
+                    b.bh,
+                    c.ref_frame[0],
+                    c.mv[0],
+                    interp_filters,
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    f.bit_depth,
+                    &mut u_pred10,
+                    &mut v_pred10,
+                    cw,
+                );
+            }
+        }
+        // The SAME OBMC blend at 10 bits (`av1_inter_prediction_obmc` with
+        // `is16bit`): the neighbours' predictions are rebuilt from each
+        // reference's `hbd` twin and the blend is the u16 hmask/vmask pair.
+        if let Some(spans) = &obmc_spans {
+            crate::obmc_pred_arm::predict_obmc_in_place_hbd(
+                &crate::obmc_pred_arm::ObmcCtx {
+                    padded_by_ref: &f.padded_by_ref,
+                    above_row: &spans.above[..spans.n_above],
+                    left_col: &spans.left[..spans.n_left],
+                    up_available: b.org_y > 0,
+                    left_available: b.org_x > 0,
+                    mi_cols: f.mi_cols.max(0) as usize,
+                    mi_rows: f.mi_rows.max(0) as usize,
+                    sb_size: f.sb_size,
+                    frame_w: f.frame_w,
+                    frame_h: f.frame_h,
+                    edges: crate::inter_pred_arm::block_mb_edges(
+                        b.org_x, b.org_y, b.bw, b.bh, f.frame_w, f.frame_h,
+                    ),
+                },
+                svtav1_types::block::BlockSize::from_u8(b.bsize)
+                    .expect("an injected inter block must have a real BlockSize"),
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
                 f.bit_depth,
                 &mut y_pred10,
                 b.bw,

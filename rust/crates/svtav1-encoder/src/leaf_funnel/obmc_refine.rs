@@ -291,6 +291,58 @@ pub(super) fn refine_at_stage(
     cand.pred.extend_from_slice(&y_pred);
     ic.u_pred = u_pred;
     ic.v_pred = v_pred;
+
+    // The TRUE-10-bit twin: `cand.pred10` / `ic.{u,v}_pred10` still hold the
+    // UNREFINED MV's blended prediction. The bd10 full-RD residual and the
+    // committed recon are computed against them, so leaving them stale codes
+    // `src10 - pred10(old_mv)` against a bitstream that signals the refined
+    // MV — the same desync class as the u8 rebuild this mirrors. C's hbd_md
+    // never splits the prediction, so it has no twin to keep in step.
+    if let Some(hbd) = padded.hbd.as_ref() {
+        if !cand.pred10.is_empty() {
+            let want_uv10 = want_uv && hbd.uv.is_some() && !ic.u_pred10.is_empty();
+            crate::inter_pred_arm::predict_inter_leaf_hbd(
+                &hbd.y,
+                if want_uv10 {
+                    hbd.uv.as_ref().map(|(u, v)| (u, v))
+                } else {
+                    None
+                },
+                crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+                false,
+                ic.wm_params,
+                g.abs_x,
+                g.abs_y,
+                w,
+                h,
+                ic.mv[0],
+                ic.interp_filters,
+                im.sb_size,
+                im.frame_w,
+                im.frame_h,
+                im.bit_depth,
+                &mut cand.pred10[..],
+                w,
+                &mut ic.u_pred10,
+                &mut ic.v_pred10,
+                cw,
+            );
+            crate::obmc_pred_arm::predict_obmc_in_place_hbd(
+                &obmc_ctx,
+                bsize,
+                g.abs_x,
+                g.abs_y,
+                w,
+                h,
+                im.bit_depth,
+                &mut cand.pred10[..],
+                w,
+                &mut ic.u_pred10,
+                &mut ic.v_pred10,
+                cw,
+            );
+        }
+    }
 }
 
 /// C `single_motion_search` (mode_decision.c:2069-2181) for the OBMC arm.

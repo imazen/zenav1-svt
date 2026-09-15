@@ -279,4 +279,43 @@ pub(super) fn refine_at_mds1(
     ic.u_pred = u_pred;
     ic.v_pred = v_pred;
     cand.pred = crate::vecpool::PoolVec::from_slice(&y_pred);
+
+    // The TRUE-10-bit twin of the rebuild above: `cand.pred10` /
+    // `ic.{u,v}_pred10` still hold the UNREFINED MV's prediction. MDS1's
+    // `tx_unit_hbd` reads `cand.pred10` on the very next line of its caller,
+    // and a winning candidate's residual/recon are computed against it — a
+    // refinement that reached this point (outcome == Refined) would code
+    // `src10 - pred10(old_mv)` against a bitstream that signals the NEW MV.
+    // C has one prediction at hbd_md; the port's u8/hbd split must keep the
+    // twin in step wherever C's `valid_luma_pred = 0` would.
+    if let Some(hbd) = padded.hbd.as_ref() {
+        if !cand.pred10.is_empty() {
+            let want_uv10 = want_uv && hbd.uv.is_some() && !ic.u_pred10.is_empty();
+            let mut wm10 = ic.wm_params;
+            crate::inter_pred_arm::predict_inter_yuv_warped_hbd(
+                &hbd.y,
+                if want_uv10 {
+                    hbd.uv.as_ref().map(|(u, v)| (u, v))
+                } else {
+                    None
+                },
+                &mut wm10,
+                g.abs_x,
+                g.abs_y,
+                w,
+                h,
+                ic.mv[0],
+                ic.interp_filters,
+                im.sb_size,
+                im.frame_w,
+                im.frame_h,
+                im.bit_depth,
+                &mut cand.pred10[..],
+                w,
+                &mut ic.u_pred10,
+                &mut ic.v_pred10,
+                cw,
+            );
+        }
+    }
 }

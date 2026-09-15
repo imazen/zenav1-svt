@@ -278,3 +278,38 @@ pub(crate) fn uv_tx_type(uv: u8, cw: usize, chh: usize) -> usize {
         t
     }
 }
+
+/// Inter-class chroma tx type: the decoder's "chroma follows luma" rule.
+/// `av1_get_tx_type`'s `PLANE_TYPE_UV` inter arm reads the luma
+/// `tx_type_map` at the chroma block's luma-scaled origin
+/// (blockd.h:1296-1309) — and the map cell holds the CODED luma type, not
+/// the mode-decision pick: `read_coeffs_txb`'s all-zero arm leaves
+/// `DCT_DCT` whenever the covering luma txb coded no coefficients
+/// (decodetxb.c:148-154), and the lossless early return does the same
+/// (`av1_get_tx_type`, blockd.h:1288). C's encode side gates identically:
+/// `init_tx_cand_bf` forces `transform_type_uv = DCT_DCT` on
+/// `eob.y[0] == 0` (product_coding_loop.c:5500-5510). `cover_eob` /
+/// `cover_tt` are the covering luma txb's committed eob and tx type —
+/// txb index 0 for the single chroma txb, whose scaled origin is the leaf
+/// origin (`txb_org_inter(.., 0)`). The surviving type is then filtered by
+/// the chroma tx's inter ext-tx set, exactly like the decoder.
+pub(crate) fn inter_uv_tx_type(
+    cover_eob: u16,
+    cover_tt: u8,
+    lossless: bool,
+    cw: usize,
+    chh: usize,
+) -> usize {
+    let luma_tt = if cover_eob == 0 || lossless {
+        cc::DCT_DCT
+    } else {
+        cover_tt as usize
+    };
+    let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
+    let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
+    if ext_tx_used(uv_set, luma_tt) {
+        luma_tt
+    } else {
+        cc::DCT_DCT
+    }
+}

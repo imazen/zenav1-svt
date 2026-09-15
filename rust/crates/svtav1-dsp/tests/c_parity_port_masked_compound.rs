@@ -20,9 +20,9 @@
 use svtav1_cref::inter_pred as cref;
 use svtav1_dsp::port_masked_compound::{
     CompoundType, DiffwtdMaskType, build_compound_diffwtd_mask, build_compound_diffwtd_mask_highbd,
-    highbd_blend_a64_hmask_16bit, highbd_sse, highbd_subtract_block, is_masked_compound_type, sse,
-    subtract_block, sum_squares_i16, wedge_compute_delta_squares, wedge_sign_from_residuals,
-    wedge_sse_from_residuals,
+    highbd_blend_a64_hmask_16bit, highbd_blend_a64_vmask_16bit, highbd_sse, highbd_subtract_block,
+    is_masked_compound_type, sse, subtract_block, sum_squares_i16, wedge_compute_delta_squares,
+    wedge_sign_from_residuals, wedge_sse_from_residuals,
 };
 
 fn xs(s: &mut u32) -> u32 {
@@ -362,6 +362,30 @@ fn highbd_blend_a64_hmask_16bit_matches_c() {
             highbd_blend_a64_hmask_16bit(&mut r, s, &src0, s, &src1, s, &mask, w, h);
             cref::highbd_blend_a64_hmask_16bit(&mut c, s, &src0, s, &src1, s, &mask, w, h, bd);
             assert_eq!(r, c, "hbd blend hmask bd{bd} {w}x{h}");
+            cells += 1;
+        }
+    }
+    assert!(cells >= 15, "anti-vacuity: only {cells} cells ran");
+}
+
+/// `svt_aom_highbd_blend_a64_vmask_16bit_c` (blend_a64_mask_c.c:15) — the
+/// 10-bit OBMC ABOVE blend. Its mask is indexed by ROW, so the random mask
+/// here is `h` long, not `w`.
+#[test]
+fn highbd_blend_a64_vmask_16bit_matches_c() {
+    let mut cells = 0usize;
+    for bd in [8i32, 10, 12] {
+        for (w, h) in [(4usize, 4usize), (8, 8), (16, 8), (32, 32), (4, 16)] {
+            let s = w + 2;
+            let src0 = u16s(s * h, 0x1010 ^ w as u32, bd as u32);
+            let src1 = u16s(s * h, 0x2020 ^ h as u32, bd as u32);
+            let mut ms = 0x3030u32 ^ h as u32;
+            let mask: Vec<u8> = (0..h).map(|_| (xs(&mut ms) % 65) as u8).collect();
+            let mut r = vec![0u16; s * h];
+            let mut c = vec![0u16; s * h];
+            highbd_blend_a64_vmask_16bit(&mut r, s, &src0, s, &src1, s, &mask, w, h);
+            cref::highbd_blend_a64_vmask_16bit(&mut c, s, &src0, s, &src1, s, &mask, w, h, bd);
+            assert_eq!(r, c, "hbd blend vmask bd{bd} {w}x{h}");
             cells += 1;
         }
     }

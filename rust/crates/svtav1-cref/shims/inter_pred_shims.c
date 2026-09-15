@@ -466,6 +466,16 @@ void ref_highbd_blend_a64_hmask_16bit(uint16_t* dst, uint32_t dst_stride, const 
     svt_aom_highbd_blend_a64_hmask_16bit_c(dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, w, h, bd);
 }
 
+void svt_aom_highbd_blend_a64_vmask_16bit_c(uint16_t* dst, uint32_t dst_stride, const uint16_t* src0,
+                                            uint32_t src0_stride, const uint16_t* src1, uint32_t src1_stride,
+                                            const uint8_t* mask, int w, int h, int bd);
+
+void ref_highbd_blend_a64_vmask_16bit(uint16_t* dst, uint32_t dst_stride, const uint16_t* src0, uint32_t src0_stride,
+                                      const uint16_t* src1, uint32_t src1_stride, const uint8_t* mask, int w, int h,
+                                      int bd) {
+    svt_aom_highbd_blend_a64_vmask_16bit_c(dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, w, h, bd);
+}
+
 /* ---- wedge mask tables ------------------------------------------------ */
 
 void           svt_av1_init_wedge_masks(void);
