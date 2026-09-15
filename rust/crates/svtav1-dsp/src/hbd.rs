@@ -783,23 +783,56 @@ pub fn predict_filter_intra_hbd(
 ) {
     assert!(width <= 32 && height <= 32);
     assert!((mode as usize) < 5);
-
-    let mut buffer = [[0u16; 33]; 33];
-    buffer[0][..width + 1].copy_from_slice(&above[..width + 1]);
-    for r in 0..height {
-        buffer[r + 1][0] = left[r];
-    }
+    // Same in-place rewrite as `predict_filter_intra`: every tap reads
+    // `above`/`left` or a dst cell an earlier sub-block already wrote, so the
+    // `buffer[33][33]` staging — and its per-call zero — is unnecessary.
+    // `up[j]` == `buf[r-1][j+1]` (above[1..] on the first row pair, dst row
+    // `r - 2` after); the `c == 1` sub-block, whose p0/p5/p6 are border
+    // cells, is peeled so the interior loop is branch-free.
+    assert!(dst.len() >= (height - 1) * dst_stride + width);
+    assert!(left.len() >= height);
+    assert!(above.len() >= width + 1);
 
     let taps = &FILTER_INTRA_TAPS_HBD[mode as usize];
     for r in (1..height + 1).step_by(2) {
-        for c in (1..width + 1).step_by(4) {
-            let p0 = buffer[r - 1][c - 1] as i32;
-            let p1 = buffer[r - 1][c] as i32;
-            let p2 = buffer[r - 1][c + 1] as i32;
-            let p3 = buffer[r - 1][c + 2] as i32;
-            let p4 = buffer[r - 1][c + 3] as i32;
-            let p5 = buffer[r][c - 1] as i32;
-            let p6 = buffer[r + 1][c - 1] as i32;
+        // Split at row `r - 1`: dst rows `r - 1`,`r` are written while row
+        // `r - 2` is the up-tap source; `cur[j]` == `dst[(r-1)*stride + j]`.
+        let (above_rows, cur) = dst.split_at_mut((r - 1) * dst_stride);
+        let up: &[u16] = if r == 1 {
+            &above[1..]
+        } else {
+            &above_rows[(r - 2) * dst_stride..]
+        };
+        {
+            let p0 = (if r == 1 { above[0] } else { left[r - 2] }) as i32;
+            let p1 = up[0] as i32;
+            let p2 = up[1] as i32;
+            let p3 = up[2] as i32;
+            let p4 = up[3] as i32;
+            let p5 = left[r - 1] as i32;
+            let p6 = left[r] as i32;
+            for k in 0..8 {
+                let val = taps[k][0] as i32 * p0
+                    + taps[k][1] as i32 * p1
+                    + taps[k][2] as i32 * p2
+                    + taps[k][3] as i32 * p3
+                    + taps[k][4] as i32 * p4
+                    + taps[k][5] as i32 * p5
+                    + taps[k][6] as i32 * p6;
+                cur[(k >> 2) * dst_stride + (k & 0x03)] = clip_pixel_highbd(
+                    round_power_of_two_signed_hbd(val, FILTER_INTRA_SCALE_BITS_HBD),
+                    bd,
+                );
+            }
+        }
+        for c in (5..width + 1).step_by(4) {
+            let p0 = up[c - 2] as i32;
+            let p1 = up[c - 1] as i32;
+            let p2 = up[c] as i32;
+            let p3 = up[c + 1] as i32;
+            let p4 = up[c + 2] as i32;
+            let p5 = cur[c - 2] as i32;
+            let p6 = cur[dst_stride + c - 2] as i32;
 
             for k in 0..8 {
                 let r_offset = k >> 2;
@@ -811,16 +844,12 @@ pub fn predict_filter_intra_hbd(
                     + taps[k][4] as i32 * p4
                     + taps[k][5] as i32 * p5
                     + taps[k][6] as i32 * p6;
-                buffer[r + r_offset][c + c_offset] = clip_pixel_highbd(
+                cur[r_offset * dst_stride + (c + c_offset - 1)] = clip_pixel_highbd(
                     round_power_of_two_signed_hbd(val, FILTER_INTRA_SCALE_BITS_HBD),
                     bd,
                 );
             }
         }
-    }
-
-    for r in 0..height {
-        dst[r * dst_stride..r * dst_stride + width].copy_from_slice(&buffer[r + 1][1..1 + width]);
     }
 }
 

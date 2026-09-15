@@ -1677,32 +1677,62 @@ pub fn predict_filter_intra(
 ) {
     assert!(width <= 32 && height <= 32);
     assert!((mode as usize) < 5);
-
-    // 33x33 buffer: row 0 = above (with top-left at [0][0]),
-    // column 0 = left (starting at [1][0]).
-    let mut buffer = [[0u8; 33]; 33];
-
-    // Initialize top row: buffer[0][0..=bw] = above[0..=bw]
-    // above[0] = top_left, above[1..] = above pixels
-    buffer[0][..width + 1].copy_from_slice(&above[..width + 1]);
-
-    // Initialize left column: buffer[r+1][0] = left[r]
-    for r in 0..height {
-        buffer[r + 1][0] = left[r];
-    }
+    // The dst block is written in place: sub-blocks are processed in order
+    // (top-to-bottom row pairs, left-to-right inside each), and every tap
+    // reads either `above`/`left` or a dst cell an EARLIER sub-block already
+    // wrote — the C `buffer[33][33]` staging (and its per-call zero) exists
+    // only because that buffer also held the border.  Buffer coords map as
+    // `buf[0][c]` = `above[c]`, `buf[r][0]` = `left[r - 1]`, `buf[r][c]` =
+    // `dst[(r - 1) * stride + (c - 1)]`.
+    assert!(dst.len() >= (height - 1) * dst_stride + width);
+    assert!(left.len() >= height);
+    assert!(above.len() >= width + 1);
 
     let taps = &FILTER_INTRA_TAPS[mode as usize];
 
-    // Process 4-wide by 2-tall sub-blocks
+    // 4-wide by 2-tall sub-blocks. `up[j]` aliases buffer row `r - 1`
+    // WITHOUT its left-border cell (`up[j]` == `buf[r-1][j+1]`) — `above[1..]`
+    // for the first row pair, dst row `r - 2` afterwards. The leftmost
+    // sub-block (`c == 1`, whose p0/p5/p6 are border cells) is peeled so the
+    // interior loop is branch-free.
     for r in (1..height + 1).step_by(2) {
-        for c in (1..width + 1).step_by(4) {
-            let p0 = buffer[r - 1][c - 1] as i32;
-            let p1 = buffer[r - 1][c] as i32;
-            let p2 = buffer[r - 1][c + 1] as i32;
-            let p3 = buffer[r - 1][c + 2] as i32;
-            let p4 = buffer[r - 1][c + 3] as i32;
-            let p5 = buffer[r][c - 1] as i32;
-            let p6 = buffer[r + 1][c - 1] as i32;
+        // dst rows `r - 1` and `r` are written; row `r - 2` is the up-tap
+        // source. Split at row `r - 1` so the shared up-row borrow coexists
+        // with the writes: `cur[j]` == `dst[(r - 1) * stride + j]`.
+        let (above_rows, cur) = dst.split_at_mut((r - 1) * dst_stride);
+        let up: &[u8] = if r == 1 {
+            &above[1..]
+        } else {
+            &above_rows[(r - 2) * dst_stride..]
+        };
+        {
+            let p0 = (if r == 1 { above[0] } else { left[r - 2] }) as i32;
+            let p1 = up[0] as i32;
+            let p2 = up[1] as i32;
+            let p3 = up[2] as i32;
+            let p4 = up[3] as i32;
+            let p5 = left[r - 1] as i32;
+            let p6 = left[r] as i32;
+            for k in 0..8 {
+                let val = taps[k][0] as i32 * p0
+                    + taps[k][1] as i32 * p1
+                    + taps[k][2] as i32 * p2
+                    + taps[k][3] as i32 * p3
+                    + taps[k][4] as i32 * p4
+                    + taps[k][5] as i32 * p5
+                    + taps[k][6] as i32 * p6;
+                cur[(k >> 2) * dst_stride + (k & 0x03)] =
+                    round_power_of_two_signed(val, FILTER_INTRA_SCALE_BITS).clamp(0, 255) as u8;
+            }
+        }
+        for c in (5..width + 1).step_by(4) {
+            let p0 = up[c - 2] as i32;
+            let p1 = up[c - 1] as i32;
+            let p2 = up[c] as i32;
+            let p3 = up[c + 1] as i32;
+            let p4 = up[c + 2] as i32;
+            let p5 = cur[c - 2] as i32;
+            let p6 = cur[dst_stride + c - 2] as i32;
 
             for k in 0..8 {
                 let r_offset = k >> 2;
@@ -1714,15 +1744,10 @@ pub fn predict_filter_intra(
                     + taps[k][4] as i32 * p4
                     + taps[k][5] as i32 * p5
                     + taps[k][6] as i32 * p6;
-                buffer[r + r_offset][c + c_offset] =
+                cur[r_offset * dst_stride + (c + c_offset - 1)] =
                     round_power_of_two_signed(val, FILTER_INTRA_SCALE_BITS).clamp(0, 255) as u8;
             }
         }
-    }
-
-    // Copy result from buffer to dst
-    for r in 0..height {
-        dst[r * dst_stride..r * dst_stride + width].copy_from_slice(&buffer[r + 1][1..1 + width]);
     }
 }
 
