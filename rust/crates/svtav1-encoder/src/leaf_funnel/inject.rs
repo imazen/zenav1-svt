@@ -546,6 +546,21 @@ pub(super) fn inject_candidates(
         // function (`write_intra_inter`'s call site); MD did not,
         // and the two disagreed for as long as both existed.
         let is_inter_ctx = crate::port_entropy_inter::intra_inter_context(&neighbors);
+        // C `ctx->is_intra_bordered` (product_coding_loop.c:9115 light /
+        // :9451 regular): `use_neighbouring_mode_ctrls.enabled ?
+        // is_intra_bordered(ctx) : 0` — the gate runs on BOTH lanes, and
+        // `is_intra_bordered` is "above and left both exist and are both
+        // non-inter" (:8141-8157). The controls are the per-SB light sig's
+        // on the light lane, the picture-level row's otherwise.
+        let use_neighbouring = fx.lpd1.as_ref().map_or_else(
+            || im.cand_reduction.use_neighbouring_mode_enabled != 0,
+            |l| l.sig.cand_reduction.use_neighbouring_mode_enabled != 0,
+        );
+        let is_intra_bordered = use_neighbouring
+            && neighbors.up_available
+            && neighbors.left_available
+            && neighbors.above.is_some_and(|m| !m.is_inter_block())
+            && neighbors.left.is_some_and(|m| !m.is_inter_block());
         let prelude = crate::inter_md_arm::block_prelude(
             im,
             &mut crate::inter_md_arm::InterBlockCtx {
@@ -569,8 +584,15 @@ pub(super) fn inject_candidates(
             },
             lambda,
             frame.inter_fast_lambda,
+            fx.lpd1.as_ref().map(|l| (&l.sig, is_intra_bordered)),
         );
-        inter_pre = Some((prelude, neighbors, overlappable, is_inter_ctx));
+        inter_pre = Some((
+            prelude,
+            neighbors,
+            overlappable,
+            is_inter_ctx,
+            is_intra_bordered,
+        ));
     }
     // C `dc_cand_only_flag` (`generate_md_stage_0_cand`,
     // mode_decision.c:3576-3579). The caller's `dc_only` carries the
@@ -596,11 +618,17 @@ pub(super) fn inject_candidates(
         );
         if elim.enabled != 0 {
             let (me, pme) = (prelude.search.md_me_dist(), prelude.search.md_pme_dist());
-            if me != u32::MAX || pme != u32::MAX {
+            // `generate_md_stage_0_cand_light_pd1` reads `md_me_dist` ONLY
+            // (mode_decision.c:3539-3545) — the light lane runs no
+            // `pme_search`, so `md_pme_dist` is not part of its check. The
+            // regular `eliminate_candidate_based_on_pme_me_results` takes
+            // `MIN(md_me_dist, md_pme_dist)` (:3408-3416).
+            let best = if fx.lpd1.is_some() { me } else { me.min(pme) };
+            if best != u32::MAX {
                 let th = u32::from(elim.dc_only_th)
                     .wrapping_mul(h as u32)
                     .wrapping_mul(w as u32);
-                if me.min(pme) < th {
+                if best < th {
                     dc_only = true;
                 }
             }
@@ -1697,7 +1725,7 @@ pub(super) fn inject_candidates(
     // the motion-compensated prediction and C's `svt_aom_inter_fast_cost` —
     // see that module's header for the fraction of C's candidate set this is.
     if let Some(im) = fx.inter {
-        let (prelude, neighbors, overlappable, is_inter_ctx) = inter_pre
+        let (prelude, neighbors, overlappable, is_inter_ctx, is_intra_bordered) = inter_pre
             .expect("the block prelude is built at the top whenever the inter arm is armed");
         let built = crate::inter_md_arm::build_inter_candidates(
             im,
@@ -1733,9 +1761,12 @@ pub(super) fn inject_candidates(
                 .map_or(cfg.merge_inter_cands_mult, |l| l.merge_inter_cands_mult),
             prelude,
             warp_blk,
+            is_intra_bordered,
             // Light-PD1 replaces the inter candidate set with the strict
-            // MVP + ME-NEWMV subset (see `build_inter_candidates`).
-            fx.lpd1.is_some(),
+            // MVP + ME-NEWMV subset (see `build_inter_candidates`) — the
+            // sig rides along so the injection controls read the light
+            // derivation, not the picture's.
+            fx.lpd1.as_ref().map(|l| &l.sig),
         );
         for c in built {
             // MDS0's distortion is the SAME arm the intra candidates take:

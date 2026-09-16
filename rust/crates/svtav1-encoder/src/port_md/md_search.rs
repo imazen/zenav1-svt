@@ -431,15 +431,26 @@ impl DistortionSource for PlaneDistortion<'_> {
 
     fn subpel_variance(
         &mut self,
-        _ref_origin_index: i32,
-        _subx: i32,
-        _suby: i32,
-        _input_origin_index: usize,
+        ref_origin_index: i32,
+        subx: i32,
+        suby: i32,
+        input_origin_index: usize,
     ) -> u32 {
-        // The sub-pel variance needs the AV1 bilinear filters, which live
-        // in the DSP layer; this plain-plane implementation deliberately
-        // does not fake them.
-        unimplemented!("subpel_variance requires the interpolation filters")
+        // C `fn_ptr->svf` — `svt_aom_sub_pixel_variance{W}x{H}_c` (bilinear).
+        let base = self.ref_at(ref_origin_index);
+        svtav1_dsp::subpel_variance::sub_pixel_variance(
+            self.ref_plane,
+            base,
+            self.ref_stride,
+            subx as usize,
+            suby as usize,
+            self.src,
+            input_origin_index,
+            self.src_stride,
+            self.bwidth,
+            self.bheight,
+        )
+        .0
     }
 
     fn sad(&mut self, ref_origin_index: i32, input_origin_index: usize) -> u32 {
@@ -459,8 +470,22 @@ impl DistortionSource for PlaneDistortion<'_> {
         .1
     }
 
-    fn variance_vs_flat(&mut self, _ref_origin_index: i32) -> u32 {
-        unimplemented!("variance_vs_flat requires svt_aom_eb_av1_var_offs")
+    fn variance_vs_flat(&mut self, ref_origin_index: i32) -> u32 {
+        // C `fn_ptr->vf(ref + idx, ref_stride, svt_aom_eb_av1_var_offs, 0,
+        // &sse)` — the second operand's stride is 0, so every row reads the
+        // same 128-valued row.
+        let base = self.ref_at(ref_origin_index);
+        svtav1_dsp::subpel_variance::variance_diff_sse(
+            self.ref_plane,
+            base,
+            self.ref_stride,
+            &crate::md_subpel::EB_AV1_VAR_OFFS,
+            0,
+            0,
+            self.bwidth,
+            self.bheight,
+        )
+        .0
     }
 }
 

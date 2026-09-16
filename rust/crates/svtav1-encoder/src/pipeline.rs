@@ -10239,6 +10239,32 @@ fn encode_block_syntax(
     // before every one of its mode/coeff symbols.
     #[cfg(feature = "std")]
     if crate::dbgenv::blkmark() {
+        if let Some(id) = decision.inter.as_deref() {
+            // Inter leaves join to C's `CWIN poc=<p> blk=(<x>,<y>) mode=<m>
+            // rf0=<r> rf1=<r> mv=(<x>,<y>) drl=<d> skip=<s> skm=<s> bhc=<b>
+            // txdep=<t>` — same block origin in pixels, same field order.
+            // `bhc` (block-has-coeff) is `eob != 0` here.
+            std::eprintln!(
+                "RWIN blk=({},{}) {}x{} mode={} rf0={} rf1={} mv=({},{}) mv1=({},{}) \
+                 drl={} skip={} skm={} bhc={} txdep={}",
+                block_x,
+                block_y,
+                decision.width,
+                decision.height,
+                id.mode as u8,
+                id.ref_frame[0],
+                id.ref_frame[1],
+                id.mv[0].x,
+                id.mv[0].y,
+                id.mv[1].x,
+                id.mv[1].y,
+                id.drl_index,
+                u8::from(decision.eob == 0),
+                u8::from(id.skip_mode),
+                u8::from(decision.eob != 0),
+                decision.tx_depth,
+            );
+        }
         std::eprintln!(
             "W BLKMARK mi=({},{}) {}x{} mode={} uv={} pal={} ibc={}",
             block_y / 4,

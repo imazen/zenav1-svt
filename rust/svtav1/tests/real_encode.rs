@@ -1019,9 +1019,7 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
     for i in 0..4 {
         let bytes = gop
             .try_encode_frame_420(&y, &u, &v, 64)
-            .unwrap_or_else(|e| {
-                panic!("frame {i} of a hierarchical GOP was refused: {e:?}")
-            });
+            .unwrap_or_else(|e| panic!("frame {i} of a hierarchical GOP was refused: {e:?}"));
         assert!(!bytes.is_empty(), "frame {i} produced no bytes");
     }
 

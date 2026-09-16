@@ -54,10 +54,11 @@
 
 use crate::inter_mvp::{InterMvpStack, av1_set_ref_frame, get_list_idx, get_ref_frame_idx};
 use crate::picture::PaddedRef;
+use crate::port_enc_mode_config::encdec::{MdSubPelSearchCtrls, subpel_search_method};
 use crate::port_md::md_search::{
-    DistortionType, FullPelCtx, MdPmeCtrls, PlaneDistortion, RefPicGeom, RefineMeIn,
+    DistortionType, FullPelCtx, MdPmeCtrls, MdSubpelCtrls, PlaneDistortion, RefPicGeom, RefineMeIn,
     SubpelBlockGeom, best_mvp_by_distortion, build_single_ref_mvp_list, md_subpel_search,
-    pme_search_for_ref, refine_me_mv_for_ref,
+    md_subpel_search_fixed_stage, pme_search_for_ref, refine_me_mv_for_ref,
 };
 use crate::port_md::pme::{MvCostParams, MvCostTable};
 use crate::port_md::predicates::{
@@ -364,6 +365,26 @@ fn ref_geom(p: &PaddedRef) -> RefPicGeom {
     }
 }
 
+/// The `md_subpel_search_fixed_stage` control view of an
+/// [`MdSubPelSearchCtrls`] row — same fields, the fixed-stage function's
+/// own struct. C passes the ME controls unconditionally:
+/// `md_subpel_search_fixed_stage` reads `ctx->md_subpel_me_ctrls` even at
+/// the `pme_search` call site (product_coding_loop.c:3351-3357), so the
+/// PME closure below converts the ME row too.
+fn fixed_stage_ctrls(c: &MdSubPelSearchCtrls) -> MdSubpelCtrls {
+    MdSubpelCtrls {
+        enabled: c.enabled != 0,
+        max_precision: c.max_precision,
+        abs_th_mult: u32::from(c.abs_th_mult),
+        pred_variance_th: c.pred_variance_th.max(0) as u32,
+        bias_fp: c.bias_fp.max(0) as u16,
+        min_blk_sz: u16::from(c.min_blk_sz),
+        fixed_stage: c.subpel_search_method == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH,
+        subpel_iters_per_step: c.subpel_iters_per_step.max(0) as u8,
+        skip_diag_refinement: c.skip_diag_refinement,
+    }
+}
+
 /// C `perform_md_reference_pruning` (product_coding_loop.c:3004-3084,
 /// `static`).
 ///
@@ -574,7 +595,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         // `docs/WORKING-ON-THIS.md` §4: a second transcription of a function
         // that already exists is how this campaign lost a lambda.
         let centre = seed_me_centre(b, &r, sq_state, sq_tested, li, ri, raw);
-        let ref_mv = choose_pred_mv(b, cfg, rf[0], centre);
+        let ref_mv = choose_pred_mv(b, cfg.shut_fast_rate, cfg.approx_inter_rate, rf[0], centre);
         let mvcp = full_pel_mv_cost_params(cfg, b, ref_mv, DistortionType::Sad);
 
         let fp_ctx = FullPelCtx {
@@ -619,28 +640,59 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 x: (mv.x >> 3).wrapping_mul(8),
                 y: (mv.y >> 3).wrapping_mul(8),
             };
-            let err = md_subpel_search(
-                crate::md_subpel::SPEL_ME,
-                &cfg.md_subpel_me,
-                geom,
-                bsize,
-                li,
-                ri,
-                cfg.allow_high_precision_mv,
-                ref_mv,
-                usize::from(cfg.base_q_idx),
-                b.full_lambda_8bit,
-                cfg.md_subpel_me.skip_diag_refinement,
-                Some(b.search_tables),
-                b.src,
-                input_origin_index,
-                b.src_stride,
-                &p.y.buf,
-                (p.y.origin + b.org_y * p.y.stride + b.org_x) as i64,
-                p.y.stride,
-                Some(&mut sub_ctx),
-                mv,
-            );
+            // C's call-site dispatch (product_coding_loop.c:2891-2898):
+            // `subpel_search_method == SUBPEL_FIXED_STAGE_SEARCH` runs
+            // `md_subpel_search_fixed_stage`, a variance-only ladder that
+            // takes NO mv_cost_params — everything else goes through
+            // `md_subpel_search`.
+            let err = if cfg.md_subpel_me.subpel_search_method
+                == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH
+            {
+                let mut fsd = PlaneDistortion {
+                    src: b.src,
+                    src_stride: b.src_stride,
+                    ref_plane: &p.y.buf,
+                    ref_org: p.y.origin,
+                    ref_stride: p.y.stride,
+                    bwidth: b.bw,
+                    bheight: b.bh,
+                };
+                md_subpel_search_fixed_stage(
+                    &fixed_stage_ctrls(&cfg.md_subpel_me),
+                    &mut fsd,
+                    b.org_x as i32,
+                    b.org_y as i32,
+                    b.bw as u32,
+                    b.bh as u32,
+                    u32::from(crate::md_subpel::NUM_PELS_LOG2_LOOKUP[bsize as usize]),
+                    p.y.stride,
+                    input_origin_index,
+                    mv,
+                )
+            } else {
+                md_subpel_search(
+                    crate::md_subpel::SPEL_ME,
+                    &cfg.md_subpel_me,
+                    geom,
+                    bsize,
+                    li,
+                    ri,
+                    cfg.allow_high_precision_mv,
+                    ref_mv,
+                    usize::from(cfg.base_q_idx),
+                    b.full_lambda_8bit,
+                    cfg.md_subpel_me.skip_diag_refinement,
+                    Some(b.search_tables),
+                    b.src,
+                    input_origin_index,
+                    b.src_stride,
+                    &p.y.buf,
+                    (p.y.origin + b.org_y * p.y.stride + b.org_x) as i64,
+                    p.y.stride,
+                    Some(&mut sub_ctx),
+                    mv,
+                )
+            };
             // `SVTAV1_SUBPEL`: the port-side twin of the C interposer's
             // `SVT_SUBPEL_OUT` (wrap_recon.c's `__wrap_svt_av1_find_best_
             // sub_pixel_tree_pruned`), same field order so the two dumps join
@@ -742,7 +794,8 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 raw_me_mv_full_pel: raw,
                 md_nsq_me_enabled: cfg.md_nsq_me_enabled,
                 do_subpel,
-                subpel_fixed_stage: false,
+                subpel_fixed_stage: cfg.md_subpel_me.subpel_search_method
+                    == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH,
                 needs_fp_me_dist: cfg.updated_enable_pme || cfg.ref_pruning.enabled != 0,
                 shape_is_part_n: !b_w_ne_h,
             },
@@ -821,7 +874,13 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
             continue;
         }
         let best_mvp = s.mvps[s.best_fp_mvp_idx];
-        let ref_mv = choose_pred_mv(b, cfg, rf[0], best_mvp);
+        let ref_mv = choose_pred_mv(
+            b,
+            cfg.shut_fast_rate,
+            cfg.approx_inter_rate,
+            rf[0],
+            best_mvp,
+        );
         let mvcp = full_pel_mv_cost_params(cfg, b, ref_mv, cfg.pme_dist_type);
 
         let fp_ctx = FullPelCtx {
@@ -861,30 +920,60 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 x: (mv.x >> 3).wrapping_mul(8),
                 y: (mv.y >> 3).wrapping_mul(8),
             };
-            let err = md_subpel_search(
-                crate::md_subpel::SPEL_PME,
-                &cfg.md_subpel_pme,
-                geom,
-                bsize,
-                li,
-                ri,
-                cfg.allow_high_precision_mv,
-                ref_mv,
-                usize::from(cfg.base_q_idx),
-                b.full_lambda_8bit,
-                // C reads the ME controls' `skip_diag_refinement` even on a
-                // PME call (`svt_init_mv_cost_params`, :1906).
-                cfg.md_subpel_me.skip_diag_refinement,
-                Some(b.search_tables),
-                b.src,
-                input_origin_index,
-                b.src_stride,
-                &p.y.buf,
-                (p.y.origin + b.org_y * p.y.stride + b.org_x) as i64,
-                p.y.stride,
-                Some(&mut sub_ctx),
-                mv,
-            );
+            // C's PME call site dispatches on the ME controls' method, not
+            // the PME controls' — and `md_subpel_search_fixed_stage` reads
+            // `ctx->md_subpel_me_ctrls` internally either way
+            // (product_coding_loop.c:3351-3357).
+            let err = if cfg.md_subpel_me.subpel_search_method
+                == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH
+            {
+                let mut fsd = PlaneDistortion {
+                    src: b.src,
+                    src_stride: b.src_stride,
+                    ref_plane: &p.y.buf,
+                    ref_org: p.y.origin,
+                    ref_stride: p.y.stride,
+                    bwidth: b.bw,
+                    bheight: b.bh,
+                };
+                md_subpel_search_fixed_stage(
+                    &fixed_stage_ctrls(&cfg.md_subpel_me),
+                    &mut fsd,
+                    b.org_x as i32,
+                    b.org_y as i32,
+                    b.bw as u32,
+                    b.bh as u32,
+                    u32::from(crate::md_subpel::NUM_PELS_LOG2_LOOKUP[bsize as usize]),
+                    p.y.stride,
+                    input_origin_index,
+                    mv,
+                )
+            } else {
+                md_subpel_search(
+                    crate::md_subpel::SPEL_PME,
+                    &cfg.md_subpel_pme,
+                    geom,
+                    bsize,
+                    li,
+                    ri,
+                    cfg.allow_high_precision_mv,
+                    ref_mv,
+                    usize::from(cfg.base_q_idx),
+                    b.full_lambda_8bit,
+                    // C reads the ME controls' `skip_diag_refinement` even on a
+                    // PME call (`svt_init_mv_cost_params`, :1906).
+                    cfg.md_subpel_me.skip_diag_refinement,
+                    Some(b.search_tables),
+                    b.src,
+                    input_origin_index,
+                    b.src_stride,
+                    &p.y.buf,
+                    (p.y.origin + b.org_y * p.y.stride + b.org_x) as i64,
+                    p.y.stride,
+                    Some(&mut sub_ctx),
+                    mv,
+                )
+            };
             #[cfg(feature = "std")]
             if crate::dbgenv::subpeldbg() {
                 std::eprint!(
@@ -1002,6 +1091,195 @@ fn stack_this_mvs(stack: &InterMvpStack) -> Vec<Mv> {
     stack.stack.iter().map(|c| c.this_mv).collect()
 }
 
+/// The per-SB values `read_refine_me_mvs_light_pd1` reads where the regular
+/// `read_refine_me_mvs` reads picture-level ones —
+/// `svt_aom_sig_deriv_enc_dec_light_pd1_default`'s output
+/// (enc_mode_config.c:7378-7580), narrowed to what the search consumes.
+pub struct LightSearchSig<'a> {
+    /// `ctx->md_subpel_me_ctrls` — `sig.md_subpel_me`. The light ladder
+    /// resolves `me_subpel_level` to 7..10 whenever it is nonzero
+    /// (enc_mode_config.c:7467-7490), i.e. `SUBPEL_FIXED_STAGE_SEARCH` on
+    /// every SB this lane reaches in the supported envelope; the tree arm
+    /// below exists for the levels the RTC ladder adds (:7656-7705).
+    pub md_subpel_me: &'a MdSubPelSearchCtrls,
+    /// `ctx->is_intra_bordered` — the caller applies C's
+    /// `use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx) : 0`
+    /// gate (product_coding_loop.c:9115); this is the POST-gate value.
+    pub is_intra_bordered: bool,
+    /// `ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled` —
+    /// `sig.cand_reduction`, the light lane's own cand-reduction level.
+    pub use_neighbouring_mode_enabled: bool,
+    /// `ctx->shut_fast_rate` — `sig.shut_fast_rate`, hardcoded false in C's
+    /// light derivation (enc_mode_config.c:7565); carried so the
+    /// `no_mv_stack` arm is the transcription rather than a constant.
+    pub shut_fast_rate: bool,
+    /// `ctx->approx_inter_rate` — `sig.approx_inter_rate`, C's
+    /// `MAX(1, pcs->approx_inter_rate)` (:7544).
+    pub approx_inter_rate: u8,
+}
+
+/// C `read_refine_me_mvs_light_pd1` (product_coding_loop.c:2737-2812) — the
+/// light lane's ENTIRE block search. Compared to the regular
+/// [`run_block_searches`]:
+///
+/// * The seed is `me_mv_array` times 8, UNCLIPPED — the light path clips
+///   `sb_me_mv` only, AFTER the search (:2808-2811), and never consults
+///   `sq_sb_me_mv`/`pc_tree`.
+/// * `skip_subpel` (:2771-2776) suppresses the search on an intra-bordered
+///   block under neighbouring-mode controls, and on `sq_size <= min_blk_sz`.
+/// * `ctx->ref_mv` is `0` under `shut_fast_rate`, else
+///   `choose_best_av1_mv_pred(NEWMV, me_mv)` — and is written ONLY when the
+///   subpel search runs.
+/// * There is no `build_single_ref_mvp_array` (`mvp_count` is memset to 0 at
+///   :9119), no `md_nsq_motion_search`/`md_sq_motion_search`, no `fp_me_mv`,
+///   no `pme_search`, and no `perform_md_reference_pruning` — the
+///   corresponding [`BlockSearchOut`] fields stay at their `~0`/empty
+///   defaults, which is exactly what C's never-written ctx state reads as on
+///   this lane (`md_pme_dist` keeps `~0`, so the light
+///   `generate_md_stage_0_cand_light_pd1`'s `md_me_dist`-only DC check and
+///   the light injectors' absence of PME reads are both served).
+/// * `post_subpel_me_mv_cost[list][ref]` is written ONLY where the search
+///   ran (:2793-2798) — the `u32::MAX` default stands in for the rest.
+pub fn run_block_searches_light(
+    cfg: &SearchFrameCfg,
+    b: &BlockSearchIn<'_>,
+    sig: &LightSearchSig<'_>,
+) -> BlockSearchOut {
+    let mut out = BlockSearchOut::default();
+    // `is_square_shape` stays false: the `sq_sb_me_mv` store lives in the
+    // regular `read_refine_me_mvs` (:2932-2934), not this function.
+
+    let input_origin_index = b.org_y * b.src_stride + b.org_x;
+    let mi_row = (b.org_y / 4) as i32;
+    let mi_col = (b.org_x / 4) as i32;
+    let bsize = svtav1_types::block::BlockSize::from_u8(b.bsize)
+        .expect("an inter block always has a real BlockSize");
+    let subpel_me = sig.md_subpel_me;
+
+    for &pair in b.ref_frame_type_arr {
+        let rf = av1_set_ref_frame(pair);
+        if rf[1] != crate::inter_mvp::NONE_FRAME {
+            continue;
+        }
+        let (li, ri) = (get_list_idx(rf[0]), get_ref_frame_idx(rf[0]));
+        if ri >= REF_LIST_MAX_DEPTH {
+            continue;
+        }
+        if !b.me.me_data_present(b.org_x, b.org_y, b.bsize, li, ri) {
+            continue;
+        }
+        let Some(p) = b.padded_by_ref[rf[0].max(0) as usize] else {
+            continue;
+        };
+        let r = ref_geom(p);
+        let Some(raw) = b.me.mv_for(b.org_x, b.org_y, b.bsize, li, ri, b.me.max_l0) else {
+            continue;
+        };
+        // C `me_mv = {{mv_cand.x * 8, mv_cand.y * 8}}` (:2759-2760) — the
+        // light path's ONLY seed; no square-parent override, no pre-clip.
+        let mut me_mv = Mv {
+            x: raw.x.wrapping_mul(8),
+            y: raw.y.wrapping_mul(8),
+        };
+
+        // :2771-2776 — "can only skip if using dc only b/c otherwise need
+        // cost at candidate generation": intra-bordered under neighbouring-
+        // mode controls, or a block at/below `min_blk_sz`, skips the search.
+        let skip_subpel = (sig.is_intra_bordered && sig.use_neighbouring_mode_enabled)
+            || b.sq_size <= u16::from(subpel_me.min_blk_sz);
+
+        if subpel_me.enabled != 0 && !skip_subpel {
+            // :2779-2787 — `ctx->ref_mv`: 0 under `no_mv_stack`
+            // (`shut_fast_rate`), else the NEWMV best-pred MV.
+            let ref_mv = if sig.shut_fast_rate {
+                Mv::ZERO
+            } else {
+                choose_pred_mv(b, sig.shut_fast_rate, sig.approx_inter_rate, rf[0], me_mv)
+            };
+            // `mvp_count` is memset to 0 on this lane (:9119), so
+            // `best_fp_mvp*` holds what C's never-written ctx state does for
+            // a light-only frame — zero. The `mvp_th` arm of the tree
+            // methods is unreachable in the supported envelope (see
+            // [`LightSearchSig::md_subpel_me`]); were it reached, C's read
+            // of `mvp_array`/`best_fp_mvp_dist` would be of STALE
+            // cross-block state this port deliberately does not model.
+            let mut sub_ctx = crate::md_subpel::SubpelMdContext {
+                pd_pass: 1,
+                mvp_th: i32::from(subpel_me.mvp_th),
+                hp_mv_th: subpel_me.hp_mv_th,
+                best_fp_mvp_dist: 0,
+                best_fp_mvp: Mv::ZERO,
+                fp_me_dist: 0,
+                final_distortion: 0,
+            };
+            let err = if subpel_me.subpel_search_method
+                == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH
+            {
+                let mut fsd = PlaneDistortion {
+                    src: b.src,
+                    src_stride: b.src_stride,
+                    ref_plane: &p.y.buf,
+                    ref_org: p.y.origin,
+                    ref_stride: p.y.stride,
+                    bwidth: b.bw,
+                    bheight: b.bh,
+                };
+                md_subpel_search_fixed_stage(
+                    &fixed_stage_ctrls(subpel_me),
+                    &mut fsd,
+                    b.org_x as i32,
+                    b.org_y as i32,
+                    b.bw as u32,
+                    b.bh as u32,
+                    u32::from(crate::md_subpel::NUM_PELS_LOG2_LOOKUP[bsize as usize]),
+                    p.y.stride,
+                    input_origin_index,
+                    &mut me_mv,
+                )
+            } else {
+                md_subpel_search(
+                    crate::md_subpel::SPEL_ME,
+                    subpel_me,
+                    subpel_geom(b, mi_row, mi_col),
+                    bsize,
+                    li,
+                    ri,
+                    cfg.allow_high_precision_mv,
+                    ref_mv,
+                    usize::from(cfg.base_q_idx),
+                    b.full_lambda_8bit,
+                    subpel_me.skip_diag_refinement,
+                    Some(b.search_tables),
+                    b.src,
+                    input_origin_index,
+                    b.src_stride,
+                    &p.y.buf,
+                    (p.y.origin + b.org_y * p.y.stride + b.org_x) as i64,
+                    p.y.stride,
+                    Some(&mut sub_ctx),
+                    &mut me_mv,
+                )
+            };
+            out.post_subpel_me_mv_cost[li][ri] = err;
+        }
+        // :2806-2811 — `sb_me_mv` takes the (possibly refined) MV, then the
+        // clip lands on the STORED value, not the search state.
+        out.sb_me_mv[li][ri] = me_mv;
+        crate::port_md::coding_loop::clip_mv_on_pic_boundary(
+            b.org_x as i32,
+            b.org_y as i32,
+            b.bw as i32,
+            b.bh as i32,
+            r.max_width,
+            r.max_height,
+            r.border,
+            &mut out.sb_me_mv[li][ri].x,
+            &mut out.sb_me_mv[li][ri].y,
+        );
+    }
+    out
+}
+
 fn subpel_geom(b: &BlockSearchIn<'_>, mi_row: i32, mi_col: i32) -> SubpelBlockGeom {
     SubpelBlockGeom {
         mi_row,
@@ -1109,13 +1387,24 @@ fn nsq_sub_block_mvs(b: &BlockSearchIn<'_>, li: usize, ri: usize) -> Vec<Mv> {
 
 /// C `svt_aom_choose_best_av1_mv_pred(ctx, ref_pair, NEWMV, mv, 0, ...)`
 /// -> `ctx->ref_mv` (the `best_pred_mv[0]` it writes).
-fn choose_pred_mv(b: &BlockSearchIn<'_>, cfg: &SearchFrameCfg, frame_type: i8, mv: Mv) -> Mv {
+///
+/// `shut_fast_rate`/`approx_inter_rate` are `ctx->shut_fast_rate` /
+/// `ctx->approx_inter_rate` — picture-level on the regular lane, the
+/// per-SB light-PD1 signal's on the light lane (`sig_deriv_enc_dec_
+/// light_pd1_default` writes `approx_inter_rate = MAX(1, pcs->..)`).
+fn choose_pred_mv(
+    b: &BlockSearchIn<'_>,
+    shut_fast_rate: bool,
+    approx_inter_rate: u8,
+    frame_type: i8,
+    mv: Mv,
+) -> Mv {
     let mut drl_index = 0u8;
     let mut pred = [Mv::ZERO; 2];
     crate::port_md::drl::choose_best_av1_mv_pred(
         &crate::port_md::drl::ChooseDrlCtx {
-            shut_fast_rate: cfg.shut_fast_rate,
-            approx_inter_rate: cfg.approx_inter_rate,
+            shut_fast_rate,
+            approx_inter_rate,
             ref_mv_stack: &b.stacks[frame_type.max(0) as usize].stack,
             ref_mv_count: b.ref_mv_count[frame_type.max(0) as usize],
             nmv_cost: b.nmv,

@@ -766,11 +766,23 @@ pub struct BlockPrelude {
 }
 
 /// Build [`BlockPrelude`] for one block (see its doc for C's ordering).
+///
+/// `light` is `Some((sig, is_intra_bordered))` on the light-PD1 lane — the
+/// per-SB `svt_aom_sig_deriv_enc_dec_light_pd1_default` signals and
+/// `ctx->is_intra_bordered` already gated on
+/// `use_neighbouring_mode_ctrls.enabled` (product_coding_loop.c:9115). It
+/// swaps C's `read_refine_me_mvs` + `pme_search` for
+/// `read_refine_me_mvs_light_pd1` (:2737) — a strictly smaller search with
+/// its own seeding and skip gates.
 pub fn block_prelude(
     f: &InterMdFrame<'_>,
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
+    light: Option<(
+        &crate::port_enc_mode_config::light_pd1::LightPd1Signals,
+        bool,
+    )>,
 ) -> BlockPrelude {
     // --- The reference-MV stack, PER REFERENCE TYPE. C calls
     //     `svt_aom_generate_av1_mvp_table(ctx, ..., ctx->ref_frame_type_arr,
@@ -810,70 +822,91 @@ pub fn block_prelude(
     // property of THIS block, not of the picture.
     let mvp_env = f.mvp_env.for_block(f.sb_size, b.bw as usize, b.bh as usize);
     // C `svt_aom_generate_av1_mvp_table` (product_coding_loop.c:9393 ->
-    // adaptive_mv_pred.c:1329): ONE driver over `ref_frame_type_arr`,
-    // single AND compound entries, with the `mv_ref0` scratch shared across
-    // the loop the way C shares its local — the `symteric_refs` shortcut
-    // reads what the LAST pass left in it.
-    for (&rt, st) in f
-        .ref_frame_type_arr
-        .iter()
-        .zip(crate::inter_mvp::generate_av1_mvp_table(
-            &grid,
-            &ctx,
-            &mvp_env,
-            b.bsize as usize,
-            f.ref_frame_type_arr,
-        ))
-    {
-        ref_mv_count[rt.max(0) as usize] = st.count;
-        stacks[rt.max(0) as usize] = st;
+    // adaptive_mv_pred.c:1329; the light lane's `!shut_fast_rate`-guarded
+    // call is at :9114): ONE driver over `ref_frame_type_arr`, single AND
+    // compound entries, with the `mv_ref0` scratch shared across the loop
+    // the way C shares its local — the `symteric_refs` shortcut reads what
+    // the LAST pass left in it. `shut_fast_rate` is false on every lane
+    // this reaches, so the guard is a transcription, not a fork — it keeps
+    // C's skip reachable rather than baking in today's value.
+    if light.is_none_or(|(sig, _)| !sig.shut_fast_rate) {
+        for (&rt, st) in f
+            .ref_frame_type_arr
+            .iter()
+            .zip(crate::inter_mvp::generate_av1_mvp_table(
+                &grid,
+                &ctx,
+                &mvp_env,
+                b.bsize as usize,
+                f.ref_frame_type_arr,
+            ))
+        {
+            ref_mv_count[rt.max(0) as usize] = st.count;
+            stacks[rt.max(0) as usize] = st;
+        }
     }
 
-    // --- C's per-block MD motion searches, in C's own order:
-    //     `build_single_ref_mvp_array` -> `read_refine_me_mvs` ->
-    //     `pme_search` (product_coding_loop.c:9425-9447). See
+    // --- C's per-block MD motion searches, in C's own order. The regular
+    //     lane runs `build_single_ref_mvp_array` -> `read_refine_me_mvs` ->
+    //     `pme_search` (product_coding_loop.c:9425-9447); the light lane
+    //     runs `read_refine_me_mvs_light_pd1` (:2737) instead — no MVP
+    //     array, no PME, no ref pruning — which is what
+    //     [`crate::inter_search_arm::run_block_searches_light`] ports. See
     //     [`crate::inter_search_arm`] for why the reference set and PME are
     //     one mechanism.
-    let search = crate::inter_search_arm::run_block_searches(
-        &f.search,
-        &crate::inter_search_arm::BlockSearchIn {
-            // C `ctx->full_lambda_md[0]` / `fast_lambda_md[0]` as
-            // `svt_aom_mode_decision_configure_sb` set them for THIS
-            // superblock. `lambda` is the funnel's own per-SB MD lambda,
-            // which is the SAME quantity the search used to re-derive at
-            // frame level -- one value, one derivation.
-            full_lambda_8bit: u32::try_from(lambda).unwrap_or(u32::MAX),
-            fast_lambda_8bit: fast_lambda,
-            org_x: b.org_x,
-            org_y: b.org_y,
-            bw: b.bw,
-            bh: b.bh,
-            bsize: b.bsize,
-            // C `blk_geom->sq_size` — the SQUARE this shape came from. The
-            // funnel has no NSQ parent link here, so a square block's own
-            // size is used; for an NSQ shape that is the larger side, which
-            // is what `svt_init_mv_cost_params`' `early_exit_th` reads.
-            sq_size: b.bw.max(b.bh) as u16,
-            mi_rows: f.mi_rows,
-            mi_cols: f.mi_cols,
-            src: f.src,
-            src_stride: f.src_stride,
-            ref_frame_type_arr: f.ref_frame_type_arr,
-            padded_by_ref: &f.padded_by_ref,
-            stacks: &stacks,
-            ref_mv_count: &ref_mv_count,
-            nmv: &f.nmv,
-            drl_mode_fac_bits: &f.fac.drl_mode,
-            search_tables: &f.search_tables,
-            me: f.me,
-            // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`, which
-            // live ACROSS blocks. `None` here means the caller has no
-            // square-parent state, which makes every shape take C's
-            // `me_mv_array` seed — the behaviour this module had before the
-            // state existed. The funnel supplies it.
-            sq_me: b.sq_me.as_deref().copied(),
-        },
-    );
+    let search_in = crate::inter_search_arm::BlockSearchIn {
+        // C `ctx->full_lambda_md[0]` / `fast_lambda_md[0]` as
+        // `svt_aom_mode_decision_configure_sb` set them for THIS
+        // superblock. `lambda` is the funnel's own per-SB MD lambda,
+        // which is the SAME quantity the search used to re-derive at
+        // frame level -- one value, one derivation.
+        full_lambda_8bit: u32::try_from(lambda).unwrap_or(u32::MAX),
+        fast_lambda_8bit: fast_lambda,
+        org_x: b.org_x,
+        org_y: b.org_y,
+        bw: b.bw,
+        bh: b.bh,
+        bsize: b.bsize,
+        // C `blk_geom->sq_size` — the SQUARE this shape came from. The
+        // funnel has no NSQ parent link here, so a square block's own
+        // size is used; for an NSQ shape that is the larger side, which
+        // is what `svt_init_mv_cost_params`' `early_exit_th` reads.
+        sq_size: b.bw.max(b.bh) as u16,
+        mi_rows: f.mi_rows,
+        mi_cols: f.mi_cols,
+        src: f.src,
+        src_stride: f.src_stride,
+        ref_frame_type_arr: f.ref_frame_type_arr,
+        padded_by_ref: &f.padded_by_ref,
+        stacks: &stacks,
+        ref_mv_count: &ref_mv_count,
+        nmv: &f.nmv,
+        drl_mode_fac_bits: &f.fac.drl_mode,
+        search_tables: &f.search_tables,
+        me: f.me,
+        // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`, which
+        // live ACROSS blocks. `None` here means the caller has no
+        // square-parent state, which makes every shape take C's
+        // `me_mv_array` seed — the behaviour this module had before the
+        // state existed. The funnel supplies it.
+        sq_me: b.sq_me.as_deref().copied(),
+    };
+    let search = if let Some((sig, is_intra_bordered)) = light {
+        crate::inter_search_arm::run_block_searches_light(
+            &f.search,
+            &search_in,
+            &crate::inter_search_arm::LightSearchSig {
+                md_subpel_me: &sig.md_subpel_me,
+                is_intra_bordered,
+                use_neighbouring_mode_enabled: sig.cand_reduction.use_neighbouring_mode_enabled
+                    != 0,
+                shut_fast_rate: sig.shut_fast_rate,
+                approx_inter_rate: sig.approx_inter_rate,
+            },
+        )
+    } else {
+        crate::inter_search_arm::run_block_searches(&f.search, &search_in)
+    };
     // C `if (ctx->shape == PART_N) ctx->sq_sb_me_mv = ctx->sb_me_mv`
     // (product_coding_loop.c:2932-2934), and the `tested_blk[PART_N][0]` that
     // guards its reader. The write is HERE and not in `inter_search_arm`
@@ -914,12 +947,19 @@ pub fn build_inter_candidates(
     merge_inter_cands_mult: u8,
     prelude: BlockPrelude,
     warp_out: &mut WarpRefineBlock,
-    // C `generate_md_stage_0_cand_light_pd1`: when the per-SB `pd1_level` is
-    // above `REGULAR_PD1` the inter candidate set is the STRICT subset
-    // `inject_inter_candidates_light_pd1` emits (MVP + ME-NEWMV only — no
-    // global, no bipred-3x3, no unipred-3x3, no PME, no non-simple/compound
-    // expansion; mode_decision.c:3526-3562).
-    light: bool,
+    // C `ctx->is_intra_bordered` — the
+    // `use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx) : 0`
+    // product BOTH lanes compute (product_coding_loop.c:9115 / :9451).
+    is_intra_bordered: bool,
+    // `Some(sig)` on the light-PD1 lane — the per-SB
+    // `svt_aom_sig_deriv_enc_dec_light_pd1_default` output. When the per-SB
+    // `pd1_level` is above `REGULAR_PD1` the inter candidate set is the
+    // STRICT subset `inject_inter_candidates_light_pd1` emits (MVP +
+    // ME-NEWMV only — no global, no bipred-3x3, no unipred-3x3, no PME, no
+    // non-simple/compound expansion; mode_decision.c:3526-3562), and the
+    // cand-reduction controls and `approx_inter_rate` come from the sig,
+    // not the picture-level rows.
+    light: Option<&crate::port_enc_mode_config::light_pd1::LightPd1Signals>,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{
         CandArray, InjectCtx, WmCtrls, inject_inter_candidates, inject_inter_candidates_light_pd1,
@@ -1041,6 +1081,10 @@ pub fn build_inter_candidates(
     // -- rather than injecting an UNREFINED one, which would be a candidate C
     // never evaluates and would move bytes with nothing saying so.
     let wm_injection_wired = wmc.enabled != 0 && wmc.refine_level != 0;
+    // C `ctx->cand_reduction_ctrls` — the light lane reads the per-SB
+    // `sig.cand_reduction` (its `cand_reduction_level` is raised above the
+    // picture's), the regular lane the picture-level row.
+    let cand_red = light.map_or(&f.cand_reduction, |s| &s.cand_reduction);
     let inj = InjectCtx {
         bsize: b.bsize,
         bwidth: b.bw as u16,
@@ -1084,12 +1128,15 @@ pub fn build_inter_candidates(
         ref_mv_count: &ref_mv_count,
         nmv_cost: &f.nmv,
         drl_mode_fac_bits: &f.fac.drl_mode,
-        shut_fast_rate: false,
-        // C `ctx->approx_inter_rate` — the PD_PASS_1 arms write it from
+        // C `ctx->shut_fast_rate` — false on both lanes this reaches
+        // (enc_mode_config.c:7565 light / :7908 regular), read off the sig
+        // anyway so the transcription survives a level that sets it.
+        shut_fast_rate: light.map_or(false, |s| s.shut_fast_rate),
+        // C `ctx->approx_inter_rate` — the regular arm writes it from
         // `pcs->approx_inter_rate` (`sig_deriv_enc_dec_default`,
-        // enc_mode_config.c:7906; the light-PD1 arm's `MAX(1, ·)` differs
-        // only where `pcs` is 0, which this lane does not resolve).
-        approx_inter_rate: f.search.approx_inter_rate,
+        // enc_mode_config.c:7906); the light-PD1 arm's `MAX(1, ·)` differs
+        // exactly where `pcs` is 0, so the sig's own field reads here.
+        approx_inter_rate: light.map_or(f.search.approx_inter_rate, |s| s.approx_inter_rate),
         total_me_cnt: me_cands.len(),
         me_cands: &me_cands,
         me_totals: &me_totals,
@@ -1107,8 +1154,8 @@ pub fn build_inter_candidates(
         // can land, so this is inert TODAY and would not be if a level 4+
         // ever became reachable.
         redundant_cand_ctrls: crate::port_md::predicates::RedundantCandCtrls {
-            score_th: f.cand_reduction.redundant_cand_ctrls.score_th,
-            mag_th: f.cand_reduction.redundant_cand_ctrls.mag_th,
+            score_th: cand_red.redundant_cand_ctrls.score_th,
+            mag_th: cand_red.redundant_cand_ctrls.mag_th,
         },
         // C `set_inter_comp_controls(ctx, pcs->inter_compound_mode)`
         // (enc_mode_config.c:7856/:7973) — `get_inter_compound_level`'s
@@ -1144,29 +1191,29 @@ pub fn build_inter_candidates(
         // default arm reaches, which is up to three `NEARMV` candidates per
         // single reference. See the module header for the measurement.
         near_count_ctrls: crate::port_md::inject::NearCountCtrls {
-            enabled: f.cand_reduction.near_count_ctrls.enabled != 0,
-            near_count: f.cand_reduction.near_count_ctrls.near_count,
-            near_near_count: f.cand_reduction.near_count_ctrls.near_near_count,
+            enabled: cand_red.near_count_ctrls.enabled != 0,
+            near_count: cand_red.near_count_ctrls.near_count,
+            near_near_count: cand_red.near_count_ctrls.near_near_count,
         },
         bipred3x3_ctrls: Default::default(),
         unipred3x3_injection: 0,
-        new_nearest_injection: true,
+        // C `ctx->new_nearest_injection` — 1 in both sig derivations this
+        // lane reaches (enc_mode_config.c:7570/:7848/:7965); the light sig's
+        // copy reads here so a level that clears it stays reachable.
+        new_nearest_injection: light.map_or(true, |s| s.new_nearest_injection != 0),
         new_nearest_near_comb_injection: 0,
         inject_new_me: true,
         inject_new_pme: true,
         updated_enable_pme: f.search.updated_enable_pme,
         // C `ctx->cand_reduction_ctrls.reduce_unipred_candidates` — 0 at
         // levels 0..2, so inert on this envelope for the same reason.
-        reduce_unipred_candidates: f.cand_reduction.reduce_unipred_candidates,
+        reduce_unipred_candidates: cand_red.reduce_unipred_candidates,
         // C `ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled`,
-        // which is 1 from level 2 up. It is read ONLY in conjunction with
-        // `is_intra_bordered`, and that is still the constant `false` below —
-        // so wiring this field cannot move a byte until `is_intra_bordered`
-        // is derived too. Wired anyway so the pair is one unported input
-        // rather than two.
-        use_neighbouring_mode_ctrls_enabled: f.cand_reduction.use_neighbouring_mode_enabled != 0,
-        lpd1_mvp_best_me_list: f.cand_reduction.lpd1_mvp_best_me_list != 0,
-        is_intra_bordered: false,
+        // which is 1 from level 2 up — read in conjunction with the now-real
+        // `is_intra_bordered` below.
+        use_neighbouring_mode_ctrls_enabled: cand_red.use_neighbouring_mode_enabled != 0,
+        lpd1_mvp_best_me_list: cand_red.lpd1_mvp_best_me_list != 0,
+        is_intra_bordered,
         has_overlappable_candidates: b.overlappable_neighbors != 0,
         allow_warped_motion: f.allow_warped_motion,
         left_available: b.neighbors.left_available,
@@ -1210,7 +1257,7 @@ pub fn build_inter_candidates(
     // re-pick must use the SAME stack the injector priced against.
     warp_out.mvp_stacks.clear();
     warp_out.mvp_stacks.extend_from_slice(&stacks);
-    if light {
+    if light.is_some() {
         // C `inject_inter_candidates_light_pd1` takes no warp hooks — the
         // light path never refines an MV at injection (`read_refine_me_mvs_
         // light_pd1` runs the light refine, not the MDS1 warp lane).
