@@ -52,6 +52,25 @@ pub(super) fn txb_ctx_from_spans(
     cc::get_txb_ctx(0, a, l, block_eq_tx, false)
 }
 
+/// The tx-shortcut gates for ONE txb's transform-type search —
+/// C's `search_dct_dct_only` shortcut arms + `tx_search_skip_flag` +
+/// `pf_shape`, resolved per candidate per txb.
+///
+/// `#[derive(Default)]` gives the all-false struct — C's level-0
+/// (`tx_shortcut_level = 0`, always on a still).
+#[derive(Clone, Copy, Default)]
+pub(super) struct TxtGate {
+    /// `use_tx_shortcuts_mds3 || bypass_tx` — OR'd into
+    /// `search_dct_dct_only` (product_coding_loop.c:4560-4572).
+    pub force_dct: bool,
+    /// `tx_search_skip_flag` (product_coding_loop.c:5413/6990) — the
+    /// MDS3 `bypass_tx_th` shortcut; every txb emits eob=0.
+    pub skip_tx: bool,
+    /// `pf_shape == N4_SHAPE` — keep only the top-left
+    /// `(w>>2)x(h>>2)` transform quadrant.
+    pub n4: bool,
+}
+
 /// `SVTAV1_TXT_XY="x,y"` per-candidate TXT-search dump tag (block org +
 /// txb identity), mirroring the sibling-C `SVT_TXT_OUT` instrument lines.
 #[derive(Clone, Copy)]
@@ -95,6 +114,7 @@ pub(super) fn txt_search(
     bd10: Option<&Bd10Txb<'_>>,
     dbg: Option<TxtDbg>,
     rate_mode: RateMode,
+    gate: TxtGate,
 ) -> (TxUnitOut, Option<TxUnitOutHbd>, usize) {
     macro_rules! txt_dbg {
         ($($t:tt)*) => {
@@ -116,8 +136,10 @@ pub(super) fn txt_search(
     let is_inter = inter_txt_dir(intra_dir);
     // search_dct_dct_only (product_coding_loop.c:4601): txt disabled
     // (eff-M9 txt_level 0 -> !mds_do_txt), dims > 32, a single-type ext
-    // set, or ext set index 0.
+    // set, ext set index 0 — OR the tx-shortcut arms
+    // (use_tx_shortcuts_mds3 || bypass_tx_th, :4560-4572).
     let only_dct = !frame.cfg.txt_on
+        || gate.force_dct
         || w > 32
         || h > 32
         || cc::ext_tx_types(c_tx, is_inter, false) == 1
@@ -363,6 +385,10 @@ pub(super) fn txt_search(
                                 crop,
                             }),
                             screen.as_mut(),
+                            tx_pipeline::TxGate {
+                                skip_tx: gate.skip_tx,
+                                n4: gate.n4,
+                            },
                         );
                         if let Some(sc) = screen.as_ref() {
                             let (satd, prev) = sc.last();
@@ -417,6 +443,10 @@ pub(super) fn txt_search(
                             rate_mode,
                             s,
                             shared_residual,
+                            tx_pipeline::TxGate {
+                                skip_tx: gate.skip_tx,
+                                n4: gate.n4,
+                            },
                             target,
                         )
                     };

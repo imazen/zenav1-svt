@@ -129,19 +129,19 @@ impl TxShortcutState {
     /// is small relative to `area * qp_index`.
     ///
     /// C computes the right-hand side in `uint32_t` (`(uint32_t)(bheight *
-    /// bwidth * qp_index)`) and the left in the `uint32_t` promotion of
-    /// `luma_fast_dist * bypass_tx_th`. At the widest block (128x128) and
-    /// the highest qindex (255) the normaliser is 4.2e6, well inside 32
-    /// bits; the product on the left is NOT — `luma_fast_dist` is a
-    /// `uint64_t` SSE — so C truncates it. That truncation is reproduced
-    /// here with an explicit `as u32`, because dropping it would make the
-    /// port take the shortcut in cases C does not.
+    /// bwidth * qp_index)`) and the left in `uint64_t`: `luma_fast_dist` is
+    /// `uint64_t`, so `luma_fast_dist * bypass_tx_th` promotes the u32
+    /// `bypass_tx_th` to u64 — there is NO 32-bit truncation of the
+    /// product. The comparison is `u64 < u64` (the u32 RHS promotes).
+    /// At the widest block (128x128) and the highest qindex (255) the
+    /// normaliser is 4.2e6, well inside 32 bits.
     #[must_use]
     fn bypass_tx_applies(&self, width: usize, height: usize) -> bool {
         self.bypass_tx_th != 0
             && !self.block_has_coeff
-            && ((self.luma_fast_dist * u64::from(self.bypass_tx_th)) as u32)
-                < ((height * width) as u32).wrapping_mul(self.qp_index)
+            && self.luma_fast_dist * u64::from(self.bypass_tx_th)
+                < u64::from((height * width) as u32)
+                    * u64::from(self.qp_index)
     }
 }
 

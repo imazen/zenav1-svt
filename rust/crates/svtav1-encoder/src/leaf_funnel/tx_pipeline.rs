@@ -44,6 +44,27 @@ pub(super) enum RateMode {
     LightPd1(u8),
 }
 
+/// C's two tx-shortcut behaviours inside the TX unit
+/// (`tx_shortcut_ctrls`, enc_mode_config.c:6722).
+///
+/// `#[derive(Default)]` gives the all-false struct — C's level-0
+/// (`tx_shortcut_level = 0`, always on a still).
+#[derive(Clone, Copy, Default)]
+pub(super) struct TxGate {
+    /// `tx_search_skip_flag` (product_coding_loop.c:5413/6990): the MDS3
+    /// `bypass_tx_th` shortcut — C skips residual + forward transform +
+    /// quantize and writes `eob = 0` (recon = pred copy, dist = spatial
+    /// SSE of the prediction).
+    pub skip_tx: bool,
+    /// `pf_shape == N4_SHAPE` — keep only the top-left
+    /// `(w>>2) x (h>>2)` transform quadrant; everything else is zeroed
+    /// (transforms.c `av1_fwd_txfm2d_N4` kernels + `handle64x*_N2_N4`).
+    /// Applied AFTER the forward transform, BEFORE quantize. Not applied
+    /// to the lossless WHT path (C's `svt_av1_estimate_transform` selects
+    /// `fwht4x4` unconditionally on a lossless 4x4).
+    pub n4: bool,
+}
+
 pub(super) struct TxUnitOut {
     pub(super) eob: u16,
     /// Packed (32-capped) quantized levels.
@@ -519,6 +540,7 @@ pub(super) fn tx_unit(
         need_recon,
         rate_mode,
         None,
+        TxGate::default(),
     )
     .expect("no screen was passed, so the unit is always committed")
 }
@@ -574,6 +596,7 @@ pub(super) fn tx_unit_screened(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
+    gate: TxGate,
 ) -> Option<TxUnitOut> {
     // EMPTY, deliberately: `grown_out` then fills each buffer with the same
     // `vec![0; n]`, of the same size, at the same point in `tx_unit_inner` as
@@ -611,6 +634,7 @@ pub(super) fn tx_unit_screened(
         // above them to share a residual across, so each derives its own,
         // exactly as C's `perform_dct_dct_tx` / `full_loop_uv` do.
         None,
+        gate,
         &mut bufs,
     )?;
     // `bufs` started empty, so each buffer was allocated exactly once, at its
@@ -661,6 +685,7 @@ pub(super) fn tx_unit_screened_into(
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
     pre_residual: Option<&[i32]>,
+    gate: TxGate,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
     // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
@@ -700,6 +725,7 @@ pub(super) fn tx_unit_screened_into(
                 rate_mode,
                 screen,
                 pre_residual,
+                gate,
                 out,
             )),
             Err(_) => Err(screen),
@@ -735,6 +761,7 @@ pub(super) fn tx_unit_screened_into(
         rate_mode,
         screen,
         pre_residual,
+        gate,
         out,
     )
 }
@@ -765,6 +792,7 @@ pub(super) fn tx_unit_inner(
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
     pre_residual: Option<&[i32]>,
+    gate: TxGate,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
     let (crop_w, crop_h) = crop;
@@ -786,36 +814,49 @@ pub(super) fn tx_unit_inner(
         inv,
         dqcoeff: dqcoeff_buf,
     } = sc;
-    // C derives the residual ONCE per (tx-depth, TXB) —
-    // `perform_tx_partitioning`'s `svt_aom_residual_kernel` at
-    // `product_coding_loop.c:5336`, into `cand_bf->residual->y_buffer` — and
-    // every tx-type trial then transforms THAT buffer
-    // (`svt_aom_estimate_transform` reads it at `:4730`; `tx_type_search` has
-    // no edge into the residual kernel at all). `pre_residual` is that shared
-    // buffer: `txt_search` fills it once before its group loop and hands the
-    // same slice to every trial. `None` restores the per-call derivation, which
-    // is what a single-shot call site (MDS1, chroma, CfL, the owned-output
-    // wrapper) wants — C's `perform_dct_dct_tx` and `full_loop_uv` likewise
-    // derive their own.
-    let residual: &[i32] = match pre_residual {
-        Some(r) => &r[..n],
-        None => {
-            if residual.len() < n {
-                residual.resize(n, 0);
+    // C `tx_search_skip_flag` (product_coding_loop.c:5413/6990): the MDS3
+    // `bypass_tx_th` shortcut — the residual and forward transform are
+    // skipped entirely and the quantized output is all-zero, producing
+    // `eob = 0` (recon = pred copy, dist = sse(src,pred)) through the
+    // normal zero-coeff path below.
+    let residual: &[i32] = if gate.skip_tx {
+        // Under the shortcut C never fills `cand_bf->residual` — the
+        // transform is skipped and `coeffs` stays zeroed. The residual
+        // derivation is dead work here; return an empty slice (the
+        // transform branches below are gated off too).
+        &[]
+    } else {
+        // C derives the residual ONCE per (tx-depth, TXB) —
+        // `perform_tx_partitioning`'s `svt_aom_residual_kernel` at
+        // `product_coding_loop.c:5336`, into `cand_bf->residual->y_buffer` — and
+        // every tx-type trial then transforms THAT buffer
+        // (`svt_aom_estimate_transform` reads it at `:4730`; `tx_type_search` has
+        // no edge into the residual kernel at all). `pre_residual` is that shared
+        // buffer: `txt_search` fills it once before its group loop and hands the
+        // same slice to every trial. `None` restores the per-call derivation, which
+        // is what a single-shot call site (MDS1, chroma, CfL, the owned-output
+        // wrapper) wants — C's `perform_dct_dct_tx` and `full_loop_uv` likewise
+        // derive their own.
+        match pre_residual {
+            Some(r) => &r[..n],
+            None => {
+                if residual.len() < n {
+                    residual.resize(n, 0);
+                }
+                let r = &mut residual[..n];
+                // Every element is written by the kernel, so no zero-fill is needed
+                // and the reused buffer cannot leak a previous TU's values.
+                svtav1_dsp::residual::residual_i32(
+                    &src[src_off..],
+                    src_stride,
+                    &pred[pred_off..],
+                    pred_stride,
+                    w,
+                    h,
+                    r,
+                );
+                &*r
             }
-            let r = &mut residual[..n];
-            // Every element is written by the kernel, so no zero-fill is needed
-            // and the reused buffer cannot leak a previous TU's values.
-            svtav1_dsp::residual::residual_i32(
-                &src[src_off..],
-                src_stride,
-                &pred[pred_off..],
-                pred_stride,
-                w,
-                h,
-                r,
-            );
-            &*r
         }
     };
     let coeffs = TxScratch::zeroed(coeffs, n);
@@ -828,7 +869,11 @@ pub(super) fn tx_unit_inner(
     // dst[(i << 2) + j]`. The lossless tx type is always DCT_DCT (asserted
     // in C; the injection filter and `txt_on = false` guarantee it here).
     let lossless_wht = frame.coded_lossless && w == 4 && h == 4;
-    if lossless_wht {
+    if gate.skip_tx {
+        // `tx_search_skip_flag` — C skips the transform; `coeffs` is
+        // already zeroed. The quantizer below sees all-zero input and
+        // produces eob = 0.
+    } else if lossless_wht {
         debug_assert_eq!(tx_type, cc::DCT_DCT, "lossless txb must be DCT_DCT");
         let mut res16 = [0i16; 16];
         for (d, &s) in res16.iter_mut().zip(residual.iter()) {
@@ -850,6 +895,25 @@ pub(super) fn tx_unit_inner(
             rs_tx_type,
         );
         debug_assert!(ok, "fwd txfm {w}x{h} type {tx_type}");
+        // C `pf_shape == N4_SHAPE` (transforms.c `av1_fwd_txfm2d_N4`
+        // kernels): keep only the top-left `(w>>2) x (h>>2)` quadrant,
+        // zero the rest. The mask is applied after the full transform —
+        // the N4 kernels produce the same result by construction
+        // (transforms.c:7803-7807).
+        if gate.n4 {
+            let kw = w >> 2;
+            let kh = h >> 2;
+            for r in kh..h {
+                for c in 0..w {
+                    coeffs[r * w + c] = 0;
+                }
+            }
+            for r in 0..kh.min(h) {
+                for c in kw..w {
+                    coeffs[r * w + c] = 0;
+                }
+            }
+        }
     }
 
     // ---- C's SATD early exit, at C's position: after the forward transform,
@@ -1654,6 +1718,7 @@ pub(crate) fn tx_unit_hbd(
         qm_level,
         rd,
         None,
+        TxGate::default(),
     )
     .expect("no screen was passed, so the unit is always committed")
 }
@@ -1695,6 +1760,7 @@ pub(super) fn tx_unit_hbd_screened(
     qm_level: u8,
     rd: Option<&TxRdArgs>,
     screen: Option<&mut SatdScreen>,
+    gate: TxGate,
 ) -> Option<TxUnitOutHbd> {
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
@@ -1705,16 +1771,22 @@ pub(super) fn tx_unit_hbd_screened(
     // pushes exactly h*w = n values in row-major order — byte-identical contents,
     // no `calloc`/`memset`.
     let mut residual = Vec::with_capacity(n);
-    for r in 0..h {
-        let srow = src_off + r * src_stride;
-        let prow = pred_off + r * pred_stride;
-        for c in 0..w {
-            residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
+    if !gate.skip_tx {
+        for r in 0..h {
+            let srow = src_off + r * src_stride;
+            let prow = pred_off + r * pred_stride;
+            for c in 0..w {
+                residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
+            }
         }
     }
     let mut coeffs = vec![0i32; n];
     let lossless_wht = coded_lossless && w == 4 && h == 4;
-    if lossless_wht {
+    if gate.skip_tx {
+        // `tx_search_skip_flag` — C skips the transform; `coeffs` is
+        // already zeroed. The quantizer below sees all-zero input and
+        // produces eob = 0.
+    } else if lossless_wht {
         debug_assert_eq!(tx_type, cc::DCT_DCT);
         let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
         let mut wht = [0i32; 16];
@@ -1733,6 +1805,21 @@ pub(super) fn tx_unit_hbd_screened(
             rs_tx_type,
         );
         debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
+        // `pf_shape == N4_SHAPE` — see the u8 twin in `tx_unit_inner`.
+        if gate.n4 {
+            let kw = w >> 2;
+            let kh = h >> 2;
+            for r in kh..h {
+                for c in 0..w {
+                    coeffs[r * w + c] = 0;
+                }
+            }
+            for r in 0..kh.min(h) {
+                for c in kw..w {
+                    coeffs[r * w + c] = 0;
+                }
+            }
+        }
     }
 
     // C's SATD early exit, at C's position — see [`tx_unit_screened`]'s

@@ -89,8 +89,8 @@
 //! the `true` that `FunnelCfg::for_preset` already defaults to.
 
 use crate::leaf_funnel::FunnelCfg;
-use crate::port_enc_mode_config::enc_mode::{M1, M7};
-use crate::port_enc_mode_config::encdec::{self, SkipSubDepthCtrls};
+use crate::port_enc_mode_config::enc_mode::{M1, M2, M7, M10};
+use crate::port_enc_mode_config::encdec::{self, SkipSubDepthCtrls, TxShortcutCtrls};
 use crate::sc_detect::ScArm;
 
 /// C `ctx->mds0_use_hadamard_sb` for this arm.
@@ -123,11 +123,58 @@ pub(crate) fn skip_sub_depth(arm: ScArm, enc_mode: i8) -> SkipSubDepthCtrls {
     encdec::set_skip_sub_depth_ctrls(lvl).expect("levels 1/2 are in-domain")
 }
 
+/// C `ctx->tx_shortcut_ctrls` for this arm + `enc_mode` + `is_base`, via
+/// `set_tx_shortcut_ctrls`.
+///
+/// The video ladder (`sig_deriv_mode_decision_config_default`,
+/// `md_config.rs:594-602`) is:
+///
+/// ```text
+///   m <= M2  -> 0
+///   m <= M10 -> !is_base           (0 on base, 1 on non-base)
+///   is_islice -> 1
+///   else     -> 3                  (use_mds3_shortcuts_th = 10)
+/// ```
+///
+/// Allintra pins level 0 unconditionally (:9982) — the zeroed default
+/// `FunnelCfg::for_preset` already carries.
+#[must_use]
+pub(crate) fn tx_shortcut(
+    arm: ScArm,
+    enc_mode: i8,
+    is_base: bool,
+    is_not_leaf: bool,
+) -> TxShortcutCtrls {
+    let level = match arm {
+        ScArm::Allintra => 0,
+        ScArm::Video { is_islice } => {
+            if enc_mode <= M2 {
+                0
+            } else if enc_mode <= M10 {
+                u8::from(!is_base)
+            } else if is_islice {
+                1
+            } else {
+                3
+            }
+        }
+    };
+    encdec::set_tx_shortcut_ctrls(level, is_not_leaf, enc_mode)
+        .expect("levels 0..=3 are in-domain")
+}
+
 /// Stamp this arm's `sig_deriv_enc_dec_*` signals onto a [`FunnelCfg`].
 /// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8) {
+pub(crate) fn apply(
+    cfg: &mut FunnelCfg,
+    arm: ScArm,
+    enc_mode: i8,
+    is_base: bool,
+    is_not_leaf: bool,
+) {
     cfg.mds0_use_hadamard_sb = mds0_use_hadamard_sb(arm);
     cfg.skip_sub_depth = skip_sub_depth(arm, enc_mode);
+    cfg.tx_shortcut = tx_shortcut(arm, enc_mode, is_base, is_not_leaf);
 }
 
 #[cfg(test)]
@@ -146,6 +193,8 @@ mod tests {
                 &mut walked,
                 ScArm::Allintra,
                 crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset),
+                true,
+                false,
             );
             assert_eq!(
                 baked.mds0_use_hadamard_sb, walked.mds0_use_hadamard_sb,

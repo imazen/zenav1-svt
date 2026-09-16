@@ -12851,6 +12851,8 @@ fn encode_tile_rows(
             &mut funnel_cfg,
             sc_arm,
             crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            temporal_layer == 0,
+            pd0_det_frame.is_not_last_layer,
         );
         // `pcs->mds0_level` -> `set_mds0_controls`, for THIS arm
         // (`crate::mds0_arm`). The arms agree on a key frame through M10 and

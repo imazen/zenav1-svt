@@ -342,6 +342,11 @@ pub(super) fn run_mds1(
             }
         }
         cand.mds1_has_coeff = has;
+        // C `cand_bf->cnt_nz_coeff` as MDS1 leaves it
+        // (product_coding_loop.c:6067 — the eob, 0 when a skip arm
+        // cleared `block_has_coeff` above). The MDS3 `apply_pf_on_coeffs`
+        // arm reads this, NOT the post-luma-sweep value.
+        cand.mds1_cnt_nz = if has { u32::from(dec_eob) } else { 0 };
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
         // ---- C `svt_aom_full_cost`'s skip-MODE arm (rd_cost.c:1423-1452)
         // ----
@@ -378,6 +383,7 @@ pub(super) fn run_mds1(
                 if sm_cost <= cand.full_cost {
                     cand.full_cost = sm_cost;
                     cand.mds1_has_coeff = false;
+                    cand.mds1_cnt_nz = 0;
                     ic.skip_mode = true;
                 }
             }

@@ -779,6 +779,25 @@ pub(crate) fn evaluate_leaf(
         (vec![order[0]], 1)
     };
 
+    // C `use_tx_shortcuts_mds3` (product_coding_loop.c:9225-9232): a
+    // BLOCK-LEVEL flag derived once after MDS0, gated on
+    // `!perform_mds1` — the MDS0 winner's raw `luma_fast_dist` decides
+    // whether MDS3 short-circuits the transform-type search to DCT-only
+    // and N4-shapes every txb's coefficients.
+    //
+    // `mds0_use_hadamard_blk` is `mds0_use_hadamard_sb && cand_count > 1`;
+    // the video arm's `mds0_use_hadamard_sb = false` makes the term dead
+    // wherever `use_mds3_shortcuts_th != 0` (level 3, video inter M11+),
+    // but the port keeps it faithful for any future arm that enables both.
+    let use_tx_shortcuts_mds3 = !perform_mds1
+        && cfg.tx_shortcut.use_mds3_shortcuts_th != 0
+        && !(cfg.mds0_use_hadamard_sb && cands.len() > 1)
+        && 100u64 * cands[staging.mds0_best_idx].luma_fast_dist
+            < u64::from(cfg.tx_shortcut.use_mds3_shortcuts_th)
+                * u64::from(w as u32)
+                * u64::from(h as u32)
+                * u64::from(frame.base_qindex);
+
     // -- MDS3 + the independent-chroma search -- see [`mds3`].
     mds3::run_mds3(
         fx,
@@ -798,6 +817,8 @@ pub(crate) fn evaluate_leaf(
         &order1,
         n3,
         &mut ind_uv,
+        perform_mds1,
+        use_tx_shortcuts_mds3,
     );
 
     // -- svt_aom_product_full_mode_decision: lowest cost, first wins --

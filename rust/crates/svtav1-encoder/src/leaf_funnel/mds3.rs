@@ -46,6 +46,8 @@ pub(super) fn run_mds3(
     order1: &[usize],
     n3: usize,
     ind_uv: &mut Option<[(u8, i8); 13]>,
+    perform_mds1: bool,
+    use_tx_shortcuts_mds3: bool,
 ) {
     // This function is now the MDS3 DRIVER: derive the per-leaf depth-sweep
     // constants, run the independent-uv search, then hand each candidate to
@@ -107,6 +109,8 @@ pub(super) fn run_mds3(
         tsz_cat,
         tsz_ctx,
         lambda3,
+        perform_mds1,
+        use_tx_shortcuts_mds3,
     };
     // ONE borrow per leaf, amortised over every candidate and every depth —
     // see [`Mds3Scratch`] for why that is the whole design. `try_borrow_mut`
@@ -401,6 +405,15 @@ struct Mds3Ctx {
     /// lambda domain as the distortion it compares, so this is the one
     /// substitution that covers all of them.
     lambda3: u64,
+    /// C `ctx->perform_mds1` — false when `enable_skipping_mds1` collapsed
+    /// the post-MDS0 pool to one candidate. The tx-shortcut `bypass_tx_th`
+    /// arm requires MDS1 to have run (product_coding_loop.c:6812).
+    perform_mds1: bool,
+    /// C `use_tx_shortcuts_mds3` (product_coding_loop.c:9225-9232) — a
+    /// BLOCK-LEVEL flag, derived once from the MDS0 winner's
+    /// `luma_fast_dist` when `!perform_mds1`. When set it forces
+    /// `search_dct_dct_only` on every txb and N4-shapes the coefficients.
+    use_tx_shortcuts_mds3: bool,
 }
 
 /// One candidate's MDS3 evaluation: the TXS depth sweep, the per-txb transform
@@ -514,6 +527,8 @@ fn eval_candidate(
         tsz_cat,
         tsz_ctx,
         lambda3,
+        perform_mds1,
+        use_tx_shortcuts_mds3,
     } = *m;
     // `update_intra_chroma_mode`: rewrite the candidate's chroma from
     // the ind-uv table (fast chroma rate recomputed for the luma
@@ -631,6 +646,49 @@ fn eval_candidate(
     } else {
         end_depth
     };
+
+    // C `get_start_end_tx_depth`'s bypass arm
+    // (product_coding_loop.c:6811-6818): the MDS3 `bypass_tx_th`
+    // shortcut — when MDS1 ran and left no coefficients, and the MDS0
+    // distortion scaled by `bypass_tx_th` stays under the block-area *
+    // qp product, C pins `start = end = 0` and evaluates depth-0
+    // DCT-only (the transform is skipped entirely on the
+    // `tx_search_skip_flag` path). This is PER-CANDIDATE, not
+    // block-level: each candidate's own MDS1 state decides.
+    let bypass_tx = perform_mds1
+        && cfg.tx_shortcut.bypass_tx_th != 0
+        && !cands[ci].mds1_has_coeff
+        && cands[ci].luma_fast_dist
+            .saturating_mul(u64::from(cfg.tx_shortcut.bypass_tx_th))
+            < u64::from((w * h) as u32) * u64::from(frame.base_qindex);
+    let cand_end_depth = if bypass_tx { 0 } else { cand_end_depth };
+
+    // C's MDS3 dispatch (product_coding_loop.c:6981-6997): when the
+    // block is <=64 and `search_dct_dct_only` is true at depth 0 AND the
+    // depth sweep is (0,0), C calls `perform_dct_dct_tx` — which has
+    // only the `apply_pf_on_coeffs` pf_shape arm and NOT the
+    // `use_tx_shortcuts_mds3` arm (:5725-5735). The alternative path is
+    // `perform_tx_partitioning` -> per-txb `tx_type_search`, which has
+    // BOTH arms (:4664-4676). This distinction is the ONLY thing that
+    // separates the two N4 paths: when `use_tx_shortcuts_mds3` is set,
+    // `search_dct_dct_only` is already true at every depth, so the
+    // dispatch is decided by `end == 0` alone.
+    let only_dct_d0 = {
+        let c_tx = cc::tx_size_from_dims(w, h);
+        let is_inter = cands[ci].is_inter();
+        !frame.cfg.txt_on
+            || use_tx_shortcuts_mds3
+            || bypass_tx
+            || w > 32
+            || h > 32
+            || cc::ext_tx_types(c_tx, is_inter, false) == 1
+            || cc::ext_tx_set(c_tx, is_inter, false) == 0
+    };
+    let dct_tx_path = w <= 64
+        && h <= 64
+        && cand_end_depth == 0
+        && only_dct_d0;
+
     let mut best_depth = 0u8;
     let mut best_cost = u64::MAX;
     let mut best_bits: u64 = 0;
@@ -922,6 +980,32 @@ fn eval_candidate(
                 txw,
                 txh,
             );
+            // C's `pf_shape` derivation (product_coding_loop.c:4664-4676
+            // for `tx_type_search`, :5725-5735 for `perform_dct_dct_tx`):
+            // N4 keeps only the top-left (w>>2)x(h>>2) quadrant of the
+            // transform output. The `tx_type_search` path has TWO arms —
+            // `use_tx_shortcuts_mds3` and `apply_pf_on_coeffs` — while
+            // `perform_dct_dct_tx` has ONLY the `apply_pf_on_coeffs` arm.
+            // `dct_tx_path` selects between them; it is C's own :6981-6997
+            // dispatch to `perform_dct_dct_tx`.
+            //
+            // The `apply_pf_on_coeffs` threshold reads the MDS1 value of
+            // `cnt_nz_coeff` (`cand.mds1_cnt_nz`), NOT the post-luma-sweep
+            // `cnt_nz_coeff` that C writes back at :7005 — the writeback
+            // happens after the whole luma loop.
+            //
+            // `th = (txw>>4) * (txh>>4)` — C's `txbheight_original`
+            // (the UNCROPPED txb height) at :4674.
+            let apply_pf_n4 = cfg.tx_shortcut.apply_pf_on_coeffs != 0
+                && perform_mds1
+                && (cands[ci].mds1_cnt_nz
+                    < (txw as u32 >> 4) * (txh as u32 >> 4)
+                    || !cands[ci].mds1_has_coeff);
+            let n4 = if dct_tx_path {
+                apply_pf_n4
+            } else {
+                use_tx_shortcuts_mds3 || apply_pf_n4
+            };
             let (out, out10, txt) = txt_search(
                 y_src,
                 y_src_stride,
@@ -952,6 +1036,11 @@ fn eval_candidate(
                     RateMode::Lvl0Closed
                 } else {
                     RateMode::Exact
+                },
+                TxtGate {
+                    force_dct: use_tx_shortcuts_mds3 || bypass_tx,
+                    skip_tx: bypass_tx,
+                    n4,
                 },
             );
             // SVTAV1_QLEV_XY="x,y": per-txb winner (tx_type, eob, levels)

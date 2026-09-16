@@ -45,6 +45,17 @@ pub(super) struct Cand {
     /// [SVT_HDR_MODE] parallel SSIM full cost (only when frame.tune_ssim).
     pub(super) mds3_cost_ssim: u64,
     pub(super) mds1_has_coeff: bool,
+    /// C `cand_bf->luma_fast_dist` (product_coding_loop.c:1040+): the raw,
+    /// PRE-`<<4` MDS0 luma distortion (variance / hadamard / ssd by
+    /// `mds0_dist_type`). Written once at MDS0; read by the tx-shortcut
+    /// predicates at MDS3 (`use_tx_shortcuts_mds3` and `bypass_tx`).
+    pub(super) luma_fast_dist: u64,
+    /// C `cand_bf->cnt_nz_coeff` as MDS1 leaves it
+    /// (product_coding_loop.c:6067 — the MDS1 eob, 0 when a skip arm
+    /// cleared it). The MDS3 tx-shortcut `apply_pf_on_coeffs` arm reads
+    /// THIS value — the :7005 writeback happens only after the whole
+    /// luma sweep, so the MDS3 value is not what the predicate sees.
+    pub(super) mds1_cnt_nz: u32,
     // MDS3 winner data:
     pub(super) tx_depth: u8,
     // MEASURED NOT worth a SmallVec: inline 16 covers only a 4x4 TXB, and the

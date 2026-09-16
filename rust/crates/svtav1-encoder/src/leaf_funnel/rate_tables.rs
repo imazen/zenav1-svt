@@ -898,6 +898,21 @@ pub struct FunnelCfg {
     /// `for_preset` bakes the allintra value; [`crate::encdec_arm::apply`]
     /// stamps the video arm's.
     pub skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls,
+    /// C `ctx->tx_shortcut_ctrls` (`set_tx_shortcut_ctrls`,
+    /// enc_mode_config.c:6722): the MDS3 transform-shortcut thresholds —
+    /// `bypass_tx_th` (skip the whole TX when the MDS1 candidate had no
+    /// coefficients and the MDS0 distortion is small), `apply_pf_on_coeffs`
+    /// (N4-shape the chroma coeffs when the luma eob sum is small),
+    /// `use_mds3_shortcuts_th` (block-level DCT-only gate from the MDS0
+    /// winner's distortion), and `chroma_detector_level` (the chroma
+    /// complexity detector that gates the N4 arms).
+    ///
+    /// Allintra always derives level 0 (`tx_shortcut_level = 0`,
+    /// svt_aom_sig_deriv_enc_dec_allintra :9982), so `for_preset` bakes the
+    /// zeroed default — every arm is byte-neutral on a still by
+    /// construction. The video arm's ladder is stamped by
+    /// [`crate::encdec_arm::apply`].
+    pub tx_shortcut: crate::port_enc_mode_config::encdec::TxShortcutCtrls,
 }
 
 impl FunnelCfg {
@@ -992,6 +1007,10 @@ impl FunnelCfg {
             allow_intrabc: false,
             // Stamped below, where the preset is in scope.
             skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls::default(),
+            // allintra pins `tx_shortcut_level = 0` at every preset
+            // (:9982) — the all-zero struct IS level 0, and the video arm
+            // stamps its own ladder in `encdec_arm::apply`.
+            tx_shortcut: crate::port_enc_mode_config::encdec::TxShortcutCtrls::default(),
         };
         let mut cfg = match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
