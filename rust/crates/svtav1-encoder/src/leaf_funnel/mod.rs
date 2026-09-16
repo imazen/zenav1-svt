@@ -60,6 +60,7 @@ use alloc::vec::Vec;
 use crate::entropy::coeff_c as cc;
 use crate::entropy::context::FrameContext;
 
+use crate::port_enc_mode_config::encdec::RdoqCtrls;
 use crate::quant::{CoeffCostTables, QuantTable};
 
 /// FILTER_INTRA_MODES = "no filter intra" sentinel (C definitions.h:1339).
@@ -548,7 +549,18 @@ pub(crate) fn evaluate_leaf(
     // mode_decision.c:3254-3271), then filter-intra
     // (inject_filter_intra_candidates — FILTER_DC only at fi level 2).
     let cfg = frame.cfg;
-    let do_rdoq = frame.rdoq_level > 0;
+    // `ctx->rdoq_ctrls` for this leaf's lane: the per-SB light row with
+    // `md_stage_3_light_pd1`'s bypass clear (product_coding_loop.c:7147-7151)
+    // on the light lane, `frame.rdoq` (already `md_stage_3`-cleared at
+    // construction, :7163-7167) on the regular one.
+    let rdoq = match &fx.lpd1 {
+        Some(l) => {
+            let mut r = l.sig.rdoq;
+            r.clear_when_bypassed(cfg.bypass_encdec);
+            r
+        }
+        None => frame.rdoq,
+    };
     // Chroma txb contexts (real at rate_est_level 1; candidate-independent
     // — the neighbour bytes don't change during this block's search).
     let (cb_tsc, cb_dsc) = if cfg.real_coeff_ctx {
@@ -582,7 +594,7 @@ pub(crate) fn evaluate_leaf(
         cb_dsc,
         cr_tsc,
         cr_dsc,
-        do_rdoq,
+        rdoq,
         qt_u,
         qt_v,
     };

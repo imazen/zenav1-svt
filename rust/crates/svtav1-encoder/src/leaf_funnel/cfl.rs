@@ -204,7 +204,7 @@ pub(super) fn md_cfl_rd_pick_alpha(
     qt_v: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     lambda: u64,
     luma_mode: usize,
     itr_th: u8,
@@ -256,7 +256,7 @@ pub(super) fn md_cfl_rd_pick_alpha(
             if plane == 0 { qt_u } else { qt_v },
             frame,
             rates,
-            do_rdoq,
+            rdoq,
             false,
             uv_crop,
             // R1: this closure returns `(out.dist, out.bits)` and nothing else

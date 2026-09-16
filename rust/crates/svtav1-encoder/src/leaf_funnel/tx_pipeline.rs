@@ -444,7 +444,11 @@ impl SatdScreen {
 /// `tx_type_search` / `perform_dct_dct_tx` / `svt_aom_full_loop_uv`.
 ///
 /// `spatial_dist`: MDS3 (recon vs source SSE << 4); else the MDS1
-/// freq-domain path. `do_rdoq` follows C `mds_do_rdoq && rdoq enabled`.
+/// freq-domain path. `rdoq` is the resolved `ctx->rdoq_ctrls` row for the
+/// caller's stage — `frame.rdoq` on the regular lane, the bypass-cleared
+/// `LightPd1Signals::rdoq` on the light lane, `RdoqCtrls::DISABLED` where C
+/// has `mds_do_rdoq == false`. The `eob_th`/`eob_fast_th`/`skip_uv`/
+/// `dct_dct_only` gates are applied inside (full_loop.c:1765-1894).
 ///
 /// `crop`: the cropped-TX distortion extent — C `cropped_tx_width` /
 /// `cropped_tx_height` (product_coding_loop.c:4664, and the chroma
@@ -486,7 +490,7 @@ pub(super) fn tx_unit(
     qt: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     spatial_dist: bool,
     crop: (usize, usize),
     need_recon: bool,
@@ -509,7 +513,7 @@ pub(super) fn tx_unit(
         qt,
         frame,
         rates,
-        do_rdoq,
+        rdoq,
         spatial_dist,
         crop,
         need_recon,
@@ -564,7 +568,7 @@ pub(super) fn tx_unit_screened(
     qt: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     spatial_dist: bool,
     crop: (usize, usize),
     need_recon: bool,
@@ -597,7 +601,7 @@ pub(super) fn tx_unit_screened(
         qt,
         frame,
         rates,
-        do_rdoq,
+        rdoq,
         spatial_dist,
         crop,
         need_recon,
@@ -650,7 +654,7 @@ pub(super) fn tx_unit_screened_into(
     qt: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     spatial_dist: bool,
     crop: (usize, usize),
     need_recon: bool,
@@ -689,7 +693,7 @@ pub(super) fn tx_unit_screened_into(
                 qt,
                 frame,
                 rates,
-                do_rdoq,
+                rdoq,
                 spatial_dist,
                 crop,
                 need_recon,
@@ -724,7 +728,7 @@ pub(super) fn tx_unit_screened_into(
         qt,
         frame,
         rates,
-        do_rdoq,
+        rdoq,
         spatial_dist,
         crop,
         need_recon,
@@ -754,7 +758,7 @@ pub(super) fn tx_unit_inner(
     qt: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     spatial_dist: bool,
     crop: (usize, usize),
     need_recon: bool,
@@ -939,7 +943,19 @@ pub(super) fn tx_unit_inner(
     // unconditionally in a release build, leaves regression_spotcheck 102/102
     // and identity_full_8bit 1100/1100 — nothing reads an unwritten position.
     let dqcoeff: &mut [i32] = TxScratch::grown(dqcoeff_buf, pw * ph);
-    let mut eob = if do_rdoq {
+    // C `perform_rdoq` (full_loop.c:1765-1771): `!is_lossless_segment &&
+    // (mds_do_rdoq || is_encode_pass) && rdoq_ctrls.enabled`, then the
+    // `!is_encode_pass` gates `dct_dct_only` / `skip_uv`. `rdoq.enabled`
+    // IS the caller's `(mds_do_rdoq || is_encode_pass) && enabled` — a
+    // caller on a stage where C has `mds_do_rdoq == false` (MDS1/MDS2)
+    // passes `RdoqCtrls::DISABLED`. `frame.coded_lossless` is the port's
+    // frame-level `is_lossless_segment` (the pipeline also forces
+    // `rdoq_level = 0` there — both halves kept, they are C's two facts).
+    let mut perform_rdoq = rdoq.enabled
+        && !frame.coded_lossless
+        && !(rdoq.dct_dct_only && tx_type != cc::DCT_DCT)
+        && !(rdoq.skip_uv && plane_type != 0);
+    let mut eob = if perform_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => {
                 crate::qm::quantize_fp_qm(packed, scan, qt, log_scale, wt, iwt, qcoeff, dqcoeff)
@@ -947,52 +963,39 @@ pub(super) fn tx_unit_inner(
             None => crate::quant::quantize_fp(packed, scan, qt, log_scale, qcoeff, dqcoeff),
         };
         if e != 0 {
-            let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
-            let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
-            let o_rdmult = crate::quant::rdoq_rdmult_full(
-                frame.lambda as u32,
-                plane_type,
-                frame.sharpness,
-                false,
-                frame.sharp_tx_active && plane_type == 0,
-                frame.rdoq_allintra_rd_mult,
-                // C `pred_mode >= NEARESTMV` — real inter only, so
-                // the IBC sentinel stays on the intra axis.
-                intra_dir == INTER_TXT_DIR,
-            );
-            #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_RDOQDBG").is_some() && plane_type == 0 {
-                std::eprintln!(
-                    "RDOQCTX lam={} rdmult={} sharp={} sflag={} alli={} iinter={} lvl={} cut=({},{}), qm={} tsc={} dsc={} eob0={}",
-                    frame.lambda,
-                    o_rdmult,
-                    frame.sharpness,
-                    frame.sharp_tx_active && plane_type == 0,
-                    frame.rdoq_allintra_rd_mult,
-                    intra_dir == INTER_TXT_DIR,
-                    frame.rdoq_level,
-                    cut_off_num,
-                    cut_off_denum,
-                    qm.is_some(),
-                    txb_skip_ctx,
-                    dc_sign_ctx,
-                    e,
+            // full_loop.c:1820-1844 — the eob-percentage gates.
+            // `width * height` is the FULL txb area
+            // (`tx_size_wide[txsize] * tx_size_high[txsize]`), not the
+            // 32-capped pw*ph corner.
+            let eob_perc = (u32::from(e) * 100) / (w * h) as u32;
+            if eob_perc >= u32::from(rdoq.eob_th) {
+                perform_rdoq = false;
+            }
+            if perform_rdoq && eob_perc >= u32::from(rdoq.eob_fast_th) {
+                // full_loop.c:1827-1829 — `svt_fast_optimize_b`: the cheap
+                // zbin-widened tail retraction on the fp-quantized coeffs.
+                // `p->dequant_qtx` is C's int16 DC/AC pair; `QuantTable`
+                // stores the same values widened to i32.
+                crate::port_full_loop::fast_optimize_b(
+                    packed,
+                    &[qt.dequant[0] as i16, qt.dequant[1] as i16],
+                    qcoeff,
+                    dqcoeff,
+                    &mut e,
+                    c_tx,
+                    tx_type,
                 );
             }
-            let o = crate::quant::OptimizeCtx {
-                txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
-                eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
-                rdmult: o_rdmult,
-                sharpness_flag: frame.sharp_tx_active && plane_type == 0,
-                iwt: qm.map(|(_, iwt)| iwt),
-                tx_size: c_tx,
-                tx_class,
-                txb_skip_ctx,
-                dc_sign_ctx,
-                cut_off_num,
-                cut_off_denum,
-            };
-            crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut e, scan, qt, &o);
+            if !perform_rdoq {
+                // full_loop.c:1831-1844 — RDOQ shut: the txb is RE-quantized
+                // with `quantize_b`, discarding the fp result wholesale.
+                e = match qm {
+                    Some((wt, iwt)) => crate::qm::quantize_b_qm(
+                        packed, scan, qt, log_scale, wt, iwt, qcoeff, dqcoeff,
+                    ),
+                    None => crate::quant::quantize_b(packed, scan, qt, log_scale, qcoeff, dqcoeff),
+                };
+            }
         }
         e
     } else {
@@ -1003,7 +1006,57 @@ pub(super) fn tx_unit_inner(
             None => crate::quant::quantize_b(packed, scan, qt, log_scale, qcoeff, dqcoeff),
         }
     };
-    let _ = &mut eob;
+    // full_loop.c:1875-1894 — the full trellis, only when RDOQ survived the
+    // eob gates AND coefficients remain (`svt_fast_optimize_b` can retract
+    // eob to 0).
+    if perform_rdoq && eob != 0 {
+        let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
+        let o_rdmult = crate::quant::rdoq_rdmult_full(
+            frame.lambda as u32,
+            plane_type,
+            frame.sharpness,
+            false,
+            frame.sharp_tx_active && plane_type == 0,
+            frame.rdoq_allintra_rd_mult,
+            // C `pred_mode >= NEARESTMV` — real inter only, so
+            // the IBC sentinel stays on the intra axis.
+            intra_dir == INTER_TXT_DIR,
+        );
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_RDOQDBG").is_some() && plane_type == 0 {
+            std::eprintln!(
+                "RDOQCTX lam={} rdmult={} sharp={} sflag={} alli={} iinter={} eobth={} fastth={} cut=({},{}), qm={} tsc={} dsc={} eob0={}",
+                frame.lambda,
+                o_rdmult,
+                frame.sharpness,
+                frame.sharp_tx_active && plane_type == 0,
+                frame.rdoq_allintra_rd_mult,
+                intra_dir == INTER_TXT_DIR,
+                rdoq.eob_th,
+                rdoq.eob_fast_th,
+                rdoq.cut_off_num,
+                rdoq.cut_off_denum,
+                qm.is_some(),
+                txb_skip_ctx,
+                dc_sign_ctx,
+                eob,
+            );
+        }
+        let o = crate::quant::OptimizeCtx {
+            txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
+            eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
+            rdmult: o_rdmult,
+            sharpness_flag: frame.sharp_tx_active && plane_type == 0,
+            iwt: qm.map(|(_, iwt)| iwt),
+            tx_size: c_tx,
+            tx_class,
+            txb_skip_ctx,
+            dc_sign_ctx,
+            cut_off_num: rdoq.cut_off_num,
+            cut_off_denum: rdoq.cut_off_denum,
+        };
+        crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut eob, scan, qt, &o);
+    }
     // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
     if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
         crate::noise_norm::perform_noise_normalization(

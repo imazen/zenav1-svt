@@ -524,8 +524,9 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
         f = fopen(path, "w");
     if (f) {
         const int n = av1_get_max_eob(txsize);
-        fprintf(f, "QLEV org=(%u,%u) comp=%u txs=%d txt=%d eob=%u enc=%d bd=%u qidx=%u nz=[",
-                (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, component_type, (int)txsize, (int)tx_type,
+        fprintf(f, "QLEV poc=%u org=(%u,%u) comp=%u txs=%d txt=%d eob=%u enc=%d bd=%u qidx=%u nz=[",
+                (unsigned)pcs->picture_number, (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                component_type, (int)txsize, (int)tx_type,
                 (unsigned)*eob, (int)is_encode_pass, (unsigned)bit_depth, (unsigned)qindex);
         int emitted = 0;
         for (int i = 0; i < n && emitted < 1024; ++i)

@@ -47,8 +47,10 @@ pub(super) struct ChromaCtx {
     pub(super) cb_dsc: usize,
     pub(super) cr_tsc: usize,
     pub(super) cr_dsc: usize,
-    /// Frame RDOQ policy (`frame.rdoq_level > 0`).
-    pub(super) do_rdoq: bool,
+    /// `ctx->rdoq_ctrls` for this leaf's lane — `frame.rdoq` on the regular
+    /// lane, the per-SB bypass-cleared `LightPd1Signals::rdoq` on the light
+    /// lane (selected by the caller at construction).
+    pub(super) rdoq: RdoqCtrls,
     /// Per-plane 8-bit quantiser tables (equal to the luma table when the
     /// frame header carries no chroma qindex delta).
     pub(super) qt_u: QuantTable,
@@ -129,7 +131,7 @@ pub(super) fn eval_uv(
         &cx.qt_u,
         frame,
         rates,
-        cx.do_rdoq,
+        cx.rdoq,
         true,
         cx.uv_crop,
         true,
@@ -152,7 +154,7 @@ pub(super) fn eval_uv(
         &cx.qt_v,
         frame,
         rates,
-        cx.do_rdoq,
+        cx.rdoq,
         true,
         cx.uv_crop,
         true,
@@ -316,7 +318,7 @@ fn tx_pair_hbd(
         frame.sharpness,
         frame.rdoq_allintra_rd_mult,
         rates,
-        cx.do_rdoq,
+        cx.rdoq.enabled,
         b.bd,
         b.qt_u.qm_level,
         Some(&rd_args(cx, frame, 0)),
@@ -341,7 +343,7 @@ fn tx_pair_hbd(
         frame.sharpness,
         frame.rdoq_allintra_rd_mult,
         rates,
-        cx.do_rdoq,
+        cx.rdoq.enabled,
         b.bd,
         b.qt_v.qm_level,
         Some(&rd_args(cx, frame, 0)),

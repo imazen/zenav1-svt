@@ -158,6 +158,122 @@ pub fn set_spatial_sse_full_loop_level(level: u8) -> Option<SpatialSseCtrls> {
 }
 
 // ---------------------------------------------------------------------------
+// RDOQ
+// ---------------------------------------------------------------------------
+
+/// C `RdoqCtrls` (`md_process.h:429`) — the resolved `set_rdoq_controls` row.
+///
+/// `enabled` alone is what the funnel's old `do_rdoq` bool carried: a call
+/// site that C reaches with `mds_do_rdoq == false` (MDS1/MDS2) passes the
+/// DISABLED row rather than a separate flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RdoqCtrls {
+    /// `enabled`
+    pub enabled: bool,
+    /// `cut_off_num` / `cut_off_denum` (0 num = full RDOQ over every
+    /// coefficient; otherwise the trellis only revises the tail — C's
+    /// `si_end` bound, full_loop.c:1525-1530).
+    pub cut_off_num: u32,
+    pub cut_off_denum: u32,
+    /// [MD only] `skip_uv` — RDOQ for luma only.
+    pub skip_uv: bool,
+    /// [MD only] `dct_dct_only` — RDOQ for DCT_DCT only.
+    pub dct_dct_only: bool,
+    /// `eob_th` — eob percentage at/above which RDOQ is shut and the
+    /// txb is RE-quantized with plain `quantize_b` (full_loop.c:1824).
+    /// `(uint8_t)~0` = 255, unreachable since `eob_perc <= 100`.
+    pub eob_th: u8,
+    /// `eob_fast_th` — eob percentage at/above which `svt_fast_optimize_b`
+    /// (the cheap tail retraction) runs before the full trellis
+    /// (full_loop.c:1827). 0 = always.
+    pub eob_fast_th: u8,
+}
+
+impl RdoqCtrls {
+    /// The disabled row — `set_rdoq_controls(0)` and the value a call site
+    /// uses where C has `mds_do_rdoq == false` (`md_stage_1`/`md_stage_2`,
+    /// product_coding_loop.c:7052/:7068).
+    pub const DISABLED: Self = RdoqCtrls {
+        enabled: false,
+        cut_off_num: 0,
+        cut_off_denum: 0,
+        skip_uv: false,
+        dct_dct_only: false,
+        eob_th: 0,
+        eob_fast_th: 0,
+    };
+
+    /// C's `md_stage_3` / `md_stage_3_light_pd1` EncDec-bypass clear
+    /// (product_coding_loop.c:7163-7167 and :7147-7151): with no EncDec pass
+    /// to re-run the transform, the `skip_uv` / `dct_dct_only` shortcuts
+    /// must not be taken — RDOQ then applies to chroma and every tx type.
+    /// (`md_stage_3` also requires `pd_pass == PD_PASS_1`; the funnel's
+    /// regular lane is the PD1 path.)
+    pub fn clear_when_bypassed(&mut self, bypass_encdec: bool) {
+        if bypass_encdec {
+            self.skip_uv = false;
+            self.dct_dct_only = false;
+        }
+    }
+}
+
+/// C `set_rdoq_controls` (`enc_mode_config.c:3781`). `None` is C's
+/// `assert(0)` arm (level > 5).
+#[must_use]
+pub fn set_rdoq_controls(rdoq_level: u8) -> Option<RdoqCtrls> {
+    let c = match rdoq_level {
+        0 => RdoqCtrls::DISABLED,
+        1 => RdoqCtrls {
+            enabled: true,
+            cut_off_num: 0,
+            cut_off_denum: 0,
+            skip_uv: false,
+            dct_dct_only: false,
+            eob_th: !0,
+            eob_fast_th: !0,
+        },
+        2 => RdoqCtrls {
+            enabled: true,
+            cut_off_num: 80,
+            cut_off_denum: 100,
+            skip_uv: false,
+            dct_dct_only: false,
+            eob_th: !0,
+            eob_fast_th: !0,
+        },
+        3 => RdoqCtrls {
+            enabled: true,
+            cut_off_num: 60,
+            cut_off_denum: 100,
+            skip_uv: true,
+            dct_dct_only: true,
+            eob_th: !0,
+            eob_fast_th: !0,
+        },
+        4 => RdoqCtrls {
+            enabled: true,
+            cut_off_num: 60,
+            cut_off_denum: 100,
+            skip_uv: true,
+            dct_dct_only: true,
+            eob_th: !0,
+            eob_fast_th: 30,
+        },
+        5 => RdoqCtrls {
+            enabled: true,
+            cut_off_num: 60,
+            cut_off_denum: 100,
+            skip_uv: true,
+            dct_dct_only: true,
+            eob_th: 85,
+            eob_fast_th: 0,
+        },
+        _ => return None,
+    };
+    Some(c)
+}
+
+// ---------------------------------------------------------------------------
 // TX shortcut / coefficient shaving
 // ---------------------------------------------------------------------------
 

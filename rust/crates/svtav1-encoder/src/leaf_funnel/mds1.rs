@@ -164,7 +164,7 @@ pub(super) fn run_mds1(
                 qt,
                 frame,
                 rates,
-                false, // no RDOQ at MDS1
+                RdoqCtrls::DISABLED, // no RDOQ at MDS1
                 // MDS1's distortion domain — `ctx->mds_do_spatial_sse`
                 // (product_coding_loop.c:7025). FALSE on every all-intra
                 // preset (SSSE_MDS3), TRUE on the video arm at M0..M2.
@@ -492,8 +492,8 @@ fn lossless_mds1_txbs(
             qt,
             frame,
             rates,
-            false, // no RDOQ at MDS1 (and never on a lossless segment)
-            false, // freq-domain dist
+            RdoqCtrls::DISABLED, // no RDOQ at MDS1 (and never on a lossless segment)
+            false,               // freq-domain dist
             txb_crop,
             true, // the recon feeds the next txb's prediction
             RateMode::Exact,

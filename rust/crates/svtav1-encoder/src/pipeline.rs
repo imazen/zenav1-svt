@@ -13033,6 +13033,20 @@ fn encode_tile_rows(
                     .map_or(0, |l| l.fast_8bit),
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
+                // `ctx->rdoq_ctrls` for the regular lane —
+                // `set_rdoq_controls(pcs->rdoq_level)`
+                // (sig_deriv_enc_dec_*: enc_mode_config.c:7865/8093) with
+                // `md_stage_3`'s `bypass_encdec && PD_PASS_1` clear of
+                // `skip_uv`/`dct_dct_only` applied (product_coding_loop.c
+                // :7163-7167). The light-PD1 lane's per-SB row lives on
+                // `LightPd1Signals::rdoq`.
+                rdoq: {
+                    let mut r =
+                        crate::port_enc_mode_config::encdec::set_rdoq_controls(cq.rdoq_level)
+                            .unwrap_or(crate::port_enc_mode_config::encdec::RdoqCtrls::DISABLED);
+                    r.clear_when_bypassed(funnel_cfg.bypass_encdec);
+                    r
+                },
                 // Same source as `cq.allintra_rd_mult` (set beside
                 // `CodingQuantCfg::new`) so the MD funnel and the bd10
                 // re-encode cannot disagree about the RDOQ rate-weight arm.

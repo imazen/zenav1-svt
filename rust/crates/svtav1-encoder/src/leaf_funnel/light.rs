@@ -64,6 +64,18 @@ pub(crate) struct Lpd1Leaf {
 /// C `lpd1_chroma_complexity_check` -> `COMPONENT_TYPE`.
 type ChromaComp = ComponentType;
 
+/// `ctx->rdoq_ctrls` as `md_stage_3_light_pd1` leaves it
+/// (product_coding_loop.c:7147-7151): the per-SB `sig.rdoq` row with
+/// `skip_uv`/`dct_dct_only` CLEARED when EncDec is bypassed (which it is at
+/// every preset the light lane runs — `get_bypass_encdec_default` =
+/// `enc_mode > M2`), leaving `eob_th`/`eob_fast_th`/`cut_off` live.
+fn light_rdoq(fx: &FunnelCtx<'_>) -> RdoqCtrls {
+    let l = fx.lpd1.as_ref().expect("light lane");
+    let mut r = l.sig.rdoq;
+    r.clear_when_bypassed(fx.frame.cfg.bypass_encdec);
+    r
+}
+
 /// The winner's light full-loop output, folded into a [`Cand`]'s MDS3
 /// fields by [`finish_lpd1`].
 struct LightFull {
@@ -295,7 +307,9 @@ fn light_luma_tx(
         qt,
         fx.frame,
         fx.rates,
-        fx.frame.rdoq_level != 0,
+        // `ctx->rdoq_ctrls` on this lane — `md_stage_3_light_pd1`'s per-SB
+        // row (`mds_do_rdoq = true`, :7153), NOT `frame.rdoq`.
+        light_rdoq(fx),
         false,
         g.blk_crop,
         true,
@@ -409,7 +423,7 @@ fn light_chroma_tx(
                 qt,
                 fx.frame,
                 fx.rates,
-                cx.do_rdoq,
+                cx.rdoq,
                 false,
                 cx.uv_crop,
                 true,

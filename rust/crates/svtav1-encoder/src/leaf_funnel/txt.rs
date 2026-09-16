@@ -90,7 +90,7 @@ pub(super) fn txt_search(
     qt: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
-    do_rdoq: bool,
+    rdoq: RdoqCtrls,
     lambda: u64,
     bd10: Option<&Bd10Txb<'_>>,
     dbg: Option<TxtDbg>,
@@ -352,7 +352,7 @@ pub(super) fn txt_search(
                             frame.sharpness,
                             frame.rdoq_allintra_rd_mult,
                             rates,
-                            do_rdoq,
+                            rdoq.enabled,
                             b.bd,
                             b.qt.qm_level,
                             Some(&TxRdArgs {
@@ -410,7 +410,7 @@ pub(super) fn txt_search(
                             qt,
                             frame,
                             rates,
-                            do_rdoq,
+                            rdoq,
                             true, // MDS3 spatial dist
                             crop,
                             true,

@@ -14,9 +14,9 @@ use super::ctrls::{InterIntraCompCtrls, set_inter_intra_ctrls};
 use super::enc_mode::*;
 use super::encdec::{
     CandReductionCtrls, CandReductionInputs, CoeffShavingCtrls, Lpd1TxCtrls,
-    Lpd1TxSkipDecisionCtrls, MdSubPelSearchCtrls, PfCtrls, chroma_mode, md_subpel_me_controls,
-    set_cand_reduction_ctrls, set_coeff_shaving_controls, set_lpd1_tx_ctrls,
-    set_lpd1_tx_skip_decision_ctrls, set_pf_controls,
+    Lpd1TxSkipDecisionCtrls, MdSubPelSearchCtrls, PfCtrls, RdoqCtrls, chroma_mode,
+    md_subpel_me_controls, set_cand_reduction_ctrls, set_coeff_shaving_controls, set_lpd1_tx_ctrls,
+    set_lpd1_tx_skip_decision_ctrls, set_pf_controls, set_rdoq_controls,
 };
 use super::leaf::MAX_INTRA_LEVEL;
 use super::pd0::{MdRateEstCtrls, set_rate_est_ctrls};
@@ -110,8 +110,12 @@ pub struct LightPd1Signals {
     pub cand_reduction_level: u8,
     /// `ctx->cand_reduction_ctrls`
     pub cand_reduction: CandReductionCtrls,
-    /// The derived `rdoq_level` (the controls table is not ported).
+    /// The derived `rdoq_level`.
     pub rdoq_level: u8,
+    /// `ctx->rdoq_ctrls` — the `set_rdoq_controls` row for `rdoq_level`,
+    /// BEFORE `md_stage_3_light_pd1`'s enc-dec-bypass clear
+    /// (product_coding_loop.c:7147-7151 — applied by the caller).
+    pub rdoq: RdoqCtrls,
     /// `ctx->coeff_shaving_ctrls`
     pub coeff_shaving: CoeffShavingCtrls,
     /// The derived `me_subpel_level`.
@@ -240,6 +244,15 @@ pub fn sig_deriv_enc_dec_light_pd1_default(i: LightPd1Inputs) -> Option<LightPd1
             rdoq_level = rdoq_level.max(i.rdoq_level);
         }
     }
+    // `set_rdoq_controls`'s level > 5 arm is `assert(0)` — unreachable
+    // upstream (`pcs->rdoq_level` <= 2 on the video arm) and a no-op in an
+    // NDEBUG build, where `ctx->rdoq_ctrls` then keeps the row the
+    // picture-level `set_rdoq_controls(ctx, pcs->rdoq_level)` left. The
+    // `or_else` reproduces that stale-row state rather than failing the
+    // whole derivation.
+    let rdoq = set_rdoq_controls(rdoq_level)
+        .or_else(|| set_rdoq_controls(i.rdoq_level))
+        .unwrap_or(RdoqCtrls::DISABLED);
 
     let coeff_shaving = set_coeff_shaving_controls(i.coeff_shaving_level)?;
 
@@ -340,6 +353,7 @@ pub fn sig_deriv_enc_dec_light_pd1_default(i: LightPd1Inputs) -> Option<LightPd1
         cand_reduction_level,
         cand_reduction,
         rdoq_level,
+        rdoq,
         coeff_shaving,
         me_subpel_level,
         md_subpel_me,

@@ -424,6 +424,12 @@ pub struct FunnelFrame {
     pub cli_qp: u32,
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
+    /// `ctx->rdoq_ctrls` for the REGULAR lane — `set_rdoq_controls(rdoq_level)`
+    /// (enc_mode_config.c:3781) with `md_stage_3`'s enc-dec-bypass clear
+    /// already applied (product_coding_loop.c:7163-7167: `bypass_encdec &&
+    /// pd_pass == PD_PASS_1` — the funnel's regular lane is the PD1 path).
+    /// The light-PD1 lane uses its own per-SB row (`LightPd1Signals::rdoq`).
+    pub rdoq: crate::port_enc_mode_config::encdec::RdoqCtrls,
     /// C `scs->allintra || scs->static_config.rtc` — the first index of
     /// [`crate::quant::PLANE_RD_MULT`], the RDOQ rate weight per plane.
     /// FALSE on a video-mode frame, where CHROMA weights rate at 20 instead
