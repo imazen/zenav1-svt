@@ -3044,11 +3044,14 @@ impl EncodePipeline {
                             width: w,
                             height: h,
                             picture_number: display_order,
-                            // C `frame_is_boosted(pcs)` (enc_mode_config.h:108):
-                            // true only for the base layer of a hierarchy, which
-                            // a flat low-delay P GOP never has.
-                            frame_is_boosted: temporal_layer == 0
-                                && self.gop.hierarchical_levels > 0,
+                            // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
+                            // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
+                            // update. A flat low-delay P GOP DOES still emit
+                            // GF_UPDATE frames (picture_decision marks the
+                            // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
+                            // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
+                            // here — the `96x96 q20 p6` cell's poc4 is one.
+                            frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
                             hierarchical_levels: self.gop.hierarchical_levels,
                             // C `me_process.c:214-215` — `pcs->temporal_layer_index`
                             // / `pcs->is_ref`, straight off the picture decision.
@@ -14824,6 +14827,20 @@ fn encode_tile_rows(
                                     ref_min_max_sq.and_then(|(mn, mx)| {
                                         mn.get(sb_index).copied().zip(mx.get(sb_index).copied())
                                     }),
+                                    // `coeff_lvl_modulation`
+                                    // (:1865-1870): `pcs->slice_type ==
+                                    // I_SLICE` covers allintra and the video
+                                    // key frame alike.
+                                    matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                                        || matches!(
+                                            sc_arm,
+                                            crate::sc_detect::ScArm::Video { is_islice: true }
+                                        ),
+                                    c_quant
+                                        .as_ref()
+                                        .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                                            q.input_coeff_level
+                                        }),
                                 );
                                 // Partition rates at the real contexts, from
                                 // the same (possibly chained) frame context as

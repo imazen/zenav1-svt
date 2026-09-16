@@ -1509,6 +1509,55 @@ pub struct TxTypeRatesDc {
     tx16: i32,
 }
 
+/// Inter tx-type signalling rate for DCT_DCT — the `is_inter` arm of
+/// `av1_transform_type_rate_estimation` (rd_cost.c:127-131):
+/// `inter_tx_type_fac_bits[ext_tx_set][square_tx_size][DCT_DCT]`, filled from
+/// `fc->inter_ext_tx_cdf` exactly where C's `use_inter_ext_tx_for_txsize`
+/// (md_rate_estimation.h:139) has a 1 — eset 1 at sqr {4x4,8x8}, eset 2 at
+/// sqr {16x16}, eset 3 at sqr {8x8,16x16,32x32}. Every other slot stays 0,
+/// matching the unfilled rows of C's table (rect transforms index by
+/// sqr-map, so e.g. TX_32X16 reads eset 3 / sqr 16x16).
+#[derive(Debug, Clone, Copy)]
+pub struct TxTypeRatesInter {
+    /// `[eset * EXT_TX_SIZES(4) + square_tx_size]`.
+    fac: [i32; 16],
+}
+
+pub(crate) fn build_tx_type_rates_inter_from_fc(
+    fc: &crate::entropy::coeff_c::CoeffFc,
+) -> TxTypeRatesInter {
+    use crate::entropy::coeff_c as cc;
+    // eset -> set_type, the inverse of `EXT_TX_SET_INDEX[1]`.
+    const SET_TYPE_FOR_ESET: [usize; 4] = [
+        0,
+        cc::EXT_TX_SET_ALL16,
+        cc::EXT_TX_SET_DTT9_IDTX_1DDCT,
+        cc::EXT_TX_SET_DCT_IDTX,
+    ];
+    const USED_SQRS: [[usize; 3]; 4] = [
+        [0, 0, 0],
+        [0, 1, usize::MAX],
+        [2, usize::MAX, usize::MAX],
+        [1, 2, 3],
+    ];
+    let mut rates = TxTypeRatesInter { fac: [0; 16] };
+    for eset in 1usize..4 {
+        let set_type = SET_TYPE_FOR_ESET[eset];
+        let nsyms = cc::AV1_NUM_EXT_TX_SET[set_type];
+        let sym = cc::AV1_EXT_TX_IND[set_type][cc::DCT_DCT];
+        for sq_tx in USED_SQRS[eset] {
+            if sq_tx == usize::MAX {
+                break;
+            }
+            let row = &fc.inter_ext_tx_cdf[eset * 4 + sq_tx];
+            let mut costs = [0i32; 17];
+            crate::quant::syntax_rate_from_cdf(&mut costs[..nsyms], row);
+            rates.fac[eset * 4 + sq_tx] = costs[sym];
+        }
+    }
+    rates
+}
+
 pub(crate) fn build_tx_type_rates_dc_from_fc(
     fc: &crate::entropy::coeff_c::CoeffFc,
 ) -> TxTypeRatesDc {
@@ -1536,6 +1585,38 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
         }
     }
     rates
+}
+
+/// The arm-selected tx-type rate row passed into [`cost_coeffs_txb_pd0`] —
+/// intra@DC on the allintra/intra arm, the inter table on the inter arm.
+/// C makes the same choice inside `av1_transform_type_rate_estimation` off
+/// the `is_inter` argument.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Pd0TxRates<'a> {
+    Intra(&'a TxTypeRatesDc),
+    Inter(&'a TxTypeRatesInter),
+}
+
+impl Pd0TxRates<'_> {
+    #[inline]
+    fn rate_for(&self, c_tx_size: usize) -> i32 {
+        use crate::entropy::coeff_c as cc;
+        match self {
+            Self::Intra(t) => t.rate_for(c_tx_size),
+            Self::Inter(t) => {
+                // `get_ext_tx_types > 1 && get_ext_tx_set > 0` collapses to
+                // "not DCTONLY" for inter: the other inter set types all have
+                // > 1 type and a positive eset.
+                let set_type = cc::ext_tx_set_type(c_tx_size, true, false);
+                if set_type == cc::EXT_TX_SET_DCTONLY {
+                    return 0;
+                }
+                let eset = cc::EXT_TX_SET_INDEX[1][set_type];
+                debug_assert!(eset > 0);
+                t.fac[eset as usize * 4 + cc::TXSIZE_SQR_MAP[c_tx_size]]
+            }
+        }
+    }
 }
 
 impl TxTypeRatesDc {
@@ -1711,7 +1792,7 @@ fn cost_coeffs_txb_pd0(
     eob: u16,
     c_tx_size: usize,
     tables: &crate::quant::CoeffCostTables,
-    tx_rates: &TxTypeRatesDc,
+    tx_rates: Pd0TxRates<'_>,
     subres_step: u32,
 ) -> i32 {
     crate::entropy::coeff_c::with_txb_scratch(|sc| {
@@ -1727,7 +1808,7 @@ fn cost_coeffs_txb_pd0_inner(
     eob: u16,
     c_tx_size: usize,
     tables: &crate::quant::CoeffCostTables,
-    tx_rates: &TxTypeRatesDc,
+    tx_rates: Pd0TxRates<'_>,
     subres_step: u32,
     sc: &mut crate::entropy::coeff_c::TxbScratch,
 ) -> i32 {
@@ -2108,6 +2189,7 @@ impl Pd0Mode {
 pub struct M6Pd0Tables {
     pub coeff: alloc::boxed::Box<crate::quant::CoeffCostTables>,
     tx_rates: TxTypeRatesDc,
+    tx_rates_inter: TxTypeRatesInter,
     /// PARTITION_SPLIT rate per square size (index by log2(sq) - 3:
     /// 8/16/32/64), from THIS SB's chained partition CDFs (ctx row 0).
     split_bits: [u64; 4],
@@ -2183,6 +2265,7 @@ pub fn build_m6_pd0_tables_from_ctx(
     M6Pd0Tables {
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
         tx_rates: build_tx_type_rates_dc_from_fc(cfc),
+        tx_rates_inter: build_tx_type_rates_inter_from_fc(cfc),
         split_bits,
         vert_alike_split_bits,
         horz_alike_split_bits,
@@ -3097,12 +3180,21 @@ impl<'a> Pd0Ctx<'a> {
         } else if eob == 0 {
             cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
         } else {
+            // `is_inter` selects the rate table — C's
+            // `av1_transform_type_rate_estimation` reads
+            // `inter_tx_type_fac_bits` on the inter arm, not the intra@DC
+            // rows the intra arm uses.
+            let tx_rates = if self.inter.is_some() {
+                Pd0TxRates::Inter(&tables.tx_rates_inter)
+            } else {
+                Pd0TxRates::Intra(&tables.tx_rates)
+            };
             cost_coeffs_txb_pd0(
                 &self.scratch.qcoeff[..cw * ch],
                 eob,
                 c_tx,
                 &tables.coeff,
-                &tables.tx_rates,
+                tx_rates,
                 step,
             ) as u64
         };

@@ -128,6 +128,15 @@ pub struct DrCtrls {
     /// enc_mode_config.c:11638: <= M3 -> false). Gates the e-depth caps
     /// (set_start_end_depth :1811) and the refined-scan child marking.
     pub disallow_4x4: bool,
+    /// `depth_refinement_ctrls.coeff_lvl_modulation` — `1` on every
+    /// adaptive level (1-9, enc_mode_config.c:6830-6984), absent at
+    /// levels 0/10. Live only on non-I-slices (`set_start_end_depth`
+    /// :1865-1870): at NORMAL/HIGH `coeff_lvl` it clamps the admitted
+    /// span to `s = MAX(s, -1)` / `e = MIN(e, 1)` — one parent level,
+    /// one child level — where the raw -2/+2 seed would let the walk
+    /// test a grandparent shape C never prices (e.g. a 32x16 leaf on a
+    /// PD0 tree that ran all the way to 8x8).
+    pub coeff_lvl_mod: bool,
     /// C `ctx->pic_pred_depth_only` (`enc_mode_config.c:7095`):
     /// `depth_refinement_ctrls.mode == PD0_DEPTH_PRED_PART_ONLY`, which ONLY
     /// `set_block_based_depth_refinement_controls` case 10 (`:6986`) sets.
@@ -351,6 +360,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 5: sc_class5 M2. s2/e2 = sentinel (always passes).
@@ -372,6 +382,7 @@ impl DrCtrls {
                 limit_to_pd0: 2,
                 unavail_mode: 2,
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 6: M0-M4 (!sc_class5) and sc_class5 M3/M4.
@@ -393,6 +404,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: 2,
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 9: M5.
@@ -414,6 +426,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: 0,
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 0: PD0_DEPTH_NO_RESTRICTION — every field but `mode` is
@@ -438,6 +451,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                coeff_lvl_mod: false,
                 pred_depth_only,
             },
             // case 2 / case 3 / case 4: video-only, identical to case 1 except
@@ -468,6 +482,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 7 / case 8: video-only, the cost-band-modulated rows below
@@ -490,6 +505,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: if level == 7 { 2 } else { 0 },
                 disallow_4x4,
+                coeff_lvl_mod: true,
                 pred_depth_only,
             },
             // case 10 (M6+): PRED_PART_ONLY — s = e = 0 everywhere.
@@ -511,6 +527,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 0,
                 disallow_4x4,
+                coeff_lvl_mod: false,
                 pred_depth_only,
             },
         }
@@ -598,6 +615,15 @@ struct RefineEnv<'a> {
     /// (:1608-1611). The B-slice `ref_list1` fold (:1617-1621) is inert on
     /// this port's low-delay envelope (`ref_list1_count_try == 0`).
     ref_min_max_sq: Option<(u8, u8)>,
+    /// `pcs->slice_type == I_SLICE` for the `coeff_lvl_modulation` gate
+    /// (:1866). A video-mode I-slice (key frame) counts as I-slice here,
+    /// same as the `use_ref_info` arm's `slice_type != I_SLICE` predicate.
+    is_islice: bool,
+    /// `pcs->coeff_lvl` (`derive_inter_coeff_level`) for the same gate —
+    /// the clamp engages only at NORMAL_LVL / HIGH_LVL. On an I-slice the
+    /// value is inert (the `is_islice` test short-circuits first), so the
+    /// caller may pass `Normal` there.
+    coeff_lvl: crate::quant::CoeffLvl,
 }
 
 /// C `update_pred_th_offset` (enc_dec_process.c:1545) + the deviation
@@ -667,7 +693,21 @@ fn set_start_end_depth(
                 e = 1;
             }
         }
-        // coeff_lvl_modulation: dead on I-slices (:1866).
+        // coeff_lvl_modulation (:1865-1870): dead on I-slices; on an inter
+        // frame at NORMAL/HIGH `coeff_lvl` it narrows the raw -2/+2 span to
+        // one level each way. Without it the PD1 walk tests a grandparent
+        // shape C never admits — an 8x8-leaf PD0 tree would grow a 32x16
+        // candidate at the 32x32 node where C stops at the 16x16 parent.
+        if ctrls.coeff_lvl_mod
+            && !env.is_islice
+            && !matches!(
+                env.coeff_lvl,
+                crate::quant::CoeffLvl::VLow | crate::quant::CoeffLvl::Low
+            )
+        {
+            s = s.max(-1);
+            e = e.min(1);
+        }
 
         let mut s_off: i64 = 0;
         let mut e_off: i64 = 0;
@@ -922,7 +962,20 @@ pub(crate) fn build_refined_scan(
     // the root spans a whole superblock — i.e. every SB64 case and the tests
     // below. The SB128 pipeline passes the whole-128-SB fold instead (see
     // `build_refined_scan_at`).
-    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None, 64, 64, None)
+    build_refined_scan_at(
+        root,
+        ctrls,
+        lambda,
+        tables,
+        0,
+        0,
+        None,
+        64,
+        64,
+        None,
+        true,
+        crate::quant::CoeffLvl::Normal,
+    )
 }
 
 /// [`build_refined_scan`] with the SB's pixel origin, so the NSQDBG REFINE
@@ -958,6 +1011,14 @@ pub(crate) fn build_refined_scan_at(
     // superblock — `None` on a key frame / no same-size L0 reference, which
     // is C's `slice_type == I_SLICE || !is_ref_l0_avail` arm.
     ref_min_max_sq: Option<(u8, u8)>,
+    // C `pcs->slice_type == I_SLICE` for the `coeff_lvl_modulation` gate
+    // (enc_dec_process.c:1866). True on every allintra frame AND on a
+    // video-mode key frame.
+    is_islice: bool,
+    // C `pcs->coeff_lvl` (`derive_inter_coeff_level`, md_config_process.c:650)
+    // for the same gate — NORMAL/HIGH engage the clamp. Inert when
+    // `is_islice`.
+    coeff_lvl: crate::quant::CoeffLvl,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
@@ -984,6 +1045,8 @@ pub(crate) fn build_refined_scan_at(
         max_sq: usize::from(max_tx_size.min(64)),
         sb_sq,
         ref_min_max_sq,
+        is_islice,
+        coeff_lvl,
     };
     refine_depth(&env, root, None, sb_x, sb_y).0
 }
@@ -3349,10 +3412,34 @@ mod tests {
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(160);
 
-        let scan64 =
-            build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64, 64, None);
-        let scan32 =
-            build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32, 64, None);
+        let scan64 = build_refined_scan_at(
+            &eval,
+            &ctrls,
+            248207,
+            &tables,
+            0,
+            0,
+            None,
+            64,
+            64,
+            None,
+            true,
+            crate::quant::CoeffLvl::Normal,
+        );
+        let scan32 = build_refined_scan_at(
+            &eval,
+            &ctrls,
+            248207,
+            &tables,
+            0,
+            0,
+            None,
+            32,
+            64,
+            None,
+            true,
+            crate::quant::CoeffLvl::Normal,
+        );
 
         // At max_tx_size 32 the 32x32 nodes ARE the max square, so C forces
         // s_depth = 0 -- they must not request their 64x64 parent.
