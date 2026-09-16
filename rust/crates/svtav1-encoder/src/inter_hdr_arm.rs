@@ -365,6 +365,16 @@ pub struct PipelineMdInputs {
     pub ref_l0: Option<crate::port_rc_process::RefObjStats>,
     /// See [`Self::ref_l0`].
     pub ref_l1: Option<crate::port_rc_process::RefObjStats>,
+    /// `pcs->coeff_lvl` — the DERIVED level, not a pre-analysis placeholder:
+    /// `md_config_process.c:905-909` runs `derive_inter_coeff_level` on every
+    /// non-I-slice BEFORE `svt_aom_sig_deriv_mode_decision_config_default`
+    /// reads it at :936, and the `pic_depth_removal_level` ladder's
+    /// HIGH-coeff arms depend on it. On the video-mode I-slice C leaves the
+    /// field at `INVALID_LVL`, which reads as neither `low_coeff` nor
+    /// `high_coeff` — identical to `Normal` in every equality check this
+    /// function makes — so `Normal` is the right value there. This input is
+    /// inter-only by construction (`is_key` produces no `PipelineMdInputs`).
+    pub coeff_lvl: crate::port_enc_mode_config::InputCoeffLvl,
 }
 
 /// Build C's `MdConfigInputs` for an inter frame.
@@ -383,13 +393,17 @@ pub struct PipelineMdInputs {
 ///   this pipeline does not produce. They feed signals this header does not
 ///   read; `mfmv_level >= 2` is the one place `r0` would matter, and
 ///   [`inter_signal`] REFUSES there rather than trusting the placeholder.
+///
 /// The three reference-picture coded-area statistics
 /// (`ref_{intra,skip,hp}_percentage`) are NO LONGER placeholders: the caller
 /// supplies the DPB entries' real values and this derives all three through
 /// the ported `rc_process.c:66/96/118` readers. The refusal that used to
 /// stand here — "any `ref_hp_percentage` other than -1" — is gone with them.
-/// * `coeff_lvl` — `InputCoeffLvl::Normal`, C's value before the coefficient
-///   analysis runs.
+///
+/// `coeff_lvl` is no longer a placeholder either — the caller feeds the
+/// `derive_inter_coeff_level` output stored on the coding quantizer, matching
+/// `md_config_process.c`'s order (coeff analysis at :909, this function's
+/// read at :936).
 ///
 /// # Errors
 ///
@@ -404,7 +418,7 @@ pub struct PipelineMdInputs {
 pub fn md_config_inputs(
     p: PipelineMdInputs,
 ) -> Option<crate::port_enc_mode_config::md_config::MdConfigInputs> {
-    use crate::port_enc_mode_config::{InputCoeffLvl, md_config::MdConfigInputs};
+    use crate::port_enc_mode_config::md_config::MdConfigInputs;
     // NB: `port_rc_process` has its OWN `SliceType` — the two are distinct
     // types in this crate, and mixing them is a compile error rather than a
     // silent mismatch.
@@ -474,7 +488,13 @@ pub fn md_config_inputs(
         ref_intra_percentage,
         rc_stat_gen_pass_mode: 0,
         ref_skip_percentage,
-        coeff_lvl: InputCoeffLvl::Normal,
+        // `pcs->coeff_lvl` — the derived value the caller carries on the
+        // coding quantizer (`md_config_process.c:905-909` runs
+        // `derive_inter_coeff_level` before this function reads it). Was a
+        // pinned `Normal` until 2026-10-05, which dropped every HIGH-coeff
+        // arm — `pic_depth_removal_level` was the measured victim (`96x96
+        // hier p8` diverged on poc1's partial-SB `min_sq`).
+        coeff_lvl: p.coeff_lvl,
         ref_list0_count_try: p.ref_list0_count_try,
         ref_list1_count_try: p.ref_list1_count_try,
         enable_interintra_compound: p.enable_interintra_compound,
@@ -578,6 +598,9 @@ mod cand_reduction_tests {
             ref_list1_count_try: 0,
             ref_l0: None,
             ref_l1: None,
+            // `derive_inter_coeff_level`'s output — Normal keeps the fixture
+            // on the same ladders it exercised before the field existed.
+            coeff_lvl: crate::port_enc_mode_config::InputCoeffLvl::Normal,
         }
     }
 

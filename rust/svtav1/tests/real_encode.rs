@@ -968,18 +968,20 @@ fn inter_frames_are_refused_not_corrupted() {
     );
 }
 
-/// The hierarchical-GOP refusal is scoped to frames that can actually reach the
-/// unwired RA reference table — i.e. INTER frames.
+/// The hierarchical-GOP envelope: levels <= 5 are C's own supported range and
+/// encode, level > 5 is refused.
 ///
 /// `gop_config_error` first refused `hierarchical_levels > 0` unconditionally,
-/// at the choke point every entry point funnels through. That rejected callers
+/// at the choke point every entry point funnels through — rejecting callers
 /// encoding a SINGLE key frame with a non-zero `hierarchical_levels`, which is
-/// a perfectly ordinary way to construct the pipeline and has nothing to do
-/// with the reference table: a key frame has no references and injects no inter
-/// candidates. Thirteen tests failed on it. This pins both halves so the guard
-/// cannot widen back.
+/// a perfectly ordinary way to construct the pipeline. Then the hierarchical
+/// low-delay inter path itself was ported (reference queues, per-layer
+/// signals, `sb_min_sq_size` DPB state), so the refusal narrowed to
+/// `hier > 5` — C's own `enc_settings.c:275` ceiling ("Hierarchical Levels
+/// supported: [0-5]") and the end of the pred-struct tables. This pins all
+/// three halves so the guard cannot widen or narrow silently.
 #[test]
-fn a_hierarchical_gop_refuses_the_inter_frame_but_not_the_key_frame() {
+fn a_hierarchical_gop_encodes_through_its_supported_range() {
     use svtav1_encoder::EncodeError;
     let mk = |intra_period: u32| {
         let mut p = svtav1_encoder::pipeline::EncodePipeline::new(
@@ -987,7 +989,7 @@ fn a_hierarchical_gop_refuses_the_inter_frame_but_not_the_key_frame() {
             64,
             8,
             svtav1_encoder::rate_control::RcConfig::default(),
-            // hierarchical_levels = 4: the RA structure the port has not wired.
+            // hierarchical_levels = 4: inside C's own supported range.
             4,
             intra_period,
         );
@@ -1011,23 +1013,32 @@ fn a_hierarchical_gop_refuses_the_inter_frame_but_not_the_key_frame() {
         assert!(!bytes.is_empty(), "key frame {i} produced no bytes");
     }
 
-    // A real GOP: frame 0 is still the key frame and still encodes; frame 1 is
-    // the inter frame the refusal exists for. MONOCHROME, because the 4:2:0
-    // entry point refuses multi-frame earlier, with its own message, and would
-    // hide which guard fired.
-    let mut gop = svtav1_encoder::pipeline::EncodePipeline::new(
+    // A real GOP: frame 0 is the key frame, frames 1.. are hierarchical inter
+    // frames — supported since the low-delay RA reference structure was wired.
+    let mut gop = mk(64);
+    for i in 0..4 {
+        let bytes = gop
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .unwrap_or_else(|e| {
+                panic!("frame {i} of a hierarchical GOP was refused: {e:?}")
+            });
+        assert!(!bytes.is_empty(), "frame {i} produced no bytes");
+    }
+
+    // Above C's own ceiling the refusal still stands, key frames included —
+    // the pred-struct table index itself would be out of range.
+    let mut over = svtav1_encoder::pipeline::EncodePipeline::new(
         64,
         64,
         8,
         svtav1_encoder::rate_control::RcConfig::default(),
-        4,
+        6,
         64,
     );
-    gop.try_encode_frame(&y, 64)
-        .expect("the key frame of a hierarchical GOP must still encode");
-    let err = gop
-        .try_encode_frame(&y, 64)
-        .expect_err("an inter frame under a hierarchical GOP must be refused");
+    over.chroma_420 = true;
+    let err = over
+        .try_encode_frame_420(&y, &u, &v, 64)
+        .expect_err("hierarchical_levels=6 is outside C's supported range");
     let EncodeError::UnsupportedConfig(why) = err.error() else {
         panic!("expected UnsupportedConfig, got {err:?}");
     };

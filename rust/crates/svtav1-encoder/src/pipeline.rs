@@ -3898,6 +3898,17 @@ impl EncodePipeline {
                         .then(|| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[4] as usize))
                         .flatten()
                 }),
+                // C `pcs->coeff_lvl` — `derive_inter_coeff_level`'s output
+                // (md_config_process.c:650), which runs BEFORE
+                // `sig_deriv_mode_decision_config_default` reads it. The
+                // coding quantizer above carries it; `Normal` on a `None`
+                // matches C's `INVALID_LVL` under every equality check the
+                // ladders make (neither `low_coeff` nor `high_coeff`).
+                coeff_lvl: c_quant
+                    .as_ref()
+                    .map_or(crate::port_enc_mode_config::InputCoeffLvl::Normal, |q| {
+                        crate::part_arm::input_coeff_lvl(q.input_coeff_level)
+                    }),
             })
         };
         // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
@@ -4715,9 +4726,17 @@ impl EncodePipeline {
                 let disallow_8x8 = crate::port_enc_mode_config::leaf::get_disallow_8x8_default();
                 // C `pd0_depth_removal`'s reference read is
                 // `ref_obj_l0->sb_min_sq_size[sb_index]`, i.e. LAST's — see
-                // `last_ref_slot`, not DPB slot 0.
+                // `last_ref_slot`, not DPB slot 0. C only reads it when the
+                // reference is POC-ADJACENT (`abs(picture_number - ref_poc)
+                // <= 1`, enc_mode_config.c:3176-3178); a farther ref leaves
+                // `sb_min_sq_size` at `(uint8_t)~0` and the deviation
+                // thresholds get NO bump — feeding the value unconditionally
+                // was the `96x96 hier` over-disallow on poc>=2. The L1
+                // `MIN()` arm (:3180-3185) is unreachable: low-delay never
+                // populates list 1.
                 let ref_mins = last_ref_slot
                     .and_then(|slot| self.dpb.get(slot))
+                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1)
                     .map(|rf| rf.sb_min_sq_size.clone());
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
                 let mut dr_out = Vec::with_capacity(sb_cols * sb_rows);
