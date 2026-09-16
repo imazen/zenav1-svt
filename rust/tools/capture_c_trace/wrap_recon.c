@@ -1431,7 +1431,7 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
                 "CINTER poc=%u mi=(%d,%d) bsize=%d part=%d mode=%d rf=%d,%d "
                 "mv0=%d,%d mv1=%d,%d pmv0=%d,%d pmv1=%d,%d "
                 "interp=0x%x mm=%d npr=%d ovl=%u imc=%d drl=%d drlctx=%d,%d drlnear=%d,%d "
-                "iiu=%d skip=%d skipmode=%d cgi=%d cidx=%d\n",
+                "iiu=%d skip=%d skipmode=%d cgi=%d cidx=%d txt=%d\n",
                 (unsigned)pcs->picture_number, mi_row, mi_col, (int)bsize, (int)part, (int)m->mode,
                 (int)m->ref_frame[0], (int)m->ref_frame[1], (int)m->mv[0].y, (int)m->mv[0].x,
                 (int)m->mv[1].y, (int)m->mv[1].x, (int)b->predmv[0].y, (int)b->predmv[0].x,
@@ -1439,7 +1439,8 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
                 (int)m->motion_mode, (int)m->num_proj_ref, (unsigned)b->overlappable_neighbors,
                 (int)b->inter_mode_ctx, (int)b->drl_index, (int)b->drl_ctx[0], (int)b->drl_ctx[1],
                 (int)b->drl_ctx_near[0], (int)b->drl_ctx_near[1], (int)m->is_interintra_used,
-                (int)m->skip, (int)m->skip_mode, (int)m->comp_group_idx, (int)m->compound_idx);
+                (int)m->skip, (int)m->skip_mode, (int)m->comp_group_idx, (int)m->compound_idx,
+                (int)b->tx_type[0]);
             fflush(cif);
         }
     }

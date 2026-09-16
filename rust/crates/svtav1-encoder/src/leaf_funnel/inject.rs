@@ -1808,6 +1808,17 @@ pub(super) fn inject_candidates(
             };
             let flr = u64::from(c.fast_luma_rate);
             let d = if frame.mds0_ssd { satd } else { satd << 4 };
+            // C's `*(cand_bf->fast_cost) = svt_aom_inter_fast_cost(...)`
+            // (product_coding_loop.c:1342) charges the SKIP-MODE rate when
+            // `skip_mode_rate < luma_rate` (rd_cost.c:997-1003). The cost is
+            // re-formed here because the distortion is the funnel's, so the
+            // charged rate — not `fast_luma_rate`, which C stores UNdiscounted
+            // — is what the rdcost must see. Charging `flr` priced the
+            // skip-mode candidate at its full mode rate and let the MDS0
+            // replacement pool evict it (gradient 16x16 q40 p6 poc4: C
+            // charged 1536 -> fcost 3230888 and kept it; the port charged
+            // 4025 -> 4420902 and dropped it).
+            let charged = u64::from(c.fast_cost_rate);
             // The SAME MDS0 dist-to-cost prune the intra lane applies
             // (product_coding_loop.c:1309-1334): the gate is inside
             // `fast_loop_core`, before the fast-cost call, and compares this
@@ -1821,7 +1832,7 @@ pub(super) fn inject_candidates(
             // C's `SVT_IFCOST` dump showed the NEWMV candidates injected but
             // never fast-costed. A pruned candidate carries MAX_MODE_COST
             // into the pool exactly like the intra lane's.
-            let mut fast_cost = rdcost(lambda, flr, d);
+            let mut fast_cost = rdcost(lambda, charged, d);
             if let (Some(th), Some(best)) = (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
                 if 100i128 * (i128::from(rdcost(lambda, 0, d)) - i128::from(best))
                     > i128::from(best) * i128::from(th)

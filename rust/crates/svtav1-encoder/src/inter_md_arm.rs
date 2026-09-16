@@ -398,6 +398,15 @@ pub struct InterCandOut {
     pub wm_params_l1: svtav1_types::motion::WarpedMotionParams,
     /// C `cand_bf->fast_luma_rate`.
     pub fast_luma_rate: u32,
+    /// The rate C's `*cand_bf->fast_cost` was charged at — the skip-mode
+    /// rate when `skip_mode_rate < luma_rate` fired in `finish`
+    /// (rd_cost.c:997-1003), `fast_luma_rate` otherwise. C's `fast_loop_core`
+    /// assigns the returned RDCOST wholesale; this port's funnel owns the
+    /// distortion and re-forms the cost as `rdcost(lambda, rate, satd)`, so
+    /// without this the skip-mode candidate is priced at its full mode rate
+    /// and dies in the MDS0 replacement pool (gradient 16x16 q40 p6 poc4:
+    /// C charged 1536 → fcost 3230888, the port charged 4025 → 4420902).
+    pub fast_cost_rate: u32,
     /// C `cand->block_mi.num_proj_ref` — the warped-motion SAMPLE COUNT, which
     /// the WRITER needs because it decides the motion-mode ALPHABET
     /// (`docs/INTER-ENCODE-PLAN.md` §1z¹⁸). It is carried even though this
@@ -996,7 +1005,24 @@ pub fn build_inter_candidates(
         // and `(MIN(md_me_dist, md_pme_dist) / (bw * bh)) < th` — C's
         // integer division, with `th` widened for the compare.
         let th = (u32::from(merge_inter_cands_mult) * 63u32.saturating_sub(f.search.cli_qp)) >> 1;
-        search.md_me_dist().min(search.md_pme_dist()) / ((b.bw * b.bh) as u32) < th
+        let me_d = search.md_me_dist();
+        let pme_d = search.md_pme_dist();
+        let r = me_d.min(pme_d) / ((b.bw * b.bh) as u32) < th;
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_MRGDBG").is_some() {
+            std::eprintln!(
+                "MRGDBG blk=({},{}) {}x{} mult={} th={} me_d={} pme_d={} -> {r}",
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                merge_inter_cands_mult,
+                th,
+                me_d,
+                pme_d
+            );
+        }
+        r
     };
 
     // --- C's ME candidate array for this block, verbatim: the injectors
@@ -2257,6 +2283,7 @@ fn predict_and_price(
         wm_params_l0: c.wm_params_l0,
         wm_params_l1: c.wm_params_l1,
         fast_luma_rate: cost.rate.luma,
+        fast_cost_rate: cost.charged_rate,
         num_proj_ref: c.num_proj_ref,
         // Stamped by `build_inter_candidates` once the block's
         // `merge_inter_cands` decision is known.

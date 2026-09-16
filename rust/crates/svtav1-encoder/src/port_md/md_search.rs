@@ -749,6 +749,19 @@ pub fn md_nsq_motion_search(
         sparse_search_step: 1,
         is_sprs_lev0_performed: false,
     };
+    #[cfg(feature = "std")]
+    let dbg_nsq = std::env::var_os("SVTAV1_NSQSRCH").is_some();
+    #[cfg(feature = "std")]
+    if dbg_nsq {
+        std::eprint!(
+            "NSQSRCH org=({},{}) {}x{} sqmv=({},{}) rawmvc=",
+            ctx.blk_org_x, ctx.blk_org_y, ctx.bwidth, ctx.bheight, sq_mv.y, sq_mv.x
+        );
+        for m in &mvc {
+            std::eprint!("({},{})", m.y, m.x);
+        }
+        std::eprintln!();
+    }
     for m in &mut mvc {
         m.x = round_to_full_pel(m.x);
         m.y = round_to_full_pel(m.y);
@@ -764,6 +777,10 @@ pub fn md_nsq_motion_search(
             zero_window,
             &mut center,
         );
+        #[cfg(feature = "std")]
+        if dbg_nsq {
+            std::eprintln!("  mvc({},{}) -> center=({},{}) cost={}", m.y, m.x, center.mvy, center.mvx, center.cost);
+        }
     }
 
     me_mv.x = center.mvx;
@@ -806,6 +823,10 @@ pub fn md_nsq_motion_search(
             },
             &mut best,
         );
+        #[cfg(feature = "std")]
+        if dbg_nsq {
+            std::eprintln!("  ladder w{}x{} step{} from({},{}) -> best=({},{}) cost={}", wx, wy, step, sy, sx, best.mvy, best.mvx, best.cost);
+        }
         sx = best.mvx;
         sy = best.mvy;
     }

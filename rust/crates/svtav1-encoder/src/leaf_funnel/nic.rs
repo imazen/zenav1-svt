@@ -312,6 +312,40 @@ pub(super) fn stage_mds0_to_mds1(
                 }
             }
             let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands, l, g));
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_MRGDBG").is_some() {
+                for l in 0..LANES {
+                    if sorted[l].is_empty() {
+                        continue;
+                    }
+                    let mut s = alloc::string::String::new();
+                    for (r, &ci) in sorted[l].iter().enumerate() {
+                        let c = &cands[ci];
+                        let (m, rf) = c
+                            .inter
+                            .as_deref()
+                            .map_or(("?".to_string(), "?".to_string()), |i| {
+                                (
+                                    alloc::format!("{:?}", i.mode),
+                                    alloc::format!("{:?}", i.ref_frame),
+                                )
+                            });
+                        s.push_str(&alloc::format!(
+                            "{}{}rf{}:{}{} ",
+                            if r < k[l] { "+" } else { "-" },
+                            m,
+                            rf,
+                            c.fast_cost,
+                            if c.inter.as_deref().is_some_and(|i| i.skip_mode_allowed) {
+                                "(skm)"
+                            } else {
+                                ""
+                            },
+                        ));
+                    }
+                    std::eprintln!("NICDBG lane{l} cap={cap} k={} g={g} [{s}]", k[l]);
+                }
+            }
             // MDS1 evaluates the per-class survivors, class-concatenated in
             // class order (C0..C4) — NOT cost-merged.
             let mut u: Vec<usize> = Vec::new();

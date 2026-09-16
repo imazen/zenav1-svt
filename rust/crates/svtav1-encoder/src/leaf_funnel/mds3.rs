@@ -3067,6 +3067,20 @@ fn eval_candidate(
                 .fac
                 .skip_mode[ic.skip_mode_ctx as usize][1] as u64;
             let sm_cost = rdcost(lambda3, sm_rate, sy + suv);
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+                eprintln!(
+                    "SKMDEC blk=({abs_x},{abs_y}) mode={:?} rf={:?} skmctx={} smr={} sdist={} smc={} full={} -> {}",
+                    ic.mode,
+                    ic.ref_frame,
+                    ic.skip_mode_ctx,
+                    sm_rate,
+                    sy + suv,
+                    sm_cost,
+                    full,
+                    if sm_cost <= full { "SKM" } else { "keep" }
+                );
+            }
             if sm_cost <= full {
                 full = sm_cost;
                 total_rate = sm_rate;

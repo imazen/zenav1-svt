@@ -408,6 +408,13 @@ pub struct FastCost {
     pub cost: u64,
     /// The rates C wrote into `cand_bf`.
     pub rate: FastRate,
+    /// The rate `cost` was charged at — `skip_mode_fac_bits[ctx][1]` when the
+    /// `skip_mode_rate < luma_rate` discount fired (rd_cost.c:997-1003 /
+    /// :1197-1204), `rate.luma` otherwise. C stores no such field; a caller
+    /// that re-forms `fast_cost` from a distortion it computes later (the
+    /// funnel's `rdcost(lambda, flr, satd)`) must charge THIS rate or the
+    /// skip-mode candidate prices at its full mode rate.
+    pub charged_rate: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -645,12 +652,14 @@ fn finish(
             return FastCost {
                 cost: rdcost(lambda, u64::from(skip_mode_rate), luma_distortion),
                 rate,
+                charged_rate: skip_mode_rate,
             };
         }
     }
     FastCost {
         cost: rdcost(lambda, u64::from(luma_rate), luma_distortion),
         rate,
+        charged_rate: luma_rate,
     }
 }
 

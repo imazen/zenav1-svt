@@ -596,14 +596,26 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         // that already exists is how this campaign lost a lambda.
         let centre = seed_me_centre(b, &r, sq_state, sq_tested, li, ri, raw);
         let ref_mv = choose_pred_mv(b, cfg.shut_fast_rate, cfg.approx_inter_rate, rf[0], centre);
-        let mvcp = full_pel_mv_cost_params(cfg, b, ref_mv, DistortionType::Sad);
+        // C's `md_full_pel_search` builds `mv_cost_params` PER CALL with
+        // `rdmult = dist_type != SAD ? full_lambda : fast_lambda`
+        // (product_coding_loop.c:1936-1941), and the only full-pel search
+        // `read_refine_me_mvs` reaches is `md_nsq_motion_search`'s — which
+        // runs at `md_nsq_me_ctrls.dist_type` (VAR at every enabled level).
+        // Building the params as SAD here prices the NSQ search's MV error
+        // cost off fast_lambda instead of full_lambda — measured at `diag
+        // 72x72 q55 p8` poc3: the (64,0) 16x32 ladder picked (80,-544)
+        // where C picks (64,-544).
+        let mvcp = full_pel_mv_cost_params(cfg, b, ref_mv, cfg.md_nsq_me_dist);
 
         let fp_ctx = FullPelCtx {
             blk_org_x: b.org_x as i32,
             blk_org_y: b.org_y as i32,
             bwidth: b.bw as i32,
             bheight: b.bh as i32,
-            enable_psad: false,
+            // C `ctx->enable_psad = ctx->md_nsq_me_ctrls.enable_psad`
+            // (product_coding_loop.c:2101). Inert while every enabled level
+            // is VAR — the large-LBD dispatch needs SAD.
+            enable_psad: cfg.md_nsq_enable_psad,
             hbd_md: false,
             sprs_lev0_start_x: 0,
             sprs_lev0_end_x: 0,

@@ -3007,6 +3007,20 @@ impl EncodePipeline {
                         refs.arr[li][ri] = Some(pa.ds_ref());
                     }
                 }
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_MEDBG").is_some() {
+                    let mut s = alloc::string::String::new();
+                    for (i, sl) in self.pa_slots.iter().enumerate() {
+                        s.push_str(&alloc::format!(
+                            "{i}:{} ",
+                            sl.as_deref().map_or(-1, |p| p.picture_number as i64)
+                        ));
+                    }
+                    std::eprintln!(
+                        "PASLOTS poc={} dpb={:?} slots=[{s}]",
+                        pic.picture_number, pic.rps.ref_dpb_index
+                    );
+                }
                 // `me_process.c:212-213` — the counts the picture decision
                 // offered. `MeRefs::get` panics on a hole a search reaches,
                 // so a missing pyramid means no ME rather than a wrong one —

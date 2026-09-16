@@ -940,6 +940,18 @@ pub fn inject_mvp_candidates_ii(
                     && ctx.skip_mode_flag
                     && rf[0] == ctx.skip_mode_ref_frame_idx_0
                     && rf[1] == ctx.skip_mode_ref_frame_idx_1;
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+                    eprintln!(
+                        "SKMINJ rf={:?} pair=({}, {}) skmf={} ll={} -> {}",
+                        rf,
+                        ctx.skip_mode_ref_frame_idx_0,
+                        ctx.skip_mode_ref_frame_idx_1,
+                        ctx.skip_mode_flag,
+                        ctx.is_lossless_segment,
+                        is_skip_mode,
+                    );
+                }
                 let mut cand = InterCandidate {
                     mode: PredictionMode::NearestNearestMv,
                     motion_mode: MotionMode::SimpleTranslation,
