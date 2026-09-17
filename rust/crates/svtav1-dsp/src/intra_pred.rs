@@ -1888,10 +1888,53 @@ fn predict_filter_intra_impl_scalar(
     predict_filter_intra_core(dst, dst_stride, above, left, width, height, mode);
 }
 
+/// Emit one 2x4 output block on NEON — the [`filter_intra_emit_v3`] body
+/// restated without `maddubs`/`hadd`: the 8 output pixels share the 7-tap
+/// input `p`, so each tap index contributes `p[j] * taps[k][j]` for all
+/// eight `k` at once. `p[j] * tap` fits s16 (255 * 127 < 32768) but the
+/// 7-term sum does not, so the accumulate runs `vmlal_s16` into i32.
+/// `vrshrq_n_s32::<4>` is `(v + 8) >> 4`; it differs from
+/// `ROUND_POWER_OF_TWO_SIGNED` only on negative sums that the u8 saturating
+/// narrow clips to 0 either way — the same argument that makes C's
+/// `mulhrs` kernel identical.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn filter_intra_emit_neon(
+    _token: NeonToken,
+    cur: &mut [u8],
+    dst_stride: usize,
+    off: usize,
+    p: &[u8; 8],
+    tcol: &[int16x4_t; 14],
+) {
+    // tcol[j] = taps[0..4][j] (row-0 outputs k=0..3), tcol[7+j] =
+    // taps[4..8][j] (row-1 outputs k=4..7).
+    let mut acc_lo = vdupq_n_s32(0);
+    let mut acc_hi = vdupq_n_s32(0);
+    for j in 0..7 {
+        let pv = vdup_n_s16(p[j] as i16);
+        acc_lo = vmlal_s16(acc_lo, pv, tcol[j]);
+        acc_hi = vmlal_s16(acc_hi, pv, tcol[7 + j]);
+    }
+    // Two saturating narrows: `vqmovun_s32` clamps negatives to 0 (u16
+    // range), `vqmovn_u16` clamps the top at 255 — together exactly the
+    // scalar `clamp(0, 255)`. Lanes 0..4 are row 0, 4..8 row 1.
+    let pair16 = vcombine_u16(
+        vqmovun_s32(vrshrq_n_s32::<4>(acc_lo)),
+        vqmovun_s32(vrshrq_n_s32::<4>(acc_hi)),
+    );
+    let pair8 = vqmovn_u16(pair16);
+    let mut b = [0u8; 8];
+    vst1_u8(&mut b, pair8);
+    let (row0, row1) = cur.split_at_mut(dst_stride);
+    row0[off..off + 4].copy_from_slice(&b[..4]);
+    row1[off..off + 4].copy_from_slice(&b[4..]);
+}
+
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn predict_filter_intra_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     dst: &mut [u8],
     dst_stride: usize,
     above: &[u8],
@@ -1900,7 +1943,42 @@ fn predict_filter_intra_impl_neon(
     height: usize,
     mode: u8,
 ) {
-    predict_filter_intra_core(dst, dst_stride, above, left, width, height, mode);
+    // Tap columns for this mode: tcol[j] = taps[0..4][j] (row-0 outputs)
+    // for j in 0..7, tcol[7+j] = taps[4..8][j] (row-1 outputs). i8 taps
+    // widen to s16; products p[j]*tap fit s16, the 7-term sum needs i32.
+    let taps = &FILTER_INTRA_TAPS[mode as usize];
+    let mut tl = [[0i16; 4]; 14];
+    for j in 0..7 {
+        for k in 0..4 {
+            tl[j][k] = taps[k][j] as i16;
+            tl[7 + j][k] = taps[k + 4][j] as i16;
+        }
+    }
+    let tcol: [int16x4_t; 14] = core::array::from_fn(|i| vld1_s16(&tl[i]));
+    for r in (1..height + 1).step_by(2) {
+        // Same row split as the scalar path / v3 arm.
+        let (above_rows, cur) = dst.split_at_mut((r - 1) * dst_stride);
+        let up: &[u8] = if r == 1 {
+            &above[1..]
+        } else {
+            &above_rows[(r - 2) * dst_stride..]
+        };
+        {
+            let mut p = [0u8; 8];
+            p[0] = if r == 1 { above[0] } else { left[r - 2] };
+            p[1..5].copy_from_slice(&up[0..4]);
+            p[5] = left[r - 1];
+            p[6] = left[r];
+            filter_intra_emit_neon(token, cur, dst_stride, 0, &p, &tcol);
+        }
+        for c in (5..width + 1).step_by(4) {
+            let mut p = [0u8; 8];
+            p[..5].copy_from_slice(&up[c - 2..c + 3]);
+            p[5] = cur[c - 2];
+            p[6] = cur[dst_stride + c - 2];
+            filter_intra_emit_neon(token, cur, dst_stride, c - 1, &p, &tcol);
+        }
+    }
 }
 
 /// Emit one 2x4 output block — C `svt_av1_filter_intra_predictor_sse4_1`'s

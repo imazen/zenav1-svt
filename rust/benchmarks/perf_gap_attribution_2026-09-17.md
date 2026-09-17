@@ -65,11 +65,19 @@ Facts that ruled out easy answers:
    noise): **1.016x / 1.009x** at 256/512. ident=Y; the
    `all_tiers_match_scalar` + `compute_cdef_dist_8bit_matches_c` FFI
    tests pass. LANDED.
-2. Remaining stubs found by the same audit: `predict_smooth_impl_neon`
-   (but the scalar core is branch-free and likely already
-   LLVM-vectorized — LOW expected value) and
-   `predict_filter_intra_impl_neon` (C runs a real NEON+i8mm kernel
-   with a different algorithm shape — the real intra-pred port job).
+2. **`predict_filter_intra_impl_neon` NEON arm** — second stub of the
+   audit (port scalar 83 samples vs C's real NEON+i8mm kernels ~30).
+   `filter_intra_emit_neon` mirrors `filter_intra_emit_v3`: the 8
+   outputs of a 4x2 sub-block share the 7-tap input, accumulated as
+   `vmlal_s16` into i32 (p[j]*tap fits s16, the sum does not), then
+   `vrshrq_n_s32::<4>` + `vqmovun_s32`/`vqmovn_u16` — exact vs
+   `ROUND_POWER_OF_TWO_SIGNED` because negatives clamp to 0 under both
+   roundings. ident=Y; `filter_intra_all_tiers_match_scalar` +
+   `filter_intra_predictor_matches_c` (FFI vs C) pass. LANDED.
+3. Last stub of the audit: `predict_smooth_impl_neon` (plus
+   `predict_smooth_v`/`predict_smooth_h`, which have no dispatch at
+   all). The scalar core is branch-free and likely already
+   LLVM-vectorized — LOW expected value, untried.
 
 ## Measured attempts (null or negative — DO NOT RETRY blindly)
 
