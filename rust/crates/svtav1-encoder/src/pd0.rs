@@ -1956,19 +1956,20 @@ fn check_is_subres_safe(
     org_y: usize,
     pred: &[u8],
 ) -> bool {
-    let mut sad_even = 0i64;
-    let mut sad_odd = 0i64;
-    for r in 0..64 {
-        let srow = (org_y + r) * stride + org_x;
-        for c in 0..64 {
-            let d = (src[srow + c] as i32 - pred[r * 64 + c] as i32).abs() as i64;
-            if r % 2 == 0 {
-                sad_even += d;
-            } else {
-                sad_odd += d;
-            }
-        }
-    }
+    // Even/odd-row SADs: two strided `block_sad` calls compute exactly the
+    // scalar loop's sums — every |src - pred| term is non-negative and a
+    // 64x32 sub-block can reach at most 2048 * 255, far under u32::MAX.
+    let base = org_y * stride + org_x;
+    let sad_even =
+        svtav1_dsp::me_sad::block_sad(&src[base..], 2 * stride, pred, 2 * 64, 64, 32) as i64;
+    let sad_odd = svtav1_dsp::me_sad::block_sad(
+        &src[base + stride..],
+        2 * stride,
+        &pred[64..],
+        2 * 64,
+        64,
+        32,
+    ) as i64;
     let deviation = ((sad_even.max(1) - sad_odd.max(1)) * 100) / sad_odd.max(1);
     deviation.abs() <= 5
 }
