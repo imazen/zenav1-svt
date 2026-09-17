@@ -396,7 +396,20 @@ impl AvifEncoder {
 
     /// Set the number of encoding threads.
     ///
-    /// `None` means auto-detect based on available cores.
+    /// `None` auto-detects based on available cores. Threading is
+    /// tile-parallel only: an explicit `Some(n > 1)` derives a tile grid —
+    /// `n` rounds up to a power of two and splits as evenly as possible
+    /// across columns and rows (4 -> 2x2, 8 -> 4x2), clamped to what the
+    /// frame can tile — and the bounded wave executor runs that grid on up
+    /// to `n` threads. Tiles are coded independently, so **the output bytes
+    /// depend on the grid**: `Some(4)` does not emit the same stream as
+    /// `Some(1)`. The grid is a pure function of `n`, so a given count is
+    /// byte-reproducible on any machine.
+    ///
+    /// `None`, `Some(0)` and `Some(1)` keep the default grid — a single
+    /// tile unless the frame geometry forces tiling (width > 4096 px or
+    /// area above `MAX_TILE_AREA`) — where the auto-detected count still
+    /// bounds the parallel wave without changing bytes.
     pub fn with_num_threads(mut self, threads: Option<usize>) -> Self {
         self.threads = threads;
         self
@@ -546,8 +559,29 @@ impl AvifEncoder {
             intra_period,
         )
         // Feature 4: route the `threads` knob into the bounded tile-parallel
-        // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.
+        // encode (`None`/`Some(0)` = auto-detect). Byte-neutral where the
+        // grid is left at its default — see the tile derivation below.
         .with_thread_count(self.threads.unwrap_or(0));
+        // Issue #24: the wave executor only engages when `num_tiles() > 1`,
+        // which without a request happens only at forced-tile geometry
+        // (width > MAX_TILE_WIDTH or area > MAX_TILE_AREA) — so an explicit
+        // thread count was inert for every ordinary AVIF size. `Some(n > 1)`
+        // now derives a grid targeting `n` tiles: `n` rounds up to a power
+        // of two, split as evenly as possible across columns and rows
+        // (4 -> 2x2, 8 -> 4x2), and `TileGrid::resolve` clamps the request
+        // to what the frame can tile. The grid is a pure function of `n` —
+        // deterministic bytes per count, machine-independent — while `None`,
+        // `Some(0)` and `Some(1)` leave the default grid so auto-detection
+        // can never make output depend on the host's core count.
+        if let Some(n) = self.threads {
+            if n > 1 {
+                let total_log2 = (usize::BITS - (n - 1).leading_zeros()) as u8;
+                let cols_log2 = total_log2.div_ceil(2);
+                pipeline = pipeline
+                    .with_tile_cols_log2(cols_log2)
+                    .with_tile_rows_log2(total_log2 - cols_log2);
+            }
+        }
         if let Some(stop) = &self.stop {
             pipeline = pipeline.with_stop(stop.clone());
         }
@@ -864,13 +898,18 @@ impl AvifEncoder {
     /// Reject the configurations this encoder cannot honour, where ignoring
     /// them would silently emit output the caller did not ask for.
     ///
-    /// As of issue #9 item 7 there are NO inert knobs left: `with_qm` and
-    /// `with_variance_boost` are wired to the real pipeline settings, and
-    /// `with_trellis` / `with_vaq` / `with_seg_boost` /
-    /// `with_still_image_tuning` are gone (they had no counterpart in the
-    /// pipeline or in C — SVT-AV1 has no trellis or seg-boost knob, and this
-    /// encoder is unconditionally still-image: one KEY frame, temporal tools
-    /// forced off for all-intra exactly as C does).
+    /// As of issue #9 item 7 the recorded-and-ignored knobs are gone:
+    /// `with_qm` and `with_variance_boost` are wired to the real pipeline
+    /// settings, and `with_trellis` / `with_vaq` / `with_seg_boost` /
+    /// `with_still_image_tuning` were removed (they had no counterpart in
+    /// the pipeline or in C — SVT-AV1 has no trellis or seg-boost knob, and
+    /// this encoder is unconditionally still-image: one KEY frame, temporal
+    /// tools forced off for all-intra exactly as C does).
+    ///
+    /// `with_num_threads` is the partial exception (issue #24): it is live
+    /// only because `Some(n > 1)` derives a tile grid — a byte-changing,
+    /// opt-in behavior, documented on the knob. `None`/`Some(0)`/`Some(1)`
+    /// affect execution solely where frame geometry already forces tiles.
     ///
     /// Format-independent checks; capability guards remain in the pipeline.
     fn validate_inert_knobs(&self, _chroma_420: bool) -> Result<(), EncodeError> {
@@ -1017,6 +1056,51 @@ mod tests {
         enc.encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
             .expect("4:2:0 encode")
             .data
+    }
+
+    /// Issue #24: `with_num_threads` was inert below the forced-tile
+    /// thresholds — the wave executor only runs when `num_tiles() > 1`, and
+    /// `AvifEncoder` never requested tiles. Now an explicit `Some(n > 1)`
+    /// derives a tile grid, so the knob must change the coded stream on an
+    /// ordinary still (no forced tiling at these dims), while counts that
+    /// derive the SAME grid stay byte-identical across thread counts.
+    #[test]
+    fn num_threads_derives_a_tile_grid() {
+        // 512x256 tiles under either SB size (>= 4 cols x 2 rows of 128px
+        // SBs), so the derived grids are not clamped into degenerate shapes.
+        let (w, h) = (512usize, 256usize);
+        let (cw, ch) = (w / 2, h / 2);
+        let y: Vec<u8> = (0..h)
+            .flat_map(|r| (0..w).map(move |c| ((r * 255) / h) as u8 ^ ((c * 3) & 0x3F) as u8))
+            .collect();
+        let u: Vec<u8> = (0..ch)
+            .flat_map(|r| (0..cw).map(move |c| (((r * 3 + c) & 0x7F) + 64) as u8))
+            .collect();
+        let v: Vec<u8> = (0..ch)
+            .flat_map(|r| (0..cw).map(move |c| (((c * 5 + r) & 0x7F) + 64) as u8))
+            .collect();
+        let enc = |t: Option<usize>| {
+            AvifEncoder::new()
+                .with_quality(60.0)
+                .with_speed(6)
+                .with_num_threads(t)
+                .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+                .expect("4:2:0 encode")
+                .data
+        };
+        let single = enc(Some(1));
+        assert_eq!(single, enc(None));
+        assert_eq!(single, enc(Some(0)));
+        let four = enc(Some(4));
+        assert_ne!(
+            four, single,
+            "threads=4 must derive a tile grid and change the stream"
+        );
+        assert_eq!(four, enc(Some(4)), "the grid is deterministic per count");
+        // 5..=8 all round up to the same 8-tile grid: the count bounds the
+        // wave, the grid decides the bytes — identical output across these
+        // thread counts (the issue's G5 requirement at a fixed grid).
+        assert_eq!(enc(Some(5)), enc(Some(8)));
     }
 
     /// Item 6: `encode_yuv420` must produce the SAME bytes as driving the
