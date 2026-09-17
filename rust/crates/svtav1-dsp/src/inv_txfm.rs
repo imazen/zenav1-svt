@@ -2259,58 +2259,60 @@ fn inv_txfm2d_core(
     // bd-dependent clamp/stage ranges (bd8 -> 16/16, byte-identical to the
     // former BD8_* constants; bd10 -> row 18 / col 16).
     let (row_range, col_range) = inv_txfm_ranges(bd);
-    let mut buf = vec![0i32; w * h];
-    let nmax = w.max(h);
-    let mut temp_in = vec![0i32; nmax];
-    let mut temp_out = vec![0i32; nmax];
+    // `buf` is fully written by the row pass before the column pass reads
+    // it; the temps are overwritten per row/column. Thread-local staging
+    // plus fixed stack temps avoid per-call alloc + memset.
+    let mut temp_in = [0i32; 64];
+    let mut temp_out = [0i32; 64];
     // get_rect_tx_log_ratio(col, row)
     let rect_log_ratio = w.trailing_zeros() as i32 - h.trailing_zeros() as i32;
+    crate::fwd_txfm::with_txfm_stage(w * h, |buf| {
+        // Rows
+        for r in 0..h {
+            if rect_log_ratio.abs() == 1 {
+                for c in 0..w {
+                    temp_in[c] = round_shift_i64(
+                        input[r * input_stride + c] as i64 * NEW_INV_SQRT2 as i64,
+                        NEW_SQRT2_BITS,
+                    );
+                }
+            } else {
+                for c in 0..w {
+                    temp_in[c] = input[r * input_stride + c];
+                }
+            }
+            clamp_buf(&mut temp_in[..w], row_range);
+            row_func(&temp_in[..w], &mut buf[r * w..(r + 1) * w], row_range);
+            round_shift_array(&mut buf[r * w..(r + 1) * w], -(shift[0] as i32));
+        }
 
-    // Rows
-    for r in 0..h {
-        if rect_log_ratio.abs() == 1 {
-            for c in 0..w {
-                temp_in[c] = round_shift_i64(
-                    input[r * input_stride + c] as i64 * NEW_INV_SQRT2 as i64,
-                    NEW_SQRT2_BITS,
-                );
+        // Columns
+        for c in 0..w {
+            if !lr_flip {
+                for r in 0..h {
+                    temp_in[r] = buf[r * w + c];
+                }
+            } else {
+                // flip left right
+                for r in 0..h {
+                    temp_in[r] = buf[r * w + (w - c - 1)];
+                }
             }
-        } else {
-            for c in 0..w {
-                temp_in[c] = input[r * input_stride + c];
-            }
-        }
-        clamp_buf(&mut temp_in[..w], row_range);
-        row_func(&temp_in[..w], &mut buf[r * w..(r + 1) * w], row_range);
-        round_shift_array(&mut buf[r * w..(r + 1) * w], -(shift[0] as i32));
-    }
-
-    // Columns
-    for c in 0..w {
-        if !lr_flip {
-            for r in 0..h {
-                temp_in[r] = buf[r * w + c];
-            }
-        } else {
-            // flip left right
-            for r in 0..h {
-                temp_in[r] = buf[r * w + (w - c - 1)];
+            clamp_buf(&mut temp_in[..h], col_range);
+            col_func(&temp_in[..h], &mut temp_out[..h], col_range);
+            round_shift_array(&mut temp_out[..h], -(shift[1] as i32));
+            if !ud_flip {
+                for r in 0..h {
+                    output[r * out_stride + c] = highbd_wraplow(temp_out[r], bd);
+                }
+            } else {
+                // flip upside down
+                for r in 0..h {
+                    output[r * out_stride + c] = highbd_wraplow(temp_out[h - r - 1], bd);
+                }
             }
         }
-        clamp_buf(&mut temp_in[..h], col_range);
-        col_func(&temp_in[..h], &mut temp_out[..h], col_range);
-        round_shift_array(&mut temp_out[..h], -(shift[1] as i32));
-        if !ud_flip {
-            for r in 0..h {
-                output[r * out_stride + c] = highbd_wraplow(temp_out[r], bd);
-            }
-        } else {
-            // flip upside down
-            for r in 0..h {
-                output[r * out_stride + c] = highbd_wraplow(temp_out[h - r - 1], bd);
-            }
-        }
-    }
+    });
 }
 
 /// C `svt_aom_inv_txfm_shift_ls` (inv_transforms.c:17-41), keyed by (w, h).

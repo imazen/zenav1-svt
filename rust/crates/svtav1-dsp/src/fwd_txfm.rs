@@ -158,6 +158,39 @@ pub fn half_btf(w0: i32, in0: i32, w1: i32, in1: i32, cos_bit: u32) -> i32 {
     round_shift_i64(result, cos_bit)
 }
 
+/// Per-thread staging buffer for the scalar 2D transform cores. `buf` is
+/// fully written by the first pass before the second pass reads it, so a
+/// fresh `vec![0i32; w*h]` per call pays an alloc + memset of up to 16 KB
+/// for bytes nobody reads. Under `std` a thread-local stage is reused;
+/// a re-entrant borrow or `no_std` falls back to a fresh Vec.
+#[inline]
+pub(crate) fn with_txfm_stage<R>(n: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+    debug_assert!(n <= 4096);
+    #[cfg(feature = "std")]
+    {
+        use core::cell::RefCell;
+        std::thread_local! {
+            static TXFM_CORE_STAGE: RefCell<[i32; 4096]> = const { RefCell::new([0; 4096]) };
+        }
+        // Err carries the unconsumed closure so the fallback can run it.
+        match TXFM_CORE_STAGE.with(|c| match c.try_borrow_mut() {
+            Ok(mut b) => Ok(f(&mut b[..n])),
+            Err(_) => Err(f),
+        }) {
+            Ok(r) => r,
+            Err(f) => {
+                let mut buf = vec![0i32; n];
+                f(&mut buf)
+            }
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let mut buf = vec![0i32; n];
+        f(&mut buf)
+    }
+}
+
 /// Round-shift an array in place.
 pub fn round_shift_array(arr: &mut [i32], bit: i32) {
     if bit == 0 {
@@ -2316,53 +2349,56 @@ pub fn fwd_txfm2d_core(
     ud_flip: bool,
     lr_flip: bool,
 ) {
-    let mut buf = vec![0i32; w * h];
-    let mut temp_in = vec![0i32; h];
-    let mut temp_out = vec![0i32; h];
+    // `buf` is fully written by the column pass before the row pass reads
+    // it; the temp vectors are overwritten per column/row. Thread-local
+    // staging plus fixed stack temps avoid per-call alloc + memset.
+    let mut temp_in = [0i32; 64];
+    let mut temp_out = [0i32; 64];
+    let mut row_out = [0i32; 64];
     // get_rect_tx_log_ratio(col, row)
     let rect_log_ratio = w.trailing_zeros() as i32 - h.trailing_zeros() as i32;
+    with_txfm_stage(w * h, |buf| {
+        // Columns
+        for c in 0..w {
+            if !ud_flip {
+                for r in 0..h {
+                    temp_in[r] = input[r * input_stride + c];
+                }
+            } else {
+                for r in 0..h {
+                    // flip upside down
+                    temp_in[r] = input[(h - r - 1) * input_stride + c];
+                }
+            }
+            round_shift_array(&mut temp_in[..h], -(shift[0] as i32));
+            col_func(&temp_in[..h], &mut temp_out[..h], cos_bit_col);
+            round_shift_array(&mut temp_out[..h], -(shift[1] as i32));
+            if !lr_flip {
+                for r in 0..h {
+                    buf[r * w + c] = temp_out[r];
+                }
+            } else {
+                for r in 0..h {
+                    // flip from left to right
+                    buf[r * w + (w - c - 1)] = temp_out[r];
+                }
+            }
+        }
 
-    // Columns
-    for c in 0..w {
-        if !ud_flip {
-            for r in 0..h {
-                temp_in[r] = input[r * input_stride + c];
+        // Rows
+        for r in 0..h {
+            row_func(&buf[r * w..r * w + w], &mut row_out[..w], cos_bit_row);
+            round_shift_array(&mut row_out[..w], -(shift[2] as i32));
+            if rect_log_ratio.abs() == 1 {
+                // Multiply everything by Sqrt2 if the transform is rectangular
+                // and the size difference is a factor of 2.
+                for v in row_out[..w].iter_mut() {
+                    *v = round_shift_i64(*v as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+                }
             }
-        } else {
-            for r in 0..h {
-                // flip upside down
-                temp_in[r] = input[(h - r - 1) * input_stride + c];
-            }
+            output[r * w..r * w + w].copy_from_slice(&row_out[..w]);
         }
-        round_shift_array(&mut temp_in, -(shift[0] as i32));
-        col_func(&temp_in, &mut temp_out, cos_bit_col);
-        round_shift_array(&mut temp_out, -(shift[1] as i32));
-        if !lr_flip {
-            for r in 0..h {
-                buf[r * w + c] = temp_out[r];
-            }
-        } else {
-            for r in 0..h {
-                // flip from left to right
-                buf[r * w + (w - c - 1)] = temp_out[r];
-            }
-        }
-    }
-
-    // Rows
-    let mut row_out = vec![0i32; w];
-    for r in 0..h {
-        row_func(&buf[r * w..r * w + w], &mut row_out, cos_bit_row);
-        round_shift_array(&mut row_out, -(shift[2] as i32));
-        if rect_log_ratio.abs() == 1 {
-            // Multiply everything by Sqrt2 if the transform is rectangular
-            // and the size difference is a factor of 2.
-            for v in row_out.iter_mut() {
-                *v = round_shift_i64(*v as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
-            }
-        }
-        output[r * w..r * w + w].copy_from_slice(&row_out);
-    }
+    });
 }
 
 /// Configured C-exact forward 2D transform (svt_av1_transform_two_d semantics).
