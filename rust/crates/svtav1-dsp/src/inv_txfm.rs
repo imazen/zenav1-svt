@@ -2509,6 +2509,62 @@ pub(crate) fn mod_input_64(
     m
 }
 
+/// [`mod_input_64`] writing into `out` (`w * h` elements), zeroing only the
+/// region the copy does not cover. Identical contents to the allocating form;
+/// used by the TLS-backed wrapper so the 64-dim inverse path stops paying a
+/// fresh `calloc` per call.
+pub(crate) fn mod_input_64_into(
+    input: &[TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [TranLow],
+) {
+    let cw = w.min(32);
+    let ch = h.min(32);
+    for r in 0..ch {
+        out[r * w..r * w + cw].copy_from_slice(&input[r * input_stride..r * input_stride + cw]);
+        out[r * w + cw..r * w + w].fill(0);
+    }
+    out[ch * w..w * h].fill(0);
+}
+
+/// Run `f` on a thread-local `w * h` scratch holding the zero-extended
+/// [`mod_input_64`] raster. Re-entrant calls fall back to a heap allocation
+/// — same contract as the Hadamard scratch in `leaf_funnel::predict`.
+#[cfg(feature = "std")]
+pub(crate) fn with_mod_input_64<R>(
+    input: &[TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    f: impl FnOnce(&[TranLow]) -> R,
+) -> R {
+    use core::cell::RefCell;
+    std::thread_local! {
+        static MOD64: RefCell<alloc::vec::Vec<TranLow>> = const { RefCell::new(alloc::vec::Vec::new()) };
+    }
+    let n = w * h;
+    let taken = MOD64.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut b) => {
+            if b.len() < n {
+                b.resize(n, 0);
+            }
+            mod_input_64_into(input, input_stride, w, h, &mut b[..n]);
+            Ok(f(&b[..n]))
+        }
+        Err(_) => Err(f),
+    });
+    match taken {
+        Ok(r) => r,
+        Err(f) => {
+            let mut m = vec![0i32; n];
+            mod_input_64_into(input, input_stride, w, h, &mut m);
+            f(&m)
+        }
+    }
+}
+
 /// Inverse 4x4 DCT-DCT using the general framework.
 pub fn inv_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
     incant!(

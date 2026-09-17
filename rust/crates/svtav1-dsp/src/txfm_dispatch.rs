@@ -69,10 +69,22 @@ pub fn inv_txfm2d_dispatch_bd(
         // C's `mod_input` (svt_av1_inv_txfm2d_add_64x*): the top-left 32x32
         // read out of the full-stride layout and zero-extended to w x h —
         // the one transcription, shared with the named 64-dim wrappers.
-        let mod_input = crate::inv_txfm::mod_input_64(input, stride, w, h);
-        inv_txfm2d_c_exact_bd(
-            &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
-        )
+        // The TLS scratch removes a 16KB calloc+memset per 64-dim call.
+        #[cfg(feature = "std")]
+        {
+            crate::inv_txfm::with_mod_input_64(input, stride, w, h, |m| {
+                inv_txfm2d_c_exact_bd(
+                    m, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
+                )
+            })
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let mod_input = crate::inv_txfm::mod_input_64(input, stride, w, h);
+            inv_txfm2d_c_exact_bd(
+                &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
+            )
+        }
     } else {
         inv_txfm2d_c_exact_bd(
             input, stride, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
