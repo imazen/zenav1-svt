@@ -605,11 +605,13 @@ pub(super) fn inject_candidates(
     // set collapses to {DC_PRED}. Dead on stills (`fx.inter` is None) and
     // at cand_reduction levels 0/1 (enabled == 0).
     let mut dc_only = dc_only;
-    if let Some((prelude, ..)) = &inter_pre {
-        // C reads `ctx->cand_reduction_ctrls.cand_elimination_ctrls` — the
-        // LIGHT-PD1 signal's copy on the light lane (its cand_reduction_level
-        // is raised above the picture's), the frame's otherwise.
-        let elim = &fx.lpd1.as_ref().map_or_else(
+    // C reads `ctx->cand_reduction_ctrls.cand_elimination_ctrls` — the
+    // LIGHT-PD1 signal's copy on the light lane (its cand_reduction_level
+    // is raised above the picture's), the frame's otherwise. Read once —
+    // used by both the dc_cand_only injection collapse and the MDS0
+    // cand_elimination early-out (fast_loop_core :1017-1030).
+    let elim = inter_pre.as_ref().map(|_| {
+        fx.lpd1.as_ref().map_or_else(
             || {
                 &fx.inter
                     .expect("inter_pre is built exactly when the inter arm is armed")
@@ -617,7 +619,10 @@ pub(super) fn inject_candidates(
                     .cand_elimination_ctrls
             },
             |l| &l.sig.cand_reduction.cand_elimination_ctrls,
-        );
+        )
+    });
+    if let Some((prelude, ..)) = &inter_pre {
+        let elim = elim.unwrap();
         if elim.enabled != 0 {
             let (me, pme) = (prelude.search.md_me_dist(), prelude.search.md_pme_dist());
             // `generate_md_stage_0_cand_light_pd1` reads `md_me_dist` ONLY
@@ -767,6 +772,11 @@ pub(super) fn inject_candidates(
     // prune below, which is why it is `None` until the first candidate is
     // scored — C's sentinel is checked explicitly at `:1326`.
     let mut mds0_best_cost: Option<u64> = None;
+    // C `ctx->mds0_best_idx` + `cand_bf_ptr_array[mds0_best_idx]->luma_fast_dist`
+    // (:1019): the best-so-far candidate's un-shifted luma variance, read by the
+    // `cand_elimination` early-out (:1020-1030). `None` until the first
+    // candidate is scored — same sentinel as `mds0_best_cost`.
+    let mut mds0_best_dist: Option<u64> = None;
     for itr in 0..tot_itr {
         for &(mode, delta, fi) in &cand_modes {
             // C gates this skip on `itr == 0` (:1687). At itr 1 the regular modes
@@ -794,6 +804,26 @@ pub(super) fn inject_candidates(
                 )
             {
                 continue;
+            }
+            // C `fast_loop_core`'s cand_elimination early-out
+            // (product_coding_loop.c:1017-1030): when the best-so-far
+            // candidate's un-shifted luma variance is already under
+            // `th * area`, this intra candidate is MAX_MODE_COST without
+            // running prediction or distortion. `skip_dc_th` (0 at every
+            // shipping level) is the harsher DC_PRED threshold. Skipping
+            // the push is equivalent — a MAX_MODE_COST candidate sorts to
+            // the end of the survivor pool and is eliminated regardless.
+            if let (Some(elim), Some(best_dist)) = (elim, mds0_best_dist) {
+                if elim.enabled != 0 && fi == FI_NONE {
+                    let th = u64::from(if mode == 0 {
+                        elim.skip_dc_th
+                    } else {
+                        elim.dc_only_th
+                    }) * (w * h) as u64;
+                    if best_dist < th {
+                        continue;
+                    }
+                }
             }
             // C injection (inject_intra_candidates / inject_filter_intra_candidates,
             // mode_decision.c:3286-3292): uv = ind_uv_avail ? best_uv_mode[map]
@@ -989,7 +1019,10 @@ pub(super) fn inject_candidates(
                 }
                 _ => fast_cost,
             };
-            mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
+            if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
+                mds0_best_cost = Some(fast_cost);
+                mds0_best_dist = Some(satd);
+            }
             #[cfg(feature = "std")]
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
@@ -1386,6 +1419,9 @@ pub(super) fn inject_candidates(
                 flr + fcr,
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );
+            if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
+                mds0_best_cost = Some(fast_cost);
+            }
             #[cfg(feature = "std")]
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
@@ -1673,6 +1709,9 @@ pub(super) fn inject_candidates(
                 } else {
                     rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
                 };
+                if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
+                    mds0_best_cost = Some(fast_cost);
+                }
                 cands.push(Cand {
                     mode: 0, // DC_PRED (the coded neighbour-visible mode)
                     delta: 0,
@@ -1848,7 +1887,9 @@ pub(super) fn inject_candidates(
                     fast_cost = crate::port_md::lpd1_loop::MAX_MODE_COST;
                 }
             }
-            mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
+            if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
+                mds0_best_cost = Some(fast_cost);
+            }
             // The intra lanes above each print an `NSQDBG PFAST` line; without
             // this one the inter candidate is INVISIBLE in the candidate dump,
             // and "the injector ran and the candidate lost" is indistinguishable
