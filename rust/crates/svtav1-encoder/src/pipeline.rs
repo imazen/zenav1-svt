@@ -5181,9 +5181,9 @@ impl EncodePipeline {
                     let cur_w = sb_size.min(w - x0);
                     let cur_h = sb_size.min(h - y0);
                     for r in 0..cur_h {
-                        for c in 0..cur_w {
-                            recon[(y0 + r) * w + x0 + c] = tile_recon[offset + r * cur_w + c];
-                        }
+                        recon[(y0 + r) * w + x0..(y0 + r) * w + x0 + cur_w].copy_from_slice(
+                            &tile_recon[offset + r * cur_w..offset + (r + 1) * cur_w],
+                        );
                     }
                     offset += cur_w * cur_h;
 
