@@ -1,8 +1,8 @@
-//! Dispatch-tier lock for `lpf_horizontal_14` / `lpf_vertical_14`.
+//! Dispatch-tier lock for `lpf_{horizontal,vertical}_{6,8,14}`.
 //!
-//! The v3 arms port C's `dlf_intrin_sse2.c` 14-tap kernels. They reproduce
-//! `_sse2` on every threshold the encoder can derive (mblim <= 193, lim <= 63)
-//! and `_c` everywhere — including the blimit/limit=255 corners where C's own
+//! The v3 arms port C's `dlf_intrin_sse2.c` kernels. They reproduce `_sse2`
+//! on every threshold the encoder can derive (mblim <= 193, lim <= 63) and
+//! `_c` everywhere — including the blimit/limit=255 corners where C's own
 //! _sse2 saturating sum and flag fold diverge from `~mask`. Every dispatch
 //! tier is pinned against the linked C `_c` reference across flat, step-edge,
 //! and random content, including threshold triples outside the derivable
@@ -74,20 +74,24 @@ fn fill(content: u32, rng: &mut Rng, vertical: bool, buf: &mut [u8]) {
 }
 
 #[test]
-fn lpf14_all_tiers_match_c() {
+fn lpf_all_tiers_match_c() {
     let mut rng = Rng(0x14F1_17E7_2026_0917);
     // Edge geometry matches tests/c_parity_lpf.rs: H edge between rows 7|8
     // filtering columns 3..6; V edge between cols 7|8 filtering rows 2..5.
     let h_off = 8 * SIZE + 3;
     let v_off = 2 * SIZE + 8;
-    for iter in 0..400 {
-        let vertical = iter % 2 == 1;
+    let kinds = [
+        cref::LpfKind::H6,
+        cref::LpfKind::V6,
+        cref::LpfKind::H8,
+        cref::LpfKind::V8,
+        cref::LpfKind::H14,
+        cref::LpfKind::V14,
+    ];
+    for iter in 0..600 {
+        let kind = kinds[(iter % kinds.len() as usize) as usize];
+        let (_, vertical) = kind.geometry();
         let off = if vertical { v_off } else { h_off };
-        let kind = if vertical {
-            cref::LpfKind::V14
-        } else {
-            cref::LpfKind::H14
-        };
         // Mix derivable thresholds with adversarial triples — the 255
         // corners are where C's own _sse2 kernel diverges from _c.
         let t = if iter % 5 == 0 {
@@ -110,10 +114,14 @@ fn lpf14_all_tiers_match_c() {
 
         let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut ours = buf.clone();
-            if vertical {
-                lf::lpf_vertical_14(&mut ours, off, SIZE, t);
-            } else {
-                lf::lpf_horizontal_14(&mut ours, off, SIZE, t);
+            match kind {
+                cref::LpfKind::H6 => lf::lpf_horizontal_6(&mut ours, off, SIZE, t),
+                cref::LpfKind::V6 => lf::lpf_vertical_6(&mut ours, off, SIZE, t),
+                cref::LpfKind::H8 => lf::lpf_horizontal_8(&mut ours, off, SIZE, t),
+                cref::LpfKind::V8 => lf::lpf_vertical_8(&mut ours, off, SIZE, t),
+                cref::LpfKind::H14 => lf::lpf_horizontal_14(&mut ours, off, SIZE, t),
+                cref::LpfKind::V14 => lf::lpf_vertical_14(&mut ours, off, SIZE, t),
+                other => panic!("unexpected kind {other:?}"),
             }
             assert_eq!(ours, c_buf, "{kind:?} iter {iter} t={t:?}");
         });
