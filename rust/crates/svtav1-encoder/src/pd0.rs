@@ -88,18 +88,22 @@ pub(crate) fn compute_b64_variance(
     let mut msq8 = [0u64; 64];
     for by in 0..8 {
         for bx in 0..8 {
-            let mut sum = 0u64;
-            let mut sq = 0u64;
+            // u32 accumulation is exact: 32 u8 samples -> sum <= 8_160,
+            // sq <= 32 * 255^2 = 2_080_800. Keeping the accumulators 32-bit
+            // lets LLVM auto-vectorize the pixel loop; widening to u64 blocks
+            // it (~6.3K -> ~1.5K instructions per SB).
+            let mut sum = 0u32;
+            let mut sq = 0u32;
             for r in [0usize, 2, 4, 6] {
                 let row = (org_y + by * 8 + r) * stride + org_x + bx * 8;
                 for c in 0..8 {
-                    let v = src[row + c] as u64;
+                    let v = src[row + c] as u32;
                     sum += v;
                     sq += v * v;
                 }
             }
-            mean8[by * 8 + bx] = sum << 3;
-            msq8[by * 8 + bx] = sq << 11;
+            mean8[by * 8 + bx] = (sum as u64) << 3;
+            msq8[by * 8 + bx] = (sq as u64) << 11;
         }
     }
     let mut mean16 = [0u64; 16];
