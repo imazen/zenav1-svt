@@ -457,16 +457,22 @@ pub(crate) fn extract_neighbors_tiled(
     let mut above = [0u8; MAX_EDGE_PX];
     if has_above {
         let row = abs_y - 1;
-        let mut last = above_ref0.unwrap_or(127);
-        for (i, dst) in above[..width].iter_mut().enumerate() {
-            let x = abs_x + i;
-            let idx = row * stride + x;
-            if i < n_top_px && x < stride && idx < recon.len() {
-                last = recon[idx];
-            }
-            // else: extend the last available sample, like C
-            *dst = last;
-        }
+        // Every availability bound is monotone in `i` (`i < n_top_px`,
+        // `x < stride`, `idx < recon.len()` — each stays false once false),
+        // so the real samples form a single contiguous prefix: bulk-copy it
+        // and fill the tail with its last value, instead of three bounds
+        // checks per pixel.
+        let base = row * stride + abs_x;
+        let n_real = n_top_px
+            .min(stride.saturating_sub(abs_x))
+            .min(recon.len().saturating_sub(base));
+        above[..n_real].copy_from_slice(&recon[base..base + n_real]);
+        let last = if n_real > 0 {
+            recon[base + n_real - 1]
+        } else {
+            above_ref0.unwrap_or(127)
+        };
+        above[n_real..width].fill(last);
     } else {
         above[..width].fill(left_ref0.unwrap_or(127));
     }
@@ -474,14 +480,21 @@ pub(crate) fn extract_neighbors_tiled(
     let mut left = [0u8; MAX_EDGE_PX];
     if has_left {
         let col = abs_x - 1;
+        // Same monotone-prefix shape down the column: `i < n_left_px` and
+        // `(abs_y + i) * stride + col < recon.len()` both stay false once
+        // false, so the real run is `n_real` strided loads then a tail fill.
+        let base = abs_y * stride + col;
+        let n_real = n_left_px.min(if base < recon.len() {
+            (recon.len() - 1 - base) / stride + 1
+        } else {
+            0
+        });
         let mut last = left_ref0.unwrap_or(129);
-        for (i, dst) in left[..height].iter_mut().enumerate() {
-            let idx = (abs_y + i) * stride + col;
-            if i < n_left_px && idx < recon.len() {
-                last = recon[idx];
-            }
+        for (dst, idx) in left[..n_real].iter_mut().zip((0..n_real).map(|i| base + i * stride)) {
+            last = recon[idx];
             *dst = last;
         }
+        left[n_real..height].fill(last);
     } else {
         left[..height].fill(above_ref0.unwrap_or(129));
     }
@@ -577,18 +590,23 @@ pub(crate) fn extract_neighbors_hbd(
         None
     };
 
+    // Monotone-prefix copies, same shape as the u8 twin: every availability
+    // bound stays false once false, so the real run is one bulk copy (above)
+    // or one strided gather (left) plus a tail fill.
     let above: alloc::vec::Vec<u16> = if has_above {
         let row = abs_y - 1;
+        let b = row * stride + abs_x;
+        let n_real = n_top_px
+            .min(stride.saturating_sub(abs_x))
+            .min(recon.len().saturating_sub(b));
         let mut v = alloc::vec::Vec::with_capacity(width);
-        let mut last = above_ref0.unwrap_or(base - 1);
-        for i in 0..width {
-            let x = abs_x + i;
-            let idx = row * stride + x;
-            if i < n_top_px && x < stride && idx < recon.len() {
-                last = recon[idx];
-            }
-            v.push(last);
-        }
+        v.extend_from_slice(&recon[b..b + n_real]);
+        let last = if n_real > 0 {
+            recon[b + n_real - 1]
+        } else {
+            above_ref0.unwrap_or(base - 1)
+        };
+        v.resize(width, last);
         v
     } else {
         alloc::vec![left_ref0.unwrap_or(base - 1); width]
@@ -596,15 +614,20 @@ pub(crate) fn extract_neighbors_hbd(
 
     let left: alloc::vec::Vec<u16> = if has_left {
         let col = abs_x - 1;
+        let b = abs_y * stride + col;
+        let n_real = n_left_px.min(if b < recon.len() {
+            (recon.len() - 1 - b) / stride + 1
+        } else {
+            0
+        });
         let mut v = alloc::vec::Vec::with_capacity(height);
-        let mut last = left_ref0.unwrap_or(base + 1);
-        for i in 0..height {
-            let idx = (abs_y + i) * stride + col;
-            if i < n_left_px && idx < recon.len() {
-                last = recon[idx];
-            }
-            v.push(last);
-        }
+        v.extend((0..n_real).map(|i| recon[b + i * stride]));
+        let last = if n_real > 0 {
+            v[n_real - 1]
+        } else {
+            left_ref0.unwrap_or(base + 1)
+        };
+        v.resize(height, last);
         v
     } else {
         alloc::vec![above_ref0.unwrap_or(base + 1); height]
