@@ -1313,13 +1313,13 @@ fn eval_candidate(
                 // 10-bit: the detector's SAD arm uses the 10-bit
                 // chroma predictions and luma, and the variance arm
                 // uses vf_hbd_10 on the 10-bit chroma source.
-                let (det_u10, det_v10): (Vec<u16>, Vec<u16>) = if let Some(ic) =
+                let (det_u10, det_v10) = if let Some(ic) =
                     cands[ci].inter.as_deref()
                 {
                     (ic.u_pred10.clone(), ic.v_pred10.clone())
                 } else {
-                    let mut u = vec![0u16; cw * chh];
-                    let mut v = vec![0u16; cw * chh];
+                    let mut u = dirty_pool::<u16>(cw * chh);
+                    let mut v = dirty_pool::<u16>(cw * chh);
                     predict_unit_hbd(fx.u_recon10.as_deref().unwrap(),
                         fx.c_stride, ccx, ccy, cw, chh,
                         cands[ci].uv, cands[ci].uv_delta, FI_NONE,
@@ -1330,7 +1330,7 @@ fn eval_candidate(
                         cands[ci].uv, cands[ci].uv_delta, FI_NONE,
                         &uv_geom, cfg.edge_filter, filt_type_uv,
                         &mut v, b.bd);
-                    (u, v)
+                    (u.into_vec(), v.into_vec())
                 };
                 let s = chroma_detector_fires_hbd(
                     y_src, y_src_stride, y_src_off, &best_pred10, w,
@@ -1345,13 +1345,13 @@ fn eval_candidate(
                 (s, v_)
             }
             None => {
-                let (det_u, det_v): (Vec<u8>, Vec<u8>) = if let Some(ic) =
+                let (det_u, det_v) = if let Some(ic) =
                     cands[ci].inter.as_deref()
                 {
                     (ic.u_pred.clone(), ic.v_pred.clone())
                 } else {
-                    let mut u = vec![0u8; cw * chh];
-                    let mut v = vec![0u8; cw * chh];
+                    let mut u = dirty_pool::<u8>(cw * chh);
+                    let mut v = dirty_pool::<u8>(cw * chh);
                     predict_unit(fx.u_recon, fx.c_stride, ccx, ccy,
                         cw, chh, cands[ci].uv, cands[ci].uv_delta,
                         FI_NONE, &uv_geom, cfg.edge_filter,
@@ -1360,7 +1360,7 @@ fn eval_candidate(
                         cw, chh, cands[ci].uv, cands[ci].uv_delta,
                         FI_NONE, &uv_geom, cfg.edge_filter,
                         filt_type_uv, &mut v);
-                    (u, v)
+                    (u.into_vec(), v.into_vec())
                 };
                 let s = chroma_detector_fires(
                     y_src, y_src_stride, y_src_off, &best_pred, w,

@@ -894,7 +894,17 @@ pub(super) fn tx_unit_inner(
             }
         }
     };
-    let coeffs = TxScratch::zeroed(coeffs, n);
+    // `coeffs` is `zeroed` ONLY for the `skip_tx` arm — every other branch
+    // (the lossless WHT, the SIMD/scalar transform, and the N4 mask on top)
+    // writes all `n` elements before anything reads them. The `memset` the
+    // `zeroed` pays is the #1 allocator-side cost in the funnel (see
+    // [`TxScratch::grown`]'s doc for the measured share); the transform's own
+    // stores make it dead on the common path.
+    let coeffs = if gate.skip_tx {
+        TxScratch::zeroed(coeffs, n)
+    } else {
+        TxScratch::grown(coeffs, n)
+    };
     // Coded-lossless (issue #5): C `svt_av1_estimate_transform`
     // (transforms.c:3950-3963) takes the 4x4 Walsh-Hadamard instead of the
     // DCT when the segment is lossless AND the tx is TX_4X4 (larger sizes fall
@@ -1241,7 +1251,10 @@ pub(super) fn tx_unit_inner(
                 *d = s as u8;
             }
         } else {
-            let inv = TxScratch::zeroed(inv, n);
+            // GROWN, NOT ZEROED — `inv_txfm2d_dispatch` writes all `w*h`
+            // positions before `recon_add_clamp` reads them. The `memset`
+            // the `zeroed` paid was dead on every non-skip call.
+            let inv = TxScratch::grown(inv, n);
             let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                 dq_src,
                 inv,
