@@ -2083,9 +2083,7 @@ pub(crate) fn funnel_block_decision(
         } else {
             let mut full = alloc::vec![0i32; w * h];
             for r in 0..ph {
-                for c in 0..pw {
-                    full[r * w + c] = choice.txb_qcoeffs[0][r * pw + c];
-                }
+                full[r * w..r * w + pw].copy_from_slice(&choice.txb_qcoeffs[0][r * pw..r * pw + pw]);
             }
             full
         };

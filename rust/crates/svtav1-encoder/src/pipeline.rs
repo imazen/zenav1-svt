@@ -385,13 +385,15 @@ fn pad_plane_replicate(
     dh: usize,
 ) -> crate::EncodeResult<alloc::vec::Vec<u8>> {
     let mut out = svtav1_types::try_vec![0u8; dw * dh]?;
+    // Interior columns are a verbatim row copy; only the replicated right
+    // edge needs the clamp. `c.min(sw - 1)` for c < sw is just `c`.
+    let cw = sw.min(dw);
     for r in 0..dh {
         let sr = r.min(sh - 1);
         let base = sr * src_stride;
         let orow = r * dw;
-        for c in 0..dw {
-            out[orow + c] = src[base + c.min(sw - 1)];
-        }
+        out[orow..orow + cw].copy_from_slice(&src[base..base + cw]);
+        out[orow + cw..orow + dw].fill(src[base + sw - 1]);
     }
     Ok(out)
 }
@@ -409,13 +411,13 @@ fn pad_plane_replicate_u16(
     dh: usize,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let mut out = svtav1_types::try_vec![0u16; dw * dh]?;
+    let cw = sw.min(dw);
     for r in 0..dh {
         let sr = r.min(sh - 1);
         let base = sr * src_stride;
         let orow = r * dw;
-        for c in 0..dw {
-            out[orow + c] = src[base + c.min(sw - 1)];
-        }
+        out[orow..orow + cw].copy_from_slice(&src[base..base + cw]);
+        out[orow + cw..orow + dw].fill(src[base + sw - 1]);
     }
     Ok(out)
 }
