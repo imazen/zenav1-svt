@@ -213,3 +213,13 @@ the measurement cost.
   vqtbl tables; port's contiguous-table approach needs 96 bytes of u16
   lanes = 6 regs — tractable but larger), `predict_{paeth,smooth*}_hbd`
   (cold in both bd10 profiles: ≤36 samples).
+
+## quantize raster NEON width (8-bit)
+
+- `quantize_{b,fp}_raster_impl_neon` widened 4 -> 8 lanes/iter (two
+  independent int32x4 halves; the per-coefficient chain is ~12
+  serially-dependent vector ops, so the halves overlap). Same op set
+  per lane = byte-identical by construction. A/B vs `9dc19b56`:
+  **1.008x @512p4, 1.006x @512p2** (both ratio bands below 1.0),
+  wash @256p4 and @512p10 (quantize is cold at p10), byte-identical
+  everywhere (`ab_quant8_2026-09-17*.tsv`).

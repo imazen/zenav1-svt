@@ -180,7 +180,46 @@ fn quantize_fp_raster_impl_neon(
     let sh_q = vdupq_n_s32(-(16 - log_scale)); // product >> (16-log_scale)
     let sh_dq = vdupq_n_s32(-log_scale); // dq product >> log_scale
 
+    // One coefficient's chain is ~10 serially-dependent vector ops; running
+    // two independent 4-lane halves per iteration overlaps those chains.
     let mut rc = 0usize;
+    while rc + 8 <= n {
+        let src0: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
+        let src1: &[i32; 4] = coeffs[rc + 4..rc + 8].try_into().unwrap();
+        for (h, coeff) in [vld1q_s32(src0), vld1q_s32(src1)].into_iter().enumerate() {
+            let coeff_sign = vshrq_n_s32::<31>(coeff); // 0 or -1 per lane
+            let abs = vabsq_s32(coeff);
+
+            // threshold: pass iff (abs << (1+log_scale)) >= dequant; `fail` = below.
+            let shifted = vshlq_s32(abs, sh_pre);
+            let fail = vcltq_s32(shifted, thresh_v);
+
+            // a = clamp_i16(abs + round); tmp32 = (a * quant_fp) >> (16-log_scale)
+            let sum = vaddq_s32(abs, round_v);
+            let a = vmaxq_s32(vminq_s32(sum, hi), lo);
+            let prod = vmulq_s32(a, quant_v);
+            let tmp = vshlq_s32(prod, sh_q);
+            // zero where the threshold failed (pass ? tmp : 0)
+            let tmp_masked = vbslq_s32(fail, zero, tmp);
+
+            // qcoeff = (tmp_masked ^ sign) - sign
+            let q = vsubq_s32(veorq_s32(tmp_masked, coeff_sign), coeff_sign);
+            // abs_dq = (tmp_masked * dequant) >> log_scale ; dqcoeff = signed
+            let dqprod = vmulq_s32(tmp_masked, deq_v);
+            let absdq = vshlq_s32(dqprod, sh_dq);
+            let dq = vsubq_s32(veorq_s32(absdq, coeff_sign), coeff_sign);
+
+            let qo: &mut [i32; 4] = (&mut qcoeff[rc + h * 4..rc + h * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1q_s32(qo, q);
+            let dqo: &mut [i32; 4] = (&mut dqcoeff[rc + h * 4..rc + h * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1q_s32(dqo, dq);
+        }
+        rc += 8;
+    }
     while rc + 4 <= n {
         let src: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
         let coeff = vld1q_s32(src);
@@ -482,7 +521,46 @@ fn quantize_b_raster_impl_neon(
     let sh_q = vdupq_n_s32(-(16 - log_scale)); // final >> (16-log_scale)
     let sh_dq = vdupq_n_s32(-log_scale); // dq product >> log_scale
 
+    // Two independent 4-lane halves per iteration, same as
+    // `quantize_fp_raster_impl_neon`: the per-coefficient chain is ~12
+    // serially-dependent vector ops, so the halves overlap in the pipe.
     let mut rc = 0usize;
+    while rc + 8 <= n {
+        let src0: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
+        let src1: &[i32; 4] = coeffs[rc + 4..rc + 8].try_into().unwrap();
+        for (h, coeff) in [vld1q_s32(src0), vld1q_s32(src1)].into_iter().enumerate() {
+            let coeff_sign = vshrq_n_s32::<31>(coeff);
+            let abs = vabsq_s32(coeff);
+
+            // dead-zone: pass iff abs >= zbin; `fail` = abs < zbin.
+            let fail = vcltq_s32(abs, zbin_v);
+
+            // tmp = clamp_i16(abs + round)
+            let sum = vaddq_s32(abs, round_v);
+            let tmp = vmaxq_s32(vminq_s32(sum, hi), lo);
+            // tmp32 = (((tmp*quant) >> 16) + tmp) * quant_shift >> (16-log_scale)
+            let p1 = vshrq_n_s32::<16>(vmulq_s32(tmp, quant_v));
+            let inner = vaddq_s32(p1, tmp);
+            let p2 = vmulq_s32(inner, qshift_v);
+            let tmp32 = vshlq_s32(p2, sh_q);
+            let tmp_masked = vbslq_s32(fail, zero, tmp32); // pass ? tmp32 : 0
+
+            let q = vsubq_s32(veorq_s32(tmp_masked, coeff_sign), coeff_sign);
+            let dqprod = vmulq_s32(tmp_masked, deq_v);
+            let absdq = vshlq_s32(dqprod, sh_dq);
+            let dq = vsubq_s32(veorq_s32(absdq, coeff_sign), coeff_sign);
+
+            let qo: &mut [i32; 4] = (&mut qcoeff[rc + h * 4..rc + h * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1q_s32(qo, q);
+            let dqo: &mut [i32; 4] = (&mut dqcoeff[rc + h * 4..rc + h * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1q_s32(dqo, dq);
+        }
+        rc += 8;
+    }
     while rc + 4 <= n {
         let src: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
         let coeff = vld1q_s32(src);
