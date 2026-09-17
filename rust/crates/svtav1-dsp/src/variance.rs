@@ -551,15 +551,50 @@ fn sse_impl_v3(
     height: usize,
 ) -> u64 {
     use magetypes::simd::generic::{i32x8, u8x32};
-    let fold = |acc: i32x8<X64V3Token>, a: &[u8; 16], b: &[u8; 16]| {
-        let mut aa = [0u8; 32];
-        let mut bb = [0u8; 32];
-        aa[..16].copy_from_slice(a);
-        bb[..16].copy_from_slice(b);
-        let a = u8x32::from_array(token, aa).widen_low().bitcast_i16x16();
-        let b = u8x32::from_array(token, bb).widen_low().bitcast_i16x16();
-        let d = a - b;
-        acc + d.madd_adjacent(d)
+    if width >= 32 {
+        // Direct 32-byte row loads — no staging copies. `widen_low` /
+        // `widen_high` cover all 32 pixels; each `madd_adjacent` lane sums a
+        // pair of i16 squares into i32, and the per-lane per-fold bound
+        // (2 * 255^2 = 130050, twice that per 32px fold) matches the
+        // `drain_every` bound the narrow path below was tuned to.
+        let mut total: u64 = 0;
+        let mut acc = i32x8::splat(token, 0);
+        let drain_every = (32_000 / width).max(1);
+        let mut since_drain = 0usize;
+        for row in 0..height {
+            let s_off = row * src_stride;
+            let r_off = row * ref_stride;
+            let mut col = 0usize;
+            while col + 32 <= width {
+                let a: &[u8; 32] = src[s_off + col..s_off + col + 32].try_into().unwrap();
+                let b: &[u8; 32] = ref_[r_off + col..r_off + col + 32].try_into().unwrap();
+                let av = u8x32::load(token, a);
+                let bv = u8x32::load(token, b);
+                let d_lo = av.widen_low().bitcast_i16x16() - bv.widen_low().bitcast_i16x16();
+                let d_hi = av.widen_high().bitcast_i16x16() - bv.widen_high().bitcast_i16x16();
+                acc = acc + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+                col += 32;
+            }
+            for c in col..width {
+                let d = src[s_off + c] as i32 - ref_[r_off + c] as i32;
+                total += (d * d) as u64;
+            }
+            since_drain += 1;
+            if since_drain >= drain_every {
+                total += u64::from(acc.reduce_add() as u32);
+                acc = i32x8::splat(token, 0);
+                since_drain = 0;
+            }
+        }
+        return total + u64::from(acc.reduce_add() as u32);
+    }
+    use magetypes::simd::generic::i32x4;
+    let fold = |acc: i32x4<X64V3Token>, a: &[u8; 16], b: &[u8; 16]| {
+        let a = magetypes::simd::generic::u8x16::load(token, a);
+        let b = magetypes::simd::generic::u8x16::load(token, b);
+        let d_lo = a.widen_low().bitcast_i16x8() - b.widen_low().bitcast_i16x8();
+        let d_hi = a.widen_high().bitcast_i16x8() - b.widen_high().bitcast_i16x8();
+        acc + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi)
     };
     // Keep narrow row widths constant through inlining: runtime-length
     // copy_from_slice otherwise survives as memcpy calls for every row.
@@ -571,7 +606,7 @@ fn sse_impl_v3(
             ref_stride,
             w,
             height,
-            i32x8::splat(token, 0),
+            i32x4::splat(token, 0),
             fold,
             |acc| acc.reduce_add(),
         )
