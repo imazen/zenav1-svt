@@ -267,6 +267,10 @@ fn wiener_simd_applicable(hfilter: &[i16; 8], vfilter: &[i16; 8], w: usize) -> b
         || vfilter[1] != vfilter[5]
         || vfilter[2] != vfilter[4]
         || vfilter[7] != 0
+        || hfilter[0] != hfilter[6]
+        || hfilter[1] != hfilter[5]
+        || hfilter[2] != hfilter[4]
+        || hfilter[7] != 0
     {
         return false;
     }
@@ -425,10 +429,21 @@ fn wiener_convolve_simd(
 
             let mut x = 0;
             while x < w {
-                let mut acc = bias_h;
-                for k in 0..8 {
-                    acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
-                }
+                // Symmetric taps (certified by `wiener_simd_applicable`):
+                // fold `s[k]*h[k] + s[7-k]*h[7-k]` into `h[k]*(s[k]+s[7-k])`
+                // — C's `wiener_convolve_h_tap7_kernel_avx512` pair-sum, four
+                // multiplies instead of eight.
+                let acc = bias_h
+                    + (i32x16::from_slice(token, &s32[x..])
+                        + i32x16::from_slice(token, &s32[x + 6..]))
+                        * hc[0]
+                    + (i32x16::from_slice(token, &s32[x + 1..])
+                        + i32x16::from_slice(token, &s32[x + 5..]))
+                        * hc[1]
+                    + (i32x16::from_slice(token, &s32[x + 2..])
+                        + i32x16::from_slice(token, &s32[x + 4..]))
+                        * hc[2]
+                    + i32x16::from_slice(token, &s32[x + 3..]) * hc[3];
                 let v = acc
                     .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
                     .max(zero)
