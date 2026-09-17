@@ -854,7 +854,11 @@ pub(crate) fn evaluate_leaf(
     }
     // The shared MDS3 residual workspace after the loop: the LAST
     // processed candidate's (order1[n3-1]) whole-block depth-0 residual.
-    let mut psq_resid = vec![0i32; w * h];
+    // `dirty_pool`: `residual_i32` writes every position, so the zero fill
+    // `vec![0i32; _]` used to pay was dead work (the `tx_pipeline::grown_out`
+    // contract). The kernel is C `svt_residual_kernel8bit` — strided source,
+    // packed pred/out — the same call `pd0` already makes.
+    let mut psq_resid = crate::vecpool::dirty_pool::<i32>(w * h);
     // bd10 twin (task #94, root #2): the SAME last-candidate residual at TRUE
     // 10 bits (`src10 - last.pred10`), consumed by `min_nz_hv` at bd10. Built
     // only when the last candidate carries a 10-bit prediction (== bd10 funnel
@@ -862,18 +866,21 @@ pub(crate) fn evaluate_leaf(
     let mut psq_resid10: Vec<i32> = Vec::new();
     {
         let last = &cands[order1[n3 - 1]];
-        for r in 0..h {
-            let srow = y_src_off + r * y_src_stride;
-            for c in 0..w {
-                psq_resid[r * w + c] = y_src[srow + c] as i32 - last.pred[r * w + c] as i32;
-            }
-        }
+        svtav1_dsp::residual::residual_i32(
+            &y_src[y_src_off..],
+            y_src_stride,
+            &last.pred,
+            w,
+            w,
+            h,
+            &mut psq_resid,
+        );
         if !last.pred10.is_empty() {
             // Task #6 chunk 1: `blk_y_src10` is the real u16 source on a
             // native-HBD encode, and the same `u8 << (bd - 8)` widening this
             // loop did inline otherwise.
             debug_assert_eq!(blk_y_src10.len(), w * h);
-            psq_resid10 = vec![0i32; w * h];
+            psq_resid10 = crate::vecpool::dirty_pool::<i32>(w * h).into_vec();
             for i in 0..w * h {
                 psq_resid10[i] = blk_y_src10[i] as i32 - last.pred10[i] as i32;
             }
@@ -945,7 +952,7 @@ pub(crate) fn evaluate_leaf(
             gate_y,
             gate_u,
             gate_v,
-            psq_resid,
+            psq_resid: psq_resid.into_vec(),
             psq_resid10,
             win_recon10: wr,
             win_u_recon10: wu,
@@ -1021,7 +1028,7 @@ pub(crate) fn evaluate_leaf(
         gate_y,
         gate_u,
         gate_v,
-        psq_resid,
+        psq_resid: psq_resid.into_vec(),
         psq_resid10,
         win_recon10,
         win_u_recon10: Vec::new(),

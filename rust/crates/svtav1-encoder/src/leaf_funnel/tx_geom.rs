@@ -169,12 +169,15 @@ pub(crate) fn min_nz_hv(
     let half_eob = |ox: usize, oy: usize, tw: usize, th: usize| -> u16 {
         let n = tw * th;
         let c_tx = cc::tx_size_from_dims(tw, th);
-        let mut residual = vec![0i32; n];
+        // `dirty_pool`: every position is written before it is read (the
+        // `copy_from_slice` rows for `residual`, the forward transform for
+        // `coeffs`), so the zero fill is dead work.
+        let mut residual = crate::vecpool::dirty_pool::<i32>(n).into_vec();
         for r in 0..th {
             let rrow = (oy + r) * w + ox;
             residual[r * tw..(r + 1) * tw].copy_from_slice(&resid[rrow..rrow + tw]);
         }
-        let mut coeffs = vec![0i32; n];
+        let mut coeffs = crate::vecpool::dirty_pool::<i32>(n).into_vec();
         let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
             &residual,
             &mut coeffs,
@@ -186,7 +189,7 @@ pub(crate) fn min_nz_hv(
         // 64-dim fold (the 64x32/32x64 halves of a 64x64 block).
         let (pw, ph) = (tw.min(32), th.min(32));
         let packed = if tw > 32 || th > 32 {
-            let mut v = vec![0i32; pw * ph];
+            let mut v = crate::vecpool::dirty_pool::<i32>(pw * ph).into_vec();
             for r in 0..ph {
                 v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * tw..r * tw + pw]);
             }
