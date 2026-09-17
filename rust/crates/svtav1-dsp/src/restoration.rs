@@ -2794,14 +2794,16 @@ pub fn sse_region(
     width: usize,
     height: usize,
 ) -> i64 {
-    let mut sse: i64 = 0;
-    for i in 0..height {
-        for j in 0..width {
-            let d = a[a_origin + i * a_stride + j] as i64 - b[b_origin + i * b_stride + j] as i64;
-            sse += d * d;
-        }
-    }
-    sse
+    // Same sum of squared diffs as the scalar nest — `variance::sse` reads
+    // `row * stride + col` over `height` rows, identical reach.
+    crate::variance::sse(
+        &a[a_origin..],
+        a_stride,
+        &b[b_origin..],
+        b_stride,
+        width,
+        height,
+    ) as i64
 }
 
 // ===========================================================================
