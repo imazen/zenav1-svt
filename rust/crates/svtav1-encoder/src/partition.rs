@@ -490,7 +490,10 @@ pub(crate) fn extract_neighbors_tiled(
             0
         });
         let mut last = left_ref0.unwrap_or(129);
-        for (dst, idx) in left[..n_real].iter_mut().zip((0..n_real).map(|i| base + i * stride)) {
+        for (dst, idx) in left[..n_real]
+            .iter_mut()
+            .zip((0..n_real).map(|i| base + i * stride))
+        {
             last = recon[idx];
             *dst = last;
         }

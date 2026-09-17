@@ -51,22 +51,28 @@ pub(super) fn chroma_detector_fires(
         0
     };
     let rows = chh >> shift;
+    // The subsampled SAD is a strided block SAD — `stride << shift` picks out
+    // every (1<<shift)-th row, and each row's `cw` samples are contiguous.
+    // `block_sad` sums |a-b| over `rows` rows exactly as the scalar loop did;
+    // the sum is pure, so the `cb || cr` early exit short-circuits identically
+    // to the old `||` on the three completed sums.
     let sad =
         |a: &[u8], a_off: usize, a_stride: usize, b: &[u8], b_off: usize, b_stride: usize| -> u32 {
-            let mut s = 0u32;
-            for r in 0..rows {
-                let ar = a_off + r * (a_stride << shift);
-                let br = b_off + r * (b_stride << shift);
-                for c in 0..cw {
-                    s += (a[ar + c] as i32 - b[br + c] as i32).unsigned_abs();
-                }
-            }
-            s
+            svtav1_dsp::me_sad::block_sad(
+                &a[a_off..],
+                a_stride << shift,
+                &b[b_off..],
+                b_stride << shift,
+                cw,
+                rows,
+            )
         };
     let y_dist = sad(y_src, y_off, y_stride, y_pred, 0, y_pred_stride) << 1;
     let cb_dist = sad(u_src, c_off, c_stride, u_pred, 0, cw);
-    let cr_dist = sad(v_src, c_off, c_stride, v_pred, 0, cw);
-    cb_dist > y_dist || cr_dist > y_dist
+    if cb_dist > y_dist {
+        return true;
+    }
+    sad(v_src, c_off, c_stride, v_pred, 0, cw) > y_dist
 }
 
 /// bd10 twin of [`chroma_detector_fires`]: C's `hbd_md` arm of
@@ -140,6 +146,11 @@ pub(super) fn chroma_detector_fires_hbd(
 /// chroma plane's per-pixel source variance exceeds `cplx_th`. Variance is
 /// `svt_aom_varianceWxH_c` against a flat-128 reference (== variance around
 /// the block mean), then `ROUND_POWER_OF_TWO(var, log2(cw*chh))`.
+/// Flat reference plane for the variance arm's `src - 128` — the largest
+/// chroma block here is 32x32 (4:2:0 half of a 64x64 luma block); 64x64
+/// keeps the buffer safe under any future SB128-style caller.
+static FLAT128: [u8; 4096] = [128u8; 4096];
+
 pub(super) fn chroma_var_arm_fires(
     u_src: &[u8],
     v_src: &[u8],
@@ -149,22 +160,29 @@ pub(super) fn chroma_var_arm_fires(
     chh: usize,
     cplx_th: u32,
 ) -> bool {
+    // `variance_diff(src, flat-128)` is `Σ(src-128)² - (Σ(src-128))²/n` —
+    // exactly the scalar loop's `sse - (sum*sum)/n` (the kernel applies C's
+    // VAR macro with the same truncating i64 division), computed by the SIMD
+    // parts kernel.
     let block_var = |src: &[u8]| -> u32 {
-        let mut sum: i64 = 0;
-        let mut sse: i64 = 0;
-        for r in 0..chh {
-            let row = c_off + r * c_stride;
-            for c in 0..cw {
-                let diff = src[row + c] as i64 - 128;
-                sum += diff;
-                sse += diff * diff;
+        let n = cw * chh;
+        let var = if n <= FLAT128.len() {
+            svtav1_dsp::variance::variance_diff(&src[c_off..], c_stride, &FLAT128[..n], cw, cw, chh)
+        } else {
+            let mut sum: i64 = 0;
+            let mut sse: i64 = 0;
+            for r in 0..chh {
+                let row = c_off + r * c_stride;
+                for c in 0..cw {
+                    let diff = src[row + c] as i64 - 128;
+                    sum += diff;
+                    sse += diff * diff;
+                }
             }
-        }
-        let n = (cw * chh) as i64;
-        // svt_aom_varianceWxH_c: *sse - (uint32)((int64)sum*sum / (w*h)).
-        let var = (sse - (sum * sum) / n) as u32;
+            (sse - (sum * sum) / (n as i64)) as u32
+        };
         // block_var = ROUND_POWER_OF_TWO(var, log2(cw*chh)).
-        let log2n = n.trailing_zeros();
+        let log2n = (n as i64).trailing_zeros();
         (var + (1 << (log2n - 1))) >> log2n
     };
     block_var(u_src) > cplx_th || block_var(v_src) > cplx_th
