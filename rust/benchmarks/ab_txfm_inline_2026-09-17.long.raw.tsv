@@ -1,0 +1,18 @@
+# perf_ab raw — one row per interleaved paired round (NEITHER SIDE NICED)
+# base=/tmp/perf_encode_pre_z2
+# cand=target/release/examples/perf_encode
+# commit=98ea519ec host=mac date=2026-09-17T16:47:53Z
+# content=gradient sizes=[512] presets=[4] qp=40 rounds=12
+size	preset	round	base_ns	cand_ns	ident
+512	4	1	79930291	79110000	Y
+512	4	2	80778959	79142250	Y
+512	4	3	79513583	79803125	Y
+512	4	4	79592666	80112917	Y
+512	4	5	79804917	79588625	Y
+512	4	6	80009750	79305084	Y
+512	4	7	80064375	79447167	Y
+512	4	8	79620667	79515000	Y
+512	4	9	80036958	79940833	Y
+512	4	10	79513041	79661292	Y
+512	4	11	79299709	80070208	Y
+512	4	12	79710958	80099208	Y
