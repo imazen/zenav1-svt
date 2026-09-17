@@ -396,91 +396,81 @@ fn nz_map_ctxs_impl_v3(
 ) {
     let w = txb_wide(tx_size);
     let h = txb_high(tx_size);
-    let stride = w + TX_PAD_HOR;
-    // Third/fourth/fifth stencil taps past the right (+1) and below (+stride)
-    // ones — C's `offsets[3]` per tx_class (encodetxb_sse2.c:470-496).
-    let (off0, off1, off2) = match tx_class {
-        TX_CLASS_2D => (2, stride + 1, 2 * stride),
-        TX_CLASS_HORIZ => (2, 3, 4),
-        _ => (2 * stride, 3 * stride, 4 * stride),
-    };
     let table = &NZ_OFFSET[tx_class][tx_size];
 
+    // Width-specialized raster fill. Inside each `w` arm the padded stride is
+    // a compile-time constant and the tx_class match supplies literal tap
+    // offsets, so ONE window slice per iteration (`win`) bounds every tap —
+    // all inner indices are constants and fold against `win`'s literal
+    // length. `WIN = (4 + gather_rows) * stride + w` is the union of every
+    // class's reach (VERT's is the deepest); at the last iteration it lands
+    // exactly on the documented `(h + 3) * stride + w` bound.
+    macro_rules! nz_rows {
+        ($w:literal, $stride:literal, $step:literal, $win:literal, $chunk:literal,
+         $gather:ident, $kernel:ident,
+         ($o0_2d:literal, $o1_2d:literal, $o2_2d:literal),
+         ($o0_h:literal, $o1_h:literal, $o2_h:literal),
+         ($o0_v:literal, $o1_v:literal, $o2_v:literal)) => {{
+            macro_rules! nz_body {
+                ($o0:literal, $o1:literal, $o2:literal) => {{
+                    let mut row = 0usize;
+                    while row < h {
+                        let base = row * $stride;
+                        let idx = row * $w;
+                        let win: &[u8] = &levels[base..base + $win];
+                        $kernel(
+                            token,
+                            &$gather(win, 1, $stride),
+                            &$gather(win, $stride, $stride),
+                            &$gather(win, $o0, $stride),
+                            &$gather(win, $o1, $stride),
+                            &$gather(win, $o2, $stride),
+                            table[idx..idx + $chunk].try_into().unwrap(),
+                            (&mut coeff_contexts[idx..idx + $chunk])
+                                .try_into()
+                                .unwrap(),
+                        );
+                        row += $step;
+                    }
+                }};
+            }
+            match tx_class {
+                TX_CLASS_2D => nz_body!($o0_2d, $o1_2d, $o2_2d),
+                TX_CLASS_HORIZ => nz_body!($o0_h, $o1_h, $o2_h),
+                _ => nz_body!($o0_v, $o1_v, $o2_v),
+            }
+        }};
+    }
+
     match w {
-        4 => {
-            // 4 rows × 4 columns per iteration (h % 4 == 0).
-            let mut row = 0usize;
-            while row < h {
-                let base = row * stride;
-                let idx = row * 4;
-                let l0 = gather4(levels, base + 1, stride);
-                let l1 = gather4(levels, base + stride, stride);
-                let l2 = gather4(levels, base + off0, stride);
-                let l3 = gather4(levels, base + off1, stride);
-                let l4 = gather4(levels, base + off2, stride);
-                nz_kernel16_v3(
-                    token,
-                    &l0,
-                    &l1,
-                    &l2,
-                    &l3,
-                    &l4,
-                    table[idx..idx + 16].try_into().unwrap(),
-                    (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
-                );
-                row += 4;
-            }
-        }
-        8 => {
-            // 2 rows × 8 columns per iteration (h % 2 == 0).
-            let mut row = 0usize;
-            while row < h {
-                let base = row * stride;
-                let idx = row * 8;
-                let l0 = gather8(levels, base + 1, stride);
-                let l1 = gather8(levels, base + stride, stride);
-                let l2 = gather8(levels, base + off0, stride);
-                let l3 = gather8(levels, base + off1, stride);
-                let l4 = gather8(levels, base + off2, stride);
-                nz_kernel16_v3(
-                    token,
-                    &l0,
-                    &l1,
-                    &l2,
-                    &l3,
-                    &l4,
-                    table[idx..idx + 16].try_into().unwrap(),
-                    (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
-                );
-                row += 2;
-            }
-        }
-        _ => {
-            // w ∈ {16, 32}: 16 columns of one row per iteration; all five taps
-            // are direct contiguous loads.
-            let mut row = 0usize;
-            while row < h {
-                let mut cg = 0usize;
-                while cg < w {
-                    let base = row * stride + cg;
-                    let idx = row * w + cg;
-                    nz_kernel16_v3(
-                        token,
-                        levels[base + 1..base + 17].try_into().unwrap(),
-                        levels[base + stride..base + stride + 16]
-                            .try_into()
-                            .unwrap(),
-                        levels[base + off0..base + off0 + 16].try_into().unwrap(),
-                        levels[base + off1..base + off1 + 16].try_into().unwrap(),
-                        levels[base + off2..base + off2 + 16].try_into().unwrap(),
-                        table[idx..idx + 16].try_into().unwrap(),
-                        (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
-                    );
-                    cg += 16;
-                }
-                row += 1;
-            }
-        }
+        // 4 rows × 4 columns per iteration (h % 4 == 0), stride 8.
+        4 => nz_rows!(
+            4, 8, 4, 60, 16, gather4, nz_kernel16_v3,
+            (2, 9, 16),
+            (2, 3, 4),
+            (16, 24, 32)
+        ),
+        // 2 rows × 8 columns per iteration (h % 2 == 0), stride 12.
+        8 => nz_rows!(
+            8, 12, 2, 68, 16, gather8, nz_kernel16_v3,
+            (2, 13, 24),
+            (2, 3, 4),
+            (24, 36, 48)
+        ),
+        // 1 row × 16 columns per iteration, stride 20.
+        16 => nz_rows!(
+            16, 20, 1, 96, 16, gather16, nz_kernel16_v3,
+            (2, 21, 40),
+            (2, 3, 4),
+            (40, 60, 80)
+        ),
+        // 1 row × 32 columns per iteration, stride 36.
+        _ => nz_rows!(
+            32, 36, 1, 176, 32, gather32, nz_kernel32_v3,
+            (2, 37, 72),
+            (2, 3, 4),
+            (72, 108, 144)
+        ),
     }
 
     // DC of a 2D block is context 0 (`(tx_class | coeff_idx) == 0` in
@@ -687,6 +677,23 @@ fn gather8(levels: &[u8], s: usize, stride: usize) -> [u8; 16] {
     a
 }
 
+/// Contiguous 16-byte tap — the wide-arm twin of [`gather8`]; `stride` is
+/// unused but kept in the signature so the width-specialized macro can call
+/// every gather with the same shape.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn gather16(levels: &[u8], s: usize, _stride: usize) -> [u8; 16] {
+    levels[s..s + 16].try_into().unwrap()
+}
+
+/// Contiguous 32-byte tap for the `w == 32` arm — C's `get_32n_*_avx2`
+/// width (`_mm256_loadu_si256` per tap).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn gather32(levels: &[u8], s: usize, _stride: usize) -> [u8; 32] {
+    levels[s..s + 32].try_into().unwrap()
+}
+
 /// Sum the clamped 5-neighbour stencil for 16 positions, halve-round, clamp to
 /// 4, add the position base, and store. Mirrors `get_coeff_contexts_kernel_sse2`
 /// (encodetxb_sse2.c:65): `min(level, 3)` per tap (levels are 0..=127, so
@@ -715,6 +722,33 @@ fn nz_kernel16_v3(
     c = _mm_min_epu8(c, _mm_set1_epi8(4));
     c = _mm_add_epi8(c, _mm_loadu_si128(offtab));
     _mm_storeu_si128(out, c);
+}
+
+/// The 32-lane twin of [`nz_kernel16_v3`] — C's `get_32n_*_avx2` width
+/// (`_mm256` versions of the same min/add/avg/min/add chain; every op is
+/// per-byte, so 32 positions behave identically to two 16-position folds).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn nz_kernel32_v3(
+    _token: Desktop64,
+    l0: &[u8; 32],
+    l1: &[u8; 32],
+    l2: &[u8; 32],
+    l3: &[u8; 32],
+    l4: &[u8; 32],
+    offtab: &[u8; 32],
+    out: &mut [i8; 32],
+) {
+    let c3 = _mm256_set1_epi8(3);
+    let mut c = _mm256_min_epu8(_mm256_loadu_si256(l0), c3);
+    c = _mm256_add_epi8(c, _mm256_min_epu8(_mm256_loadu_si256(l1), c3));
+    c = _mm256_add_epi8(c, _mm256_min_epu8(_mm256_loadu_si256(l2), c3));
+    c = _mm256_add_epi8(c, _mm256_min_epu8(_mm256_loadu_si256(l3), c3));
+    c = _mm256_add_epi8(c, _mm256_min_epu8(_mm256_loadu_si256(l4), c3));
+    c = _mm256_avg_epu8(c, _mm256_setzero_si256());
+    c = _mm256_min_epu8(c, _mm256_set1_epi8(4));
+    c = _mm256_add_epi8(c, _mm256_loadu_si256(offtab));
+    _mm256_storeu_si256(out, c);
 }
 
 #[cfg(test)]
