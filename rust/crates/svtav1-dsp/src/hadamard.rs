@@ -1061,6 +1061,109 @@ fn aom_hadamard_32x32_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32
     }
 }
 
+/// i16 semantics inside i32 lanes: `(v as i16) as i32` — the load-bearing
+/// 16-bit WRAP of C's `_mm256_{add,sub}_epi16`, expressed as a shift pair
+/// (packs would saturate, not wrap).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn wrap16_v3(_token: X64V3Token, v: __m256i) -> __m256i {
+    _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(v))
+}
+
+/// Load 8 i32 lanes and sign-extend through 16 bits (scalar `as i16`).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn load16w_v3(token: X64V3Token, src: &[i32; 8]) -> __m256i {
+    wrap16_v3(token, _mm256_loadu_si256(src))
+}
+
+/// Store 8 i32 lanes, 16-bit-wrapped (scalar `wrapping_add/sub` + `as i32`).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn store16w_v3(token: X64V3Token, dst: &mut [i32; 8], v: __m256i) {
+    _mm256_storeu_si256(dst, wrap16_v3(token, v));
+}
+
+/// The 64-element cross-combine of `aom_hadamard_16x16`, 8 lanes at a time:
+/// reads sign-extend through 16 bits (scalar `as i16`), the add/sub wraps
+/// at 16 bits (scalar `wrapping_add/sub`), `>> 1` is the i16 arithmetic
+/// shift on the sign-extended lane.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_combine16_v3(token: X64V3Token, coeff: &mut [i32]) {
+    for i in (0..64).step_by(8) {
+        let a0 = load16w_v3(token, coeff[i..i + 8].try_into().unwrap());
+        let a1 = load16w_v3(token, coeff[i + 64..i + 72].try_into().unwrap());
+        let a2 = load16w_v3(token, coeff[i + 128..i + 136].try_into().unwrap());
+        let a3 = load16w_v3(token, coeff[i + 192..i + 200].try_into().unwrap());
+        let b0 = _mm256_srai_epi32::<1>(wrap16_v3(token, _mm256_add_epi32(a0, a1)));
+        let b1 = _mm256_srai_epi32::<1>(wrap16_v3(token, _mm256_sub_epi32(a0, a1)));
+        let b2 = _mm256_srai_epi32::<1>(wrap16_v3(token, _mm256_add_epi32(a2, a3)));
+        let b3 = _mm256_srai_epi32::<1>(wrap16_v3(token, _mm256_sub_epi32(a2, a3)));
+        store16w_v3(
+            token,
+            (&mut coeff[i..i + 8]).try_into().unwrap(),
+            _mm256_add_epi32(b0, b2),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 64..i + 72]).try_into().unwrap(),
+            _mm256_add_epi32(b1, b3),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 128..i + 136]).try_into().unwrap(),
+            _mm256_sub_epi32(b0, b2),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 192..i + 200]).try_into().unwrap(),
+            _mm256_sub_epi32(b1, b3),
+        );
+    }
+}
+
+/// The 256-element cross-combine of `aom_hadamard_32x32`: i32 add/sub +
+/// `>> 2`, `_mm256_packs_epi32` SATURATING narrow, then wrapping 16-bit
+/// add/sub — same shapes as [`hadamard_combine16_v3`].
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_combine32_v3(token: X64V3Token, coeff: &mut [i32]) {
+    let lo = _mm256_set1_epi32(i16::MIN as i32);
+    let hi = _mm256_set1_epi32(i16::MAX as i32);
+    let sat = |v| _mm256_max_epi32(_mm256_min_epi32(v, hi), lo);
+    for i in (0..256).step_by(8) {
+        let a0 = load16w_v3(token, coeff[i..i + 8].try_into().unwrap());
+        let a1 = load16w_v3(token, coeff[i + 256..i + 264].try_into().unwrap());
+        let a2 = load16w_v3(token, coeff[i + 512..i + 520].try_into().unwrap());
+        let a3 = load16w_v3(token, coeff[i + 768..i + 776].try_into().unwrap());
+        let b0 = sat(_mm256_srai_epi32::<2>(_mm256_add_epi32(a0, a1)));
+        let b1 = sat(_mm256_srai_epi32::<2>(_mm256_sub_epi32(a0, a1)));
+        let b2 = sat(_mm256_srai_epi32::<2>(_mm256_add_epi32(a2, a3)));
+        let b3 = sat(_mm256_srai_epi32::<2>(_mm256_sub_epi32(a2, a3)));
+        store16w_v3(
+            token,
+            (&mut coeff[i..i + 8]).try_into().unwrap(),
+            _mm256_add_epi32(b0, b2),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 256..i + 264]).try_into().unwrap(),
+            _mm256_add_epi32(b1, b3),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 512..i + 520]).try_into().unwrap(),
+            _mm256_sub_epi32(b0, b2),
+        );
+        store16w_v3(
+            token,
+            (&mut coeff[i + 768..i + 776]).try_into().unwrap(),
+            _mm256_sub_epi32(b1, b3),
+        );
+    }
+}
+
 // Carry one V3 token through sub-transforms and combine at V3 features.
 #[cfg(target_arch = "x86_64")]
 #[rite]
@@ -1074,23 +1177,7 @@ fn hadamard_compose16_v3(
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
         aom_hadamard_8x8_impl_v3(token, &src_diff[off..], src_stride, &mut coeff[idx * 64..]);
     }
-    for i in 0..64usize {
-        // The 8x8 stage already produced int16-valued coefficients (C's
-        // `buffer2` / the AVX2 `temp_coeff` are both int16), so reading them
-        // back as i16 is lossless and matches the AVX2 lane width.
-        let a0 = coeff[i] as i16;
-        let a1 = coeff[i + 64] as i16;
-        let a2 = coeff[i + 128] as i16;
-        let a3 = coeff[i + 192] as i16;
-        let b0 = a0.wrapping_add(a1) >> 1;
-        let b1 = a0.wrapping_sub(a1) >> 1;
-        let b2 = a2.wrapping_add(a3) >> 1;
-        let b3 = a2.wrapping_sub(a3) >> 1;
-        coeff[i] = b0.wrapping_add(b2) as i32;
-        coeff[i + 64] = b1.wrapping_add(b3) as i32;
-        coeff[i + 128] = b0.wrapping_sub(b2) as i32;
-        coeff[i + 192] = b1.wrapping_sub(b3) as i32;
-    }
+    hadamard_combine16_v3(token, coeff);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1105,27 +1192,7 @@ fn hadamard_compose32_v3(
         let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
         hadamard_compose16_v3(token, &src_diff[off..], src_stride, &mut coeff[idx * 256..]);
     }
-    for i in 0..256usize {
-        // `temp_coeff` is int16: the 16x16 stage is read back through 16-bit
-        // lanes and sign-extended (the AVX2 `sign_extend_16bit_to_32bit`).
-        let a0 = coeff[i] as i16 as i32;
-        let a1 = coeff[i + 256] as i16 as i32;
-        let a2 = coeff[i + 512] as i16 as i32;
-        let a3 = coeff[i + 768] as i16 as i32;
-        // 32-bit add/sub then arithmetic `>> 2` (`_mm256_srai_epi32`).
-        let b0 = (a0 + a1) >> 2;
-        let b1 = (a0 - a1) >> 2;
-        let b2 = (a2 + a3) >> 2;
-        let b3 = (a2 - a3) >> 2;
-        // `_mm256_packs_epi32`: SATURATING 32 -> 16 narrowing.
-        let sat = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let (b0, b1, b2, b3) = (sat(b0), sat(b1), sat(b2), sat(b3));
-        // `_mm256_{add,sub}_epi16`: WRAPPING 16-bit, then sign-extended store.
-        coeff[i] = b0.wrapping_add(b2) as i32;
-        coeff[i + 256] = b1.wrapping_add(b3) as i32;
-        coeff[i + 512] = b0.wrapping_sub(b2) as i32;
-        coeff[i + 768] = b1.wrapping_sub(b3) as i32;
-    }
+    hadamard_combine32_v3(token, coeff);
 }
 
 /// AArch64 twin of [`hadamard_compose16_v3`]: four 8x8 sub-transforms via
