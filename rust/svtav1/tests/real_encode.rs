@@ -617,10 +617,10 @@ fn transforms_on_real_residual() {
     let pred = make_flat(width, height, 128);
 
     // Compute 8x8 residual
-    let mut residual = [0i32; 64];
+    let mut residual = [0i16; 64];
     for r in 0..8 {
         for c in 0..8 {
-            residual[r * 8 + c] = src[r * width + c] as i32 - pred[r * width + c] as i32;
+            residual[r * 8 + c] = src[r * width + c] as i16 - pred[r * width + c] as i16;
         }
     }
 
@@ -641,7 +641,7 @@ fn transforms_on_real_residual() {
     let max_err: i32 = residual
         .iter()
         .zip(recovered.iter())
-        .map(|(&a, &b)| (a - b).abs())
+        .map(|(&a, &b)| (i32::from(a) - b).abs())
         .max()
         .unwrap();
     assert!(max_err <= 4, "roundtrip max error {max_err} > 4");
@@ -653,10 +653,10 @@ fn quantize_real_coefficients() {
     let src = make_zone_plate(width, 64);
     let pred = make_flat(width, 64, 128);
 
-    let mut residual = [0i32; 64];
+    let mut residual = [0i16; 64];
     for r in 0..8 {
         for c in 0..8 {
-            residual[r * 8 + c] = src[r * width + c] as i32 - pred[r * width + c] as i32;
+            residual[r * 8 + c] = src[r * width + c] as i16 - pred[r * width + c] as i16;
         }
     }
 

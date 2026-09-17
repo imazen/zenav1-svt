@@ -44,7 +44,7 @@ inv_rect_driver!(inv_adst_adst_16x8, 16, 8, iadst16_x8, iadst8_x8);
 #[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_adst(
     t: Desktop64,
-    input: &[i32],
+    input: &[i16],
     output: &mut [i32],
     input_stride: usize,
     w: usize,

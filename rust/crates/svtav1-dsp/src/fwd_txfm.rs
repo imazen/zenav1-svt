@@ -2336,7 +2336,7 @@ pub fn get_fwd_txfm_func(tx_type_1d: u8, size: usize) -> Option<TxfmFunc> {
 /// extra scale, exactly like C.
 #[allow(clippy::too_many_arguments)]
 pub fn fwd_txfm2d_core(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -2362,12 +2362,12 @@ pub fn fwd_txfm2d_core(
         for c in 0..w {
             if !ud_flip {
                 for r in 0..h {
-                    temp_in[r] = input[r * input_stride + c];
+                    temp_in[r] = i32::from(input[r * input_stride + c]);
                 }
             } else {
                 for r in 0..h {
                     // flip upside down
-                    temp_in[r] = input[(h - r - 1) * input_stride + c];
+                    temp_in[r] = i32::from(input[(h - r - 1) * input_stride + c]);
                 }
             }
             round_shift_array(&mut temp_in[..h], -(shift[0] as i32));
@@ -2407,7 +2407,7 @@ pub fn fwd_txfm2d_core(
 /// the (type, size) combination has no 1D kernel (e.g. ADST on 32/64 dims).
 #[allow(clippy::too_many_arguments)]
 pub fn fwd_txfm2d_c_exact(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -2503,82 +2503,82 @@ pub fn fwd_txfm2d_c_exact(
 }
 
 /// Forward 64x64 DCT-DCT.
-pub fn fwd_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_64x64_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 64, 64, 0, 0, false, false);
 }
 
 /// Forward 4x8 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_4x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_4x8_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 4, 8, 0, 0, false, false);
 }
 
 /// Forward 8x4 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_8x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_8x4_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 8, 4, 0, 0, false, false);
 }
 
 /// Forward 8x16 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_8x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_8x16_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 8, 16, 0, 0, false, false);
 }
 
 /// Forward 16x8 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_16x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_16x8_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 16, 8, 0, 0, false, false);
 }
 
 /// Forward 16x32 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_16x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_16x32_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 16, 32, 0, 0, false, false);
 }
 
 /// Forward 32x16 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_32x16_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 32, 16, 0, 0, false, false);
 }
 
 /// Forward 32x64 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_32x64_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 32, 64, 0, 0, false, false);
 }
 
 /// Forward 64x32 DCT-DCT (rectangular).
-pub fn fwd_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_64x32_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 64, 32, 0, 0, false, false);
 }
 
 /// Forward 4x16 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_4x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_4x16_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 4, 16, 0, 0, false, false);
 }
 
 /// Forward 16x4 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_16x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_16x4_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 16, 4, 0, 0, false, false);
 }
 
 /// Forward 8x32 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_8x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_8x32_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 8, 32, 0, 0, false, false);
 }
 
 /// Forward 32x8 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_32x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_32x8_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 32, 8, 0, 0, false, false);
 }
 
 /// Forward 16x64 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_16x64_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 16, 64, 0, 0, false, false);
 }
 
 /// Forward 64x16 DCT-DCT (4:1 rectangular).
-pub fn fwd_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_64x16_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     fwd_txfm2d_c_exact(input, output, stride, 64, 16, 0, 0, false, false);
 }
 
 /// Forward 4x4 DCT-DCT using the general framework.
-pub fn fwd_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_4x4_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     incant!(
         fwd_txfm2d_4x4_dct_dct_impl(input, output, stride),
         [v3, neon, scalar]
@@ -2587,7 +2587,7 @@ pub fn fwd_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride:
 
 fn fwd_txfm2d_4x4_dct_dct_impl_scalar(
     _token: ScalarToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2598,7 +2598,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_scalar(
 #[arcane]
 fn fwd_txfm2d_4x4_dct_dct_impl_v3(
     _token: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2609,7 +2609,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_v3(
 #[arcane]
 fn fwd_txfm2d_4x4_dct_dct_impl_neon(
     _token: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2617,7 +2617,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_neon(
 }
 
 /// Forward 8x8 DCT-DCT.
-pub fn fwd_txfm2d_8x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_8x8_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     incant!(
         fwd_txfm2d_8x8_dct_dct_impl(input, output, stride),
         [v3, neon, scalar]
@@ -2626,7 +2626,7 @@ pub fn fwd_txfm2d_8x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride:
 
 fn fwd_txfm2d_8x8_dct_dct_impl_scalar(
     _token: ScalarToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2637,7 +2637,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_scalar(
 #[arcane]
 fn fwd_txfm2d_8x8_dct_dct_impl_v3(
     _token: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2648,7 +2648,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_v3(
 #[arcane]
 fn fwd_txfm2d_8x8_dct_dct_impl_neon(
     _token: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2656,7 +2656,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_neon(
 }
 
 /// Forward 16x16 DCT-DCT.
-pub fn fwd_txfm2d_16x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_16x16_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     incant!(
         fwd_txfm2d_16x16_dct_dct_impl(input, output, stride),
         [v3, neon, scalar]
@@ -2665,7 +2665,7 @@ pub fn fwd_txfm2d_16x16_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 
 fn fwd_txfm2d_16x16_dct_dct_impl_scalar(
     _token: ScalarToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2676,7 +2676,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_scalar(
 #[arcane]
 fn fwd_txfm2d_16x16_dct_dct_impl_v3(
     _token: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2687,7 +2687,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_v3(
 #[arcane]
 fn fwd_txfm2d_16x16_dct_dct_impl_neon(
     _token: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2695,7 +2695,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_neon(
 }
 
 /// Forward 32x32 DCT-DCT.
-pub fn fwd_txfm2d_32x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+pub fn fwd_txfm2d_32x32_dct_dct(input: &[i16], output: &mut [TranLow], stride: usize) {
     incant!(
         fwd_txfm2d_32x32_dct_dct_impl(input, output, stride),
         [v3, neon, scalar]
@@ -2704,7 +2704,7 @@ pub fn fwd_txfm2d_32x32_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 
 fn fwd_txfm2d_32x32_dct_dct_impl_scalar(
     _token: ScalarToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2715,7 +2715,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_scalar(
 #[arcane]
 fn fwd_txfm2d_32x32_dct_dct_impl_v3(
     _token: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2726,7 +2726,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_v3(
 #[arcane]
 fn fwd_txfm2d_32x32_dct_dct_impl_neon(
     _token: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
 ) {
@@ -2987,7 +2987,7 @@ mod tests {
 
     #[test]
     fn fwd_txfm2d_4x4_dc() {
-        let input = [100i32; 16];
+        let input = [100i16; 16];
         let mut output = [0i32; 16];
         fwd_txfm2d_4x4_dct_dct(&input, &mut output, 4);
         assert!(output[0].abs() > 0, "DC should be nonzero");
@@ -3002,7 +3002,7 @@ mod tests {
 
     #[test]
     fn fwd_txfm2d_8x8_dc() {
-        let input = [50i32; 64];
+        let input = [50i16; 64];
         let mut output = [0i32; 64];
         fwd_txfm2d_8x8_dct_dct(&input, &mut output, 8);
         assert!(output[0].abs() > 0, "DC should be nonzero");
@@ -3017,7 +3017,7 @@ mod tests {
 
     #[test]
     fn fwd_txfm2d_16x16_dc() {
-        let input = [30i32; 256];
+        let input = [30i16; 256];
         let mut output = [0i32; 256];
         fwd_txfm2d_16x16_dct_dct(&input, &mut output, 16);
         assert!(output[0].abs() > 0, "DC should be nonzero");
@@ -3033,7 +3033,7 @@ mod tests {
     #[test]
     fn fwd_txfm2d_4x4_zero() {
         let mut output = [0i32; 16];
-        fwd_txfm2d_4x4_dct_dct(&[0i32; 16], &mut output, 4);
+        fwd_txfm2d_4x4_dct_dct(&[0i16; 16], &mut output, 4);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -3062,7 +3062,7 @@ mod dispatch_tests {
 
     #[test]
     fn fwd_txfm2d_4x4_dct_dct_all_dispatch_levels() {
-        let input: [i32; 16] = [
+        let input: [i16; 16] = [
             10, -20, 30, -40, 50, -60, 70, -80, 15, -25, 35, -45, 55, -65, 75, -85,
         ];
         let mut reference = [0i32; 16];
@@ -3080,9 +3080,9 @@ mod dispatch_tests {
 
     #[test]
     fn fwd_txfm2d_8x8_dct_dct_all_dispatch_levels() {
-        let mut input = [0i32; 64];
+        let mut input = [0i16; 64];
         for (i, v) in input.iter_mut().enumerate() {
-            *v = (i as i32 * 7 - 30) % 100;
+            *v = ((i as i32 * 7 - 30) % 100) as i16;
         }
         let mut reference = [0i32; 64];
         fwd_txfm2d_8x8_dct_dct(&input, &mut reference, 8);

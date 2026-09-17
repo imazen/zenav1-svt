@@ -159,8 +159,16 @@ pub(crate) fn min_nz_hv(
     };
     // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
     qt.qm_level = qm_level_y;
-    let resid = if bd10 {
-        ev.psq_resid10()
+    let resid10;
+    let resid: &[i16] = if bd10 {
+        // 10-bit source diffs fit i16 (|src-pred| <= 1023); narrow once here
+        // so the shared half_eob path runs the same kernel as bd8.
+        resid10 = ev
+            .psq_resid10()
+            .iter()
+            .map(|&v| v as i16)
+            .collect::<Vec<i16>>();
+        &resid10
     } else {
         ev.psq_resid()
     };
@@ -172,7 +180,7 @@ pub(crate) fn min_nz_hv(
         // `dirty_pool`: every position is written before it is read (the
         // `copy_from_slice` rows for `residual`, the forward transform for
         // `coeffs`), so the zero fill is dead work.
-        let mut residual = crate::vecpool::dirty_pool::<i32>(n).into_vec();
+        let mut residual = crate::vecpool::dirty_pool::<i16>(n).into_vec();
         for r in 0..th {
             let rrow = (oy + r) * w + ox;
             residual[r * tw..(r + 1) * tw].copy_from_slice(&resid[rrow..rrow + tw]);

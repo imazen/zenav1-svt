@@ -180,10 +180,9 @@ fn fwd_adst32_matches_c() {
                 let res16: Vec<i16> = (0..w * h).map(|_| rng.residual()).collect();
                 let c_out = cref_fwd(w, h, &res16, txt);
 
-                let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
                 let mut ours = vec![0i32; w * h];
                 assert!(
-                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, t),
+                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res16, &mut ours, w, ts, t),
                     "fwd dispatch must now support {w}x{h} {t:?} (ADST-32)"
                 );
                 if ours != c_out {

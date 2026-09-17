@@ -104,7 +104,7 @@ pub fn bench_fwd_txfm_throughput() -> Vec<BenchResult> {
 
     // 4x4 DCT
     {
-        let input: Vec<i32> = (0..16).map(|i| i * 7 - 50).collect();
+        let input: Vec<i16> = (0..16).map(|i| i * 7 - 50).collect();
         let mut output = [0i32; 16];
         let iterations = 500_000u64;
         let start = std::time::Instant::now();
@@ -127,7 +127,7 @@ pub fn bench_fwd_txfm_throughput() -> Vec<BenchResult> {
 
     // 8x8 DCT
     {
-        let input: Vec<i32> = (0..64).map(|i| i * 3 - 100).collect();
+        let input: Vec<i16> = (0..64).map(|i| i * 3 - 100).collect();
         let mut output = [0i32; 64];
         let iterations = 200_000u64;
         let start = std::time::Instant::now();

@@ -126,7 +126,7 @@ macro_rules! dct_square_driver {
         #[cfg_attr(target_arch = "aarch64", rite(neon))]
         pub(super) fn $fwd_fn(
             t: Desktop64,
-            input: &[i32],
+            input: &[i16],
             output: &mut [i32],
             input_stride: usize,
         ) {
@@ -147,7 +147,7 @@ macro_rules! dct_square_driver {
                     let mut colin = [_mm256_setzero_si256(); N];
                     for r in 0..N {
                         colin[r] =
-                            round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
+                            round_shift_v(t, load16w(t, input, r * input_stride + colbase), pre_col);
                     }
                     let mut colout = [_mm256_setzero_si256(); N];
                     $fdct(t, &colin, &mut colout, cos_bit_col);
@@ -235,7 +235,7 @@ pub(super) fn inv_dct_square(
 #[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_dct_square(
     t: Desktop64,
-    input: &[i32],
+    input: &[i16],
     output: &mut [i32],
     input_stride: usize,
     n: usize,

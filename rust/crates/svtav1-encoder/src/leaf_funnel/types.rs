@@ -516,7 +516,7 @@ pub(crate) struct LeafEval {
     /// holds the LAST MDS3-processed candidate's whole-block DEPTH-0
     /// residual (the depth-1/2 trials write the per-depth scratch
     /// buffers, init_tx_cand_bf copies OUT of this one).
-    pub(super) psq_resid: Vec<i32>,
+    pub(super) psq_resid: Vec<i16>,
     /// bd10 twin of `psq_resid` (task #94, root #2): the LAST MDS3 candidate's
     /// whole-block depth-0 residual at TRUE 10 bits (`src10 - last.pred10`).
     /// C's `non_normative_txs` (product_coding_loop.c:9180) transforms +
@@ -718,7 +718,7 @@ impl LeafEval {
     /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
     /// consumed by the psq gate): the LAST MDS3 candidate's depth-0
     /// residual.
-    pub(crate) fn psq_resid(&self) -> &[i32] {
+    pub(crate) fn psq_resid(&self) -> &[i16] {
         &self.psq_resid
     }
 

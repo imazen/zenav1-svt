@@ -173,7 +173,7 @@ macro_rules! fwd_ext_driver {
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
-            input: &[i32],
+            input: &[i16],
             output: &mut [i32],
             input_stride: usize,
             col_1d: u8,
@@ -203,7 +203,7 @@ macro_rules! fwd_ext_driver {
                     for r in 0..H {
                         let src_row = if ud { H - 1 - r } else { r };
                         colin[r] =
-                            round_shift_v(t, load8(t, input, src_row * input_stride + colbase), pre_col);
+                            round_shift_v(t, load16w(t, input, src_row * input_stride + colbase), pre_col);
                     }
                     let mut colout = [_mm256_setzero_si256(); H];
                     match col_1d {
@@ -412,7 +412,7 @@ inv_ext_driver!(inv_ext_16x8, 16, 8,
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fwd_ext(
     t: Desktop64,
-    input: &[i32],
+    input: &[i16],
     output: &mut [i32],
     input_stride: usize,
     w: usize,

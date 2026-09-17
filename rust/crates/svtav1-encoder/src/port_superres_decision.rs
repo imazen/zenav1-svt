@@ -216,7 +216,7 @@ pub fn analyze_hor_freq(luma: &[u8], stride: usize, width: usize, height: usize)
     let mut freq_energy = [0u64; 16];
     let mut n = 0u64;
 
-    let mut src16 = [0i32; 16 * 4];
+    let mut src16 = [0i16; 16 * 4];
     let mut coeff = [0i32; 16 * 4];
 
     let mut i = 0usize;
@@ -226,7 +226,7 @@ pub fn analyze_hor_freq(luma: &[u8], stride: usize, width: usize, height: usize)
             for ii in 0..4 {
                 let row = (i + ii) * stride + j;
                 for jj in 0..16 {
-                    src16[ii * 16 + jj] = i32::from(luma[row + jj]);
+                    src16[ii * 16 + jj] = i16::from(luma[row + jj]);
                 }
             }
             svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(

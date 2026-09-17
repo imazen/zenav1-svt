@@ -289,7 +289,7 @@ pub(super) fn txt_search(
         // once. Only on the multi-candidate path: a one-candidate search has
         // nothing to share it with, and the per-call derivation writes into the
         // `TxScratch` buffer it already owns.
-        let shared_residual: Option<&[i32]> = if only_dct {
+        let shared_residual: Option<&[i16]> = if only_dct {
             None
         } else {
             let n = w * h;
@@ -297,7 +297,7 @@ pub(super) fn txt_search(
                 res_buf.resize(n, 0);
             }
             let r = &mut res_buf[..n];
-            svtav1_dsp::residual::residual_i32(&src[src_off..], src_stride, pred, w, w, h, r);
+            svtav1_dsp::residual::residual_i16(&src[src_off..], src_stride, pred, w, w, h, r);
             Some(&*r)
         };
         // The bd10 twin of the SELECTED type (not of the u8-best type): when the

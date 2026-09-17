@@ -25,11 +25,11 @@ mod transform_roundtrip {
     use svtav1_dsp::inv_txfm::*;
 
     /// Helper: generate a deterministic test pattern for a given size.
-    fn test_pattern(n: usize, seed: u8) -> Vec<i32> {
+    fn test_pattern(n: usize, seed: u8) -> Vec<i16> {
         (0..n)
             .map(|i| {
                 let v = (i as u8).wrapping_mul(seed).wrapping_add(37);
-                (v as i32) - 128 // centered around 0
+                (v as i16) - 128 // centered around 0
             })
             .collect()
     }
@@ -38,13 +38,14 @@ mod transform_roundtrip {
     fn dct4_roundtrip_multiple_inputs() {
         for seed in [1u8, 17, 42, 99, 200, 255] {
             let input = test_pattern(4, seed);
+            let input32: Vec<i32> = input.iter().map(|&v| i32::from(v)).collect();
             let mut fwd = [0i32; 4];
             let mut inv = [0i32; 4];
-            fdct4(&input, &mut fwd, 12);
+            fdct4(&input32, &mut fwd, 12);
             idct4(&fwd, &mut inv, 31);
             // AV1 scale factor: roundtrip = input * N/2 = input * 2
             for i in 0..4 {
-                let expected = input[i] * 2;
+                let expected = i32::from(input[i]) * 2;
                 let diff = (inv[i] - expected).abs();
                 assert!(
                     diff <= 2,
@@ -59,12 +60,13 @@ mod transform_roundtrip {
     fn dct8_roundtrip_multiple_inputs() {
         for seed in [1u8, 33, 77, 128, 250] {
             let input = test_pattern(8, seed);
+            let input32: Vec<i32> = input.iter().map(|&v| i32::from(v)).collect();
             let mut fwd = [0i32; 8];
             let mut inv = [0i32; 8];
-            fdct8(&input, &mut fwd, 12);
+            fdct8(&input32, &mut fwd, 12);
             idct8(&fwd, &mut inv, 31);
             for i in 0..8 {
-                let expected = input[i] * 4; // 8-point scale = N/2 = 4
+                let expected = i32::from(input[i]) * 4; // 8-point scale = N/2 = 4
                 let diff = (inv[i] - expected).abs();
                 assert!(
                     diff <= 4,
@@ -84,7 +86,7 @@ mod transform_roundtrip {
             fwd_txfm2d_4x4_dct_dct(&input, &mut fwd, 4);
             inv_txfm2d_4x4_dct_dct(&fwd, &mut inv, 4);
             for i in 0..16 {
-                let diff = (inv[i] - input[i]).abs();
+                let diff = (inv[i] - i32::from(input[i])).abs();
                 assert!(
                     diff <= 2,
                     "seed={seed} i={i}: inv={} input={} diff={diff}",
@@ -104,7 +106,7 @@ mod transform_roundtrip {
             fwd_txfm2d_8x8_dct_dct(&input, &mut fwd, 8);
             inv_txfm2d_8x8_dct_dct(&fwd, &mut inv, 8);
             for i in 0..64 {
-                let diff = (inv[i] - input[i]).abs();
+                let diff = (inv[i] - i32::from(input[i])).abs();
                 assert!(
                     diff <= 4,
                     "seed={seed} i={i}: inv={} input={} diff={diff}",
@@ -149,7 +151,7 @@ mod txfm_quant_roundtrip {
     #[test]
     fn txfm_quantize_dequantize_inv_txfm_4x4() {
         // Full chain: pixel residual → fwd txfm → quantize → dequantize → inv txfm
-        let residual: Vec<i32> = (0..16).map(|i| i * 5 - 40).collect();
+        let residual: Vec<i16> = (0..16).map(|i| i * 5 - 40).collect();
         let mut coeffs = [0i32; 16];
         fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, 4);
 
@@ -167,7 +169,7 @@ mod txfm_quant_roundtrip {
         // Verify reconstruction is reasonable (lossy but correlated)
         let mut total_error: i64 = 0;
         for i in 0..16 {
-            let err = (recon_residual[i] - residual[i]).abs() as i64;
+            let err = (recon_residual[i] - i32::from(residual[i])).abs() as i64;
             total_error += err;
         }
         let avg_error = total_error / 16;
@@ -181,7 +183,7 @@ mod txfm_quant_roundtrip {
     #[test]
     fn lossless_at_qp1() {
         // Very low quantization should be near-lossless
-        let residual: Vec<i32> = (0..16).map(|i| i * 3 - 20).collect();
+        let residual: Vec<i16> = (0..16).map(|i| i * 3 - 20).collect();
         let mut coeffs = [0i32; 16];
         fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, 4);
 
@@ -205,14 +207,14 @@ mod txfm_quant_roundtrip {
         inv_txfm2d_4x4_dct_dct(&dqcoeffs, &mut recon, 4);
 
         for i in 0..16 {
-            let diff = (recon[i] - residual[i]).abs();
+            let diff = (recon[i] - i32::from(residual[i])).abs();
             assert!(diff <= 2, "near-lossless recon error {diff} at {i}");
         }
     }
 
     #[test]
     fn zero_residual_produces_zero_output() {
-        let residual = [0i32; 16];
+        let residual = [0i16; 16];
         let mut coeffs = [0i32; 16];
         fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, 4);
         assert!(

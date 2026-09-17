@@ -256,7 +256,7 @@ fn grown_out<T: crate::vecpool::Pooled>(buf: &mut PoolVec<T>, n: usize) -> &mut 
 /// at 4096 i32 per full-size buffer and never reallocates after warmup.
 #[derive(Default)]
 pub(super) struct TxScratch {
-    pub(super) residual: Vec<i32>,
+    pub(super) residual: Vec<i16>,
     pub(super) coeffs: Vec<i32>,
     pub(super) packed: Vec<i32>,
     pub(super) dq_full: Vec<i32>,
@@ -317,7 +317,7 @@ impl TxScratch {
 pub(super) struct TxtScratch {
     pub(super) cur: TxOutBufs,
     pub(super) bst: TxOutBufs,
-    pub(super) residual: Vec<i32>,
+    pub(super) residual: Vec<i16>,
 }
 
 #[cfg(feature = "std")]
@@ -738,7 +738,7 @@ pub(super) fn tx_unit_screened_into(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
-    pre_residual: Option<&[i32]>,
+    pre_residual: Option<&[i16]>,
     gate: TxGate,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
@@ -845,7 +845,7 @@ pub(super) fn tx_unit_inner(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
-    pre_residual: Option<&[i32]>,
+    pre_residual: Option<&[i16]>,
     gate: TxGate,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
@@ -873,7 +873,7 @@ pub(super) fn tx_unit_inner(
     // skipped entirely and the quantized output is all-zero, producing
     // `eob = 0` (recon = pred copy, dist = sse(src,pred)) through the
     // normal zero-coeff path below.
-    let residual: &[i32] = if gate.skip_tx {
+    let residual: &[i16] = if gate.skip_tx {
         // Under the shortcut C never fills `cand_bf->residual` — the
         // transform is skipped and `coeffs` stays zeroed. The residual
         // derivation is dead work here; return an empty slice (the
@@ -900,7 +900,7 @@ pub(super) fn tx_unit_inner(
                 let r = &mut residual[..n];
                 // Every element is written by the kernel, so no zero-fill is needed
                 // and the reused buffer cannot leak a previous TU's values.
-                svtav1_dsp::residual::residual_i32(
+                svtav1_dsp::residual::residual_i16(
                     &src[src_off..],
                     src_stride,
                     &pred[pred_off..],
@@ -940,9 +940,7 @@ pub(super) fn tx_unit_inner(
     } else if lossless_wht {
         debug_assert_eq!(tx_type, cc::DCT_DCT, "lossless txb must be DCT_DCT");
         let mut res16 = [0i16; 16];
-        for (d, &s) in res16.iter_mut().zip(residual.iter()) {
-            *d = s as i16;
-        }
+        res16.copy_from_slice(&residual[..16]);
         let mut dst = [0i32; 16];
         svtav1_dsp::fwd_txfm::fwht4x4(&res16, &mut dst, 4);
         for i in 0..4 {
@@ -1945,7 +1943,7 @@ pub(super) fn tx_unit_hbd_screened(
             let srow = src_off + r * src_stride;
             let prow = pred_off + r * pred_stride;
             for c in 0..w {
-                residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
+                residual.push((src[srow + c] as i32 - pred[prow + c] as i32) as i16);
             }
         }
     }
@@ -1957,7 +1955,8 @@ pub(super) fn tx_unit_hbd_screened(
         // produces eob = 0.
     } else if lossless_wht {
         debug_assert_eq!(tx_type, cc::DCT_DCT);
-        let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
+        let mut res = [0i16; 16];
+        res.copy_from_slice(&residual[..16]);
         let mut wht = [0i32; 16];
         svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
         for r in 0..4 {

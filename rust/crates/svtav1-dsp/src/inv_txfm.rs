@@ -3211,7 +3211,7 @@ mod tests {
         // But the actual combined effect depends on the exact scaling.
         // Let's just verify structure: DC input -> forward -> inverse should
         // produce a scaled version of the original.
-        let input = [100i32; 16];
+        let input = [100i16; 16];
         let mut fwd = [0i32; 16];
         let mut inv = [0i32; 16];
         fwd_txfm2d_4x4_dct_dct(&input, &mut fwd, 4);
@@ -3240,7 +3240,7 @@ mod tests {
     fn fwd_inv_txfm2d_4x4_zero() {
         let mut fwd = [0i32; 16];
         let mut inv = [0i32; 16];
-        fwd_txfm2d_4x4_dct_dct(&[0i32; 16], &mut fwd, 4);
+        fwd_txfm2d_4x4_dct_dct(&[0i16; 16], &mut fwd, 4);
         inv_txfm2d_4x4_dct_dct(&fwd, &mut inv, 4);
         assert!(inv.iter().all(|&v| v == 0));
     }
@@ -3249,14 +3249,14 @@ mod tests {
     fn fwd_inv_txfm2d_8x8_zero() {
         let mut fwd = [0i32; 64];
         let mut inv = [0i32; 64];
-        fwd_txfm2d_8x8_dct_dct(&[0i32; 64], &mut fwd, 8);
+        fwd_txfm2d_8x8_dct_dct(&[0i16; 64], &mut fwd, 8);
         inv_txfm2d_8x8_dct_dct(&fwd, &mut inv, 8);
         assert!(inv.iter().all(|&v| v == 0));
     }
 
     #[test]
     fn fwd_inv_txfm2d_8x8_roundtrip() {
-        let input = [50i32; 64];
+        let input = [50i16; 64];
         let mut fwd = [0i32; 64];
         let mut inv = [0i32; 64];
         fwd_txfm2d_8x8_dct_dct(&input, &mut fwd, 8);
@@ -3283,7 +3283,7 @@ mod dispatch_tests {
     #[test]
     fn inv_txfm2d_4x4_dct_dct_all_dispatch_levels() {
         // Use forward transform output as input to inverse
-        let fwd_input: [i32; 16] = [
+        let fwd_input: [i16; 16] = [
             10, -20, 30, -40, 50, -60, 70, -80, 15, -25, 35, -45, 55, -65, 75, -85,
         ];
         let mut coeffs = [0i32; 16];
@@ -3304,9 +3304,9 @@ mod dispatch_tests {
 
     #[test]
     fn inv_txfm2d_8x8_dct_dct_all_dispatch_levels() {
-        let mut fwd_input = [0i32; 64];
+        let mut fwd_input = [0i16; 64];
         for (i, v) in fwd_input.iter_mut().enumerate() {
-            *v = (i as i32 * 7 - 30) % 100;
+            *v = ((i as i32 * 7 - 30) % 100) as i16;
         }
         let mut coeffs = [0i32; 64];
         crate::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&fwd_input, &mut coeffs, 8);

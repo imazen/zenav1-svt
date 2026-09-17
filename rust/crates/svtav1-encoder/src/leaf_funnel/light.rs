@@ -843,8 +843,8 @@ pub(super) fn finish_lpd1(
     // path runs ONE candidate, so it is the winner's `src - pred`.
     // Pooled scratch + the SIMD residual kernel — same pattern as
     // `evaluate_leaf`: every element is written, so a `vec![0]` fill is dead.
-    let mut psq_resid = crate::vecpool::dirty_pool::<i32>(w * h);
-    svtav1_dsp::residual::residual_i32(
+    let mut psq_resid = crate::vecpool::dirty_pool::<i16>(w * h);
+    svtav1_dsp::residual::residual_i16(
         &y_src[y_src_off..],
         y_src_stride,
         &win_cand.pred,

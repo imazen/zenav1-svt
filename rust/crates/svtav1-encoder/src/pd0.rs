@@ -997,7 +997,7 @@ mod pd0_quant_parity_tests {
                 // edges, impulses, and deterministic signed noise. This is a
                 // producer regression grid, not a proof for every possible image.
                 for pattern in 0..16 {
-                    let residual: Vec<i32> = (0..w * h)
+                    let residual: Vec<i16> = (0..w * h)
                         .map(|i| match pattern {
                             0 => 255,
                             1 => -255,
@@ -1040,7 +1040,7 @@ mod pd0_quant_parity_tests {
                                 ((i as u32)
                                     .wrapping_mul(1664525)
                                     .wrapping_add(pattern * 1013904223u32.wrapping_div(16))
-                                    % 511) as i32
+                                    % 511) as i16
                                     - 255
                             }
                         })
@@ -1444,7 +1444,8 @@ fn tx_quant_core(
     if qindex_off == 0 && sq_size == 4 && tx_h == 4 {
         // C svt_av1_estimate_transform's lossless TX_4X4 branch, including
         // its transposed store. Larger PD0 transforms still use DCT.
-        let res: [i16; 16] = core::array::from_fn(|i| s.residual[i] as i16);
+        let mut res = [0i16; 16];
+        res.copy_from_slice(&s.residual[..16]);
         let mut wht = [0i32; 16];
         svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
         for r in 0..4 {
@@ -2709,7 +2710,7 @@ struct Pd0Scratch {
     /// Second candidate buffer for `inter_best_pred`'s argmin-swap.
     cand: alloc::vec::Vec<u8>,
     /// `bw * tx_h` residuals.
-    residual: alloc::vec::Vec<i32>,
+    residual: alloc::vec::Vec<i16>,
     /// `bw * tx_h` forward-transform output (pre-64-fold).
     coeffs: alloc::vec::Vec<i32>,
     /// Packed `min(bw,32) * min(tx_h,32)` quantized coefficients.
@@ -2734,6 +2735,14 @@ fn scratch_i32(v: &mut alloc::vec::Vec<i32>, n: usize) -> &mut [i32] {
 
 /// [`scratch_i32`] for `u8` buffers.
 fn scratch_u8(v: &mut alloc::vec::Vec<u8>, n: usize) -> &mut [u8] {
+    if v.len() < n {
+        v.resize(n, 0);
+    }
+    &mut v[..n]
+}
+
+/// [`scratch_i32`] for `i16` buffers.
+fn scratch_i16(v: &mut alloc::vec::Vec<i16>, n: usize) -> &mut [i16] {
     if v.len() < n {
         v.resize(n, 0);
     }
@@ -2962,14 +2971,14 @@ impl<'a> Pd0Ctx<'a> {
         // shifted row index.
         let stride = self.stride;
         let src = self.src;
-        svtav1_dsp::residual::residual_i32(
+        svtav1_dsp::residual::residual_i16(
             &src[abs_y * stride + abs_x..],
             stride << step,
             pred,
             bw << step,
             bw,
             tx_h,
-            scratch_i32(&mut self.scratch.residual, bw * tx_h),
+            scratch_i16(&mut self.scratch.residual, bw * tx_h),
         );
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
         let (eob, dist, _c_tx) =
@@ -3199,14 +3208,14 @@ impl<'a> Pd0Ctx<'a> {
         // shifted row index.
         let stride = self.stride;
         let src = self.src;
-        svtav1_dsp::residual::residual_i32(
+        svtav1_dsp::residual::residual_i16(
             &src[abs_y * stride + abs_x..],
             stride << step,
             pred,
             bw << step,
             bw,
             tx_h,
-            scratch_i32(&mut self.scratch.residual, bw * tx_h),
+            scratch_i16(&mut self.scratch.residual, bw * tx_h),
         );
         let (eob, dist, c_tx) = tx_quant_core(
             &mut self.scratch,

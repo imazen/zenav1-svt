@@ -40,11 +40,10 @@ fn fwd_txfm2d_matches_c() {
             let res16: Vec<i16> = (0..n * n).map(|_| rng.residual()).collect();
             let c_out = cref::fwd_txfm2d(n, &res16, 0); // DCT_DCT
 
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             let mut ours = vec![0i32; n * n];
             assert!(
                 svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32,
+                    &res16,
                     &mut ours,
                     n,
                     ts,
@@ -154,7 +153,7 @@ fn trial_residual(rng: &mut Rng, n: usize, trial: usize) -> Vec<i16> {
     }
 }
 
-fn named_fwd_square(n: usize, input: &[i32], output: &mut [i32], stride: usize) {
+fn named_fwd_square(n: usize, input: &[i16], output: &mut [i32], stride: usize) {
     use svtav1_dsp::fwd_txfm::*;
     match n {
         4 => fwd_txfm2d_4x4_dct_dct(input, output, stride),
@@ -172,9 +171,8 @@ fn fwd_named_square_wrappers_match_c() {
         for trial in 0..26 {
             let res16 = trial_residual(&mut rng, n * n, trial);
             let c_out = cref::fwd_txfm2d(n, &res16, 0);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             let mut ours = vec![0i32; n * n];
-            named_fwd_square(n, &res32, &mut ours, n);
+            named_fwd_square(n, &res16, &mut ours, n);
             if ours != c_out {
                 let first = ours
                     .iter()
@@ -194,7 +192,7 @@ fn fwd_named_square_wrappers_match_c() {
     }
 }
 
-fn named_fwd_rect(w: usize, h: usize, input: &[i32], output: &mut [i32], stride: usize) {
+fn named_fwd_rect(w: usize, h: usize, input: &[i16], output: &mut [i32], stride: usize) {
     use svtav1_dsp::fwd_txfm::*;
     match (w, h) {
         (4, 8) => fwd_txfm2d_4x8_dct_dct(input, output, stride),
@@ -221,9 +219,8 @@ fn fwd_named_rect_wrappers_match_c() {
         for trial in 0..26 {
             let res16 = trial_residual(&mut rng, w * h, trial);
             let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             let mut ours = vec![0i32; w * h];
-            named_fwd_rect(w, h, &res32, &mut ours, w);
+            named_fwd_rect(w, h, &res16, &mut ours, w);
             if ours != c_out {
                 let first = ours
                     .iter()
@@ -252,11 +249,10 @@ fn fwd_dispatch_rect_matches_c() {
         for trial in 0..26 {
             let res16 = trial_residual(&mut rng, w * h, trial);
             let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             let mut ours = vec![0i32; w * h];
             assert!(
                 svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32,
+                    &res16,
                     &mut ours,
                     w,
                     ts,
@@ -460,11 +456,10 @@ fn fwd_dct_simd_all_tiers_match_c() {
         for pat in 0..40 {
             let res16 = simd_residual(pat, n * n, &mut rng);
             let c_out = cref::fwd_txfm2d(n, &res16, 0); // DCT_DCT
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             for_each_tier("fwd_dct_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; n * n];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32,
+                    &res16,
                     &mut ours,
                     n,
                     ts,
@@ -504,11 +499,10 @@ fn fwd_dct_simd_rect_all_tiers_match_c() {
         for pat in 0..40 {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0); // DCT_DCT
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             for_each_tier("fwd_dct_simd_rect_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32,
+                    &res16,
                     &mut ours,
                     w,
                     ts,
@@ -702,11 +696,10 @@ fn fwd_adst_simd_all_tiers_match_c() {
         for pat in 0..40 {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             for_each_tier("fwd_adst_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32, &mut ours, w, ts, txt
+                    &res16, &mut ours, w, ts, txt
                 ));
                 if ours != c_out {
                     let first = ours
@@ -905,11 +898,10 @@ fn fwd_ext_simd_all_tiers_match_c() {
         for pat in 0..40 {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             for_each_tier("fwd_ext_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
-                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
+                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res16, &mut ours, w, ts, txt),
                     "dispatch must support {w}x{h} {txt:?}"
                 );
                 if ours != c_out {
@@ -1061,11 +1053,10 @@ fn fwd_4dim_simd_all_tiers_match_c() {
                     .collect()
             };
             let c_out = cref_fwd_any(w, h, &res16, txi);
-            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
             for_each_tier("fwd_4dim_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
-                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
+                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res16, &mut ours, w, ts, txt),
                     "dispatch must support {w}x{h} {txt:?}"
                 );
                 if ours != c_out {

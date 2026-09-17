@@ -1074,8 +1074,8 @@ fn eval_candidate(
                     let mut co_field = alloc::string::String::new();
                     if crate::dbgenv::qlev_co() {
                         let n = txw * txh;
-                        let mut res = alloc::vec![0i32; n];
-                        svtav1_dsp::residual::residual_i32(
+                        let mut res = alloc::vec![0i16; n];
+                        svtav1_dsp::residual::residual_i16(
                             &y_src[y_src_off + tx_y * y_src_stride + tx_x..],
                             y_src_stride,
                             &txb_pred[..],

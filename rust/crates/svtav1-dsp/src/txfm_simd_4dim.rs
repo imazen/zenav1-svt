@@ -204,7 +204,7 @@ macro_rules! fwd_4dim_driver {
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
-            input: &[i32],
+            input: &[i16],
             output: &mut [i32],
             input_stride: usize,
             col_1d: u8,
@@ -237,11 +237,11 @@ macro_rules! fwd_4dim_driver {
                     let src_row = if ud { H - 1 - r } else { r };
                     let base = src_row * input_stride + colbase;
                     let v = if cnt == 8 {
-                        load8(t, input, base)
+                        load16w(t, input, base)
                     } else {
                         let mut tmp = [0i32; 8];
                         for l in 0..cnt {
-                            tmp[l] = input[base + l];
+                            tmp[l] = input[base + l] as i32;
                         }
                         load8(t, &tmp, 0)
                     };
@@ -473,7 +473,7 @@ inv_4dim_driver!(inv_4dim_16x4, 16, 4,
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fwd_4dim(
     t: Desktop64,
-    input: &[i32],
+    input: &[i16],
     output: &mut [i32],
     input_stride: usize,
     w: usize,

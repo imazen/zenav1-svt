@@ -106,11 +106,11 @@ pub fn encode_block_tx_cq(
     let n = width * height;
 
     // Step 1: Compute residual (src - pred)
-    let mut residual = alloc::vec![0i32; n];
+    let mut residual = alloc::vec![0i16; n];
     for row in 0..height {
         for col in 0..width {
             residual[row * width + col] =
-                src[row * src_stride + col] as i32 - pred[row * pred_stride + col] as i32;
+                src[row * src_stride + col] as i16 - pred[row * pred_stride + col] as i16;
         }
     }
 

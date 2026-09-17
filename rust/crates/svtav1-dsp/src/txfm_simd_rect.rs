@@ -21,7 +21,7 @@ macro_rules! fwd_rect_driver {
     ($fn:ident, $w:literal, $h:literal, $colk:ident, $rowk:ident) => {
         #[cfg_attr(target_arch = "x86_64", rite(v3))]
         #[cfg_attr(target_arch = "aarch64", rite(neon))]
-        pub(super) fn $fn(t: Desktop64, input: &[i32], output: &mut [i32], input_stride: usize) {
+        pub(super) fn $fn(t: Desktop64, input: &[i16], output: &mut [i32], input_stride: usize) {
             const W: usize = $w;
             const H: usize = $h;
             const WG: usize = W / 8; // groups of 8 columns
@@ -43,7 +43,7 @@ macro_rules! fwd_rect_driver {
                     let mut colin = [_mm256_setzero_si256(); H];
                     for r in 0..H {
                         colin[r] =
-                            round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
+                            round_shift_v(t, load16w(t, input, r * input_stride + colbase), pre_col);
                     }
                     let mut colout = [_mm256_setzero_si256(); H];
                     $colk(t, &colin, &mut colout, cos_bit_col);
@@ -219,7 +219,7 @@ inv_rect_driver!(inv_dct_64x16, 64, 16, idct64_x8, idct16_x8);
 #[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_dct_rect(
     t: Desktop64,
-    input: &[i32],
+    input: &[i16],
     output: &mut [i32],
     input_stride: usize,
     w: usize,

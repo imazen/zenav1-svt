@@ -858,7 +858,7 @@ pub(crate) fn evaluate_leaf(
     // `vec![0i32; _]` used to pay was dead work (the `tx_pipeline::grown_out`
     // contract). The kernel is C `svt_residual_kernel8bit` — strided source,
     // packed pred/out — the same call `pd0` already makes.
-    let mut psq_resid = crate::vecpool::dirty_pool::<i32>(w * h);
+    let mut psq_resid = crate::vecpool::dirty_pool::<i16>(w * h);
     // bd10 twin (task #94, root #2): the SAME last-candidate residual at TRUE
     // 10 bits (`src10 - last.pred10`), consumed by `min_nz_hv` at bd10. Built
     // only when the last candidate carries a 10-bit prediction (== bd10 funnel
@@ -866,7 +866,7 @@ pub(crate) fn evaluate_leaf(
     let mut psq_resid10: Vec<i32> = Vec::new();
     {
         let last = &cands[order1[n3 - 1]];
-        svtav1_dsp::residual::residual_i32(
+        svtav1_dsp::residual::residual_i16(
             &y_src[y_src_off..],
             y_src_stride,
             &last.pred,

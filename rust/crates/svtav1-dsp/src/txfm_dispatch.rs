@@ -16,7 +16,7 @@ use svtav1_types::transform::{TranLow, TxSize, TxType};
 ///
 /// Returns false if the combination is not supported.
 pub fn fwd_txfm2d_dispatch(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     stride: usize,
     tx_size: TxSize,
@@ -167,7 +167,7 @@ mod tests {
         ] {
             let (w, h) = tx_size_dims(tx_size);
             let n = w * h;
-            let input = vec![100i32; n];
+            let input = vec![100i16; n];
             let mut fwd_output = vec![0i32; n];
             let ok = fwd_txfm2d_dispatch(&input, &mut fwd_output, w, tx_size, TxType::DctDct);
             assert!(ok, "fwd dispatch failed for {tx_size:?}");
@@ -190,7 +190,7 @@ mod tests {
         // fwd -> inv through the dispatch reconstructs the input exactly up
         // to rounding. This is stricter than the old relative-scale check:
         // it pins the absolute decoder-facing scale.
-        let input: Vec<i32> = (0..16).map(|i| i * 7 - 50).collect();
+        let input: Vec<i16> = (0..16).map(|i| i * 7 - 50).collect();
         let mut fwd = vec![0i32; 16];
         let mut inv = vec![0i32; 16];
         assert!(fwd_txfm2d_dispatch(
@@ -208,7 +208,7 @@ mod tests {
             TxType::DctDct
         ));
         for i in 0..16 {
-            let diff = (inv[i] - input[i]).abs();
+            let diff = (inv[i] - i32::from(input[i])).abs();
             assert!(
                 diff <= 2,
                 "roundtrip not identity at {i}: inv={} input={} diff={diff}",
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn dispatch_adst_dct_4x4() {
-        let input = vec![50i32; 16];
+        let input = vec![50i16; 16];
         let mut output = vec![0i32; 16];
         let ok = fwd_txfm2d_dispatch(&input, &mut output, 4, TxSize::Tx4x4, TxType::AdstDct);
         assert!(ok, "ADST-DCT 4x4 should be supported");
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn dispatch_identity_4x4() {
-        let input: Vec<i32> = (0..16).map(|i| i * 10).collect();
+        let input: Vec<i16> = (0..16).map(|i| i * 10).collect();
         let mut output = vec![0i32; 16];
         let ok = fwd_txfm2d_dispatch(&input, &mut output, 4, TxSize::Tx4x4, TxType::Idtx);
         assert!(ok, "IDTX 4x4 should be supported");
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn dispatch_rect_4x8() {
-        let input = vec![100i32; 32]; // 4x8
+        let input = vec![100i16; 32]; // 4x8
         let mut output = vec![0i32; 32];
         let ok = fwd_txfm2d_dispatch(&input, &mut output, 4, TxSize::Tx4x8, TxType::DctDct);
         assert!(ok, "DCT-DCT 4x8 should be supported");
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn dispatch_all_16_tx_types_4x4() {
-        let input = vec![50i32; 16];
+        let input = vec![50i16; 16];
         for tx_type in [
             TxType::DctDct,
             TxType::AdstDct,

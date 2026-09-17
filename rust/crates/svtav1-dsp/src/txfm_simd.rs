@@ -109,7 +109,7 @@ fn simd_4dim_supported(w: usize, h: usize) -> bool {
 /// only when the AVX2 tier actually handled it; false (scalar/neon tiers, or
 /// unsupported `n`) tells the caller to run the scalar core.
 pub fn try_fwd_dct_square(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     n: usize,
@@ -145,7 +145,7 @@ pub fn try_inv_dct_square(
 /// Try the SIMD forward rectangular DCT-DCT (`w != h`, no flips). Same return
 /// contract as [`try_fwd_dct_square`].
 pub fn try_fwd_dct_rect(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -184,7 +184,7 @@ pub fn try_inv_dct_rect(
 /// Try the SIMD forward ADST-containing 2D transform (ADST_DCT / DCT_ADST /
 /// ADST_ADST, no flips). Same return contract as [`try_fwd_dct_square`].
 pub fn try_fwd_adst(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -239,7 +239,7 @@ pub fn try_inv_adst(
 /// [`try_fwd_dct_square`].
 #[allow(clippy::too_many_arguments)]
 pub fn try_fwd_ext(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -300,7 +300,7 @@ pub fn try_inv_ext(
 /// `ud`/`lr` are the FLIPADST edge flips. Same contract as [`try_fwd_ext`].
 #[allow(clippy::too_many_arguments)]
 pub fn try_fwd_4dim(
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -360,7 +360,7 @@ pub fn try_inv_4dim(
 
 fn try_fwd_dct_square_impl_scalar(
     _t: ScalarToken,
-    _input: &[TranLow],
+    _input: &[i16],
     _output: &mut [TranLow],
     _input_stride: usize,
     _n: usize,
@@ -382,7 +382,7 @@ fn try_inv_dct_square_impl_scalar(
 
 fn try_fwd_dct_rect_impl_scalar(
     _t: ScalarToken,
-    _input: &[TranLow],
+    _input: &[i16],
     _output: &mut [TranLow],
     _input_stride: usize,
     _w: usize,
@@ -408,7 +408,7 @@ fn try_inv_dct_rect_impl_scalar(
 #[arcane]
 fn try_fwd_dct_rect_impl_neon(
     t: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -440,7 +440,7 @@ fn try_inv_dct_rect_impl_neon(
 
 fn try_fwd_adst_impl_scalar(
     _t: ScalarToken,
-    _input: &[TranLow],
+    _input: &[i16],
     _output: &mut [TranLow],
     _input_stride: usize,
     _w: usize,
@@ -469,7 +469,7 @@ fn try_inv_adst_impl_scalar(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_ext_impl_scalar(
     _t: ScalarToken,
-    _input: &[TranLow],
+    _input: &[i16],
     _output: &mut [TranLow],
     _input_stride: usize,
     _w: usize,
@@ -505,7 +505,7 @@ fn try_inv_ext_impl_scalar(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_ext_impl_neon(
     t: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -560,7 +560,7 @@ fn try_inv_ext_impl_neon(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_4dim_impl_scalar(
     _t: ScalarToken,
-    _input: &[TranLow],
+    _input: &[i16],
     _output: &mut [TranLow],
     _input_stride: usize,
     _w: usize,
@@ -596,7 +596,7 @@ fn try_inv_4dim_impl_scalar(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_4dim_impl_neon(
     t: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -652,7 +652,7 @@ fn try_inv_4dim_impl_neon(
 #[arcane]
 fn try_fwd_adst_impl_neon(
     t: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -701,7 +701,7 @@ fn try_inv_adst_impl_neon(
 #[arcane]
 fn try_fwd_dct_square_impl_neon(
     t: NeonToken,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     n: usize,
@@ -990,6 +990,15 @@ mod neon {
         [vld1q_s32(lo), vld1q_s32(hi)]
     }
 
+    /// Widen-load 8 contiguous i16 at `buf[off..off+8]` — the forward path's
+    /// residual input (C's `int16_t` residual buffers).
+    #[rite(neon)]
+    pub(super) fn load16w(_t: Desktop64, buf: &[i16], off: usize) -> __m256i {
+        let lo: &[i16; 4] = buf[off..off + 4].try_into().unwrap();
+        let hi: &[i16; 4] = buf[off + 4..off + 8].try_into().unwrap();
+        [vmovl_s16(vld1_s16(lo)), vmovl_s16(vld1_s16(hi))]
+    }
+
     #[rite(neon)]
     pub(super) fn store8(_t: Desktop64, buf: &mut [i32], off: usize, v: __m256i) {
         let (lo, hi) = buf[off..off + 8].split_at_mut(4);
@@ -1151,6 +1160,14 @@ mod v3 {
         _mm256_loadu_si256(a)
     }
 
+    /// Load 8 contiguous i16 at `buf[off..off+8]`, sign-extended to i32 —
+    /// the forward path's residual input (C's `int16_t` residual buffers).
+    #[rite]
+    pub(super) fn load16w(_t: Desktop64, buf: &[i16], off: usize) -> __m256i {
+        let a: &[i16; 8] = buf[off..off + 8].try_into().unwrap();
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(a))
+    }
+
     /// Store 8 i32 to `buf[off..off+8]`.
     #[rite]
     pub(super) fn store8(_t: Desktop64, buf: &mut [i32], off: usize, v: __m256i) {
@@ -1171,7 +1188,7 @@ mod v3 {
 #[arcane]
 fn try_fwd_dct_square_impl_v3(
     t: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     n: usize,
@@ -1199,7 +1216,7 @@ fn try_inv_dct_square_impl_v3(
 #[arcane]
 fn try_fwd_dct_rect_impl_v3(
     t: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -1229,7 +1246,7 @@ fn try_inv_dct_rect_impl_v3(
 #[arcane]
 fn try_fwd_adst_impl_v3(
     t: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -1275,7 +1292,7 @@ fn try_inv_adst_impl_v3(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_ext_impl_v3(
     t: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
@@ -1328,7 +1345,7 @@ fn try_inv_ext_impl_v3(
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_4dim_impl_v3(
     t: Desktop64,
-    input: &[TranLow],
+    input: &[i16],
     output: &mut [TranLow],
     input_stride: usize,
     w: usize,
