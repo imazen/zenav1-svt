@@ -223,3 +223,13 @@ the measurement cost.
   **1.008x @512p4, 1.006x @512p2** (both ratio bands below 1.0),
   wash @256p4 and @512p10 (quantize is cold at p10), byte-identical
   everywhere (`ab_quant8_2026-09-17*.tsv`).
+
+## CDEF tap-group multiply — measured null, reverted
+
+- `cdef_filter_cols{8,4}_neon` regrouped to C's shape: one multiply per
+  same-coefficient tap group (`sum += cof*(c0+c1)`, 12->4 muls/row,
+  broadcasts hoisted; exact mod 2^16 distributivity). All cdef tests +
+  FFI parity byte-exact, but interleaved A/B was a wash (256p4 ratio
+  1.001 p25-p75 0.996-1.002; 512p4 0.999 0.998-1.007) — the row cost is
+  the 12 tap loads + constrain chain, not the multiplies. Reverted;
+  evidence in `ab_cdefgrp_2026-09-17*.tsv`.
