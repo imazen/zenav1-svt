@@ -841,13 +841,19 @@ pub(super) fn finish_lpd1(
     let gate_v = crate::vecpool::PoolVec::from_slice(&win_cand.v_recon);
     // `psq_resid` — the last MDS3 candidate's depth-0 residual; the light
     // path runs ONE candidate, so it is the winner's `src - pred`.
-    let mut psq_resid = alloc::vec![0i32; w * h];
-    for r in 0..h {
-        let srow = y_src_off + r * y_src_stride;
-        for c in 0..w {
-            psq_resid[r * w + c] = i32::from(y_src[srow + c]) - i32::from(win_cand.pred[r * w + c]);
-        }
-    }
+    // Pooled scratch + the SIMD residual kernel — same pattern as
+    // `evaluate_leaf`: every element is written, so a `vec![0]` fill is dead.
+    let mut psq_resid = crate::vecpool::dirty_pool::<i32>(w * h);
+    svtav1_dsp::residual::residual_i32(
+        &y_src[y_src_off..],
+        y_src_stride,
+        &win_cand.pred,
+        w,
+        w,
+        h,
+        &mut psq_resid,
+    );
+    let psq_resid = psq_resid.into_vec();
     LeafEval {
         abs_x: g.abs_x,
         abs_y: g.abs_y,
