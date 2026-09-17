@@ -172,56 +172,29 @@ pub(super) fn costs_from_cdf<const N: usize>(cdf: &[u16]) -> [i32; N] {
 /// Build the funnel's rate tables from a (possibly chained) frame context
 /// pair. `fc` carries the mode CDFs, `cfc` the coefficient CDFs.
 pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box<MdRates> {
-    let mut r = alloc::boxed::Box::new(MdRates {
-        kf_y: [[[0; 13]; 5]; 5],
-        mb_mode: [[0; 13]; 4],
-        intra_inter: [[0; 2]; crate::entropy::context::INTRA_INTER_CONTEXTS],
-        uv: [[[0; 14]; 13]; 2],
-        angle: [[0; 7]; 8],
-        fi_flag: [[0; 2]; 22],
-        fi_mode: [0; 5],
-        skip: [[0; 2]; 3],
-        tx_size: [[[0; 3]; 3]; 4],
-        intra_ext_tx: [[0; 17]; 13 * 4 * 3],
-        cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
-        palette_y_no: [[0; 3]; 7],
-        palette_uv_no: [0; 2],
-        palette_y_yes: [[0; 3]; 7],
-        palette_ysize: [[0; 7]; 7],
-        palette_ycolor: [[[0; 8]; 5]; 7],
-        intrabc_fac_bits: [0; 2],
-        inter_ext_tx: [[0; 17]; 16],
-        txfm_partition_fac_bits: [[0; 2]; crate::entropy::context::TXFM_PARTITION_CONTEXTS],
-        coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
-    });
-    r.intrabc_fac_bits = costs_from_cdf::<2>(&fc.intrabc_cdf);
-    for row in 0..16 {
-        r.inter_ext_tx[row] = costs_from_cdf::<17>(&cfc.inter_ext_tx_cdf[row]);
-    }
-    for (row, cdf) in fc.txfm_partition_cdf.iter().enumerate() {
-        r.txfm_partition_fac_bits[row] = costs_from_cdf::<2>(cdf);
-    }
+    // Every field is written by the fills below, so build them by value:
+    // the all-zeros `Box::new` literal used to pay a ~25KB store pass per
+    // call that nothing ever read.
+    let mut palette_y_no = [[0i32; 3]; 7];
+    let mut palette_y_yes = [[0i32; 3]; 7];
+    let mut palette_ysize = [[0i32; 7]; 7];
     for b in 0..7 {
         // palette_ymode_fac_bits[bsize_ctx][mode_ctx][yes/no] — all 3
         // neighbor mode-ctx rows (C default_palette_y_mode_cdf, 7x3x2).
         for m in 0..3 {
             let c2 = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][m]);
-            r.palette_y_no[b][m] = c2[0];
-            r.palette_y_yes[b][m] = c2[1];
+            palette_y_no[b][m] = c2[0];
+            palette_y_yes[b][m] = c2[1];
         }
-        r.palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
+        palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
     }
-    r.palette_uv_no = [
-        costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0],
-        costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[1])[0],
-    ];
-    for n in 0..7 {
-        for c in 0..5 {
+    let palette_ycolor = std::array::from_fn(|n| {
+        std::array::from_fn(|c| {
             // Row width = n+2 symbols; syntax_rate_from_cdf reads to the
             // terminator, so slice per-row like the uv 13/14 handling.
             let nsym = n + 2;
             let mut full = [0i32; 8];
-            let mut tmp = alloc::vec![0i32; nsym];
+            let mut tmp = [0i32; 8];
             // #71: the palette color-index MAP cost uses the FRAME-INIT
             // (default) CDF, NOT the per-SB-chained `fc`. C's MD-side
             // `update_palette_cdf` (md_rate_estimation.c:733-759) advances
@@ -236,28 +209,15 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
             // this is a no-op on the (default-fc) non-chain call sites and on
             // non-screen frames (palette_ycolor unused).
             crate::quant::syntax_rate_from_cdf(
-                &mut tmp,
+                &mut tmp[..nsym],
                 &crate::entropy::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF[n][c],
             );
-            full[..nsym].copy_from_slice(&tmp);
-            r.palette_ycolor[n][c] = full;
-        }
-    }
-    for a in 0..5 {
-        for l in 0..5 {
-            r.kf_y[a][l] = costs_from_cdf(&fc.kf_y_mode_cdf[a][l]);
-        }
-    }
-    // The NON-I-slice intra luma table (C `mb_mode_fac_bits`), and the
-    // `is_inter = 0` flag an intra block pays only on a non-I-slice.
-    for g in 0..4 {
-        r.mb_mode[g] = costs_from_cdf(&fc.y_mode_cdf[g]);
-    }
-    for c in 0..crate::entropy::context::INTRA_INTER_CONTEXTS {
-        r.intra_inter[c] = costs_from_cdf(&fc.intra_inter_cdf[c]);
-    }
-    for cfl in 0..2 {
-        for y in 0..13 {
+            full[..nsym].copy_from_slice(&tmp[..nsym]);
+            full
+        })
+    });
+    let uv = std::array::from_fn(|cfl| {
+        std::array::from_fn(|y| {
             let mut c = [0i32; 14];
             // CFL-disallowed rows have 13 symbols; cost fn reads the CDF
             // up to the terminator, so slice per-row width.
@@ -268,55 +228,71 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
             } else {
                 crate::quant::syntax_rate_from_cdf(&mut c, &fc.uv_mode_cdf[cfl][y]);
             }
-            r.uv[cfl][y] = c;
-        }
-    }
-    for m in 0..8 {
-        r.angle[m] = costs_from_cdf(&fc.angle_delta_cdf[m]);
-    }
-    for b in 0..22 {
-        r.fi_flag[b] = costs_from_cdf(&fc.filter_intra_cdfs[b]);
-    }
-    r.fi_mode = costs_from_cdf(&fc.filter_intra_mode_cdf);
-    for ctx in 0..3 {
-        r.skip[ctx] = costs_from_cdf(&fc.skip_cdf[ctx]);
-    }
-    for cat in 0..4 {
-        for ctx in 0..3 {
-            r.tx_size[cat][ctx] = costs_from_cdf(&fc.tx_size_cdf[cat][ctx]);
-        }
-    }
-    for row in 0..(13 * 4 * 3) {
-        r.intra_ext_tx[row] = costs_from_cdf(&cfc.intra_ext_tx_cdf[row]);
-    }
+            c
+        })
+    });
     // CfL alpha rate table (md_rate_estimation.c:192-213). sign_fac_bits
     // over cfl_sign_cdf; per joint_sign, each plane's magnitude costs from
     // cfl_alpha_cdf[CFL_CONTEXT_{U,V}] (zero-sign plane -> all-0); then the
     // joint-sign rate is folded into plane U only (matching the syntax:
     // sign coded once, U/V magnitudes follow).
-    {
+    let cfl_alpha_fac_bits = {
         use crate::entropy::context as ctx;
+        let mut bits = [[[0i32; 16]; 2]; 8];
         let mut sign_fac_bits = [0i32; ctx::CFL_JOINT_SIGNS];
         crate::quant::syntax_rate_from_cdf(&mut sign_fac_bits, &fc.cfl_sign_cdf);
         for js in 0..ctx::CFL_JOINT_SIGNS {
             if ctx::cfl_sign_u(js) != 0 {
                 crate::quant::syntax_rate_from_cdf(
-                    &mut r.cfl_alpha_fac_bits[js][0],
+                    &mut bits[js][0],
                     &fc.cfl_alpha_cdf[ctx::cfl_context_u(js)],
                 );
             }
             if ctx::cfl_sign_v(js) != 0 {
                 crate::quant::syntax_rate_from_cdf(
-                    &mut r.cfl_alpha_fac_bits[js][1],
+                    &mut bits[js][1],
                     &fc.cfl_alpha_cdf[ctx::cfl_context_v(js)],
                 );
             }
             for u in 0..16 {
-                r.cfl_alpha_fac_bits[js][0][u] += sign_fac_bits[js];
+                bits[js][0][u] += sign_fac_bits[js];
             }
         }
-    }
-    r
+        bits
+    };
+    alloc::boxed::Box::new(MdRates {
+        kf_y: std::array::from_fn(|a| {
+            std::array::from_fn(|l| costs_from_cdf(&fc.kf_y_mode_cdf[a][l]))
+        }),
+        // The NON-I-slice intra luma table (C `mb_mode_fac_bits`), and the
+        // `is_inter = 0` flag an intra block pays only on a non-I-slice.
+        mb_mode: std::array::from_fn(|g| costs_from_cdf(&fc.y_mode_cdf[g])),
+        intra_inter: std::array::from_fn(|c| costs_from_cdf(&fc.intra_inter_cdf[c])),
+        uv,
+        angle: std::array::from_fn(|m| costs_from_cdf(&fc.angle_delta_cdf[m])),
+        fi_flag: std::array::from_fn(|b| costs_from_cdf(&fc.filter_intra_cdfs[b])),
+        fi_mode: costs_from_cdf(&fc.filter_intra_mode_cdf),
+        skip: std::array::from_fn(|c| costs_from_cdf(&fc.skip_cdf[c])),
+        tx_size: std::array::from_fn(|cat| {
+            std::array::from_fn(|c| costs_from_cdf(&fc.tx_size_cdf[cat][c]))
+        }),
+        intra_ext_tx: std::array::from_fn(|row| costs_from_cdf(&cfc.intra_ext_tx_cdf[row])),
+        cfl_alpha_fac_bits,
+        palette_y_no,
+        palette_uv_no: [
+            costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0],
+            costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[1])[0],
+        ],
+        palette_y_yes,
+        palette_ysize,
+        palette_ycolor,
+        intrabc_fac_bits: costs_from_cdf::<2>(&fc.intrabc_cdf),
+        inter_ext_tx: std::array::from_fn(|row| costs_from_cdf(&cfc.inter_ext_tx_cdf[row])),
+        txfm_partition_fac_bits: std::array::from_fn(|row| {
+            costs_from_cdf::<2>(&fc.txfm_partition_cdf[row])
+        }),
+        coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
+    })
 }
 
 impl MdRates {
