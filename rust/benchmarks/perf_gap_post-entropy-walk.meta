@@ -1,0 +1,8 @@
+# perf_gap fit
+date: 2026-09-17T17:00:27Z
+commit: db8814b5e
+host: mac (12 logical cores)
+grid: content=gradient sizes=[256 512] presets=[4] qp=40 rounds=7 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):
+  p4   port: a=17.0199 ms  b=241.60 ms/MP   |   C: a=10.0607 ms  b=128.56 ms/MP   |   slope-ratio=1.88x  intercept-ratio=1.69x
