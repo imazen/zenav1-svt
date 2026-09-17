@@ -1317,20 +1317,15 @@ fn dist_packed(
     subsampling: usize,
 ) -> u64 {
     let dim = if luma { 8usize } else { 4 };
-    let mut sum = 0u64;
-    for (bi, &(by, bx)) in dlist.iter().enumerate() {
-        let s0 = (fb_y0 + by * dim) * plane_w + fb_x0 + bx * dim;
-        let p0 = bi * dim * dim;
-        let mut i = 0usize;
-        while i < dim {
-            for j in 0..dim {
-                let e = src_plane[s0 + i * plane_w + j] as i32 - tmp[p0 + i * dim + j] as i32;
-                sum += (e * e) as u64;
-            }
-            i += subsampling;
-        }
-    }
-    sum
+    k::cdef_dist_packed(
+        src_plane,
+        fb_y0 * plane_w + fb_x0,
+        plane_w,
+        tmp,
+        dlist,
+        dim,
+        subsampling,
+    )
 }
 
 /// The full still-frame CDEF strength search at allintra search presets

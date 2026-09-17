@@ -2201,6 +2201,200 @@ pub fn compute_cdef_dist_8bit(
     sum >> (2 * coeff_shift)
 }
 
+/// Packed-block subsampled SSE, 8-bit — the distortion half of the allintra
+/// CDEF strength search (`svt_aom_compute_cdef_dist_8bit`, enc_cdef.c:114,
+/// square blocks only). `packed` holds one `dim * dim` byte block per
+/// `blocks` entry, back to back; `plane` is the true picture (stride
+/// `pstride`), block `(by, bx)` at `plane_off + by*dim*pstride + bx*dim`.
+/// Every `sub`-th row of each block is summed (`i += subsampling_factor`).
+///
+/// The v3 arm stages each block's sampled rows contiguously so the fold sees
+/// only live lanes — the strided gather is the same byte reach as the scalar
+/// core. Runtime-dispatched (`incant!([v3, neon, scalar])`).
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_dist_packed(
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    incant!(
+        cdef_dist_packed_impl(plane, plane_off, pstride, packed, blocks, dim, sub),
+        [v3, neon, scalar]
+    )
+}
+
+/// Scalar reference for [`cdef_dist_packed`].
+#[allow(clippy::too_many_arguments)]
+fn cdef_dist_packed_core(
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    let mut sum = 0u64;
+    for (bi, &(by, bx)) in blocks.iter().enumerate() {
+        let poff = plane_off + by * dim * pstride + bx * dim;
+        let p0 = bi * dim * dim;
+        let mut i = 0usize;
+        while i < dim {
+            for j in 0..dim {
+                let e = plane[poff + i * pstride + j] as i32 - packed[p0 + i * dim + j] as i32;
+                sum += (e * e) as u64;
+            }
+            i += sub;
+        }
+    }
+    sum
+}
+
+fn cdef_dist_packed_impl_scalar(
+    _token: ScalarToken,
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    cdef_dist_packed_core(plane, plane_off, pstride, packed, blocks, dim, sub)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn cdef_dist_packed_impl_neon(
+    _token: NeonToken,
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    cdef_dist_packed_core(plane, plane_off, pstride, packed, blocks, dim, sub)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn cdef_dist_packed_impl_v3(
+    token: Desktop64,
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    let mut sum = 0u64;
+    match dim {
+        8 => {
+            for (bi, &(by, bx)) in blocks.iter().enumerate() {
+                let poff = plane_off + by * 8 * pstride + bx * 8;
+                sum += dist_block_v3::<8>(
+                    token,
+                    &packed[bi * 64..bi * 64 + 64],
+                    &plane[poff..],
+                    pstride,
+                    sub,
+                );
+            }
+        }
+        4 => {
+            for (bi, &(by, bx)) in blocks.iter().enumerate() {
+                let poff = plane_off + by * 4 * pstride + bx * 4;
+                sum += dist_block_v3::<4>(
+                    token,
+                    &packed[bi * 16..bi * 16 + 16],
+                    &plane[poff..],
+                    pstride,
+                    sub,
+                );
+            }
+        }
+        _ => {
+            return cdef_dist_packed_core(
+                plane, plane_off, pstride, packed, blocks, dim, sub,
+            );
+        }
+    }
+    sum
+}
+
+/// One block's subsampled SSE. `tmp_blk` is `DIM*DIM` packed bytes, `src` the
+/// plane slice at the block's top-left. Sampled rows (`k * sub`) are staged
+/// contiguously, then folded pairwise: `DIM` is const-generic so every row
+/// gather is a fixed-size copy and `n * DIM` (16/32/64 px) always divides the
+/// 32-byte folds with at most one 16-byte tail.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn dist_block_v3<const DIM: usize>(
+    token: Desktop64,
+    tmp_blk: &[u8],
+    src: &[u8],
+    src_stride: usize,
+    sub: usize,
+) -> u64 {
+    use magetypes::simd::generic::{u8x16, u8x32};
+    // Rows visited by the scalar `i += sub` loop: {0, sub, 2sub, ..} < DIM.
+    let n = DIM.div_ceil(sub.max(1));
+    let total = n * DIM;
+    // The packed block's sampled rows are contiguous already when sub == 1;
+    // otherwise they are gathered into a zero-padded staging row — lanes past
+    // `total` stay zero on BOTH sides, so their squared diffs contribute 0.
+    let mut sa_buf = [0u8; 64];
+    let sa: &[u8] = if sub == 1 {
+        &tmp_blk[..total]
+    } else {
+        for k in 0..n {
+            let t: &[u8; DIM] = tmp_blk[k * sub * DIM..k * sub * DIM + DIM]
+                .try_into()
+                .unwrap();
+            sa_buf[k * DIM..k * DIM + DIM].copy_from_slice(t);
+        }
+        &sa_buf[..]
+    };
+    let mut sb = [0u8; 64];
+    for k in 0..n {
+        let s: &[u8; DIM] = src[k * sub * src_stride..k * sub * src_stride + DIM]
+            .try_into()
+            .unwrap();
+        sb[k * DIM..k * DIM + DIM].copy_from_slice(s);
+    }
+    let mut sum = 0u64;
+    let mut c = 0usize;
+    while c < total {
+        if total - c >= 32 {
+            let a = u8x32::load(token, (&sa[c..c + 32]).try_into().unwrap());
+            let b = u8x32::load(token, (&sb[c..c + 32]).try_into().unwrap());
+            let d_lo =
+                a.widen_low().bitcast_i16x16() - b.widen_low().bitcast_i16x16();
+            let d_hi =
+                a.widen_high().bitcast_i16x16() - b.widen_high().bitcast_i16x16();
+            let acc = d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+            sum += u64::from(acc.reduce_add() as u32);
+            c += 32;
+        } else {
+            let a = u8x16::load(token, (&sa[c..c + 16]).try_into().unwrap());
+            let b = u8x16::load(token, (&sb[c..c + 16]).try_into().unwrap());
+            let d_lo = a.widen_low().bitcast_i16x8() - b.widen_low().bitcast_i16x8();
+            let d_hi = a.widen_high().bitcast_i16x8() - b.widen_high().bitcast_i16x8();
+            let acc = d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+            sum += u64::from(acc.reduce_add() as u32);
+            c += 16;
+        }
+    }
+    sum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2484,6 +2678,42 @@ mod tests {
                 assert_eq!(checked, 9 * 4 * 8 * 16 * 4 * 5 * 3);
             },
         );
+    }
+
+    /// `cdef_dist_packed` under every dispatch tier must equal the scalar
+    /// core — over both block dims, every legal subsampling (including 3,
+    /// which does not divide 8 and exercises the staged-tail fold), and an
+    /// edge-clipped block list.
+    #[test]
+    fn cdef_dist_packed_all_tiers_match_scalar() {
+        for_each_tier("cdef_dist_packed_all_tiers_match_scalar", |_| {
+            let pw = 96usize;
+            let ph = 96usize;
+            let mut plane = vec![0u8; pw * ph];
+            let mut packed = vec![0u8; 64 * 64];
+            for (i, b) in plane.iter_mut().enumerate() {
+                *b = ((i * 37 + (i >> 6) * 91) & 0xFF) as u8;
+            }
+            for (i, b) in packed.iter_mut().enumerate() {
+                *b = ((i * 53 + (i >> 5) * 17) & 0xFF) as u8;
+            }
+            let blocks: alloc::vec::Vec<(usize, usize)> = (0..7)
+                .flat_map(|by| (0..7).map(move |bx| (by, bx)))
+                .collect();
+            for &dim in &[8usize, 4] {
+                let nblk = blocks.len().min(packed.len() / (dim * dim));
+                let bl = &blocks[..nblk];
+                for &sub in &[1usize, 2, 3, 4] {
+                    let got = cdef_dist_packed(
+                        &plane, 0, pw, &packed[..nblk * dim * dim], bl, dim, sub,
+                    );
+                    let want = cdef_dist_packed_core(
+                        &plane, 0, pw, &packed[..nblk * dim * dim], bl, dim, sub,
+                    );
+                    assert_eq!(got, want, "dim={dim} sub={sub}");
+                }
+            }
+        });
     }
 
     /// Spec 7.15.3 Cdef_Directions cross-check: the padded table's live rows
