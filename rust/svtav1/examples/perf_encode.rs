@@ -175,6 +175,16 @@ fn main() {
         return;
     }
 
+    // PERF_BD=10 runs the same still cell through the native 10-bit entry
+    // (`try_encode_frame_420_hbd`, u16 planes, `with_bit_depth(10)`). The u8
+    // content is bit-extended `(v << 2) | (v >> 6)` — the standard
+    // round-trip-free 8->10 map — and the `.yuv` is written little-endian
+    // u16. Port-vs-port A/B cells only: the C harness has no bd10 arm.
+    if std::env::var("PERF_BD").ok().as_deref() == Some("10") {
+        encode_still_bd10(&y, &u, &v, w, h, qp, preset, prefix, warmup);
+        return;
+    }
+
     // Write the raw I420 8-bit .yuv the C driver (tools/perf_c_encode) reads —
     // the ONE byte stream both encoders consume, keeping the comparison honest.
     //
@@ -227,6 +237,73 @@ fn main() {
 
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
     // The ONLY stdout line — the driver greps it.
+    println!("ENCODE_NS={ns} BYTES={}", obu.len());
+}
+
+/// The `PERF_BD=10` arm: one still frame through the native-10 entry.
+/// Same timing contract as the 8-bit path — fresh pipeline, warmup untimed,
+/// `ENCODE_NS`/`BYTES` the only stdout line.
+#[allow(clippy::too_many_arguments)]
+fn encode_still_bd10(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    w: usize,
+    h: usize,
+    qp: u8,
+    preset: u8,
+    prefix: &str,
+    warmup: usize,
+) {
+    let widen = |p: &[u8]| -> Vec<u16> {
+        p.iter().map(|&s| ((s as u16) << 2) | ((s as u16) >> 6)).collect()
+    };
+    let (y10, u10, v10) = (widen(y), widen(u), widen(v));
+
+    // u16 little-endian stream — the layout a bd10 reader would expect.
+    {
+        use std::io::Write;
+        let f = std::fs::File::create(format!("{prefix}.yuv")).expect("create .yuv");
+        let mut bw = std::io::BufWriter::with_capacity(1 << 16, f);
+        for p in [&y10, &u10, &v10] {
+            for &s in p.iter() {
+                bw.write_all(&s.to_le_bytes()).expect("write .yuv");
+            }
+        }
+        bw.flush().expect("flush .yuv");
+    }
+
+    let build = || {
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp,
+            ..RcConfig::default()
+        };
+        EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+            .with_bit_depth(10)
+            .with_tile_rows_log2(0)
+            .with_tile_cols_log2(0)
+            .with_sb_size(None)
+            .with_chroma_420(true)
+    };
+
+    for _ in 0..warmup {
+        let mut p = build();
+        let _ = p.try_encode_frame_420_hbd(&y10, &u10, &v10, w);
+    }
+
+    let mut p = build();
+    let t = Instant::now();
+    let obu = match p.try_encode_frame_420_hbd(&y10, &u10, &v10, w) {
+        Ok(obu) => obu,
+        Err(e) => {
+            eprintln!("perf_encode: REFUSED by the encoder (bd10): {e}");
+            std::process::exit(3);
+        }
+    };
+    let ns = t.elapsed().as_nanos();
+
+    std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
     println!("ENCODE_NS={ns} BYTES={}", obu.len());
 }
 
