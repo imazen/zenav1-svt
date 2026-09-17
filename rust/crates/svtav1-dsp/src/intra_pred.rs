@@ -85,6 +85,195 @@ pub fn predict_smooth(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        predict_smooth_impl(dst, dst_stride, above, left, width, height),
+        [v3, neon, scalar]
+    );
+}
+
+fn predict_smooth_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_core(dst, dst_stride, above, left, width, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_core(dst, dst_stride, above, left, width, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn predict_smooth_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    use magetypes::simd::generic::{i32x8, u8x32};
+    if width != 8 && (width < 16 || width % 16 != 0 || width > 128) {
+        predict_smooth_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    // Per-row factored form of C's bilinear:
+    //   pred[c] = (wh * top[c] + ww[c] * d + K) >> 9
+    //   d = left[row] - right,  K = 256*right + (256 - wh)*below + 256
+    // — the same value as C's `(wh*top + ww*lft + (256-ww)*right +
+    // (256-wh)*below + 256) / 512`: every product is nonneg and the total is
+    // ≤ 260,866, so i32 lanes are exact, `>> 9` is the scalar floor-div, and
+    // `.min(255)` is the u8 narrowing's saturation. The column-varying
+    // vectors (top, ww) are hoisted per block; only wh/d/K change per row.
+    let below = i32::from(left[height - 1]);
+    let right = i32::from(above[width - 1]);
+    let sm_h = smooth_weights(height);
+    let sm_w = smooth_weights(width);
+    let mut tops = [i32x8::splat(token, 0); 16];
+    let mut wws = [i32x8::splat(token, 0); 16];
+    let mut j = 0usize;
+    while j * 8 < width {
+        let take = (width - j * 8).min(16);
+        let mut ta = [0u8; 32];
+        let mut wa = [0u8; 32];
+        ta[..take].copy_from_slice(&above[j * 8..j * 8 + take]);
+        wa[..take].copy_from_slice(&sm_w[j * 8..j * 8 + take]);
+        let t16 = u8x32::load(token, &ta).widen_low().bitcast_i16x16();
+        let w16 = u8x32::load(token, &wa).widen_low().bitcast_i16x16();
+        tops[j] = t16.widen_low();
+        tops[j + 1] = t16.widen_high();
+        wws[j] = w16.widen_low();
+        wws[j + 1] = w16.widen_high();
+        j += 2;
+    }
+    if width == 8 {
+        // One i32x8 covers a whole row; two rows pack into a u8x32 whose
+        // lanes 8..16 and 24..32 are junk (the second `narrow` operand is a
+        // duplicate of the first) — only bytes 0..8 and 16..24 are copied.
+        let mut row = 0usize;
+        while row + 1 < height {
+            let mut halves = [i32x8::splat(token, 0); 4];
+            for (i, r) in [row, row + 1].into_iter().enumerate() {
+                let wh = i32::from(sm_h[r]);
+                let d = i32::from(left[r]) - right;
+                let k = 256 * right + (256 - wh) * below + 256;
+                let a = (tops[0] * wh + wws[0] * d + k).shr_logical_const::<9>();
+                halves[2 * i] = a;
+                halves[2 * i + 1] = a;
+            }
+            let mut tmp = [0u8; 32];
+            halves[0]
+                .narrow_saturating_i16(halves[1])
+                .narrow_saturating_u8(halves[2].narrow_saturating_i16(halves[3]))
+                .store(&mut tmp);
+            dst[row * dst_stride..row * dst_stride + 8].copy_from_slice(&tmp[..8]);
+            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 8]
+                .copy_from_slice(&tmp[16..24]);
+            row += 2;
+        }
+        if row < height {
+            let rest = height - row;
+            predict_smooth_core(
+                &mut dst[row * dst_stride..],
+                dst_stride,
+                above,
+                &left[row..row + rest],
+                width,
+                rest,
+            );
+        }
+        return;
+    }
+    if width == 16 {
+        // A 16-px row pairs with the next row in one u8x32 narrow; block
+        // heights are always even, and the scalar tail covers a defensive
+        // odd `height`.
+        let mut row = 0usize;
+        while row + 1 < height {
+            let mut halves = [i32x8::splat(token, 0); 4];
+            for (i, r) in [row, row + 1].into_iter().enumerate() {
+                let wh = i32::from(sm_h[r]);
+                let d = i32::from(left[r]) - right;
+                let k = 256 * right + (256 - wh) * below + 256;
+                halves[2 * i] =
+                    (tops[0] * wh + wws[0] * d + k).shr_logical_const::<9>();
+                halves[2 * i + 1] =
+                    (tops[1] * wh + wws[1] * d + k).shr_logical_const::<9>();
+            }
+            let mut tmp = [0u8; 32];
+            halves[0]
+                .narrow_saturating_i16(halves[1])
+                .narrow_saturating_u8(halves[2].narrow_saturating_i16(halves[3]))
+                .store(&mut tmp);
+            dst[row * dst_stride..row * dst_stride + 16].copy_from_slice(&tmp[..16]);
+            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 16]
+                .copy_from_slice(&tmp[16..]);
+            row += 2;
+        }
+        if row < height {
+            let rest = height - row;
+            predict_smooth_core(
+                &mut dst[row * dst_stride..],
+                dst_stride,
+                above,
+                &left[row..row + rest],
+                width,
+                rest,
+            );
+        }
+        return;
+    }
+    for row in 0..height {
+        let wh = i32::from(sm_h[row]);
+        let d = i32::from(left[row]) - right;
+        let k = 256 * right + (256 - wh) * below + 256;
+        let base = row * dst_stride;
+        let mut c = 0usize;
+        // 32 output pixels per fold: two 16-lane halves narrowed into u8x32.
+        while c * 32 < width {
+            let a0 = (tops[2 * c] * wh + wws[2 * c] * d + k).shr_logical_const::<9>();
+            let a1 =
+                (tops[2 * c + 1] * wh + wws[2 * c + 1] * d + k).shr_logical_const::<9>();
+            let b0 =
+                (tops[2 * c + 2] * wh + wws[2 * c + 2] * d + k).shr_logical_const::<9>();
+            let b1 =
+                (tops[2 * c + 3] * wh + wws[2 * c + 3] * d + k).shr_logical_const::<9>();
+            a0.narrow_saturating_i16(a1)
+                .narrow_saturating_u8(b0.narrow_saturating_i16(b1))
+                .store(
+                    (&mut dst[base + c * 32..base + c * 32 + 32])
+                        .try_into()
+                        .unwrap(),
+                );
+            c += 1;
+        }
+    }
+}
+
+fn predict_smooth_core(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
     let below_pred = left[height - 1] as u32;
     let right_pred = above[width - 1] as u32;
 
