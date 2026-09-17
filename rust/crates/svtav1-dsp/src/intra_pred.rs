@@ -1404,10 +1404,12 @@ fn dr_z2_edged(
         return;
     }
 
-    // `bw >= 16 && bh >= 16` for the reason [`dr_z1_edged`] records: below it
-    // neither pass can run a single 16-lane chunk, so the `incant!` would
-    // summon a token and cross a target-feature boundary to execute the
-    // scalar core.
+    // `bw >= 16` for the reason [`dr_z1_edged`] records: pass 1 chunks
+    // 16 lanes over COLUMNS, so a narrower block cannot run one vector
+    // iteration. `bh` is unrestricted — pass 2's row-chunked loop just
+    // never runs below 16 rows and its per-column scalar tail takes the
+    // (short) left region, while pass 1 still vectorizes the bulk. C's
+    // `dr_prediction_z2_WxH_neon` likewise routes every `bw >= 16` here.
     //
     // The load bounds. Pass 1 reads `above[origin + base_x + c ..= + 16]` with
     // `c + 16 <= bw` and `base_x <= -1`, so its highest index is
@@ -1415,7 +1417,7 @@ fn dr_z2_edged(
     // `r + 16 <= bh` and `by0 <= -1`, highest `origin + bh - 1`. The `+ 16`
     // in the guards is slack, not a requirement.
     if bw >= 16
-        && (16..=64).contains(&bh)
+        && bh <= 64
         && !upsample_above
         && !upsample_left
         && above.len() >= origin + bw + 16
@@ -3224,7 +3226,7 @@ mod tests {
             (seed >> 16) as u8
         };
         let origin = EDGE_ORIGIN;
-        for &bw in &[4usize, 8, 16] {
+        for &bw in &[4usize, 8, 16, 32, 64] {
             for &bh in &[4usize, 8, 16, 32] {
                 let above: Vec<u8> = (0..EDGE_BUF_LEN).map(|_| next()).collect();
                 let left: Vec<u8> = (0..EDGE_BUF_LEN).map(|_| next()).collect();
