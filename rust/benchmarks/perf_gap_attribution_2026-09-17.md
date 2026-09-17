@@ -154,7 +154,23 @@ Facts that ruled out easy answers:
   in production (upsample requires `w + h <= 16`), same over-read C
   does into stack slack; the sweeps use 256-byte buffers to cover it.
 
+* **z2 wide-short coverage — LANDED (coverage, null perf here)**:
+  relaxed the flat arm's gate from `bh >= 16` to any `bh <= 64` — pass 1
+  chunks over columns so 16x8/32x8/64x4 blocks vectorize their bulk;
+  pass 2's scalar tail takes the short left region. Matches C, which
+  routes every `bw >= 16` to `dr_prediction_z2_WxH_neon`. A/B 7r:
+  byte-identical, ratio straddles 1.0 (wide-short z2 blocks are rare
+  at p4 on this fixture). Kept as a coverage/parity alignment, not a
+  perf claim. (ab_z2wide_neon_2026-09-17.tsv)
+
+* **Gap re-measure (campaign, port vs C oracle)**: 512p4 **1.70x**
+  (75.0 vs 44.1 ms), 256p4 **1.67x** — down from 1.83x at the start of
+  the NEON sweep. Every DSP symbol still carrying samples in the fresh
+  512p4 profile now HAS a NEON arm; the remaining gap is the
+  driver-level buckets below. (perf_gap_z13final_2026-09-17.tsv)
+
 ## Where the remaining gap actually lives
+
 
 
 

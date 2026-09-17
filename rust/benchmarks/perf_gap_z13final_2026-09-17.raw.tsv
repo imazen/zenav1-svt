@@ -1,0 +1,18 @@
+# perf_gap raw samples — one row per interleaved paired round (NEITHER SIDE NICED)
+# commit=4b7639e76 host=mac cores=12 date=2026-09-17T18:15:37Z
+# content=gradient sizes=[256 512] presets=[4] qp=40 rounds=7 warmup=1
+content	size	preset	qp	round	port_ns	c_ns	ident
+gradient	256	4	40	1	31083792	18432000	Y
+gradient	256	4	40	2	30825833	18486000	Y
+gradient	256	4	40	3	30783042	18571000	Y
+gradient	256	4	40	4	30954542	18576000	Y
+gradient	256	4	40	5	30487834	18443000	Y
+gradient	256	4	40	6	31242667	18610000	Y
+gradient	256	4	40	7	30713250	18466000	Y
+gradient	512	4	40	1	75079041	43999000	Y
+gradient	512	4	40	2	75385292	44082000	Y
+gradient	512	4	40	3	74969167	44075000	Y
+gradient	512	4	40	4	75181791	44721000	Y
+gradient	512	4	40	5	74919042	44394000	Y
+gradient	512	4	40	6	74533250	43953000	Y
+gradient	512	4	40	7	74701250	43764000	Y
