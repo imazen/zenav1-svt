@@ -1876,7 +1876,152 @@ pub fn predict_filter_intra(
     assert!(dst.len() >= (height - 1) * dst_stride + width);
     assert!(left.len() >= height);
     assert!(above.len() >= width + 1);
+    incant!(
+        predict_filter_intra_impl(dst, dst_stride, above, left, width, height, mode),
+        [v3, neon, scalar]
+    );
+}
 
+fn predict_filter_intra_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    mode: u8,
+) {
+    predict_filter_intra_core(dst, dst_stride, above, left, width, height, mode);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_filter_intra_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    mode: u8,
+) {
+    predict_filter_intra_core(dst, dst_stride, above, left, width, height, mode);
+}
+
+/// Emit one 2x4 output block — C `svt_av1_filter_intra_predictor_sse4_1`'s
+/// inner body (filterintra_sse4.c:50-71). `p` is the 8-tap vector
+/// `[up[c-1..c+4] | cur[r][c-1] | cur[r+1][c-1] | 0]`; the four tap-pair
+/// vectors and the mulhrs rounding constant are hoisted by the caller.
+/// `mulhrs` differs from `ROUND_POWER_OF_TWO_SIGNED` only on negative sums
+/// that both sides clip to 0 anyway — the same argument that makes C's two
+/// kernels identical.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn filter_intra_emit_v3(
+    _token: Desktop64,
+    cur: &mut [u8],
+    dst_stride: usize,
+    off: usize,
+    p: &[u8; 8],
+    f1f0: __m128i,
+    f3f2: __m128i,
+    f5f4: __m128i,
+    f7f6: __m128i,
+    scale_bits: __m128i,
+) {
+    let p_b = _mm_loadu_si64(p);
+    let in_v = _mm_unpacklo_epi64(p_b, p_b);
+    let out_01 = _mm_maddubs_epi16(in_v, f1f0);
+    let out_23 = _mm_maddubs_epi16(in_v, f3f2);
+    let out_45 = _mm_maddubs_epi16(in_v, f5f4);
+    let out_67 = _mm_maddubs_epi16(in_v, f7f6);
+    let out_0123 = _mm_hadd_epi16(out_01, out_23);
+    let out_4567 = _mm_hadd_epi16(out_45, out_67);
+    let out_01234567 = _mm_hadd_epi16(out_0123, out_4567);
+    let round_w = _mm_mulhrs_epi16(out_01234567, scale_bits);
+    let out_r = _mm_packus_epi16(round_w, round_w);
+    let (row0, row1) = cur.split_at_mut(dst_stride);
+    let d0: &mut [u8; 4] = (&mut row0[off..off + 4]).try_into().unwrap();
+    let d1: &mut [u8; 4] = (&mut row1[off..off + 4]).try_into().unwrap();
+    _mm_storeu_si32(d0, out_r);
+    _mm_storeu_si32(d1, _mm_srli_si128::<4>(out_r));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn predict_filter_intra_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    mode: u8,
+) {
+    let taps = FILTER_INTRA_TAPS[mode as usize].as_flattened();
+    let t01: &[i8; 16] = taps[0..16].try_into().unwrap();
+    let t23: &[i8; 16] = taps[16..32].try_into().unwrap();
+    let t45: &[i8; 16] = taps[32..48].try_into().unwrap();
+    let t67: &[i8; 16] = taps[48..64].try_into().unwrap();
+    let f1f0 = _mm_loadu_si128(t01);
+    let f3f2 = _mm_loadu_si128(t23);
+    let f5f4 = _mm_loadu_si128(t45);
+    let f7f6 = _mm_loadu_si128(t67);
+    let scale_bits = _mm_set1_epi16(1 << (15 - FILTER_INTRA_SCALE_BITS));
+
+    for r in (1..height + 1).step_by(2) {
+        // dst rows `r - 1` and `r` are written; row `r - 2` is the up-tap
+        // source — same split as the scalar path.
+        let (above_rows, cur) = dst.split_at_mut((r - 1) * dst_stride);
+        let up: &[u8] = if r == 1 {
+            &above[1..]
+        } else {
+            &above_rows[(r - 2) * dst_stride..]
+        };
+        {
+            let mut p = [0u8; 8];
+            p[0] = if r == 1 { above[0] } else { left[r - 2] };
+            p[1..5].copy_from_slice(&up[0..4]);
+            p[5] = left[r - 1];
+            p[6] = left[r];
+            filter_intra_emit_v3(
+                token, cur, dst_stride, 0, &p, f1f0, f3f2, f5f4, f7f6, scale_bits,
+            );
+        }
+        for c in (5..width + 1).step_by(4) {
+            let mut p = [0u8; 8];
+            p[..5].copy_from_slice(&up[c - 2..c + 3]);
+            p[5] = cur[c - 2];
+            p[6] = cur[dst_stride + c - 2];
+            filter_intra_emit_v3(
+                token,
+                cur,
+                dst_stride,
+                c - 1,
+                &p,
+                f1f0,
+                f3f2,
+                f5f4,
+                f7f6,
+                scale_bits,
+            );
+        }
+    }
+}
+
+fn predict_filter_intra_core(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    mode: u8,
+) {
     let taps = &FILTER_INTRA_TAPS[mode as usize];
 
     // 4-wide by 2-tall sub-blocks. `up[j]` aliases buffer row `r - 1`
@@ -2423,6 +2568,71 @@ mod tests {
                 "expected ~128 for uniform input, got {v}"
             );
         }
+    }
+
+    /// `predict_filter_intra` under every dispatch tier must equal the scalar
+    /// core — over all 5 modes and every legal block dim, across flat,
+    /// extreme and pseudo-random neighbor patterns (the cases that stress
+    /// the maddubs sign/saturation and the mulhrs-vs-explicit-rounding
+    /// divergence on negative sums). The report is consumed, matching the
+    /// `for_each_tier` contract `cdef.rs`'s tests document.
+    #[test]
+    fn filter_intra_all_tiers_match_scalar() {
+        use archmage::testing::{CompileTimePolicy, TokenPermutation, for_each_token_permutation};
+        let mut check = |_: &TokenPermutation| {
+            let mut st = 0x9E3779B97F4A7C15u64;
+            let mut lcg = || {
+                st ^= st << 13;
+                st ^= st >> 7;
+                st ^= st << 17;
+                (st >> 33) as u8
+            };
+            for kind in 0..4 {
+                for w in [4usize, 8, 16, 32] {
+                    for h in [4usize, 8, 16, 32] {
+                        let above: Vec<u8> = (0..w + 1)
+                            .map(|i| match kind {
+                                0 => 128,
+                                1 => 255,
+                                2 => ((i * 37 + w) & 0xFF) as u8,
+                                _ => lcg(),
+                            })
+                            .collect();
+                        let left: Vec<u8> = (0..h)
+                            .map(|i| match kind {
+                                0 => 128,
+                                1 => 0,
+                                2 => ((i * 53 + h) & 0xFF) as u8,
+                                _ => lcg(),
+                            })
+                            .collect();
+                        for mode in 0..5u8 {
+                            let mut want = vec![0u8; w * h];
+                            predict_filter_intra_core(&mut want, w, &above, &left, w, h, mode);
+                            let mut got = vec![0u8; w * h];
+                            predict_filter_intra(&mut got, w, &above, &left, w, h, mode);
+                            assert_eq!(
+                                got, want,
+                                "kind={kind} {w}x{h} mode={mode}: dispatch diverged \
+                                 from scalar"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, &mut check);
+        assert!(
+            report.warnings.is_empty(),
+            "archmage excluded token(s): {:?}",
+            report.warnings
+        );
+        assert!(
+            report.permutations_run >= 2,
+            "tier sweep ran {} permutation(s) — cannot catch a SIMD-vs-scalar \
+             divergence.",
+            report.permutations_run
+        );
     }
 
     #[test]
