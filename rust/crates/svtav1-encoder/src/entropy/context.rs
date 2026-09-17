@@ -455,13 +455,34 @@ pub const AV1_PROB_COST: [u16; 128] = [
 /// `shift` normalizes p15 into [2^14, 2^15); `prob = get_prob(p15 <<
 /// shift, 32768)` maps it to [128, 255] (get_prob rounds `num * 256 /
 /// den` and clips to [1, 255]).
+///
+/// The body runs per CDF entry inside `syntax_rate_from_cdf`, which the
+/// chained-context presets (update_cdf_level = 2) call ~12K times PER SB
+/// rebuilding `CoeffCostTables`, plus per-partition/per-LRU callers.
+/// `p15`'s whole domain is 32768 values, so the answer is a compile-time
+/// LUT — same arithmetic, one load instead of ~10 ops.
 pub fn av1_cost_symbol(p15: u32) -> u32 {
-    let p15 = p15.clamp(1, CDF_PROB_TOP as u32 - 1);
+    AV1_COST_SYMBOL_LUT[p15.clamp(1, CDF_PROB_TOP as u32 - 1) as usize]
+}
+
+const fn cost_symbol_raw(p15: u32) -> u32 {
     let shift = 14 - (31 - p15.leading_zeros());
-    let prob = (((p15 << shift) * 256 + (1 << 14)) >> 15).clamp(1, 255);
-    debug_assert!(prob >= 128);
+    let prob = ((p15 << shift) * 256 + (1 << 14)) >> 15;
+    let prob = if prob > 255 { 255 } else { prob };
     AV1_PROB_COST[(prob - 128) as usize] as u32 + shift * 512
 }
+
+const fn build_cost_symbol_lut() -> [u32; CDF_PROB_TOP as usize] {
+    let mut lut = [0u32; CDF_PROB_TOP as usize];
+    let mut p = 1usize;
+    while p < lut.len() {
+        lut[p] = cost_symbol_raw(p as u32);
+        p += 1;
+    }
+    lut
+}
+
+static AV1_COST_SYMBOL_LUT: [u32; CDF_PROB_TOP as usize] = build_cost_symbol_lut();
 
 /// Cost (1/512-bit units) of coding partition symbol `sym` at a square
 /// node of `width`, with neighbor sub-context `sub_ctx` (0..3), from the
