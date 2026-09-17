@@ -587,14 +587,23 @@ fn build_src<P: Copy + Into<u16>>(
             continue;
         }
         let gy = gy as usize;
-        for (c, out) in row.iter_mut().enumerate() {
-            let gx = x0 as isize + c as isize - k::CDEF_HBORDER as isize;
-            *out = if gx < 0 || gx >= plane_w as isize {
-                k::CDEF_VERY_LARGE
-            } else {
-                pre[gy * plane_w + gx as usize].into()
-            };
+        // Per-row interior span: the columns whose `gx` lands in the plane.
+        // Edges get VERY_LARGE; the middle is one widen-copy LLVM vectorizes.
+        let rowlen = hsize + 2 * k::CDEF_HBORDER;
+        let c0 = k::CDEF_HBORDER.saturating_sub(x0).min(rowlen);
+        let c1 = (k::CDEF_HBORDER + plane_w)
+            .saturating_sub(x0)
+            .min(rowlen)
+            .max(c0);
+        row[..c0].fill(k::CDEF_VERY_LARGE);
+        let gx0 = x0 + c0 - k::CDEF_HBORDER;
+        for (out, &p) in row[c0..c1]
+            .iter_mut()
+            .zip(&pre[gy * plane_w + gx0..])
+        {
+            *out = p.into();
         }
+        row[c1..].fill(k::CDEF_VERY_LARGE);
     }
 }
 
