@@ -35,59 +35,59 @@ macro_rules! fwd_rect_driver {
             let cos_bit_row = FWD_COS_BIT_ROW[txw][txh];
             let rect_ratio1 = (txw as i32 - txh as i32).abs() == 1;
 
-            let mut buf = [0i32; W * H];
+            stage_buf(W * H, |buf| {
+                // COLUMN PASS — `W` columns (WG groups of 8), size-`H` transform,
+                // contiguous down each column (no transpose).
+                for cg in 0..WG {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); H];
+                    for r in 0..H {
+                        colin[r] =
+                            round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
+                    }
+                    let mut colout = [_mm256_setzero_si256(); H];
+                    $colk(t, &colin, &mut colout, cos_bit_col);
+                    for r in 0..H {
+                        store8(t, buf, r * W + colbase, round_shift_v(t, colout[r], post_col));
+                    }
+                }
 
-            // COLUMN PASS — `W` columns (WG groups of 8), size-`H` transform,
-            // contiguous down each column (no transpose).
-            for cg in 0..WG {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); H];
-                for r in 0..H {
-                    colin[r] =
-                        round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
-                }
-                let mut colout = [_mm256_setzero_si256(); H];
-                $colk(t, &colin, &mut colout, cos_bit_col);
-                for r in 0..H {
-                    store8(t, &mut buf, r * W + colbase, round_shift_v(t, colout[r], post_col));
-                }
-            }
-
-            // ROW PASS — `H` rows (H/8 groups of 8), size-`W` transform (load &
-            // store via 8×8 tile transpose). Rect scale on the row output.
-            for rg in 0..(H / 8) {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); W];
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, &buf, (rowbase + l) * W + s * 8);
+                // ROW PASS — `H` rows (H/8 groups of 8), size-`W` transform (load &
+                // store via 8×8 tile transpose). Rect scale on the row output.
+                for rg in 0..(H / 8) {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); W];
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, buf, (rowbase + l) * W + s * 8);
+                        }
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            pos[s * 8 + j] = tt[j];
+                        }
                     }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        pos[s * 8 + j] = tt[j];
+                    let mut rowout = [_mm256_setzero_si256(); W];
+                    $rowk(t, &pos, &mut rowout, cos_bit_row);
+                    for i in 0..W {
+                        let mut v = round_shift_v(t, rowout[i], post_row);
+                        if rect_ratio1 {
+                            v = rect_scale(t, v, NEW_SQRT2);
+                        }
+                        rowout[i] = v;
                     }
-                }
-                let mut rowout = [_mm256_setzero_si256(); W];
-                $rowk(t, &pos, &mut rowout, cos_bit_row);
-                for i in 0..W {
-                    let mut v = round_shift_v(t, rowout[i], post_row);
-                    if rect_ratio1 {
-                        v = rect_scale(t, v, NEW_SQRT2);
-                    }
-                    rowout[i] = v;
-                }
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, output, (rowbase + l) * W + s * 8, tt[l]);
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, output, (rowbase + l) * W + s * 8, tt[l]);
+                        }
                     }
                 }
-            }
+            })
         }
     };
 }
@@ -131,60 +131,60 @@ macro_rules! inv_rect_driver {
             let txh = H.trailing_zeros() as i32 - 2;
             let rect_ratio1 = (txw - txh).abs() == 1;
 
-            let mut buf = [0i32; W * H];
-
-            // ROW PASS — `H` rows (H/8 groups of 8), size-`W` transform. Rect
-            // scale on the row input, THEN the row-range clamp.
-            for rg in 0..(H / 8) {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); W];
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
-                    }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        let mut v = tt[j];
-                        if rect_ratio1 {
-                            v = rect_scale(t, v, NEW_INV_SQRT2);
+            stage_buf(W * H, |buf| {
+                // ROW PASS — `H` rows (H/8 groups of 8), size-`W` transform. Rect
+                // scale on the row input, THEN the row-range clamp.
+                for rg in 0..(H / 8) {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); W];
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
                         }
-                        pos[s * 8 + j] = clampv(t, v, row_lo, row_hi);
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            let mut v = tt[j];
+                            if rect_ratio1 {
+                                v = rect_scale(t, v, NEW_INV_SQRT2);
+                            }
+                            pos[s * 8 + j] = clampv(t, v, row_lo, row_hi);
+                        }
+                    }
+                    let mut rowout = [_mm256_setzero_si256(); W];
+                    $rowk(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi);
+                    for i in 0..W {
+                        rowout[i] = round_shift_v(t, rowout[i], rsh0);
+                    }
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, buf, (rowbase + l) * W + s * 8, tt[l]);
+                        }
                     }
                 }
-                let mut rowout = [_mm256_setzero_si256(); W];
-                $rowk(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi);
-                for i in 0..W {
-                    rowout[i] = round_shift_v(t, rowout[i], rsh0);
-                }
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, &mut buf, (rowbase + l) * W + s * 8, tt[l]);
-                    }
-                }
-            }
 
-            // COLUMN PASS — `W` columns (WG groups of 8), size-`H` transform,
-            // contiguous (no transpose).
-            for cg in 0..WG {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); H];
-                for r in 0..H {
-                    colin[r] = clampv(t, load8(t, &buf, r * W + colbase), col_lo, col_hi);
+                // COLUMN PASS — `W` columns (WG groups of 8), size-`H` transform,
+                // contiguous (no transpose).
+                for cg in 0..WG {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); H];
+                    for r in 0..H {
+                        colin[r] = clampv(t, load8(t, buf, r * W + colbase), col_lo, col_hi);
+                    }
+                    let mut colout = [_mm256_setzero_si256(); H];
+                    $colk(t, &colin, &mut colout, rnd, shc, col_lo, col_hi);
+                    for r in 0..H {
+                        let v = round_shift_v(t, colout[r], rsh1);
+                        let v = wraplow(t, v, wl_lo, wl_hi);
+                        store8(t, output, r * out_stride + colbase, v);
+                    }
                 }
-                let mut colout = [_mm256_setzero_si256(); H];
-                $colk(t, &colin, &mut colout, rnd, shc, col_lo, col_hi);
-                for r in 0..H {
-                    let v = round_shift_v(t, colout[r], rsh1);
-                    let v = wraplow(t, v, wl_lo, wl_hi);
-                    store8(t, output, r * out_stride + colbase, v);
-                }
-            }
+            })
         }
     };
 }

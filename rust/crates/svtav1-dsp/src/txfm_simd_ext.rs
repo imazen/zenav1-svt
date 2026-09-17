@@ -194,72 +194,72 @@ macro_rules! fwd_ext_driver {
             let cos_bit_row = FWD_COS_BIT_ROW[txw][txh];
             let rect_ratio1 = (txw as i32 - txh as i32).abs() == 1;
 
-            let mut buf = [0i32; W * H];
+            stage_buf(W * H, |buf| {
+                // COLUMN PASS (size H) — `ud` reverses the input row read, `lr`
+                // reverse-mirrors the output write to `buf`.
+                for cg in 0..WG {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); H];
+                    for r in 0..H {
+                        let src_row = if ud { H - 1 - r } else { r };
+                        colin[r] =
+                            round_shift_v(t, load8(t, input, src_row * input_stride + colbase), pre_col);
+                    }
+                    let mut colout = [_mm256_setzero_si256(); H];
+                    match col_1d {
+                        0 => $cdct(t, &colin, &mut colout, cos_bit_col),
+                        1 | 2 => $cadst(t, &colin, &mut colout, cos_bit_col),
+                        _ => $cid(t, &colin, &mut colout, cos_bit_col),
+                    }
+                    for r in 0..H {
+                        let v = round_shift_v(t, colout[r], post_col);
+                        if lr {
+                            store8(t, buf, r * W + (W - colbase - 8), reverse8(t, v));
+                        } else {
+                            store8(t, buf, r * W + colbase, v);
+                        }
+                    }
+                }
 
-            // COLUMN PASS (size H) — `ud` reverses the input row read, `lr`
-            // reverse-mirrors the output write to `buf`.
-            for cg in 0..WG {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); H];
-                for r in 0..H {
-                    let src_row = if ud { H - 1 - r } else { r };
-                    colin[r] =
-                        round_shift_v(t, load8(t, input, src_row * input_stride + colbase), pre_col);
-                }
-                let mut colout = [_mm256_setzero_si256(); H];
-                match col_1d {
-                    0 => $cdct(t, &colin, &mut colout, cos_bit_col),
-                    1 | 2 => $cadst(t, &colin, &mut colout, cos_bit_col),
-                    _ => $cid(t, &colin, &mut colout, cos_bit_col),
-                }
-                for r in 0..H {
-                    let v = round_shift_v(t, colout[r], post_col);
-                    if lr {
-                        store8(t, &mut buf, r * W + (W - colbase - 8), reverse8(t, v));
-                    } else {
-                        store8(t, &mut buf, r * W + colbase, v);
+                // ROW PASS (size W) — no flip; rect NewSqrt2 scale on 2:1 rects.
+                for rg in 0..(H / 8) {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); W];
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, buf, (rowbase + l) * W + s * 8);
+                        }
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            pos[s * 8 + j] = tt[j];
+                        }
+                    }
+                    let mut rowout = [_mm256_setzero_si256(); W];
+                    match row_1d {
+                        0 => $rdct(t, &pos, &mut rowout, cos_bit_row),
+                        1 | 2 => $radst(t, &pos, &mut rowout, cos_bit_row),
+                        _ => $rid(t, &pos, &mut rowout, cos_bit_row),
+                    }
+                    for i in 0..W {
+                        let mut v = round_shift_v(t, rowout[i], post_row);
+                        if rect_ratio1 {
+                            v = rect_scale(t, v, NEW_SQRT2);
+                        }
+                        rowout[i] = v;
+                    }
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, output, (rowbase + l) * W + s * 8, tt[l]);
+                        }
                     }
                 }
-            }
-
-            // ROW PASS (size W) — no flip; rect NewSqrt2 scale on 2:1 rects.
-            for rg in 0..(H / 8) {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); W];
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, &buf, (rowbase + l) * W + s * 8);
-                    }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        pos[s * 8 + j] = tt[j];
-                    }
-                }
-                let mut rowout = [_mm256_setzero_si256(); W];
-                match row_1d {
-                    0 => $rdct(t, &pos, &mut rowout, cos_bit_row),
-                    1 | 2 => $radst(t, &pos, &mut rowout, cos_bit_row),
-                    _ => $rid(t, &pos, &mut rowout, cos_bit_row),
-                }
-                for i in 0..W {
-                    let mut v = round_shift_v(t, rowout[i], post_row);
-                    if rect_ratio1 {
-                        v = rect_scale(t, v, NEW_SQRT2);
-                    }
-                    rowout[i] = v;
-                }
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, output, (rowbase + l) * W + s * 8, tt[l]);
-                    }
-                }
-            }
+            })
         }
     };
 }
@@ -305,73 +305,73 @@ macro_rules! inv_ext_driver {
             let txh = H.trailing_zeros() as i32 - 2;
             let rect_ratio1 = (txw - txh).abs() == 1;
 
-            let mut buf = [0i32; W * H];
-
-            // ROW PASS (size W) — no flip; rect scale on input, then row clamp.
-            for rg in 0..(H / 8) {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); W];
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
-                    }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        let mut v = tt[j];
-                        if rect_ratio1 {
-                            v = rect_scale(t, v, NEW_INV_SQRT2);
+            stage_buf(W * H, |buf| {
+                // ROW PASS (size W) — no flip; rect scale on input, then row clamp.
+                for rg in 0..(H / 8) {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); W];
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
                         }
-                        pos[s * 8 + j] = clampv(t, v, row_lo, row_hi);
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            let mut v = tt[j];
+                            if rect_ratio1 {
+                                v = rect_scale(t, v, NEW_INV_SQRT2);
+                            }
+                            pos[s * 8 + j] = clampv(t, v, row_lo, row_hi);
+                        }
+                    }
+                    let mut rowout = [_mm256_setzero_si256(); W];
+                    match row_1d {
+                        0 => $rdct(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
+                        1 | 2 => $radst(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
+                        _ => $rid(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
+                    }
+                    for i in 0..W {
+                        rowout[i] = round_shift_v(t, rowout[i], rsh0);
+                    }
+                    for s in 0..WG {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, buf, (rowbase + l) * W + s * 8, tt[l]);
+                        }
                     }
                 }
-                let mut rowout = [_mm256_setzero_si256(); W];
-                match row_1d {
-                    0 => $rdct(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
-                    1 | 2 => $radst(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
-                    _ => $rid(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi),
-                }
-                for i in 0..W {
-                    rowout[i] = round_shift_v(t, rowout[i], rsh0);
-                }
-                for s in 0..WG {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, &mut buf, (rowbase + l) * W + s * 8, tt[l]);
-                    }
-                }
-            }
 
-            // COLUMN PASS (size H) — `lr` reverse-mirrors the `buf` gather,
-            // `ud` reverses the output row store.
-            for cg in 0..WG {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); H];
-                for r in 0..H {
-                    let v = if lr {
-                        reverse8(t, load8(t, &buf, r * W + (W - colbase - 8)))
-                    } else {
-                        load8(t, &buf, r * W + colbase)
-                    };
-                    colin[r] = clampv(t, v, col_lo, col_hi);
+                // COLUMN PASS (size H) — `lr` reverse-mirrors the `buf` gather,
+                // `ud` reverses the output row store.
+                for cg in 0..WG {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); H];
+                    for r in 0..H {
+                        let v = if lr {
+                            reverse8(t, load8(t, buf, r * W + (W - colbase - 8)))
+                        } else {
+                            load8(t, buf, r * W + colbase)
+                        };
+                        colin[r] = clampv(t, v, col_lo, col_hi);
+                    }
+                    let mut colout = [_mm256_setzero_si256(); H];
+                    match col_1d {
+                        0 => $cdct(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
+                        1 | 2 => $cadst(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
+                        _ => $cid(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
+                    }
+                    for r in 0..H {
+                        let src = if ud { colout[H - 1 - r] } else { colout[r] };
+                        let v = round_shift_v(t, src, rsh1);
+                        let v = wraplow(t, v, wl_lo, wl_hi);
+                        store8(t, output, r * out_stride + colbase, v);
+                    }
                 }
-                let mut colout = [_mm256_setzero_si256(); H];
-                match col_1d {
-                    0 => $cdct(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
-                    1 | 2 => $cadst(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
-                    _ => $cid(t, &colin, &mut colout, rnd, shc, col_lo, col_hi),
-                }
-                for r in 0..H {
-                    let src = if ud { colout[H - 1 - r] } else { colout[r] };
-                    let v = round_shift_v(t, src, rsh1);
-                    let v = wraplow(t, v, wl_lo, wl_hi);
-                    store8(t, output, r * out_stride + colbase, v);
-                }
-            }
+            })
         }
     };
 }

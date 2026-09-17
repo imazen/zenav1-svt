@@ -8,6 +8,36 @@
 
 use crate::inv_txfm::inv_txfm_ranges;
 
+/// Per-thread transform staging buffer. Every 2D driver below fully
+/// overwrites its intermediate `buf` in the first pass before the second
+/// pass reads it, so `let mut buf = [0i32; N * N]` on the stack pays a
+/// memset of up to 16 KB per transform call for bytes that are never read —
+/// callgrind attributes ~1.8M instructions per 512² encode to those dead
+/// memsets. Under `std` a thread-local stage avoids them; `no_std` keeps the
+/// stack array.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TXFM_STAGE: core::cell::RefCell<[i32; 4096]> =
+        const { core::cell::RefCell::new([0; 4096]) };
+}
+
+/// Run `f` with a staging buffer of at least `n` i32. The contents are
+/// stale: every driver writes each element in its first pass before the
+/// second pass reads it.
+#[inline]
+fn stage_buf<R>(n: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+    debug_assert!(n <= 4096);
+    #[cfg(feature = "std")]
+    {
+        TXFM_STAGE.with(|c| f(&mut c.borrow_mut()[..n]))
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let mut buf = alloc::vec![0i32; n];
+        f(&mut buf)
+    }
+}
+
 /// Generate `inv_dct_<N>` and `fwd_dct_<N>` for a square size `N` (multiple of
 /// 8) given its 1D inverse/forward kernels.
 macro_rules! dct_square_driver {
@@ -40,54 +70,54 @@ macro_rules! dct_square_driver {
             let wl_lo = splat(t, -int_max - 1);
             let wl_hi = splat(t, int_max);
 
-            let mut buf = [0i32; N * N];
+            stage_buf(N * N, |buf| {
+                // ROW PASS — process 8 rows at a time (transpose on load & store).
+                for rg in 0..G {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); N];
+                    for s in 0..G {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
+                        }
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            pos[s * 8 + j] = clampv(t, tt[j], row_lo, row_hi);
+                        }
+                    }
+                    let mut rowout = [_mm256_setzero_si256(); N];
+                    $idct(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi);
+                    for i in 0..N {
+                        rowout[i] = round_shift_v(t, rowout[i], rsh0);
+                    }
+                    for s in 0..G {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, buf, (rowbase + l) * N + s * 8, tt[l]);
+                        }
+                    }
+                }
 
-            // ROW PASS — process 8 rows at a time (transpose on load & store).
-            for rg in 0..G {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); N];
-                for s in 0..G {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, input, (rowbase + l) * input_stride + s * 8);
+                // COLUMN PASS — 8 columns at a time, contiguous (no transpose).
+                for cg in 0..G {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); N];
+                    for r in 0..N {
+                        colin[r] = clampv(t, load8(t, buf, r * N + colbase), col_lo, col_hi);
                     }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        pos[s * 8 + j] = clampv(t, tt[j], row_lo, row_hi);
-                    }
-                }
-                let mut rowout = [_mm256_setzero_si256(); N];
-                $idct(t, &pos, &mut rowout, rnd, shc, row_lo, row_hi);
-                for i in 0..N {
-                    rowout[i] = round_shift_v(t, rowout[i], rsh0);
-                }
-                for s in 0..G {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, &mut buf, (rowbase + l) * N + s * 8, tt[l]);
+                    let mut colout = [_mm256_setzero_si256(); N];
+                    $idct(t, &colin, &mut colout, rnd, shc, col_lo, col_hi);
+                    for r in 0..N {
+                        let v = round_shift_v(t, colout[r], rsh1);
+                        let v = wraplow(t, v, wl_lo, wl_hi);
+                        store8(t, output, r * out_stride + colbase, v);
                     }
                 }
-            }
-
-            // COLUMN PASS — 8 columns at a time, contiguous (no transpose).
-            for cg in 0..G {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); N];
-                for r in 0..N {
-                    colin[r] = clampv(t, load8(t, &buf, r * N + colbase), col_lo, col_hi);
-                }
-                let mut colout = [_mm256_setzero_si256(); N];
-                $idct(t, &colin, &mut colout, rnd, shc, col_lo, col_hi);
-                for r in 0..N {
-                    let v = round_shift_v(t, colout[r], rsh1);
-                    let v = wraplow(t, v, wl_lo, wl_hi);
-                    store8(t, output, r * out_stride + colbase, v);
-                }
-            }
+            })
         }
 
         /// Forward square DCT-DCT (`N=$n`), no flips. Byte-exact with
@@ -110,54 +140,54 @@ macro_rules! dct_square_driver {
             let cos_bit_col = FWD_COS_BIT_COL[txw][txw];
             let cos_bit_row = FWD_COS_BIT_ROW[txw][txw];
 
-            let mut buf = [0i32; N * N];
+            stage_buf(N * N, |buf| {
+                // COLUMN PASS first — 8 columns at a time, contiguous.
+                for cg in 0..G {
+                    let colbase = cg * 8;
+                    let mut colin = [_mm256_setzero_si256(); N];
+                    for r in 0..N {
+                        colin[r] =
+                            round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
+                    }
+                    let mut colout = [_mm256_setzero_si256(); N];
+                    $fdct(t, &colin, &mut colout, cos_bit_col);
+                    for r in 0..N {
+                        let v = round_shift_v(t, colout[r], post_col);
+                        store8(t, buf, r * N + colbase, v);
+                    }
+                }
 
-            // COLUMN PASS first — 8 columns at a time, contiguous.
-            for cg in 0..G {
-                let colbase = cg * 8;
-                let mut colin = [_mm256_setzero_si256(); N];
-                for r in 0..N {
-                    colin[r] =
-                        round_shift_v(t, load8(t, input, r * input_stride + colbase), pre_col);
-                }
-                let mut colout = [_mm256_setzero_si256(); N];
-                $fdct(t, &colin, &mut colout, cos_bit_col);
-                for r in 0..N {
-                    let v = round_shift_v(t, colout[r], post_col);
-                    store8(t, &mut buf, r * N + colbase, v);
-                }
-            }
-
-            // ROW PASS — 8 rows at a time (transpose on load & store).
-            for rg in 0..G {
-                let rowbase = rg * 8;
-                let mut pos = [_mm256_setzero_si256(); N];
-                for s in 0..G {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for l in 0..8 {
-                        tile[l] = load8(t, &buf, (rowbase + l) * N + s * 8);
+                // ROW PASS — 8 rows at a time (transpose on load & store).
+                for rg in 0..G {
+                    let rowbase = rg * 8;
+                    let mut pos = [_mm256_setzero_si256(); N];
+                    for s in 0..G {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for l in 0..8 {
+                            tile[l] = load8(t, buf, (rowbase + l) * N + s * 8);
+                        }
+                        let tt = transpose8(t, &tile);
+                        for j in 0..8 {
+                            pos[s * 8 + j] = tt[j];
+                        }
                     }
-                    let tt = transpose8(t, &tile);
-                    for j in 0..8 {
-                        pos[s * 8 + j] = tt[j];
+                    let mut rowout = [_mm256_setzero_si256(); N];
+                    $fdct(t, &pos, &mut rowout, cos_bit_row);
+                    for i in 0..N {
+                        rowout[i] = round_shift_v(t, rowout[i], post_row);
                     }
-                }
-                let mut rowout = [_mm256_setzero_si256(); N];
-                $fdct(t, &pos, &mut rowout, cos_bit_row);
-                for i in 0..N {
-                    rowout[i] = round_shift_v(t, rowout[i], post_row);
-                }
-                for s in 0..G {
-                    let mut tile = [_mm256_setzero_si256(); 8];
-                    for j in 0..8 {
-                        tile[j] = rowout[s * 8 + j];
-                    }
-                    let tt = transpose8(t, &tile);
-                    for l in 0..8 {
-                        store8(t, output, (rowbase + l) * N + s * 8, tt[l]);
+                    for s in 0..G {
+                        let mut tile = [_mm256_setzero_si256(); 8];
+                        for j in 0..8 {
+                            tile[j] = rowout[s * 8 + j];
+                        }
+                        let tt = transpose8(t, &tile);
+                        for l in 0..8 {
+                            store8(t, output, (rowbase + l) * N + s * 8, tt[l]);
+                        }
                     }
                 }
-            }
+            })
         }
     };
 }
