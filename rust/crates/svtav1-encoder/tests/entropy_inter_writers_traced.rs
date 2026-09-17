@@ -247,7 +247,15 @@ fn write_ref_frames_single_ref_traced() {
             bsize: BlockSize::Block16x16,
         };
         let got = run(|w, fc, ic| {
-            p::refframe::write_ref_frames(w, fc, ic, &nb, &counts, ReferenceMode::Select, &blk)
+            p::refframe::write_ref_frames(
+                w,
+                &mut p::refframe::RefFrameCdfs::from_fc(fc),
+                ic,
+                &nb,
+                &counts,
+                ReferenceMode::Select,
+                &blk,
+            )
         });
         let mut exp = vec![e(Tab::CompInter, comp_inter_ctx, 0)];
         for (n, sym) in bits {
@@ -291,7 +299,15 @@ fn write_ref_frames_bidir_compound_traced() {
         };
         assert!(!blk.has_uni_comp_refs(), "{rf:?} must be bidirectional");
         let got = run(|w, fc, ic| {
-            p::refframe::write_ref_frames(w, fc, ic, &nb, &counts, ReferenceMode::Select, &blk)
+            p::refframe::write_ref_frames(
+                w,
+                &mut p::refframe::RefFrameCdfs::from_fc(fc),
+                ic,
+                &nb,
+                &counts,
+                ReferenceMode::Select,
+                &blk,
+            )
         });
         let mut exp = vec![
             e(Tab::CompInter, comp_inter_ctx, 1),
@@ -341,7 +357,15 @@ fn write_ref_frames_unidir_compound_traced() {
         };
         assert!(blk.has_uni_comp_refs(), "{rf:?} must be unidirectional");
         let got = run(|w, fc, ic| {
-            p::refframe::write_ref_frames(w, fc, ic, &nb, &counts, ReferenceMode::Select, &blk)
+            p::refframe::write_ref_frames(
+                w,
+                &mut p::refframe::RefFrameCdfs::from_fc(fc),
+                ic,
+                &nb,
+                &counts,
+                ReferenceMode::Select,
+                &blk,
+            )
         });
         let mut exp = vec![
             e(Tab::CompInter, comp_inter_ctx, 1),
@@ -397,8 +421,17 @@ fn write_ref_frames_comp_inter_flag_gates_traced() {
             ref_frame: [1, -1],
             bsize,
         };
-        let got =
-            run(|w, fc, ic| p::refframe::write_ref_frames(w, fc, ic, &nb, &counts, mode, &blk));
+        let got = run(|w, fc, ic| {
+            p::refframe::write_ref_frames(
+                w,
+                &mut p::refframe::RefFrameCdfs::from_fc(fc),
+                ic,
+                &nb,
+                &counts,
+                mode,
+                &blk,
+            )
+        });
         let mut exp = Vec::new();
         if flag {
             exp.push(e(

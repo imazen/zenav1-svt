@@ -65,7 +65,6 @@
 //! frames (`pipeline.rs`, the `if !is_key` guard). Per §7 a faithful
 //! translation with no caller stays translated.
 
-use crate::entropy::context::FrameContext;
 use crate::entropy::mv_coding::NmvContext;
 use crate::entropy::writer::AomWriter;
 use crate::inter_mv_code::{MvCodePlan, mv_precision, write_inter_block_mvs};
@@ -200,7 +199,7 @@ pub struct InterModeInfoEmitted {
 /// fresh one per block is not decodable.
 pub fn write_inter_mode_info(
     w: &mut AomWriter,
-    fc: &mut FrameContext,
+    ref_cdfs: &mut crate::port_entropy_inter::refframe::RefFrameCdfs<'_>,
     ic: &mut InterCdfs,
     nmvc: &mut NmvContext,
     nb: &Neighbors,
@@ -217,7 +216,7 @@ pub fn write_inter_mode_info(
     // Step 2: `write_ref_frames` (:5199).
     write_ref_frames(
         w,
-        fc,
+        ref_cdfs,
         ic,
         nb,
         &counts,
@@ -347,6 +346,7 @@ pub fn write_inter_mode_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entropy::context::FrameContext;
     use crate::port_entropy_inter::NeighborMi;
     use crate::port_entropy_inter::compound::{
         CompGroup, CompoundType, InterInterComp, InterIntraMode,
@@ -420,7 +420,20 @@ mod tests {
         let mut nmvc = NmvContext::default();
         let mut w = AomWriter::new(1024);
         let nb = neighbors();
-        let out = write_inter_mode_info(&mut w, &mut fc, &mut ic, &mut nmvc, &nb, &frame(), blk);
+        let mut ref_cdfs = crate::port_entropy_inter::refframe::RefFrameCdfs {
+            comp_inter_cdf: &mut fc.comp_inter_cdf,
+            comp_ref_cdf: &mut fc.comp_ref_cdf,
+            single_ref_cdf: &mut fc.single_ref_cdf,
+        };
+        let out = write_inter_mode_info(
+            &mut w,
+            &mut ref_cdfs,
+            &mut ic,
+            &mut nmvc,
+            &nb,
+            &frame(),
+            blk,
+        );
         let bytes = w.done().len();
         (out, bytes)
     }

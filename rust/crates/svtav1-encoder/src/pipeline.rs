@@ -10783,13 +10783,22 @@ fn encode_block_syntax(
                 nb.left.map(|a| (a.mode, a.ref_frame, a.interp_filters)),
             );
         }
-        let mut ic = frame_ctx.inter.clone();
-        let mut nmvc = frame_ctx.nmvc.clone();
+        // Disjoint field borrows: the writer adapts `frame_ctx.inter` and
+        // `frame_ctx.nmvc` IN PLACE — no per-block clone of either struct
+        // (~1.2 KB round trip removed from every coded inter block).
         crate::port_entropy_inter::block::write_inter_mode_info(
-            writer, frame_ctx, &mut ic, &mut nmvc, &nb, &frame, &info,
+            writer,
+            &mut crate::port_entropy_inter::refframe::RefFrameCdfs {
+                comp_inter_cdf: &mut frame_ctx.comp_inter_cdf,
+                comp_ref_cdf: &mut frame_ctx.comp_ref_cdf,
+                single_ref_cdf: &mut frame_ctx.single_ref_cdf,
+            },
+            &mut frame_ctx.inter,
+            &mut frame_ctx.nmvc,
+            &nb,
+            &frame,
+            &info,
         );
-        frame_ctx.inter = ic;
-        frame_ctx.nmvc = nmvc;
     } else if is_key {
         let above_ctx = ectx.above_mode_ctx(block_x);
         let left_ctx = ectx.left_mode_ctx(block_y);
@@ -16668,9 +16677,19 @@ mod inter_tile_byte_gate {
         );
         crate::entropy::context::write_skip(&mut w_, &mut fc, 0, true);
         crate::entropy::context::write_intra_inter(&mut w_, &mut fc, 0, true);
-        let mut ic = fc.inter.clone();
-        let mut nmvc = fc.nmvc.clone();
-        write_inter_mode_info(&mut w_, &mut fc, &mut ic, &mut nmvc, nb, frame, blk);
+        write_inter_mode_info(
+            &mut w_,
+            &mut crate::port_entropy_inter::refframe::RefFrameCdfs {
+                comp_inter_cdf: &mut fc.comp_inter_cdf,
+                comp_ref_cdf: &mut fc.comp_ref_cdf,
+                single_ref_cdf: &mut fc.single_ref_cdf,
+            },
+            &mut fc.inter,
+            &mut fc.nmvc,
+            nb,
+            frame,
+            blk,
+        );
         w_.done().to_vec()
     }
 }

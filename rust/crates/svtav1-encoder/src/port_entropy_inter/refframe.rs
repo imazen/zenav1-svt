@@ -11,7 +11,8 @@
 //! :1992..:2092, the ten `svt_aom_get_pred_cdf_*` selectors :1650..:2061,
 //! and `write_ref_frames` :2098).
 
-use crate::entropy::context::FrameContext;
+use crate::entropy::cdf::AomCdfProb;
+use crate::entropy::context::{COMP_INTER_CONTEXTS, REF_CONTEXTS};
 use crate::entropy::writer::AomWriter;
 use crate::port_entropy_inter::{InterCdfs, NeighborMi, Neighbors};
 use svtav1_types::block::BlockSize;
@@ -438,6 +439,34 @@ impl RefFrameBlock {
     }
 }
 
+/// The three `FrameContext` CDF arrays `write_ref_frames` adapts, carried as
+/// disjoint `&mut` field borrows. This is what lets `encode_block_syntax`
+/// hand the same call `frame_ctx.inter` and `frame_ctx.nmvc` alongside them
+/// WITHOUT cloning either out of the context — the previous shape took the
+/// whole `&mut FrameContext`, which aliases those fields, so the caller
+/// cloned both structs (~1.2 KB) per coded inter block.
+pub struct RefFrameCdfs<'a> {
+    /// C `comp_inter_cdf` (`FrameContext::comp_inter_cdf`).
+    pub comp_inter_cdf: &'a mut [[AomCdfProb; 3]; COMP_INTER_CONTEXTS],
+    /// C `comp_ref_cdf` (`FrameContext::comp_ref_cdf`).
+    pub comp_ref_cdf: &'a mut [[[AomCdfProb; 3]; 3]; REF_CONTEXTS],
+    /// C `single_ref_cdf` (`FrameContext::single_ref_cdf`).
+    pub single_ref_cdf: &'a mut [[[AomCdfProb; 3]; 6]; REF_CONTEXTS],
+}
+
+impl<'a> RefFrameCdfs<'a> {
+    /// Borrow the three arrays out of a whole `FrameContext` — the
+    /// convenience for test/util callers that already hold one;
+    /// `encode_block_syntax` borrows the fields directly.
+    pub fn from_fc(fc: &'a mut crate::entropy::context::FrameContext) -> Self {
+        Self {
+            comp_inter_cdf: &mut fc.comp_inter_cdf,
+            comp_ref_cdf: &mut fc.comp_ref_cdf,
+            single_ref_cdf: &mut fc.single_ref_cdf,
+        }
+    }
+}
+
 /// C `write_ref_frames` (entropy_coding.c:2098) — step 2 of the inter block
 /// walk (`inter_mv_code.rs`'s recorded order).
 ///
@@ -446,14 +475,14 @@ impl RefFrameBlock {
 /// before this call); passing stale or zeroed counts silently picks the wrong
 /// CDF row.
 ///
-/// `fc` supplies the tables that already exist and already hold the real C
-/// defaults (`comp_inter_cdf`, `single_ref_cdf`, `comp_ref_cdf`); `ic`
-/// supplies the three that `FrameContext` does not have at all
+/// `ref_cdfs` supplies the tables that already exist and already hold the
+/// real C defaults (`comp_inter_cdf`, `single_ref_cdf`, `comp_ref_cdf`);
+/// `ic` supplies the three that `FrameContext` does not have at all
 /// (`comp_ref_type`, `uni_comp_ref`, `comp_bwdref`). See
 /// [`crate::port_entropy_inter::cdfs`] for why the split exists.
 pub fn write_ref_frames(
     w: &mut AomWriter,
-    fc: &mut FrameContext,
+    ref_cdfs: &mut RefFrameCdfs<'_>,
     ic: &mut InterCdfs,
     nb: &Neighbors,
     counts: &[u8; TOTAL_REFS_PER_FRAME],
@@ -466,7 +495,11 @@ pub fn write_ref_frames(
     // code no flag at all.
     if reference_mode == ReferenceMode::Select && is_comp_ref_allowed(blk.bsize) {
         let ctx = pred_cdf_reference_mode(nb);
-        w.write_symbol(usize::from(is_compound), &mut fc.comp_inter_cdf[ctx], 2);
+        w.write_symbol(
+            usize::from(is_compound),
+            &mut ref_cdfs.comp_inter_cdf[ctx],
+            2,
+        );
     }
 
     if is_compound {
@@ -497,15 +530,15 @@ pub fn write_ref_frames(
 
         let bit = blk.ref_frame[0] == GOLDEN_FRAME || blk.ref_frame[0] == LAST3_FRAME;
         let (c0, s0) = pred_cdf_comp_ref(counts, 0);
-        w.write_symbol(usize::from(bit), &mut fc.comp_ref_cdf[c0][s0], 2);
+        w.write_symbol(usize::from(bit), &mut ref_cdfs.comp_ref_cdf[c0][s0], 2);
         if !bit {
             let bit1 = blk.ref_frame[0] == LAST2_FRAME;
             let (c1, s1) = pred_cdf_comp_ref(counts, 1);
-            w.write_symbol(usize::from(bit1), &mut fc.comp_ref_cdf[c1][s1], 2);
+            w.write_symbol(usize::from(bit1), &mut ref_cdfs.comp_ref_cdf[c1][s1], 2);
         } else {
             let bit2 = blk.ref_frame[0] == GOLDEN_FRAME;
             let (c2, s2) = pred_cdf_comp_ref(counts, 2);
-            w.write_symbol(usize::from(bit2), &mut fc.comp_ref_cdf[c2][s2], 2);
+            w.write_symbol(usize::from(bit2), &mut ref_cdfs.comp_ref_cdf[c2][s2], 2);
         }
 
         let bit_bwd = blk.ref_frame[1] == ALTREF_FRAME;
@@ -519,29 +552,29 @@ pub fn write_ref_frames(
     } else {
         let bit0 = blk.ref_frame[0] <= ALTREF_FRAME && blk.ref_frame[0] >= BWDREF_FRAME;
         let (c1, s1) = pred_cdf_single_ref(counts, 1);
-        w.write_symbol(usize::from(bit0), &mut fc.single_ref_cdf[c1][s1], 2);
+        w.write_symbol(usize::from(bit0), &mut ref_cdfs.single_ref_cdf[c1][s1], 2);
 
         if bit0 {
             let bit1 = blk.ref_frame[0] == ALTREF_FRAME;
             let (c2, s2) = pred_cdf_single_ref(counts, 2);
-            w.write_symbol(usize::from(bit1), &mut fc.single_ref_cdf[c2][s2], 2);
+            w.write_symbol(usize::from(bit1), &mut ref_cdfs.single_ref_cdf[c2][s2], 2);
             if !bit1 {
                 let bit = blk.ref_frame[0] == ALTREF2_FRAME;
                 let (c6, s6) = pred_cdf_single_ref(counts, 6);
-                w.write_symbol(usize::from(bit), &mut fc.single_ref_cdf[c6][s6], 2);
+                w.write_symbol(usize::from(bit), &mut ref_cdfs.single_ref_cdf[c6][s6], 2);
             }
         } else {
             let bit2 = blk.ref_frame[0] == LAST3_FRAME || blk.ref_frame[0] == GOLDEN_FRAME;
             let (c3, s3) = pred_cdf_single_ref(counts, 3);
-            w.write_symbol(usize::from(bit2), &mut fc.single_ref_cdf[c3][s3], 2);
+            w.write_symbol(usize::from(bit2), &mut ref_cdfs.single_ref_cdf[c3][s3], 2);
             if !bit2 {
                 let bit3 = blk.ref_frame[0] != LAST_FRAME;
                 let (c4, s4) = pred_cdf_single_ref(counts, 4);
-                w.write_symbol(usize::from(bit3), &mut fc.single_ref_cdf[c4][s4], 2);
+                w.write_symbol(usize::from(bit3), &mut ref_cdfs.single_ref_cdf[c4][s4], 2);
             } else {
                 let bit4 = blk.ref_frame[0] != LAST3_FRAME;
                 let (c5, s5) = pred_cdf_single_ref(counts, 5);
-                w.write_symbol(usize::from(bit4), &mut fc.single_ref_cdf[c5][s5], 2);
+                w.write_symbol(usize::from(bit4), &mut ref_cdfs.single_ref_cdf[c5][s5], 2);
             }
         }
     }
