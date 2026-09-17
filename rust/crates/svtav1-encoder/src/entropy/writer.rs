@@ -18,6 +18,15 @@ pub struct AomWriter {
     pub ec: OdEcEnc,
     /// Whether to update CDFs after writing symbols.
     pub allow_update_cdf: bool,
+    /// Context-evolution-only mode: emit no arithmetic-coder output. Every
+    /// `write_*` call applies exactly its CDF side effect (C's
+    /// `allow_update_cdf` estimate paths — `svt_aom_txb_estimate_coeff_bits`,
+    /// `svt_aom_tx_size_bits` — mutate the MD context without driving a bit
+    /// writer), and the output buffer is never touched, so a `cdf_only`
+    /// writer may be constructed with capacity 0. The CDF states a `cdf_only`
+    /// writer leaves behind are identical to a full writer's: `update_cdf`
+    /// is a pure function of the CDF and the symbol.
+    pub cdf_only: bool,
 }
 
 impl AomWriter {
@@ -26,6 +35,7 @@ impl AomWriter {
         Self {
             ec: OdEcEnc::new(capacity),
             allow_update_cdf: true,
+            cdf_only: false,
         }
     }
 
@@ -33,21 +43,27 @@ impl AomWriter {
     #[inline]
     pub fn write_bit(&mut self, bit: bool) {
         // 50/50 probability
-        self.ec.encode_bool_q15(bit, 16384);
+        if !self.cdf_only {
+            self.ec.encode_bool_q15(bit, 16384);
+        }
     }
 
     /// Write a bit with the given old-style probability (0-255 range).
     #[inline]
     pub fn write(&mut self, bit: bool, prob: u32) {
-        let p = (0x7FFFFF - (prob << 15) + prob) >> 8;
-        self.ec.encode_bool_q15(bit, p);
+        if !self.cdf_only {
+            let p = (0x7FFFFF - (prob << 15) + prob) >> 8;
+            self.ec.encode_bool_q15(bit, p);
+        }
     }
 
     /// Write a literal value (fixed-width binary).
     #[inline]
     pub fn write_literal(&mut self, data: u32, bits: u32) {
-        for bit in (0..bits).rev() {
-            self.write_bit((data >> bit) & 1 != 0);
+        if !self.cdf_only {
+            for bit in (0..bits).rev() {
+                self.write_bit((data >> bit) & 1 != 0);
+            }
         }
     }
 
@@ -58,7 +74,9 @@ impl AomWriter {
         // encode_bool_q15 — the exact seam the C harness wraps with
         // -Wl,--wrap (tools/capture_c_trace), so both traces are emitted at
         // the same abstraction level.
-        self.ec.encode_cdf_q15(symb, cdf, nsymbs);
+        if !self.cdf_only {
+            self.ec.encode_cdf_q15(symb, cdf, nsymbs);
+        }
         if self.allow_update_cdf {
             update_cdf(cdf, symb, nsymbs);
         }
@@ -67,7 +85,9 @@ impl AomWriter {
     /// Write a symbol using a CDF without updating it.
     #[inline]
     pub fn write_cdf(&mut self, symb: usize, cdf: &[AomCdfProb], nsymbs: usize) {
-        self.ec.encode_cdf_q15(symb, cdf, nsymbs);
+        if !self.cdf_only {
+            self.ec.encode_cdf_q15(symb, cdf, nsymbs);
+        }
     }
 
     /// Finalize and return the encoded bitstream.

@@ -15438,32 +15438,20 @@ fn encode_tile_rows(
                             sim_prev_sb_row = sb_row;
                         }
                         let (u_src, v_src) = chroma_src.unwrap();
-                        // This writer re-codes ONE superblock, so it is sized
-                        // to a superblock — not to the frame.
-                        //
-                        // MEASURED 2026-09-05
-                        // (`benchmarks/percall_layout_2026-09-05`): at
-                        // `w * h * 2 + 256` this was **524,544 zeroed bytes per
-                        // SB, 64 of them per photo_cid 512x512 p6 frame =
-                        // 33,570,816 B — of which DHAT counts 63,233 bytes
-                        // EVER WRITTEN and 2,425 EVER READ (0.19 % / 0.007 %
-                        // utilisation).** It was the port's single largest
-                        // allocator item, 31.79 M Ir = 2.10 % of the p6 frame,
-                        // and every one of those instructions zeroed memory
-                        // nothing reads.
-                        //
-                        // Any capacity is valid — `OdEcEnc::new`'s own contract
-                        // ("growth happens on demand"). The buffer past `offs`
-                        // is scratch that is never READ before it is written:
-                        // `normalize` re-establishes `len >= offs + 8` by
-                        // `resize(2 * len + 8, 0)` and then OVERWRITES eight
-                        // bytes with `copy_from_slice`, `done` resizes to
-                        // `offs + b` and assigns each byte, and
-                        // `propagate_carry_bwd` only touches indices below
-                        // `offs`. So this is a capacity choice, not a
-                        // behaviour change.
-                        let mut sim_writer =
-                            crate::entropy::writer::AomWriter::new(sb_size * sb_size * 2 + 256);
+                        // This writer re-codes ONE superblock purely to evolve
+                        // the chain's CDFs — its arithmetic output is thrown
+                        // away unread. `cdf_only` skips `encode_cdf_q15`/
+                        // `encode_bool_q15` entirely and applies only the
+                        // `update_cdf` side effect each symbol carries, the
+                        // same division C's `allow_update_cdf` estimate paths
+                        // (`svt_aom_txb_estimate_coeff_bits`,
+                        // `svt_aom_tx_size_bits` with `allow_update_cdf=1`)
+                        // draw: context mutation without a bit writer. CDF
+                        // states are identical to a full pass because
+                        // `update_cdf` is a pure function of (cdf, symbol).
+                        // Capacity 0 is valid — no byte is ever emitted.
+                        let mut sim_writer = crate::entropy::writer::AomWriter::new(0);
+                        sim_writer.cdf_only = true;
                         let mut sim_chroma = Some(ChromaPass {
                             u_src,
                             v_src,
