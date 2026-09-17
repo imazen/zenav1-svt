@@ -421,12 +421,10 @@ fn wiener_convolve_simd(
         // Zero-filling the tail is load-bearing — the last vector block reads
         // past `n_src`, and a zero there keeps stale data from the previous
         // row out of lanes that a narrower `w` would otherwise carry forward.
-        for t in 0..n_src {
-            s32[t] = i32::from(src[base + t]);
+        for (o, &p) in s32[..n_src].iter_mut().zip(src[base..base + n_src].iter()) {
+            *o = i32::from(p);
         }
-        for t in n_src..WIENER_SIMD_SRC_W {
-            s32[t] = 0;
-        }
+        s32[n_src..].fill(0);
 
         let mut x = 0;
         while x < w {
@@ -480,8 +478,8 @@ fn wiener_convolve_simd(
             x += LANES;
         }
         let d = dst_origin + y * dst_stride;
-        for i in 0..w {
-            dst[d + i] = out32[i] as u8;
+        for (o, &p) in dst[d..d + w].iter_mut().zip(out32[..w].iter()) {
+            *o = p as u8;
         }
         if y + 8 <= ih {
             fill(y + 8, &mut s32, &mut ring[(y + 8) % 8]);
