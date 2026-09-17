@@ -243,6 +243,45 @@ pub fn predict_dc_hbd(
     has_left: bool,
     bd: u8,
 ) {
+    incant!(
+        predict_dc_hbd_impl(
+            dst, dst_stride, above, left, width, height, has_above, has_left, bd
+        ),
+        [neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_dc_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+    bd: u8,
+) {
+    predict_dc_hbd_core(
+        dst, dst_stride, above, left, width, height, has_above, has_left, bd,
+    );
+}
+
+/// Scalar core of [`predict_dc_hbd`]; every tier must produce this `dc`.
+#[allow(clippy::too_many_arguments)]
+fn predict_dc_hbd_core(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+    bd: u8,
+) {
     let dc = match (has_above, has_left) {
         (true, true) => {
             let sum: u32 = above[..width].iter().map(|&v| v as u32).sum::<u32>()
@@ -261,9 +300,78 @@ pub fn predict_dc_hbd(
         (false, false) => (128u32 << (bd as u32 - 8)) as u16,
     };
     for row in 0..height {
-        for col in 0..width {
-            dst[row * dst_stride + col] = dc;
+        dst[row * dst_stride..row * dst_stride + width].fill(dc);
+    }
+}
+
+/// Sum the first `n` u16s of `e` with UADDLV widening reductions — 8-lane
+/// chunks, then 4- and 2-lane narrow loads so every AV1 edge length (4..64)
+/// is fully covered. `vaddlvq_u16`/`vaddlv_u16` return the exact u32 total
+/// (8×65535 and 4×65535 both fit u32 — no input-range assumption, unlike C's
+/// u16 tree-sum which presumes ≤12-bit samples).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dc_edge_sum_hbd_neon(_token: NeonToken, e: &[u16], n: usize) -> u32 {
+    let mut sum = 0u32;
+    let mut c = 0usize;
+    while c + 8 <= n {
+        let v: &[u16; 8] = e[c..c + 8].try_into().unwrap();
+        sum += vaddlvq_u16(vld1q_u16(v));
+        c += 8;
+    }
+    if c + 4 <= n {
+        let v: &[u16; 4] = e[c..c + 4].try_into().unwrap();
+        sum += vaddlv_u16(vld1_u16(v));
+        c += 4;
+    }
+    if c + 2 <= n {
+        let packed = u64::from(e[c] as u32) | (u64::from(e[c + 1] as u32) << 16);
+        sum += vaddlv_u16(vcreate_u16(packed));
+        c += 2;
+    }
+    for k in c..n {
+        sum += e[k] as u32;
+    }
+    sum
+}
+
+/// aarch64 arm of [`predict_dc_hbd`]: the edge sums go through
+/// `dc_edge_sum_hbd_neon`; the destination fill stays `.fill`. Same division
+/// and rounding as the scalar core, exact.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn predict_dc_hbd_impl_neon(
+    token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+    bd: u8,
+) {
+    let dc = match (has_above, has_left) {
+        (true, true) => {
+            let sum = dc_edge_sum_hbd_neon(token, above, width)
+                + dc_edge_sum_hbd_neon(token, left, height);
+            let count = (width + height) as u32;
+            ((sum + count / 2) / count) as u16
         }
+        (true, false) => {
+            let sum = dc_edge_sum_hbd_neon(token, above, width);
+            ((sum + width as u32 / 2) / width as u32) as u16
+        }
+        (false, true) => {
+            let sum = dc_edge_sum_hbd_neon(token, left, height);
+            ((sum + height as u32 / 2) / height as u32) as u16
+        }
+        (false, false) => (128u32 << (bd as u32 - 8)) as u16,
+    };
+    for row in 0..height {
+        dst[row * dst_stride..row * dst_stride + width].fill(dc);
     }
 }
 
