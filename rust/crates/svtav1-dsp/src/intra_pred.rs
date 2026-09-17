@@ -25,6 +25,41 @@ pub fn predict_dc(
     has_above: bool,
     has_left: bool,
 ) {
+    incant!(
+        predict_dc_impl(
+            dst, dst_stride, above, left, width, height, has_above, has_left
+        ),
+        [neon, scalar]
+    )
+}
+
+fn predict_dc_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+) {
+    predict_dc_core(
+        dst, dst_stride, above, left, width, height, has_above, has_left,
+    );
+}
+
+/// Scalar core of [`predict_dc`]; every tier must produce this `dc` value.
+fn predict_dc_core(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+) {
     let dc = match (has_above, has_left) {
         (true, true) => {
             let sum: u32 = above[..width].iter().map(|&v| v as u32).sum::<u32>()
@@ -38,6 +73,80 @@ pub fn predict_dc(
         }
         (false, true) => {
             let sum: u32 = left[..height].iter().map(|&v| v as u32).sum();
+            ((sum + height as u32 / 2) / height as u32) as u8
+        }
+        (false, false) => 128,
+    };
+
+    if width == 0 || height == 0 {
+        return;
+    }
+    if dst_stride == width {
+        dst[..width * height].fill(dc);
+    } else {
+        for row in 0..height {
+            dst[row * dst_stride..row * dst_stride + width].fill(dc);
+        }
+    }
+}
+
+/// Sum the first `n` bytes of `e` with UADDLV widening reductions — 16-byte
+/// chunks, then 8- and 4-byte narrow loads so every AV1 edge length (4..64)
+/// is fully covered. `vaddlvq_u8`/`vaddlv_u8` return the exact u16 total.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dc_edge_sum_neon(_token: NeonToken, e: &[u8], n: usize) -> u32 {
+    let mut sum = 0u32;
+    let mut c = 0usize;
+    while c + 16 <= n {
+        let v: &[u8; 16] = e[c..c + 16].try_into().unwrap();
+        sum += u32::from(vaddlvq_u8(vld1q_u8(v)));
+        c += 16;
+    }
+    if c + 8 <= n {
+        let v: &[u8; 8] = e[c..c + 8].try_into().unwrap();
+        sum += u32::from(vaddlv_u8(vld1_u8(v)));
+        c += 8;
+    }
+    if c + 4 <= n {
+        let v: &[u8; 4] = e[c..c + 4].try_into().unwrap();
+        sum += u32::from(vaddlv_u8(vcreate_u8(u64::from(u32::from_le_bytes(*v)))));
+        c += 4;
+    }
+    for k in c..n {
+        sum += e[k] as u32;
+    }
+    sum
+}
+
+/// aarch64 arm of [`predict_dc`]: the edge sums go through
+/// `dc_edge_sum_neon`; the destination fill stays `.fill` (memset — already
+/// optimal). Same division and rounding as the scalar core, exact.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_dc_impl_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+) {
+    let dc = match (has_above, has_left) {
+        (true, true) => {
+            let sum = dc_edge_sum_neon(token, above, width) + dc_edge_sum_neon(token, left, height);
+            let count = (width + height) as u32;
+            ((sum + count / 2) / count) as u8
+        }
+        (true, false) => {
+            let sum = dc_edge_sum_neon(token, above, width);
+            ((sum + width as u32 / 2) / width as u32) as u8
+        }
+        (false, true) => {
+            let sum = dc_edge_sum_neon(token, left, height);
             ((sum + height as u32 / 2) / height as u32) as u8
         }
         (false, false) => 128,
@@ -3176,6 +3285,38 @@ mod tests {
         let mut dst = [0u8; 16];
         predict_dc(&mut dst, 4, &above, &left, 4, 4, true, true);
         assert!(dst.iter().all(|&v| v == 100));
+    }
+
+    /// The dispatched `predict_dc` (neon/scalar via `incant!`) must equal
+    /// `predict_dc_core` on every size, flag combination, and stride — the
+    /// edge-sum is the only vectorized part, and a wrong sum flips the whole
+    /// block's dc value.
+    #[test]
+    fn predict_dc_dispatch_matches_core_all_sizes_flags() {
+        let mut seed = 0x54321u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for &width in &[4usize, 8, 16, 32, 64] {
+            for &height in &[4usize, 8, 16, 32, 64] {
+                let above: Vec<u8> = (0..width).map(|_| next()).collect();
+                let left: Vec<u8> = (0..height).map(|_| next()).collect();
+                for &(ha, hl) in &[(true, true), (true, false), (false, true), (false, false)] {
+                    for pad in [0usize, 5] {
+                        let stride = width + pad;
+                        let mut want = vec![0u8; stride * height];
+                        let mut got = vec![0u8; stride * height];
+                        predict_dc_core(&mut want, stride, &above, &left, width, height, ha, hl);
+                        predict_dc(&mut got, stride, &above, &left, width, height, ha, hl);
+                        assert_eq!(
+                            want, got,
+                            "predict_dc {width}x{height} stride {stride} flags ({ha},{hl})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The dispatched `predict_smooth` (v3/neon/scalar via `incant!`) must

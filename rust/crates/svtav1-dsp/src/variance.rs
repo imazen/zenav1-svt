@@ -369,6 +369,42 @@ fn variance_diff_parts_impl_neon(
     // `sse` uses vabdq_u8 (|a-b| is exact for u8, and |d|^2 == d^2) squared with
     // vmull_u8 into u16 lanes; squares reach 65025 so they are drained to u32
     // every 16-byte chunk, and the u32 total is drained to u64 per row.
+    if (width == 4 || width == 8) && height <= 128 {
+        // Narrow blocks never reach the 16-byte loop — mirror `sse_impl`'s
+        // measured aarch64 shape: direct narrow loads (`vld1_u8` /
+        // `vcreate_u8`), NOT the v3 arm's staging-buffer row packing, which
+        // benchmarked slower here (`benchmarks/arm_rowpack_2026-09-07.txt`).
+        // Vector accumulators: `sa`/`sb` u16 lanes hold `height * 510` max
+        // (128 * 510 = 65280 < u16::MAX; taller blocks keep the old path),
+        // `sq` drains |d|^2 through vmull_u8 -> vpadalq_u16 into u32.
+        let mut sq = vdupq_n_u32(0);
+        let mut sa = vdup_n_u16(0);
+        let mut sb = vdup_n_u16(0);
+        for row in 0..height {
+            let a_off = row * a_stride;
+            let b_off = row * b_stride;
+            let (va, vb) = if width == 8 {
+                let ac: &[u8; 8] = a[a_off..a_off + 8].try_into().unwrap();
+                let bc: &[u8; 8] = b[b_off..b_off + 8].try_into().unwrap();
+                (vld1_u8(ac), vld1_u8(bc))
+            } else {
+                let ac: &[u8; 4] = a[a_off..a_off + 4].try_into().unwrap();
+                let bc: &[u8; 4] = b[b_off..b_off + 4].try_into().unwrap();
+                (
+                    vcreate_u8(u64::from(u32::from_le_bytes(*ac))),
+                    vcreate_u8(u64::from(u32::from_le_bytes(*bc))),
+                )
+            };
+            let d = vabd_u8(va, vb);
+            sq = vpadalq_u16(sq, vmull_u8(d, d));
+            sa = vadd_u16(sa, vpaddl_u8(va));
+            sb = vadd_u16(sb, vpaddl_u8(vb));
+        }
+        let sse = u64::from(vaddvq_u32(sq));
+        let sum = i64::from(vaddlv_u16(sa)) - i64::from(vaddlv_u16(sb));
+        return (sse, sum);
+    }
+
     let mut sse: u64 = 0;
     let mut sum_a: u64 = 0;
     let mut sum_b: u64 = 0;
