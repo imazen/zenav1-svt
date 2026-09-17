@@ -214,7 +214,7 @@ pub fn inter_signal(
         .expect("order_hint_bits <= 8 in this envelope");
 
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_FHDBG").is_some() {
+    if crate::dbgenv::fhdbg() {
         eprintln!(
             "FHDBG poc={} tl={} picidx rps={:?} refresh={:02x} erm={} oh={} prf={} refsel={} skip={:?} awm={:?} mfmv={:?} ifilter={:?}",
             pic.picture_number,

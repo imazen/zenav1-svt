@@ -159,8 +159,7 @@ pub(crate) fn tx_shortcut(
             }
         }
     };
-    encdec::set_tx_shortcut_ctrls(level, is_not_leaf, enc_mode)
-        .expect("levels 0..=3 are in-domain")
+    encdec::set_tx_shortcut_ctrls(level, is_not_leaf, enc_mode).expect("levels 0..=3 are in-domain")
 }
 
 /// Stamp this arm's `sig_deriv_enc_dec_*` signals onto a [`FunnelCfg`].

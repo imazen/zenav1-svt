@@ -2097,7 +2097,7 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
     update_count_try(pic, seq);
 
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_RPSDBG").is_some() {
+    if crate::dbgenv::rpsdbg() {
         eprintln!(
             "RPSDBG poc={} l0c={} l1c={} l0t={} l1t={} dpb={:?} pocs={:?}",
             pic.picture_number,

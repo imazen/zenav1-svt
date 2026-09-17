@@ -1009,7 +1009,7 @@ pub fn build_inter_candidates(
         let pme_d = search.md_pme_dist();
         let r = me_d.min(pme_d) / ((b.bw * b.bh) as u32) < th;
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_MRGDBG").is_some() {
+        if crate::dbgenv::mrgdbg() {
             std::eprintln!(
                 "MRGDBG blk=({},{}) {}x{} mult={} th={} me_d={} pme_d={} -> {r}",
                 b.org_x,

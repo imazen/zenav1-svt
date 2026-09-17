@@ -520,7 +520,7 @@ fn light_full_cost(
             y.0 + cb.0 + cr.0,
         );
         let sc = rdcost(lambda, sf[1] as u64, y.1 + cb.1 + cr.1);
-        if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+        if crate::dbgenv::skipdbg() {
             eprintln!(
                 "LSKIP blk=({},{}) yb={y_bits} cbb={cb_bits} crb={cr_bits} nstx={nstx} \
                  sf0={} sf1={} yres={} ypred={} nsc={nsc} sc={sc} lam={lambda} -> {}",

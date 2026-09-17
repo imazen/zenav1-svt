@@ -3406,7 +3406,7 @@ impl<'a> Pd0Ctx<'a> {
             }
         }
         #[cfg(feature = "std")]
-        if crate::dbgenv::pd0dbg() && std::env::var_os("SVTAV1_PD0PRED").is_some() {
+        if crate::dbgenv::pd0dbg() && crate::dbgenv::pd0pred() {
             if have_best {
                 eprint!("PD0PRED org=({abs_x},{abs_y}) {bw}x{bh}");
                 for r in 0..bh.min(4) {

@@ -140,8 +140,7 @@ impl TxShortcutState {
         self.bypass_tx_th != 0
             && !self.block_has_coeff
             && self.luma_fast_dist * u64::from(self.bypass_tx_th)
-                < u64::from((height * width) as u32)
-                    * u64::from(self.qp_index)
+                < u64::from((height * width) as u32) * u64::from(self.qp_index)
     }
 }
 

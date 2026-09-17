@@ -48,6 +48,32 @@ use alloc::vec;
 
 /// `PICTURE_BUFFER_DESC_LUMA_MASK`.
 pub const LUMA_MASK: u32 = 1;
+
+/// Resolve a presence-only debug env var once, then answer from the cache —
+/// the same `OnceLock<bool>` pattern `svtav1_encoder::dbgenv` uses. These
+/// gates sit on a per-(block, ref) path, so a raw `getenv` per call was a
+/// real cost even with the variables unset.
+#[cfg(feature = "std")]
+#[inline]
+fn dbg_env_once(cell: &'static std::sync::OnceLock<bool>, var: &str) -> bool {
+    *cell.get_or_init(|| std::env::var_os(var).is_some())
+}
+
+/// `ZZ_CHROMA_ROW`: pinned-row chroma predictor probe.
+#[cfg(feature = "std")]
+#[inline]
+fn zz_chroma_row() -> bool {
+    static CELL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    dbg_env_once(&CELL, "ZZ_CHROMA_ROW")
+}
+
+/// `ZZ_CHROMA_DBG`: per-(block, ref) chroma subpel-params dump.
+#[cfg(feature = "std")]
+#[inline]
+fn zz_chroma_dbg() -> bool {
+    static CELL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    dbg_env_once(&CELL, "ZZ_CHROMA_DBG")
+}
 /// `PICTURE_BUFFER_DESC_Cb_FLAG`.
 pub const CB_FLAG: u32 = 2;
 /// `PICTURE_BUFFER_DESC_Cr_FLAG`.
@@ -317,12 +343,7 @@ pub fn av1_inter_prediction_light_pd1(
                 1,
             );
             #[cfg(feature = "std")]
-            if std::env::var_os("ZZ_CHROMA_ROW").is_some()
-                && geom.org_x == 16
-                && geom.org_y == 160
-                && mv.x == -8
-                && mv.y == 0
-            {
+            if zz_chroma_row() && geom.org_x == 16 && geom.org_y == 160 && mv.x == -8 && mv.y == 0 {
                 // Predict first, then show the row this call produced.
                 let rp = &u_refs[i];
                 let origin = (rp.origin as isize
@@ -350,7 +371,7 @@ pub fn av1_inter_prediction_light_pd1(
                 );
             }
             #[cfg(feature = "std")]
-            if std::env::var_os("ZZ_CHROMA_DBG").is_some() {
+            if zz_chroma_dbg() {
                 std::eprintln!(
                     "ZZCHROMA org=({},{}) bwuv={}x{} mv=({},{}) -> pos=({},{}) subpel=({},{}) xs={} ys={}",
                     geom.org_x,

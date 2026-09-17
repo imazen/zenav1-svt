@@ -368,7 +368,7 @@ pub(super) fn run_mds1(
                     .skip_mode[ic.skip_mode_ctx as usize][1] as u64;
                 let sm_cost = rdcost(dec_lambda, sm_rate, dec_dist_pred);
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+                if crate::dbgenv::skipdbg() {
                     eprintln!(
                         "SKMDEC1 blk=({},{}) smr={} sdist={} smc={} full={} -> {}",
                         abs_x,
@@ -377,7 +377,11 @@ pub(super) fn run_mds1(
                         dec_dist_pred,
                         sm_cost,
                         cand.full_cost,
-                        if sm_cost <= cand.full_cost { "SKM" } else { "keep" }
+                        if sm_cost <= cand.full_cost {
+                            "SKM"
+                        } else {
+                            "keep"
+                        }
                     );
                 }
                 if sm_cost <= cand.full_cost {

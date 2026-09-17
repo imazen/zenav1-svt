@@ -3008,7 +3008,7 @@ impl EncodePipeline {
                     }
                 }
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_MEDBG").is_some() {
+                if crate::dbgenv::medbg() {
                     let mut s = alloc::string::String::new();
                     for (i, sl) in self.pa_slots.iter().enumerate() {
                         s.push_str(&alloc::format!(
@@ -3018,7 +3018,8 @@ impl EncodePipeline {
                     }
                     std::eprintln!(
                         "PASLOTS poc={} dpb={:?} slots=[{s}]",
-                        pic.picture_number, pic.rps.ref_dpb_index
+                        pic.picture_number,
+                        pic.rps.ref_dpb_index
                     );
                 }
                 // `me_process.c:212-213` — the counts the picture decision
@@ -3448,7 +3449,7 @@ impl EncodePipeline {
                     w,
                     h,
                 );
-                if std::env::var("SVTAV1_COEFFDBG").is_ok() {
+                if crate::dbgenv::coeffdbg() {
                     eprintln!(
                         "COEFFDBG nmd={} qp={} w={} h={} -> {:?}",
                         norm_me_dist, tpl_adjusted_qp, w, h, coeff_lvl
@@ -4235,7 +4236,7 @@ impl EncodePipeline {
                             &refs,
                         );
                         #[cfg(feature = "std")]
-                        if std::env::var_os("SVT_MFMV_DBG").is_some() {
+                        if crate::dbgenv::mfmv_dbg() {
                             let mut valid = 0usize;
                             let mut hash: u64 = 1469598103934665603;
                             for t in &tpl {
@@ -4267,7 +4268,7 @@ impl EncodePipeline {
                             );
                         }
                         #[cfg(feature = "std")]
-                        if std::env::var_os("ZZ_TPL").is_some() {
+                        if crate::dbgenv::zz_tpl() {
                             let valid = tpl
                                 .iter()
                                 .filter(|t| t.ref_frame_offset != 0)
@@ -4362,7 +4363,7 @@ impl EncodePipeline {
             })
             .collect();
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_RPSDBG").is_some()
+        if crate::dbgenv::rpsdbg()
             && let Some(pic) = pic_decision.as_ref()
             && !is_key
         {
@@ -4675,7 +4676,7 @@ impl EncodePipeline {
                             lw,
                         );
                         #[cfg(feature = "std")]
-                        if std::env::var_os("SVTAV1_LAMDUMP").is_some() {
+                        if crate::dbgenv::lamdump() {
                             std::eprintln!(
                                 "LAM poc={} tl={} sb={} baseq={} but={:?} fut={:?} alt={} meq={} meqd={} lmi={} lw={} -> full={} fast={}",
                                 pic_decision
@@ -6392,7 +6393,7 @@ impl EncodePipeline {
             )?;
         }
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_LFDBG").is_some() {
+        if crate::dbgenv::lfdbg() {
             std::eprintln!(
                 "LFDBG key={} lf_levels={:?} sharp={} postfilter_consumed={}",
                 u8::from(is_key),
@@ -8211,7 +8212,7 @@ impl EncodePipeline {
             temporal_layer,
         };
         #[cfg(feature = "std")]
-        if std::env::var_os("SVT_MFMV_DBG").is_some() {
+        if crate::dbgenv::mfmv_dbg() {
             let mut named = 0usize;
             let mut hash: u64 = 1469598103934665603;
             for m in &ref_frame.mvs {
@@ -10756,7 +10757,7 @@ fn encode_block_syntax(
         // which an inter block leaves at 0, so an inter leaf was
         // indistinguishable from a DC intra one.
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_INTERDBG").is_some() {
+        if crate::dbgenv::interdbg() {
             std::eprintln!(
                 "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} interp={:#x} drl={:?} skm={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,

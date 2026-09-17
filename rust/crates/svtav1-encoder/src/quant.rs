@@ -1301,7 +1301,7 @@ fn update_coeff_eob<const TC: usize>(
         }
 
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_TRELLIS").is_some() {
+        if crate::dbgenv::trellis() {
             std::eprintln!(
                 "TREL si={si} ci={ci} qc={qc} ctx={coeff_ctx} ctxE={coeff_ctx_new_eob} ar={} ad={} rate={rate} dist={dist} rd={rd} rdlow={rd_low} rdn={rd_new_eob} nec={new_eob_cost} rm={}",
                 *accu_rate,

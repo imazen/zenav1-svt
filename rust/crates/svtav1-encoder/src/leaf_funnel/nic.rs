@@ -313,7 +313,7 @@ pub(super) fn stage_mds0_to_mds1(
             }
             let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands, l, g));
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_MRGDBG").is_some() {
+            if crate::dbgenv::mrgdbg() {
                 for l in 0..LANES {
                     if sorted[l].is_empty() {
                         continue;
@@ -321,15 +321,15 @@ pub(super) fn stage_mds0_to_mds1(
                     let mut s = alloc::string::String::new();
                     for (r, &ci) in sorted[l].iter().enumerate() {
                         let c = &cands[ci];
-                        let (m, rf) = c
-                            .inter
-                            .as_deref()
-                            .map_or(("?".to_string(), "?".to_string()), |i| {
-                                (
-                                    alloc::format!("{:?}", i.mode),
-                                    alloc::format!("{:?}", i.ref_frame),
-                                )
-                            });
+                        let (m, rf) =
+                            c.inter
+                                .as_deref()
+                                .map_or(("?".to_string(), "?".to_string()), |i| {
+                                    (
+                                        alloc::format!("{:?}", i.mode),
+                                        alloc::format!("{:?}", i.ref_frame),
+                                    )
+                                });
                         s.push_str(&alloc::format!(
                             "{}{}rf{}:{}{} ",
                             if r < k[l] { "+" } else { "-" },

@@ -211,7 +211,7 @@ pub(crate) fn commit_leaf(
     // winner is always `skip` for the coefficient-context neighbours.
     let skip = committed_skm || !cand.block_has_coeff;
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_WINDBG").is_some() {
+    if crate::dbgenv::windbg() {
         if let Some(i) = cand.inter.as_deref() {
             eprintln!(
                 "RWIN blk=({abs_x},{abs_y}) {w}x{h} imode={} rf={:?} mv=({},{}) drl={} skip={skip} skm={} bhc={} cost={} yd={}",

@@ -750,12 +750,17 @@ pub fn md_nsq_motion_search(
         is_sprs_lev0_performed: false,
     };
     #[cfg(feature = "std")]
-    let dbg_nsq = std::env::var_os("SVTAV1_NSQSRCH").is_some();
+    let dbg_nsq = crate::dbgenv::nsqsrch();
     #[cfg(feature = "std")]
     if dbg_nsq {
         std::eprint!(
             "NSQSRCH org=({},{}) {}x{} sqmv=({},{}) rawmvc=",
-            ctx.blk_org_x, ctx.blk_org_y, ctx.bwidth, ctx.bheight, sq_mv.y, sq_mv.x
+            ctx.blk_org_x,
+            ctx.blk_org_y,
+            ctx.bwidth,
+            ctx.bheight,
+            sq_mv.y,
+            sq_mv.x
         );
         for m in &mvc {
             std::eprint!("({},{})", m.y, m.x);
@@ -779,7 +784,14 @@ pub fn md_nsq_motion_search(
         );
         #[cfg(feature = "std")]
         if dbg_nsq {
-            std::eprintln!("  mvc({},{}) -> center=({},{}) cost={}", m.y, m.x, center.mvy, center.mvx, center.cost);
+            std::eprintln!(
+                "  mvc({},{}) -> center=({},{}) cost={}",
+                m.y,
+                m.x,
+                center.mvy,
+                center.mvx,
+                center.cost
+            );
         }
     }
 
@@ -825,7 +837,17 @@ pub fn md_nsq_motion_search(
         );
         #[cfg(feature = "std")]
         if dbg_nsq {
-            std::eprintln!("  ladder w{}x{} step{} from({},{}) -> best=({},{}) cost={}", wx, wy, step, sy, sx, best.mvy, best.mvx, best.cost);
+            std::eprintln!(
+                "  ladder w{}x{} step{} from({},{}) -> best=({},{}) cost={}",
+                wx,
+                wy,
+                step,
+                sy,
+                sx,
+                best.mvy,
+                best.mvx,
+                best.cost
+            );
         }
         sx = best.mvx;
         sy = best.mvy;

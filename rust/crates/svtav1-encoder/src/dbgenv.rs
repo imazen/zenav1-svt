@@ -197,6 +197,50 @@ presence_flags! {
     /// post-detector level. Joins against the C `CLVL`/`CDET`/`CLPD1` lines
     /// the `SVT_LPD1DBG` interposer emits (reference enc_dec_process.c).
     lpd1dbg => "SVTAV1_LPD1DBG",
+    /// `SVTAV1_TRELLIS`: per-coefficient trellis-decision dump inside
+    /// `quant::optimize_b`. The hottest debug check in the encoder — the
+    /// raw `var_os` was ~3.5 % of sampled encode cycles (2026-09-17,
+    /// /tmp/perf_had.data, 24K samples).
+    trellis => "SVTAV1_TRELLIS",
+    /// `SVTAV1_RDOQDBG`: per-txb RDOQ context dump in `tx_pipeline`.
+    rdoqdbg => "SVTAV1_RDOQDBG",
+    /// `SVTAV1_SKIPDBG`: skip-decision dumps (`RSKIP`/`LSKIP`/`SKMDEC`/
+    /// `SKMINJ` across mds1/mds3/light/port_md::inject).
+    skipdbg => "SVTAV1_SKIPDBG",
+    /// `SVTAV1_MRGDBG`: merge-candidate pruning dump
+    /// (`inter_md_arm`, `leaf_funnel::nic`).
+    mrgdbg => "SVTAV1_MRGDBG",
+    /// `SVTAV1_MEDBG`: motion-estimation per-64x64 / per-SB dump
+    /// (`inter_me_arm`, `pipeline`).
+    medbg => "SVTAV1_MEDBG",
+    /// `SVTAV1_COEFFDBG`: coefficient-context derivation dump (`pipeline`).
+    coeffdbg => "SVTAV1_COEFFDBG",
+    /// `SVTAV1_LAMDUMP`: per-superblock lambda-resolution dump (`pipeline`).
+    lamdump => "SVTAV1_LAMDUMP",
+    /// `SVTAV1_WINDBG`: per-block winner dump at `leaf_funnel::commit`.
+    windbg => "SVTAV1_WINDBG",
+    /// `SVTAV1_INTERDBG`: per-block inter-mode trace (`pipeline` `IDBG` lines).
+    interdbg => "SVTAV1_INTERDBG",
+    /// `SVTAV1_NSQSRCH`: NSQ full-pel motion-search trace
+    /// (`port_md::md_search`).
+    nsqsrch => "SVTAV1_NSQSRCH",
+    /// `SVTAV1_PD0PRED`: PD0 winning-prediction pixel dump (`pd0.rs`); still
+    /// ANDed behind [`pd0dbg`] at the call site.
+    pd0pred => "SVTAV1_PD0PRED",
+    /// `SVTAV1_QLEV_CO`: pre-quant coefficient dump; read only behind the
+    /// `SVTAV1_QLEV_XY` pin in `mds3`.
+    qlev_co => "SVTAV1_QLEV_CO",
+    /// `SVTAV1_FHDBG`: frame-header field dump (`inter_hdr_arm`).
+    fhdbg => "SVTAV1_FHDBG",
+    /// `SVTAV1_LFDBG`: deblock-level dump (`pipeline` `LFDBG` line).
+    lfdbg => "SVTAV1_LFDBG",
+    /// `SVTAV1_RPSDBG`: reference-picture-set dump
+    /// (`pipeline`, `port_picstruct`).
+    rpsdbg => "SVTAV1_RPSDBG",
+    /// `SVT_MFMV_DBG`: temporal-MV field dump (keeps the C-side `SVT_` name).
+    mfmv_dbg => "SVT_MFMV_DBG",
+    /// `ZZ_TPL`: TPL debug gate in `pipeline`.
+    zz_tpl => "ZZ_TPL",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same

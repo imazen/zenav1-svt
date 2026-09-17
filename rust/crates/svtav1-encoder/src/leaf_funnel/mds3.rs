@@ -313,16 +313,15 @@ fn search_best_uv_mode(
         for &(uvm, uvd) in &uv_list {
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
-                    let (u_out, v_out) = chroma::eval_uv_hbd(
-                        cx, fx, b, uvm, uvd, TxGate::default());
+                    let (u_out, v_out) =
+                        chroma::eval_uv_hbd(cx, fx, b, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
                     )
                 }
                 None => {
-                    let (u_out, v_out) = chroma::eval_uv(
-                        cx, fx, uvm, uvd, TxGate::default());
+                    let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
@@ -660,7 +659,8 @@ fn eval_candidate(
     let bypass_tx = perform_mds1
         && cfg.tx_shortcut.bypass_tx_th != 0
         && !cands[ci].mds1_has_coeff
-        && cands[ci].luma_fast_dist
+        && cands[ci]
+            .luma_fast_dist
             .saturating_mul(u64::from(cfg.tx_shortcut.bypass_tx_th))
             < u64::from((w * h) as u32) * u64::from(frame.base_qindex);
     let cand_end_depth = if bypass_tx { 0 } else { cand_end_depth };
@@ -686,10 +686,7 @@ fn eval_candidate(
             || cc::ext_tx_types(c_tx, is_inter, false) == 1
             || cc::ext_tx_set(c_tx, is_inter, false) == 0
     };
-    let dct_tx_path = w <= 64
-        && h <= 64
-        && cand_end_depth == 0
-        && only_dct_d0;
+    let dct_tx_path = w <= 64 && h <= 64 && cand_end_depth == 0 && only_dct_d0;
 
     let mut best_depth = 0u8;
     let mut best_cost = u64::MAX;
@@ -1000,8 +997,7 @@ fn eval_candidate(
             // (the UNCROPPED txb height) at :4674.
             let apply_pf_n4 = cfg.tx_shortcut.apply_pf_on_coeffs != 0
                 && perform_mds1
-                && (cands[ci].mds1_cnt_nz
-                    < (txw as u32 >> 4) * (txh as u32 >> 4)
+                && (cands[ci].mds1_cnt_nz < (txw as u32 >> 4) * (txh as u32 >> 4)
                     || !cands[ci].mds1_has_coeff);
             let n4 = if dct_tx_path {
                 apply_pf_n4
@@ -1069,7 +1065,7 @@ fn eval_candidate(
                     // `tx_unit_inner` consumed: residual + fwd 2D + the
                     // 64-dim fold to `pw x ph`.
                     let mut co_field = alloc::string::String::new();
-                    if std::env::var_os("SVTAV1_QLEV_CO").is_some() {
+                    if crate::dbgenv::qlev_co() {
                         let n = txw * txh;
                         let mut res = alloc::vec![0i32; n];
                         svtav1_dsp::residual::residual_i32(
@@ -1313,64 +1309,123 @@ fn eval_candidate(
                 // 10-bit: the detector's SAD arm uses the 10-bit
                 // chroma predictions and luma, and the variance arm
                 // uses vf_hbd_10 on the 10-bit chroma source.
-                let (det_u10, det_v10) = if let Some(ic) =
-                    cands[ci].inter.as_deref()
-                {
+                let (det_u10, det_v10) = if let Some(ic) = cands[ci].inter.as_deref() {
                     (ic.u_pred10.clone(), ic.v_pred10.clone())
                 } else {
                     let mut u = dirty_pool::<u16>(cw * chh);
                     let mut v = dirty_pool::<u16>(cw * chh);
-                    predict_unit_hbd(fx.u_recon10.as_deref().unwrap(),
-                        fx.c_stride, ccx, ccy, cw, chh,
-                        cands[ci].uv, cands[ci].uv_delta, FI_NONE,
-                        &uv_geom, cfg.edge_filter, filt_type_uv,
-                        &mut u, b.bd);
-                    predict_unit_hbd(fx.v_recon10.as_deref().unwrap(),
-                        fx.c_stride, ccx, ccy, cw, chh,
-                        cands[ci].uv, cands[ci].uv_delta, FI_NONE,
-                        &uv_geom, cfg.edge_filter, filt_type_uv,
-                        &mut v, b.bd);
+                    predict_unit_hbd(
+                        fx.u_recon10.as_deref().unwrap(),
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        cands[ci].uv,
+                        cands[ci].uv_delta,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut u,
+                        b.bd,
+                    );
+                    predict_unit_hbd(
+                        fx.v_recon10.as_deref().unwrap(),
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        cands[ci].uv,
+                        cands[ci].uv_delta,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut v,
+                        b.bd,
+                    );
                     (u.into_vec(), v.into_vec())
                 };
                 let s = chroma_detector_fires_hbd(
-                    y_src, y_src_stride, y_src_off, &best_pred10, w,
-                    fx.u_src, fx.v_src, &det_u10, &det_v10,
-                    fx.c_stride, c_off, cw, chh,
-                    u32::from(b.bd - 8));
+                    y_src,
+                    y_src_stride,
+                    y_src_off,
+                    &best_pred10,
+                    w,
+                    fx.u_src,
+                    fx.v_src,
+                    &det_u10,
+                    &det_v10,
+                    fx.c_stride,
+                    c_off,
+                    cw,
+                    chh,
+                    u32::from(b.bd - 8),
+                );
                 // HBD variance: same formula as the u8 arm but on
                 // 10-bit data — C calls vf_hbd_10 on the u16 source
                 // with offset 1<<(bd-1) (eb_av1_var_offs_hbd).
-                let v_ = chroma_var_arm_fires_hbd(
-                    &b.u_src10, &b.v_src10, cw, chh, 150, b.bd);
+                let v_ = chroma_var_arm_fires_hbd(&b.u_src10, &b.v_src10, cw, chh, 150, b.bd);
                 (s, v_)
             }
             None => {
-                let (det_u, det_v) = if let Some(ic) =
-                    cands[ci].inter.as_deref()
-                {
+                let (det_u, det_v) = if let Some(ic) = cands[ci].inter.as_deref() {
                     (ic.u_pred.clone(), ic.v_pred.clone())
                 } else {
                     let mut u = dirty_pool::<u8>(cw * chh);
                     let mut v = dirty_pool::<u8>(cw * chh);
-                    predict_unit(fx.u_recon, fx.c_stride, ccx, ccy,
-                        cw, chh, cands[ci].uv, cands[ci].uv_delta,
-                        FI_NONE, &uv_geom, cfg.edge_filter,
-                        filt_type_uv, &mut u);
-                    predict_unit(fx.v_recon, fx.c_stride, ccx, ccy,
-                        cw, chh, cands[ci].uv, cands[ci].uv_delta,
-                        FI_NONE, &uv_geom, cfg.edge_filter,
-                        filt_type_uv, &mut v);
+                    predict_unit(
+                        fx.u_recon,
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        cands[ci].uv,
+                        cands[ci].uv_delta,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut u,
+                    );
+                    predict_unit(
+                        fx.v_recon,
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        cands[ci].uv,
+                        cands[ci].uv_delta,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut v,
+                    );
                     (u.into_vec(), v.into_vec())
                 };
                 let s = chroma_detector_fires(
-                    y_src, y_src_stride, y_src_off, &best_pred, w,
-                    fx.u_src, fx.v_src, &det_u, &det_v,
-                    fx.c_stride, c_off, cw, chh);
+                    y_src,
+                    y_src_stride,
+                    y_src_off,
+                    &best_pred,
+                    w,
+                    fx.u_src,
+                    fx.v_src,
+                    &det_u,
+                    &det_v,
+                    fx.c_stride,
+                    c_off,
+                    cw,
+                    chh,
+                );
                 // The variance arm's `th` is hardcoded 150
                 // (product_coding_loop.c:6128), NOT `cplx_th`.
-                let v_ = chroma_var_arm_fires(
-                    fx.u_src, fx.v_src, fx.c_stride, c_off,
-                    cw, chh, 150);
+                let v_ = chroma_var_arm_fires(fx.u_src, fx.v_src, fx.c_stride, c_off, cw, chh, 150);
                 (s, v_)
             }
         };
@@ -1385,14 +1440,15 @@ fn eval_candidate(
     // luma-coefficient test passes (post-MDS3 writeback, :7002-7007).
     // `txbwidth_uv`/`txbheight_uv` == `av1_get_max_uv_txsize` == the
     // C-coded (uncropped) chroma dims = cw/chh.
-    let chroma_n4 = chroma_luma && (
-        use_tx_shortcuts_mds3 ||
-        (cfg.tx_shortcut.apply_pf_on_coeffs != 0 &&
-         (best_coeff_count
-             < (cw as u32 >> 4) * (chh as u32 >> 4)
-             || best_coeff_count == 0))
-    );
-    let chroma_gate = TxGate { n4: chroma_n4, ..TxGate::default() };
+    let chroma_n4 = chroma_luma
+        && (use_tx_shortcuts_mds3
+            || (cfg.tx_shortcut.apply_pf_on_coeffs != 0
+                && (best_coeff_count < (cw as u32 >> 4) * (chh as u32 >> 4)
+                    || best_coeff_count == 0)));
+    let chroma_gate = TxGate {
+        n4: chroma_n4,
+        ..TxGate::default()
+    };
 
     // ---- Chroma full loop (uv per candidate: follows-luma at
     //      CHROMA_MODE_1, or the ind-uv table pick at chroma_level 4)
@@ -1606,9 +1662,7 @@ fn eval_candidate(
         }
         (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
             // IBC: the DV copy at 10 bits, with the inter tx-type rule.
-            (Some((dv, _)), Some(tt)) => {
-                chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt, chroma_gate)
-            }
+            (Some((dv, _)), Some(tt)) => chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt, chroma_gate),
             _ => chroma::eval_uv_hbd(cx, fx, b, cand.uv, cand.uv_delta, chroma_gate),
         }),
         // !has_uv: C runs NO chroma stage, so every chroma term is exactly
@@ -2383,8 +2437,7 @@ fn eval_candidate(
                 // (FILTER candidate, no :7063 pre-rewrite); the mds3 configs
                 // pre-rewrote so this branch is a no-op there.
                 if let Some(b) = bd10_rd.as_ref() {
-                    uv_out10 = Some(chroma::eval_uv_hbd(
-                        cx, fx, b, arb_uv, arb_uvd, chroma_gate));
+                    uv_out10 = Some(chroma::eval_uv_hbd(cx, fx, b, arb_uv, arb_uvd, chroma_gate));
                 }
                 uv_mode_final = arb_uv;
                 uv_delta_final = arb_uvd;
@@ -3122,7 +3175,7 @@ fn eval_candidate(
             best_dist + uv_dist10,
         );
         let skip_cost = rdcost(lambda3, rates.skip[skip_ctx][1] as u64, skip_y + skip_uv);
-        if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+        if crate::dbgenv::skipdbg() {
             eprintln!(
                 "RSKIP blk=({abs_x},{abs_y}) yb={best_bits} ub={u_bits10} vb={v_bits10} nstx={non_skip_tx_bits} sf0={} sf1={} yres={best_dist} uvres={uv_dist10} ypred={skip_y} uvpred={skip_uv} nsc={non_skip_cost} sc={skip_cost} lam={lambda3} -> {}",
                 rates.skip[skip_ctx][0],
@@ -3138,7 +3191,7 @@ fn eval_candidate(
             skip_dist = Some((skip_y, skip_uv));
             block_has_coeff = false;
         }
-    } else if std::env::var_os("SVTAV1_SKIPDBG").is_some() && cand.inter.is_some() {
+    } else if crate::dbgenv::skipdbg() && cand.inter.is_some() {
         eprintln!(
             "RSKIP blk=({abs_x},{abs_y}) ARM-MISS bhc={block_has_coeff} has_uv={has_uv} pred_dists={}",
             pred_dists.is_some()
@@ -3260,7 +3313,7 @@ fn eval_candidate(
                 .skip_mode[ic.skip_mode_ctx as usize][1] as u64;
             let sm_cost = rdcost(lambda3, sm_rate, sy + suv);
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+            if crate::dbgenv::skipdbg() {
                 eprintln!(
                     "SKMDEC blk=({abs_x},{abs_y}) mode={:?} rf={:?} skmctx={} smr={} sdist={} smc={} full={} -> {}",
                     ic.mode,

@@ -781,7 +781,7 @@ pub fn run_frame_me_into(
             b64_pic.b64_geom_height = (p.height - oy).min(64) as u32;
             motion_estimation_b64(&b64_pic, ox as u32, oy as u32, &mut me, &src, refs, out_b64);
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_MEDBG").is_some() {
+            if crate::dbgenv::medbg() {
                 let bi = b64_index - 1;
                 let p = |v: u32| (v & 0xFFFF) as i16 as i32;
                 let q = |v: u32| (v >> 16) as i16 as i32;

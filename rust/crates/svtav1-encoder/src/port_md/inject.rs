@@ -941,7 +941,7 @@ pub fn inject_mvp_candidates_ii(
                     && rf[0] == ctx.skip_mode_ref_frame_idx_0
                     && rf[1] == ctx.skip_mode_ref_frame_idx_1;
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_SKIPDBG").is_some() {
+                if crate::dbgenv::skipdbg() {
                     eprintln!(
                         "SKMINJ rf={:?} pair=({}, {}) skmf={} ll={} -> {}",
                         rf,

@@ -7,27 +7,31 @@
 #   clippy::bool_assert_comparison 2
 #   clippy::chunks_exact_to_as_chunks 2
 #   clippy::collapsible_if 2
-#   clippy::doc_lazy_continuation 3
+#   clippy::doc_lazy_continuation 4
 #   clippy::doc_overindented_list_items 1
 #   clippy::drop_non_drop 1
-#   clippy::empty_line_after_doc_comments 1
+#   clippy::empty_line_after_doc_comments 2
 #   clippy::empty_line_after_outer_attr 1
 #   clippy::excessive_precision 1
 #   clippy::field_reassign_with_default 1
 #   clippy::identity_op 2
-#   clippy::int_plus_one 1
+#   clippy::if_same_then_else 1
+#   clippy::int_plus_one 3
 #   clippy::items_after_test_module 1
+#   clippy::let_and_return 1
 #   clippy::manual_clamp 1
 #   clippy::manual_is_multiple_of 4
 #   clippy::manual_range_patterns 1
 #   clippy::needless_borrow 1
+#   clippy::needless_lifetimes 1
 #   clippy::question_mark 1
 #   clippy::redundant_slicing 1
 #   clippy::too_many_arguments 2
 #   clippy::type_complexity 3
 #   clippy::unnecessary_cast 3
+#   clippy::unnecessary_map_or 1
 #   clippy::useless_conversion 1
-# Total: 39 occurrences across 25 kinds.
+# Total: 47 occurrences across 29 kinds.
 clippy::assertions_on_constants
 clippy::assign_op_pattern
 clippy::bool_assert_comparison
@@ -41,15 +45,19 @@ clippy::empty_line_after_outer_attr
 clippy::excessive_precision
 clippy::field_reassign_with_default
 clippy::identity_op
+clippy::if_same_then_else
 clippy::int_plus_one
 clippy::items_after_test_module
+clippy::let_and_return
 clippy::manual_clamp
 clippy::manual_is_multiple_of
 clippy::manual_range_patterns
 clippy::needless_borrow
+clippy::needless_lifetimes
 clippy::question_mark
 clippy::redundant_slicing
 clippy::too_many_arguments
 clippy::type_complexity
 clippy::unnecessary_cast
+clippy::unnecessary_map_or
 clippy::useless_conversion

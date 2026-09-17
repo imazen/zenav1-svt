@@ -1,0 +1,56 @@
+# dbgenv OnceLock — cache presence-only debug env vars off the hot paths
+
+date:   2026-09-17
+host:   lilith (WSL, x86_64-linux)
+base:   17cbbf7f (main tip; parent of this commit)
+cand:   this commit. crates/svtav1-encoder/src/dbgenv.rs grew 17
+        presence-flag accessors; every remaining raw `std::env::var_os`/
+        `var(...).is_ok()` presence check on per-block-or-hotter paths now
+        reads the OnceLock cache. svtav1-dsp gained two local OnceLock
+        gates (ZZ_CHROMA_ROW / ZZ_CHROMA_DBG in port_pd_pred.rs).
+tool:   tools/perf_ab.sh — interleaved paired rounds, randomised order,
+        neither side niced. perf record -F 4999 for the symbol shares.
+data:   benchmarks/dbgenv_once_2026-09-17.raw.tsv
+
+WHY. A 24K-sample `perf record` of `perf_encode gradient 512 512 40 6`
+(/tmp/perf_had.data) put `__getenv` + `std::env::var_os` at ~3.5 % of
+encode cycles — `quant::optimize_b` re-read `SVTAV1_TRELLIS` on EVERY
+trellis coefficient. The same pattern sat in ~25 more debug gates on
+per-(block, candidate, txb, ref) paths (SKIPDBG x6, MRGDBG x2, MEDBG x2,
+RDOQDBG, COEFFDBG, LAMDUMP, WINDBG, INTERDBG, NSQSRCH, PD0PRED, QLEV_CO,
+FHDBG, LFDBG, RPSDBG x2, SVT_MFMV_DBG x2, ZZ_TPL). dbgenv.rs existed to
+finish exactly this job; these were the leftovers. Value-carrying vars
+(SVTAV1_RECON_BIN, _VB_DUMP, _RECON10_BIN, _LRREC_BIN, _FHDUMP,
+_FCTX_OUT, _SC_TOOLS, _DBG_MI, SVT_HDR_MODE, predict.rs's pin vars)
+stay where they are — the module documents that contract.
+
+Semantics: presence flags are read once per process; setting one
+mid-encode no longer takes effect. Every caller is a shell-driven stderr
+dump that exports before launch — nothing loses a capability. Verified
+SVTAV1_TRELLIS=1 still prints 1626 TREL lines on gradient 128 and
+SVTAV1_SKIPDBG+SVTAV1_RDOQDBG print on gradient 64.
+
+RESULT — every cell ident=Y (byte-identical bitstream), every p25/p75
+span disjoint from 1.0:
+
+  cell          n    base_ms    cand_ms   ratio    speedup
+  512 p6        15     26.697     25.389   0.9549   1.047x
+  256 p2        11    184.561    160.924   0.8734   1.145x
+  256 p10       11      1.569      1.458   0.9360   1.068x
+  512 p2        11    376.925    342.911   0.9065   1.103x
+  512 p10       11      7.159      6.798   0.9520   1.050x
+
+Larger wins at p2 because more candidates per block means more
+SKIPDBG/RDOQDBG/TRELLIS gate reads per encode.
+
+Post-change profile (/tmp/perf_cand.data, 12,464 samples): getenv +
+env wrappers 0.06 % total (was ~3.5 %).
+
+Also folds in a `cargo fmt` normalisation: HEAD was fmt-dirty under the
+CI-pinned 1.98 rustfmt (files untouched by this change — encdec_arm.rs,
+inject.rs, tx_gates.rs — reflowed), so the tree now passes
+`cargo fmt --all --check`.
+
+gates: regression_spotcheck.sh 141/141; nextest on the two touched
+       crates 3412/3412; cargo fmt --all --check clean;
+       tools/clippy_inventory.sh --check rc=0.

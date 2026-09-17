@@ -518,9 +518,28 @@ pub(super) fn tx_unit(
     rate_mode: RateMode,
 ) -> TxUnitOut {
     tx_unit_gated(
-        src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type, plane_type,
-        txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, rdoq, spatial_dist, crop,
-        need_recon, rate_mode, TxGate::default(),
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        intra_dir,
+        qt,
+        frame,
+        rates,
+        rdoq,
+        spatial_dist,
+        crop,
+        need_recon,
+        rate_mode,
+        TxGate::default(),
     )
 }
 
@@ -1132,7 +1151,7 @@ pub(super) fn tx_unit_inner(
             intra_dir == INTER_TXT_DIR,
         );
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_RDOQDBG").is_some() && plane_type == 0 {
+        if crate::dbgenv::rdoqdbg() && plane_type == 0 {
             std::eprintln!(
                 "RDOQCTX lam={} rdmult={} sharp={} sflag={} alli={} iinter={} eobth={} fastth={} cut=({},{}), qm={} tsc={} dsc={} eob0={}",
                 frame.lambda,

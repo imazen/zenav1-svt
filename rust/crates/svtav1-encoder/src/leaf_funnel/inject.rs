@@ -418,16 +418,15 @@ pub(super) fn inject_candidates(
             // `chroma_eval` (the `None` arm is the original code).
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
-                    let (u_out, v_out) = chroma::eval_uv_hbd(
-                        cx, fx, b, uvm, uvd, TxGate::default());
+                    let (u_out, v_out) =
+                        chroma::eval_uv_hbd(cx, fx, b, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
                     )
                 }
                 None => {
-                    let (u_out, v_out) = chroma::eval_uv(
-                        cx, fx, uvm, uvd, TxGate::default());
+                    let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
