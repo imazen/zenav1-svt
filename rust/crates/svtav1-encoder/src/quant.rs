@@ -523,26 +523,20 @@ pub fn build_coeff_cost_tables(base_qindex: u8) -> alloc::boxed::Box<CoeffCostTa
 pub fn build_coeff_cost_tables_from_fc(
     fc: &coeff_c::CoeffFc,
 ) -> alloc::boxed::Box<CoeffCostTables> {
-    let mut tables = alloc::boxed::Box::new(CoeffCostTables {
-        txb: alloc::vec![
-            TxbCosts {
-                txb_skip_cost: [[0; 2]; TXB_SKIP_CONTEXTS],
-                base_eob_cost: [[0; 3]; SIG_COEF_CONTEXTS_EOB],
-                base_cost: [[0; 8]; SIG_COEF_CONTEXTS],
-                eob_extra_cost: [[0; 2]; EOB_COEF_CONTEXTS],
-                dc_sign_cost: [[0; 2]; DC_SIGN_CONTEXTS],
-                lps_cost: [[0; 2 * (COEFF_BASE_RANGE + 1)]; LEVEL_CONTEXTS],
-            };
-            10
-        ],
-        eob: [[EobCosts {
-            eob_cost: [[0; 11]; 2],
-        }; 2]; 7],
-    });
-
+    // Every field is written by the fill below, so the tables are built by
+    // value: `vec![zeros; 10]` used to pay a ~110KB calloc zero-fill per SB
+    // that nothing ever read.
+    fn costs_from_cdf<const N: usize>(cdf: &[u16]) -> [i32; N] {
+        let mut costs = [0i32; N];
+        syntax_rate_from_cdf(&mut costs, cdf);
+        costs
+    }
+    let mut eob = [[EobCosts {
+        eob_cost: [[0; 11]; 2],
+    }; 2]; 7];
     for eob_multi_size in 0..7 {
         for plane in 0..2 {
-            let e = &mut tables.eob[eob_multi_size][plane];
+            let e = &mut eob[eob_multi_size][plane];
             for ctx in 0..2 {
                 let idx = plane * 2 + ctx;
                 match eob_multi_size {
@@ -557,73 +551,68 @@ pub fn build_coeff_cost_tables_from_fc(
             }
         }
     }
+    let mut tables = alloc::boxed::Box::new(CoeffCostTables {
+        txb: alloc::vec::Vec::with_capacity(10),
+        eob,
+    });
 
     for txs_ctx in 0..5 {
         for plane in 0..2 {
-            let p = &mut tables.txb[txs_ctx * 2 + plane];
-            for ctx in 0..TXB_SKIP_CONTEXTS {
-                // txb_skip_cdf is [txs_ctx][ctx] (no plane dim in C).
-                syntax_rate_from_cdf(
-                    &mut p.txb_skip_cost[ctx],
-                    &fc.txb_skip_cdf[txs_ctx * 13 + ctx],
-                );
-            }
-            for ctx in 0..SIG_COEF_CONTEXTS_EOB {
-                syntax_rate_from_cdf(
-                    &mut p.base_eob_cost[ctx],
-                    &fc.coeff_base_eob_cdf[(txs_ctx * 2 + plane) * 4 + ctx],
-                );
-            }
+            let idx = txs_ctx * 2 + plane;
+            let mut base_cost: [[i32; 8]; SIG_COEF_CONTEXTS] =
+                std::array::from_fn(|ctx| {
+                    costs_from_cdf(&fc.coeff_base_cdf[idx * 42 + ctx])
+                });
             for ctx in 0..SIG_COEF_CONTEXTS {
-                syntax_rate_from_cdf(
-                    &mut p.base_cost[ctx],
-                    &fc.coeff_base_cdf[(txs_ctx * 2 + plane) * 42 + ctx],
-                );
+                base_cost[ctx][4] = 0;
+                base_cost[ctx][5] = base_cost[ctx][1] + cost_literal(1) - base_cost[ctx][0];
+                base_cost[ctx][6] = base_cost[ctx][2] - base_cost[ctx][1];
+                base_cost[ctx][7] = base_cost[ctx][3] - base_cost[ctx][2];
             }
-            for ctx in 0..SIG_COEF_CONTEXTS {
-                p.base_cost[ctx][4] = 0;
-                p.base_cost[ctx][5] = p.base_cost[ctx][1] + cost_literal(1) - p.base_cost[ctx][0];
-                p.base_cost[ctx][6] = p.base_cost[ctx][2] - p.base_cost[ctx][1];
-                p.base_cost[ctx][7] = p.base_cost[ctx][3] - p.base_cost[ctx][2];
-            }
-            for ctx in 0..EOB_COEF_CONTEXTS {
-                syntax_rate_from_cdf(
-                    &mut p.eob_extra_cost[ctx],
-                    &fc.eob_extra_cdf[(txs_ctx * 2 + plane) * 9 + ctx],
-                );
-            }
-            for ctx in 0..DC_SIGN_CONTEXTS {
-                syntax_rate_from_cdf(&mut p.dc_sign_cost[ctx], &fc.dc_sign_cdf[plane * 3 + ctx]);
-            }
-            for ctx in 0..LEVEL_CONTEXTS {
-                // coeff_br_cdf is indexed with AOMMIN(txs_ctx, TX_32X32=3).
-                let br_txs = txs_ctx.min(3);
-                let mut br_rate = [0i32; BR_CDF_SIZE];
-                syntax_rate_from_cdf(
-                    &mut br_rate,
-                    &fc.coeff_br_cdf[(br_txs * 2 + plane) * 21 + ctx],
-                );
-                let mut prev_cost = 0i32;
-                let mut i = 0usize;
-                while i < COEFF_BASE_RANGE {
-                    for j in 0..BR_CDF_SIZE - 1 {
-                        p.lps_cost[ctx][i + j] = prev_cost + br_rate[j];
+            let br_txs = txs_ctx.min(3);
+            tables.txb.push(TxbCosts {
+                txb_skip_cost: std::array::from_fn(|ctx| {
+                    // txb_skip_cdf is [txs_ctx][ctx] (no plane dim in C).
+                    costs_from_cdf(&fc.txb_skip_cdf[txs_ctx * 13 + ctx])
+                }),
+                base_eob_cost: std::array::from_fn(|ctx| {
+                    costs_from_cdf(&fc.coeff_base_eob_cdf[idx * 4 + ctx])
+                }),
+                base_cost,
+                eob_extra_cost: std::array::from_fn(|ctx| {
+                    costs_from_cdf(&fc.eob_extra_cdf[idx * 9 + ctx])
+                }),
+                dc_sign_cost: std::array::from_fn(|ctx| {
+                    costs_from_cdf(&fc.dc_sign_cdf[plane * 3 + ctx])
+                }),
+                lps_cost: std::array::from_fn(|ctx| {
+                    // coeff_br_cdf is indexed with AOMMIN(txs_ctx, TX_32X32=3).
+                    let mut lps = [0i32; 2 * (COEFF_BASE_RANGE + 1)];
+                    let mut br_rate = [0i32; BR_CDF_SIZE];
+                    syntax_rate_from_cdf(
+                        &mut br_rate,
+                        &fc.coeff_br_cdf[(br_txs * 2 + plane) * 21 + ctx],
+                    );
+                    let mut prev_cost = 0i32;
+                    let mut i = 0usize;
+                    while i < COEFF_BASE_RANGE {
+                        for j in 0..BR_CDF_SIZE - 1 {
+                            lps[i + j] = prev_cost + br_rate[j];
+                        }
+                        prev_cost += br_rate[BR_CDF_SIZE - 1];
+                        i += BR_CDF_SIZE - 1;
                     }
-                    prev_cost += br_rate[BR_CDF_SIZE - 1];
-                    i += BR_CDF_SIZE - 1;
-                }
-                p.lps_cost[ctx][i] = prev_cost;
-            }
-            for ctx in 0..LEVEL_CONTEXTS {
-                p.lps_cost[ctx][COEFF_BASE_RANGE + 1] = p.lps_cost[ctx][0];
-                for i in 1..=COEFF_BASE_RANGE {
-                    p.lps_cost[ctx][i + COEFF_BASE_RANGE + 1] =
-                        p.lps_cost[ctx][i] - p.lps_cost[ctx][i - 1];
-                }
-            }
+                    lps[i] = prev_cost;
+                    lps[COEFF_BASE_RANGE + 1] = lps[0];
+                    for i2 in 1..=COEFF_BASE_RANGE {
+                        lps[i2 + COEFF_BASE_RANGE + 1] = lps[i2] - lps[i2 - 1];
+                    }
+                    lps
+                }),
+            });
         }
     }
-    tables
+    return tables;
 }
 
 // ---------------------------------------------------------------------------
