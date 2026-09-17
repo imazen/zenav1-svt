@@ -59,7 +59,15 @@ fn gen_content(content: &str, w: usize, h: usize) -> Vec<u8> {
                 "uniform" => 128,
                 // Spec'd by the identity campaign (matches identity_run.rs).
                 "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
-                other => panic!("unknown content {other:?} (use uniform|gradient)"),
+                // Diagonal-dominated texture: three tilted bands with fine
+                // cross-grain, so the intra search actually picks z1/z2/z3
+                // directional modes (gradient mostly resolves to DC/smooth).
+                "diag" => {
+                    let band = ((c as i32 * 3 - r as i32 * 2).rem_euclid(64)) as u32;
+                    let grain = ((c * 7 + r * 11) & 0x1f) as u32;
+                    (band.wrapping_mul(4).wrapping_add(grain) & 0xff) as u8
+                }
+                other => panic!("unknown content {other:?} (use uniform|gradient|diag)"),
             };
         }
     }

@@ -23,11 +23,13 @@ PE="$RS/target-perf/release/examples/perf_encode"
 [ -x "$PE" ] || PE="$RS/target/release/examples/perf_encode"
 [ -x "$PE" ] || { echo "prof.sh: no perf_encode binary (looked in target-perf/ and target/)" >&2; exit 1; }
 
-# ensure the yuv exists (port harness writes it)
-"$PE" gradient "$sz" "$sz" "$qp" "$preset" "$W/in_${sz}_${qp}" 0 >/dev/null 2>&1
+# ensure the yuv exists (port harness writes it). PERF_CONTENT overrides the
+# fixture (gradient default; `diag` exercises directional intra modes).
+CONTENT="${PERF_CONTENT:-gradient}"
+"$PE" "$CONTENT" "$sz" "$sz" "$qp" "$preset" "$W/in_${sz}_${qp}" 0 >/dev/null 2>&1
 
 if [ "$which" = port ]; then
-  "$PE" gradient "$sz" "$sz" "$qp" "$preset" "$W/o_p" "$iters" >/dev/null 2>&1 &
+  "$PE" "$CONTENT" "$sz" "$sz" "$qp" "$preset" "$W/o_p" "$iters" >/dev/null 2>&1 &
 else
   "$RS/tools/perf_c_encode/perf_c_encode" "$sz" "$sz" "$qp" "$preset" "$W/in_${sz}_${qp}.yuv" "$W/o_c.obu" "$iters" >/dev/null 2>&1 &
 fi
