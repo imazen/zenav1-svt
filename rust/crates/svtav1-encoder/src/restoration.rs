@@ -199,27 +199,54 @@ impl FrameRestInfo {
     }
 }
 
+/// A padded-plane buffer that returns to the pixel type's park on drop.
+///
+/// `vec![0; stride*(h+2*BORDER)]` reached `calloc` for every plane of every
+/// frame, and glibc serves these ~half-megabyte chunks from the reused arena
+/// — the zero fill was ~8.4M instructions per encode of memory nothing ever
+/// read: `from_strided` overwrites the interior by row copies and the
+/// borders by the `extend_frame` that immediately follows at both sites,
+/// while `empty`'s `trial`/`dst` interiors are written per restoration unit
+/// before the SSE/crop reads (the stripe loop covers the whole limits rect,
+/// RESTORE_NONE included; the borders are never read). That is
+/// `vecpool::dirty_pool`'s contract exactly.
+pub(crate) struct PlaneVec<T: LrPixel>(alloc::vec::Vec<T>);
+
+impl<T: LrPixel> core::ops::Deref for PlaneVec<T> {
+    type Target = alloc::vec::Vec<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl<T: LrPixel> core::ops::DerefMut for PlaneVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl<T: LrPixel> Drop for PlaneVec<T> {
+    fn drop(&mut self) {
+        T::__plane_give(core::mem::take(&mut self.0));
+    }
+}
+
 /// A plane padded with a 4-pixel border on every side (>= the 3+1 the
 /// search extend uses horizontally and >= every read/write the stripe
 /// machinery performs: setup touches columns h_start-4 .. h_end+4 and rows
 /// v_start-3 .. v_end+2; the convolve reads 3/3/3/4).
-pub struct PaddedPlaneT<T> {
-    pub data: alloc::vec::Vec<T>,
+pub(crate) struct PaddedPlaneT<T: LrPixel> {
+    pub data: PlaneVec<T>,
     pub stride: usize,
     pub origin: usize,
     pub w: usize,
     pub h: usize,
 }
 
-/// The 8-bit plane (unchanged name for every existing caller).
-pub type PaddedPlane = PaddedPlaneT<u8>;
+pub(crate) const PLANE_BORDER: usize = 4;
 
-pub const PLANE_BORDER: usize = 4;
-
-impl<T: Copy + Default> PaddedPlaneT<T> {
-    /// Copy a tight `w x h` plane into padded storage (borders zero until
-    /// `extend()` replicates them).
-    pub fn from_tight(src: &[T], w: usize, h: usize) -> Self {
+impl<T: LrPixel> PaddedPlaneT<T> {
+    /// Copy a tight `w x h` plane into padded storage (borders unspecified
+    /// until `extend_frame` replicates them).
+    pub(crate) fn from_tight(src: &[T], w: usize, h: usize) -> Self {
         Self::from_strided(src, w, w, h)
     }
 
@@ -229,9 +256,9 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
     /// (C `whole_frame_rect` reads `frm_size`, which pcs.c:1337 sets to
     /// `picture_width - non_m8_pad_w`), so the two differ by up to 7 px and
     /// the window has to be taken at the canvas stride.
-    pub fn from_strided(src: &[T], src_stride: usize, w: usize, h: usize) -> Self {
+    pub(crate) fn from_strided(src: &[T], src_stride: usize, w: usize, h: usize) -> Self {
         let stride = w + 2 * PLANE_BORDER;
-        let mut data = alloc::vec![T::default(); stride * (h + 2 * PLANE_BORDER)];
+        let mut data = PlaneVec(T::__plane_take(stride * (h + 2 * PLANE_BORDER)));
         let origin = PLANE_BORDER * stride + PLANE_BORDER;
         for y in 0..h {
             data[origin + y * stride..origin + y * stride + w]
@@ -246,10 +273,13 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
         }
     }
 
+    /// A padded plane whose contents are ALL unspecified: every interior
+    /// position is written per unit before the SSE/crop reads it, and the
+    /// borders are never read.
     fn empty(w: usize, h: usize) -> Self {
         let stride = w + 2 * PLANE_BORDER;
         PaddedPlaneT {
-            data: alloc::vec![T::default(); stride * (h + 2 * PLANE_BORDER)],
+            data: PlaneVec(T::__plane_take(stride * (h + 2 * PLANE_BORDER))),
             stride,
             origin: PLANE_BORDER * stride + PLANE_BORDER,
             w,
@@ -366,6 +396,27 @@ pub trait LrPixel: Copy + Default {
         plane: usize,
         ctrls: &crate::port_lr_level::SgFilterCtrls,
     ) -> crate::port_sgr_search::SgrprojInfo;
+
+    /// A padded-plane buffer of `n` elements with UNSPECIFIED contents —
+    /// `PlaneVec`'s take half. The default is a plain zeroed alloc; u8/u16
+    /// park the buffer in `crate::vecpool` so a frame's plane does not pay
+    /// a fresh `calloc` memset (see [`PlaneVec`] for the write-before-read
+    /// contract).
+    #[doc(hidden)]
+    fn __plane_take(n: usize) -> alloc::vec::Vec<Self>
+    where
+        Self: Sized,
+    {
+        alloc::vec![Self::default(); n]
+    }
+    /// `PlaneVec`'s give half — the default just drops the buffer.
+    #[doc(hidden)]
+    fn __plane_give(v: alloc::vec::Vec<Self>)
+    where
+        Self: Sized,
+    {
+        drop(v);
+    }
 }
 
 impl LrPixel for u8 {
@@ -500,6 +551,19 @@ impl LrPixel for u8 {
             ctrls,
         )
     }
+
+    fn __plane_take(n: usize) -> alloc::vec::Vec<u8> {
+        let mut v = <u8 as crate::vecpool::Pooled>::take_pooled(n);
+        if v.len() < n {
+            v.resize(n, 0);
+        } else {
+            v.truncate(n);
+        }
+        v
+    }
+    fn __plane_give(v: alloc::vec::Vec<u8>) {
+        <u8 as crate::vecpool::Pooled>::give_pooled(v);
+    }
 }
 
 impl LrPixel for u16 {
@@ -631,6 +695,19 @@ impl LrPixel for u16 {
             true,
             ctrls,
         )
+    }
+
+    fn __plane_take(n: usize) -> alloc::vec::Vec<u16> {
+        let mut v = <u16 as crate::vecpool::Pooled>::take_pooled(n);
+        if v.len() < n {
+            v.resize(n, 0);
+        } else {
+            v.truncate(n);
+        }
+        v
+    }
+    fn __plane_give(v: alloc::vec::Vec<u16>) {
+        <u16 as crate::vecpool::Pooled>::give_pooled(v);
     }
 }
 
