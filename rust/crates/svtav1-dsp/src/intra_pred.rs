@@ -239,11 +239,14 @@ fn predict_smooth_impl_v3(
         let base = row * dst_stride;
         let mut c = 0usize;
         // 32 output pixels per fold: two 16-lane halves narrowed into u8x32.
+        // Each tops[]/wws[] slot covers EIGHT pixels (i16x16 split into two
+        // i32x8), so a 32-px fold needs slots 4c..4c+3 — indexing 2c..2c+3
+        // here overlapped the previous chunk from c=1 on (64-wide blocks).
         while c * 32 < width {
-            let a0 = (tops[2 * c] * wh + wws[2 * c] * d + k).shr_logical_const::<9>();
-            let a1 = (tops[2 * c + 1] * wh + wws[2 * c + 1] * d + k).shr_logical_const::<9>();
-            let b0 = (tops[2 * c + 2] * wh + wws[2 * c + 2] * d + k).shr_logical_const::<9>();
-            let b1 = (tops[2 * c + 3] * wh + wws[2 * c + 3] * d + k).shr_logical_const::<9>();
+            let a0 = (tops[4 * c] * wh + wws[4 * c] * d + k).shr_logical_const::<9>();
+            let a1 = (tops[4 * c + 1] * wh + wws[4 * c + 1] * d + k).shr_logical_const::<9>();
+            let b0 = (tops[4 * c + 2] * wh + wws[4 * c + 2] * d + k).shr_logical_const::<9>();
+            let b1 = (tops[4 * c + 3] * wh + wws[4 * c + 3] * d + k).shr_logical_const::<9>();
             a0.narrow_saturating_i16(a1)
                 .narrow_saturating_u8(b0.narrow_saturating_i16(b1))
                 .store(
@@ -2271,6 +2274,40 @@ mod tests {
         let mut dst = [0u8; 16];
         predict_dc(&mut dst, 4, &above, &left, 4, 4, true, true);
         assert!(dst.iter().all(|&v| v == 100));
+    }
+
+    /// The dispatched `predict_smooth` (v3/neon/scalar via `incant!`) must
+    /// equal `predict_smooth_core` on every AV1 block size — a SIMD kernel
+    /// that differs from its twin makes the bitstream tier-dependent.
+    /// Regression witness for the 4c-slot indexing fix (see git log): the
+    /// 4x4-only `smooth_corners` test never exercised the SIMD path.
+    #[test]
+    fn predict_smooth_dispatch_matches_core_all_sizes() {
+        let mut seed = 0x12345u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for &width in &[4usize, 8, 16, 32, 64] {
+            for &height in &[4usize, 8, 16, 32, 64] {
+                let above: Vec<u8> = (0..width).map(|_| next()).collect();
+                let left: Vec<u8> = (0..height).map(|_| next()).collect();
+                let mut want = vec![0u8; width * height];
+                let mut got = vec![0u8; width * height];
+                predict_smooth_core(&mut want, width, &above, &left, width, height);
+                predict_smooth(&mut got, width, &above, &left, width, height);
+                if let Some(i) = want.iter().zip(&got).position(|(a, b)| a != b) {
+                    panic!(
+                        "predict_smooth {width}x{height} diverges at idx {i} \
+                         (row {}, col {}): want {} got {}",
+                        i / width,
+                        i % width,
+                        want[i],
+                        got[i]
+                    );
+                }
+            }
+        }
     }
 
     #[test]
