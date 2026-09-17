@@ -109,6 +109,36 @@ fn residual_i32_impl_neon(
     h: usize,
     out: &mut [i32],
 ) {
+    if w == 8 || w == 4 {
+        // Direct narrow loads — the same shape `variance::sse`'s aarch64 arm
+        // measured FASTER than staging-buffer row packing
+        // (`benchmarks/arm_rowpack_2026-09-07.txt`). w=8: one `vsubl_u8` +
+        // two widening stores per row. w=4: `vcreate_u8` of a u32 row read,
+        // low-4-lane store.
+        for r in 0..h {
+            let s = &src[r * src_stride..r * src_stride + w];
+            let p = &pred[r * pred_stride..r * pred_stride + w];
+            let o = &mut out[r * w..r * w + w];
+            if w == 8 {
+                let sa: &[u8; 8] = s.try_into().unwrap();
+                let pa: &[u8; 8] = p.try_into().unwrap();
+                let d = vreinterpretq_s16_u16(vsubl_u8(vld1_u8(sa), vld1_u8(pa)));
+                let q0: &mut [i32; 4] = (&mut o[0..4]).try_into().unwrap();
+                vst1q_s32(q0, vmovl_s16(vget_low_s16(d)));
+                let q1: &mut [i32; 4] = (&mut o[4..8]).try_into().unwrap();
+                vst1q_s32(q1, vmovl_high_s16(d));
+            } else {
+                let sa: &[u8; 4] = s.try_into().unwrap();
+                let pa: &[u8; 4] = p.try_into().unwrap();
+                let sv = vcreate_u8(u64::from(u32::from_le_bytes(*sa)));
+                let pv = vcreate_u8(u64::from(u32::from_le_bytes(*pa)));
+                let d = vsubl_u8(sv, pv); // i16x8; lanes 4..7 are 0-0
+                let q: &mut [i32; 4] = o.try_into().unwrap();
+                vst1q_s32(q, vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(d))));
+            }
+        }
+        return;
+    }
     for r in 0..h {
         let s = &src[r * src_stride..r * src_stride + w];
         let p = &pred[r * pred_stride..r * pred_stride + w];
@@ -247,6 +277,30 @@ fn residual_i16_impl_neon(
     h: usize,
     out: &mut [i16],
 ) {
+    if w == 8 || w == 4 {
+        // Same narrow-load shape as `residual_i32_impl_neon` (see its comment).
+        for r in 0..h {
+            let s = &src[r * src_stride..r * src_stride + w];
+            let p = &pred[r * pred_stride..r * pred_stride + w];
+            let o = &mut out[r * w..r * w + w];
+            if w == 8 {
+                let sa: &[u8; 8] = s.try_into().unwrap();
+                let pa: &[u8; 8] = p.try_into().unwrap();
+                let d = vreinterpretq_s16_u16(vsubl_u8(vld1_u8(sa), vld1_u8(pa)));
+                let q: &mut [i16; 8] = o.try_into().unwrap();
+                vst1q_s16(q, d);
+            } else {
+                let sa: &[u8; 4] = s.try_into().unwrap();
+                let pa: &[u8; 4] = p.try_into().unwrap();
+                let sv = vcreate_u8(u64::from(u32::from_le_bytes(*sa)));
+                let pv = vcreate_u8(u64::from(u32::from_le_bytes(*pa)));
+                let d = vreinterpretq_s16_u16(vsubl_u8(sv, pv));
+                let q: &mut [i16; 4] = o.try_into().unwrap();
+                vst1_s16(q, vget_low_s16(d));
+            }
+        }
+        return;
+    }
     for r in 0..h {
         let s = &src[r * src_stride..r * src_stride + w];
         let p = &pred[r * pred_stride..r * pred_stride + w];
@@ -354,6 +408,24 @@ fn recon_add_clamp_impl_neon(
     h: usize,
     out: &mut [u8],
 ) {
+    if w == 4 {
+        // Narrow-load shape (see `residual_i32_impl_neon`): u32 row read into
+        // an 8-lane vector, widen to u32x4, i32 add, saturating narrow; the
+        // low-4-byte store mirrors loop_filter's `lpf_st4_neon`.
+        for r in 0..h {
+            let p: &[u8; 4] = pred[r * pred_stride..r * pred_stride + 4]
+                .try_into()
+                .unwrap();
+            let iv: &[i32; 4] = inv[r * 4..r * 4 + 4].try_into().unwrap();
+            let o: &mut [u8; 4] = (&mut out[r * 4..r * 4 + 4]).try_into().unwrap();
+            let pv = vcreate_u8(u64::from(u32::from_le_bytes(*p)));
+            let pw = vmovl_u16(vget_low_u16(vmovl_u8(pv)));
+            let s = vaddq_s32(vreinterpretq_s32_u32(pw), vld1q_s32(iv));
+            let n = vqmovn_u16(vcombine_u16(vqmovun_s32(s), vdup_n_u16(0)));
+            o.copy_from_slice(&vget_lane_u32::<0>(vreinterpret_u32_u8(n)).to_le_bytes());
+        }
+        return;
+    }
     for r in 0..h {
         let p = &pred[r * pred_stride..r * pred_stride + w];
         let iv = &inv[r * w..r * w + w];
