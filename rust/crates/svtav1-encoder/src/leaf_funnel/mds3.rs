@@ -313,14 +313,16 @@ fn search_best_uv_mode(
         for &(uvm, uvd) in &uv_list {
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
-                    let (u_out, v_out) = chroma::eval_uv_hbd(cx, fx, b, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv_hbd(
+                        cx, fx, b, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
                     )
                 }
                 None => {
-                    let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv(
+                        cx, fx, uvm, uvd, TxGate::default());
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
@@ -1295,6 +1297,103 @@ fn eval_candidate(
         }
     }
 
+    // ---- Chroma complexity detector for the tx-shortcut N4 gate ----
+    // C `chroma_complexity_check_pred` (product_coding_loop.c:7014-7017)
+    // runs for EVERY candidate when chroma_detector_level is armed and
+    // the tx-shortcut gate is on — not just the intra CfL lane.
+    // chroma_complexity == COMPONENT_LUMA iff neither the SAD arm
+    // (chroma SAD > 2*luma SAD) nor the variance arm (th=150) fired.
+    let chroma_luma = if has_uv
+        && cfg.tx_shortcut.chroma_detector_level != 0
+        && (cfg.tx_shortcut.apply_pf_on_coeffs != 0 || use_tx_shortcuts_mds3)
+    {
+        let c_off = ccy * fx.c_stride + ccx;
+        let (sad, var) = match &bd10_rd {
+            Some(b) => {
+                // 10-bit: the detector's SAD arm uses the 10-bit
+                // chroma predictions and luma, and the variance arm
+                // uses vf_hbd_10 on the 10-bit chroma source.
+                let (det_u10, det_v10): (Vec<u16>, Vec<u16>) = if let Some(ic) =
+                    cands[ci].inter.as_deref()
+                {
+                    (ic.u_pred10.clone(), ic.v_pred10.clone())
+                } else {
+                    let mut u = vec![0u16; cw * chh];
+                    let mut v = vec![0u16; cw * chh];
+                    predict_unit_hbd(fx.u_recon10.as_deref().unwrap(),
+                        fx.c_stride, ccx, ccy, cw, chh,
+                        cands[ci].uv, cands[ci].uv_delta, FI_NONE,
+                        &uv_geom, cfg.edge_filter, filt_type_uv,
+                        &mut u, b.bd);
+                    predict_unit_hbd(fx.v_recon10.as_deref().unwrap(),
+                        fx.c_stride, ccx, ccy, cw, chh,
+                        cands[ci].uv, cands[ci].uv_delta, FI_NONE,
+                        &uv_geom, cfg.edge_filter, filt_type_uv,
+                        &mut v, b.bd);
+                    (u, v)
+                };
+                let s = chroma_detector_fires_hbd(
+                    y_src, y_src_stride, y_src_off, &best_pred10, w,
+                    fx.u_src, fx.v_src, &det_u10, &det_v10,
+                    fx.c_stride, c_off, cw, chh,
+                    u32::from(b.bd - 8));
+                // HBD variance: same formula as the u8 arm but on
+                // 10-bit data — C calls vf_hbd_10 on the u16 source
+                // with offset 1<<(bd-1) (eb_av1_var_offs_hbd).
+                let v_ = chroma_var_arm_fires_hbd(
+                    &b.u_src10, &b.v_src10, cw, chh, 150, b.bd);
+                (s, v_)
+            }
+            None => {
+                let (det_u, det_v): (Vec<u8>, Vec<u8>) = if let Some(ic) =
+                    cands[ci].inter.as_deref()
+                {
+                    (ic.u_pred.clone(), ic.v_pred.clone())
+                } else {
+                    let mut u = vec![0u8; cw * chh];
+                    let mut v = vec![0u8; cw * chh];
+                    predict_unit(fx.u_recon, fx.c_stride, ccx, ccy,
+                        cw, chh, cands[ci].uv, cands[ci].uv_delta,
+                        FI_NONE, &uv_geom, cfg.edge_filter,
+                        filt_type_uv, &mut u);
+                    predict_unit(fx.v_recon, fx.c_stride, ccx, ccy,
+                        cw, chh, cands[ci].uv, cands[ci].uv_delta,
+                        FI_NONE, &uv_geom, cfg.edge_filter,
+                        filt_type_uv, &mut v);
+                    (u, v)
+                };
+                let s = chroma_detector_fires(
+                    y_src, y_src_stride, y_src_off, &best_pred, w,
+                    fx.u_src, fx.v_src, &det_u, &det_v,
+                    fx.c_stride, c_off, cw, chh);
+                // The variance arm's `th` is hardcoded 150
+                // (product_coding_loop.c:6128), NOT `cplx_th`.
+                let v_ = chroma_var_arm_fires(
+                    fx.u_src, fx.v_src, fx.c_stride, c_off,
+                    cw, chh, 150);
+                (s, v_)
+            }
+        };
+        !sad && !var
+    } else {
+        true // COMPONENT_LUMA — no detector ran
+    };
+
+    // Chroma N4 (full_loop.c:2240-2252): fires when the detector left
+    // chroma_complexity at COMPONENT_LUMA and either
+    // use_tx_shortcuts_mds3 forces it or the apply_pf_on_coeffs arm's
+    // luma-coefficient test passes (post-MDS3 writeback, :7002-7007).
+    // `txbwidth_uv`/`txbheight_uv` == `av1_get_max_uv_txsize` == the
+    // C-coded (uncropped) chroma dims = cw/chh.
+    let chroma_n4 = chroma_luma && (
+        use_tx_shortcuts_mds3 ||
+        (cfg.tx_shortcut.apply_pf_on_coeffs != 0 &&
+         (best_coeff_count
+             < (cw as u32 >> 4) * (chh as u32 >> 4)
+             || best_coeff_count == 0))
+    );
+    let chroma_gate = TxGate { n4: chroma_n4, ..TxGate::default() };
+
     // ---- Chroma full loop (uv per candidate: follows-luma at
     //      CHROMA_MODE_1, or the ind-uv table pick at chroma_level 4)
     //      + the complexity detector (CFL gate; see below) ----
@@ -1462,7 +1561,7 @@ fn eval_candidate(
         ibc_uv_tt = Some(tt);
         (u_out, v_out)
     } else if has_uv {
-        chroma::eval_uv(cx, fx, cand.uv, cand.uv_delta)
+        chroma::eval_uv(cx, fx, cand.uv, cand.uv_delta, chroma_gate)
     } else {
         (TxUnitOut::absent(), TxUnitOut::absent())
     };
@@ -1502,12 +1601,15 @@ fn eval_candidate(
                 &ic.u_pred10,
                 &ic.v_pred10,
                 tt,
+                chroma_gate,
             ))
         }
         (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
             // IBC: the DV copy at 10 bits, with the inter tx-type rule.
-            (Some((dv, _)), Some(tt)) => chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt),
-            _ => chroma::eval_uv_hbd(cx, fx, b, cand.uv, cand.uv_delta),
+            (Some((dv, _)), Some(tt)) => {
+                chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt, chroma_gate)
+            }
+            _ => chroma::eval_uv_hbd(cx, fx, b, cand.uv, cand.uv_delta, chroma_gate),
         }),
         // !has_uv: C runs NO chroma stage, so every chroma term is exactly
         // zero at either depth (TxUnitOut::absent()'s contract).
@@ -2272,7 +2374,7 @@ fn eval_candidate(
             // uv-follows-luma freq decision above.
             let (arb_uv, arb_uvd) = ind_uv.as_ref().unwrap()[cand.mode as usize];
             if (cand.uv, cand.uv_delta) != (arb_uv, arb_uvd) {
-                let (u2, v2) = chroma::eval_uv(cx, fx, arb_uv, arb_uvd);
+                let (u2, v2) = chroma::eval_uv(cx, fx, arb_uv, arb_uvd, chroma_gate);
                 u_out = u2;
                 v_out = v2;
                 // bd10: the 10-bit chroma decision terms follow the re-key
@@ -2281,7 +2383,8 @@ fn eval_candidate(
                 // (FILTER candidate, no :7063 pre-rewrite); the mds3 configs
                 // pre-rewrote so this branch is a no-op there.
                 if let Some(b) = bd10_rd.as_ref() {
-                    uv_out10 = Some(chroma::eval_uv_hbd(cx, fx, b, arb_uv, arb_uvd));
+                    uv_out10 = Some(chroma::eval_uv_hbd(
+                        cx, fx, b, arb_uv, arb_uvd, chroma_gate));
                 }
                 uv_mode_final = arb_uv;
                 uv_delta_final = arb_uvd;

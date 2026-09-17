@@ -169,3 +169,32 @@ pub(super) fn chroma_var_arm_fires(
     };
     block_var(u_src) > cplx_th || block_var(v_src) > cplx_th
 }
+
+/// The 10-bit twin of [`chroma_var_arm_fires`]: `vf_hbd_10` on the u16
+/// chroma source against a flat `1 << (bd - 1)` reference
+/// (`eb_av1_var_offs_hbd`, product_coding_loop.c:6003), then
+/// `ROUND_POWER_OF_TWO` the same way.
+pub(super) fn chroma_var_arm_fires_hbd(
+    u_src10: &[u16],
+    v_src10: &[u16],
+    cw: usize,
+    chh: usize,
+    cplx_th: u32,
+    bd: u8,
+) -> bool {
+    let offs = 1i64 << (bd - 1);
+    let block_var = |src: &[u16]| -> u32 {
+        let mut sum: i64 = 0;
+        let mut sse: i64 = 0;
+        for px in &src[..cw * chh] {
+            let diff = i64::from(*px) - offs;
+            sum += diff;
+            sse += diff * diff;
+        }
+        let n = (cw * chh) as i64;
+        let var = (sse - (sum * sum) / n) as u32;
+        let log2n = n.trailing_zeros();
+        (var + (1 << (log2n - 1))) >> log2n
+    };
+    block_var(u_src10) > cplx_th || block_var(v_src10) > cplx_th
+}

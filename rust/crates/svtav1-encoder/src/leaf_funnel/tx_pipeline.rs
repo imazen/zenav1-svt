@@ -50,7 +50,7 @@ pub(super) enum RateMode {
 /// `#[derive(Default)]` gives the all-false struct — C's level-0
 /// (`tx_shortcut_level = 0`, always on a still).
 #[derive(Clone, Copy, Default)]
-pub(super) struct TxGate {
+pub(crate) struct TxGate {
     /// `tx_search_skip_flag` (product_coding_loop.c:5413/6990): the MDS3
     /// `bypass_tx_th` shortcut — C skips residual + forward transform +
     /// quantize and writes `eob = 0` (recon = pred copy, dist = spatial
@@ -517,6 +517,41 @@ pub(super) fn tx_unit(
     need_recon: bool,
     rate_mode: RateMode,
 ) -> TxUnitOut {
+    tx_unit_gated(
+        src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type, plane_type,
+        txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, rdoq, spatial_dist, crop,
+        need_recon, rate_mode, TxGate::default(),
+    )
+}
+
+/// [`tx_unit`] with a caller-supplied [`TxGate`] — the chroma N4
+/// (`full_loop.c:2240-2252`) and `tx_search_skip_flag` paths need a
+/// non-default gate; every other caller goes through [`tx_unit`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tx_unit_gated(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    intra_dir: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    rdoq: RdoqCtrls,
+    spatial_dist: bool,
+    crop: (usize, usize),
+    need_recon: bool,
+    rate_mode: RateMode,
+    gate: TxGate,
+) -> TxUnitOut {
     tx_unit_screened(
         src,
         src_stride,
@@ -540,7 +575,7 @@ pub(super) fn tx_unit(
         need_recon,
         rate_mode,
         None,
-        TxGate::default(),
+        gate,
     )
     .expect("no screen was passed, so the unit is always committed")
 }
@@ -1719,6 +1754,65 @@ pub(crate) fn tx_unit_hbd(
         rd,
         None,
         TxGate::default(),
+    )
+    .expect("no screen was passed, so the unit is always committed")
+}
+
+/// [`tx_unit_hbd`] with a caller-supplied [`TxGate`] — the bd10 twin of
+/// [`tx_unit_gated`], used by the chroma N4 path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tx_unit_hbd_gated(
+    coded_lossless: bool,
+    src: &[u16],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    qt: &QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    sharpness: i8,
+    allintra_rd_mult: bool,
+    rates: &MdRates,
+    do_rdoq: bool,
+    bd: u8,
+    qm_level: u8,
+    rd: Option<&TxRdArgs>,
+    gate: TxGate,
+) -> TxUnitOutHbd {
+    tx_unit_hbd_screened(
+        coded_lossless,
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        qt,
+        rdoq_level,
+        lambda,
+        sharpness,
+        allintra_rd_mult,
+        rates,
+        do_rdoq,
+        bd,
+        qm_level,
+        rd,
+        None,
+        gate,
     )
     .expect("no screen was passed, so the unit is always committed")
 }

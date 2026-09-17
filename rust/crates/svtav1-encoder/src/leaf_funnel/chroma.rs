@@ -70,12 +70,15 @@ fn rd_args(cx: &ChromaCtx, frame: &FunnelFrame, plane_dir: usize) -> TxRdArgs {
 }
 
 /// The 8-bit arm: predict a `(uv_mode, uv_delta)` pair and run both chroma
-/// planes through the transform pipeline.
+/// planes through the transform pipeline. `gate` carries the chroma N4
+/// (`full_loop.c:2240-2252`) — `TxGate::default()` on callers that have no
+/// tx-shortcut state (the ind-uv search and CfL alternative paths).
 pub(super) fn eval_uv(
     cx: &ChromaCtx,
     fx: &FunnelCtx<'_>,
     uv: u8,
     uv_delta: i8,
+    gate: TxGate,
 ) -> (TxUnitOut, TxUnitOut) {
     let (frame, rates) = (fx.frame, fx.rates);
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
@@ -114,7 +117,7 @@ pub(super) fn eval_uv(
         &mut v_pred,
     );
     let tt = uv_tx_type(uv, cw, chh);
-    let u_out = tx_unit(
+    let u_out = tx_unit_gated(
         fx.u_src,
         fx.c_stride,
         ccy * fx.c_stride + ccx,
@@ -136,8 +139,9 @@ pub(super) fn eval_uv(
         cx.uv_crop,
         true,
         RateMode::Exact,
+        gate,
     );
-    let v_out = tx_unit(
+    let v_out = tx_unit_gated(
         fx.v_src,
         fx.c_stride,
         ccy * fx.c_stride + ccx,
@@ -159,6 +163,7 @@ pub(super) fn eval_uv(
         cx.uv_crop,
         true,
         RateMode::Exact,
+        gate,
     );
     (u_out, v_out)
 }
@@ -177,6 +182,7 @@ pub(super) fn eval_uv_hbd(
     b: &Bd10Rd,
     uv: u8,
     uv_delta: i8,
+    gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
     let frame = fx.frame;
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
@@ -215,7 +221,7 @@ pub(super) fn eval_uv_hbd(
         b.bd,
     );
     let tt = uv_tx_type(uv, cw, chh);
-    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt)
+    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate)
 }
 
 /// The IntraBC twin of [`eval_uv_hbd`]: an IBC candidate's chroma is the DV
@@ -231,6 +237,7 @@ pub(super) fn eval_uv_ibc_hbd(
     b: &Bd10Rd,
     dv: svtav1_types::motion::Mv,
     tt: usize,
+    gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     let mut u_pred = vec![0u16; cw * chh];
@@ -260,7 +267,7 @@ pub(super) fn eval_uv_ibc_hbd(
         dv,
         &mut v_pred,
     );
-    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt)
+    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate)
 }
 
 /// The bd10 chroma full loop's INTER arm.
@@ -281,8 +288,9 @@ pub(super) fn eval_uv_inter_hbd(
     u_pred10: &[u16],
     v_pred10: &[u16],
     tt: usize,
+    gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
-    tx_pair_hbd(cx, fx, b, u_pred10, v_pred10, tt)
+    tx_pair_hbd(cx, fx, b, u_pred10, v_pred10, tt, gate)
 }
 
 /// The shared 10-bit tail of both hbd arms: given a Cb/Cr prediction pair and
@@ -295,10 +303,11 @@ fn tx_pair_hbd(
     u_pred: &[u16],
     v_pred: &[u16],
     tt: usize,
+    gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
     let (frame, rates) = (fx.frame, fx.rates);
     let (cw, chh) = (cx.cw, cx.chh);
-    let u_out = tx_unit_hbd(
+    let u_out = tx_unit_hbd_gated(
         frame.coded_lossless,
         &b.u_src10,
         cw,
@@ -322,8 +331,9 @@ fn tx_pair_hbd(
         b.bd,
         b.qt_u.qm_level,
         Some(&rd_args(cx, frame, 0)),
+        gate,
     );
-    let v_out = tx_unit_hbd(
+    let v_out = tx_unit_hbd_gated(
         frame.coded_lossless,
         &b.v_src10,
         cw,
@@ -347,6 +357,7 @@ fn tx_pair_hbd(
         b.bd,
         b.qt_v.qm_level,
         Some(&rd_args(cx, frame, 0)),
+        gate,
     );
     (u_out, v_out)
 }
