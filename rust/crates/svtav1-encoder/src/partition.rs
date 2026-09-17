@@ -2058,19 +2058,26 @@ pub(crate) fn funnel_block_decision(
         // last-nonzero was only ever consumed as `== 0` (correct either way),
         // but it made the SVTAV1_DUMP_TREE `eob` field wildly misleading — a
         // 32x32 leaf whose true scan-order eob is 299 showed as ~706 (the
-        // raster index of the last retained diagonal coeff). Compute the real
-        // scan-order eob from the packed txb with the coder's scan so the
-        // dump matches the bitstream (the coder re-derives it identically at
-        // pipeline.rs `write_coeffs_txb_1d`).
-        let tx_size = crate::entropy::coeff_c::tx_size_from_dims(pw, ph);
-        let sidx = crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
-        let scan = crate::entropy::scan_tables::scan(tx_size, sidx);
-        let mut eob = 0u16;
-        for (i, &pos) in scan.iter().enumerate() {
-            if choice.txb_qcoeffs[0][pos as usize] != 0 {
-                eob = (i + 1) as u16;
+        // raster index of the last retained diagonal coeff). The tx pipeline
+        // already stores that true scan-order eob per txb (`txb_eobs`), so
+        // read it rather than re-scanning the packed raster (the coder
+        // re-derives it identically at pipeline.rs `write_coeffs_txb_1d`).
+        let eob = choice.txb_eobs.first().copied().unwrap_or_else(|| {
+            // Defensive fallback (txb_qcoeffs is populated but txb_eobs is
+            // not — unreachable in practice; see the parallel construction
+            // at leaf_funnel/types.rs): the scan-order re-derivation.
+            let tx_size = crate::entropy::coeff_c::tx_size_from_dims(pw, ph);
+            let sidx =
+                crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
+            let scan = crate::entropy::scan_tables::scan(tx_size, sidx);
+            let mut e = 0u16;
+            for (i, &pos) in scan.iter().enumerate() {
+                if choice.txb_qcoeffs[0][pos as usize] != 0 {
+                    e = (i + 1) as u16;
+                }
             }
-        }
+            e
+        });
         // No 64-dim fold on this block: the "packed" txb IS the full w x h
         // raster (`pw == w && ph == h`, and `tx_unit` sizes the buffer
         // `pw * ph`), so the unpack above was a byte-for-byte copy of it into a
@@ -2083,7 +2090,8 @@ pub(crate) fn funnel_block_decision(
         } else {
             let mut full = alloc::vec![0i32; w * h];
             for r in 0..ph {
-                full[r * w..r * w + pw].copy_from_slice(&choice.txb_qcoeffs[0][r * pw..r * pw + pw]);
+                full[r * w..r * w + pw]
+                    .copy_from_slice(&choice.txb_qcoeffs[0][r * pw..r * pw + pw]);
             }
             full
         };
