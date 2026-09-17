@@ -11591,14 +11591,21 @@ fn encode_block_syntax(
     // The decoder's mi grid: BLOCK identity/dims (chroma TX + pu_edge
     // derive from these) + the LUMA TX grid (quartered at tx_depth 1 —
     // chroma never splits with luma tx_depth).
-    geom.record_block(
-        block_x,
-        block_y,
-        decision.width as usize,
-        decision.height as usize,
-        decision.is_inter,
-        skip,
-    );
+    //
+    // `cdf_only` marks the funnel chain's context-evolution replay: it codes
+    // the same symbols to mutate CDFs but every pixel/grid side effect lands
+    // in a write-only `sim_geom` sink. Skipping the records here is pure
+    // dead-work removal — nothing downstream of a cdf_only walk reads geom.
+    if !writer.cdf_only {
+        geom.record_block(
+            block_x,
+            block_y,
+            decision.width as usize,
+            decision.height as usize,
+            decision.is_inter,
+            skip,
+        );
+    }
     // A SKIP INTER block's tx_depth is meaningless to the DEBLOCK, and
     // applying it here was a decoder mismatch. libaom's `get_transform_size`
     // takes the per-TU var-tx size only for `is_inter_block(mbmi) &&
@@ -11616,7 +11623,7 @@ fn encode_block_syntax(
     // over the 14-tap footprint. An INTRA block never takes this branch, which
     // is why the key frame was always exact and only inter frames drifted.
     let deblock_tx_is_block_max = decision.is_inter && skip;
-    if decision.tx_depth > 0 && !deblock_tx_is_block_max {
+    if !writer.cdf_only && decision.tx_depth > 0 && !deblock_tx_is_block_max {
         let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(
             decision.width as usize,
             decision.height as usize,
@@ -13362,8 +13369,10 @@ fn encode_tile_rows(
         // `DeblockGeom` to `record_block` into, but nothing ever filters
         // through it (the real one is built in `encode_frame_impl` and is the
         // only geom `apply_deblock_frame` / the DLF search ever see). The
-        // true-dims pair is therefore inert here — passing the aligned dims
-        // keeps this from pretending to carry a crop it never uses.
+        // dims must stay real — `encode_partition_tree` reads `mi_cols`/
+        // `mi_rows` for edge clipping — but the `record_*` calls are gated
+        // on `writer.cdf_only` in `encode_block_syntax`, so nothing is ever
+        // written into it.
         let mut sim_geom = crate::deblock::DeblockGeom::new(w, h, w, h);
         let mut sim_u = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_v = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
