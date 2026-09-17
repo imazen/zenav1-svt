@@ -181,6 +181,33 @@ pub(super) fn txt_search(
     ];
 
     let set_type = cc::ext_tx_set_type(c_tx, is_inter, false);
+    #[cfg(feature = "std")]
+    if dbg.is_some()
+        && let Some(b) = bd10
+    {
+        let (mut rsum, mut rabs) = (0i64, 0i64);
+        let mut row0 = [0i64; 8];
+        let mut col0 = [0i64; 8];
+        for r in 0..h {
+            let srow = b.src10_off + r * b.src10_stride;
+            let prow = r * w;
+            for c in 0..w {
+                let v = b.src10[srow + c] as i64 - b.pred10[prow + c] as i64;
+                rsum += v;
+                rabs += v.abs();
+                if r == 0 && c < 8 {
+                    row0[c] = v;
+                }
+                if c == 0 && r < 8 {
+                    col0[r] = v;
+                }
+            }
+        }
+        txt_dbg!("RESID sum={rsum} abs={rabs} row0={row0:?} col0={col0:?}");
+        let prow0: Vec<u16> = b.pred10[..8.min(w)].to_vec();
+        let pcol0: Vec<u16> = (0..8.min(h)).map(|r| b.pred10[r * w]).collect();
+        txt_dbg!("PRED row0={prow0:?} col0={pcol0:?}");
+    }
     // qp-scaled SATD early-exit th (satd_th_q_weight = 1). The threshold is
     // chosen on C's `is_inter` = `is_inter_mode(mode) || use_intrabc`
     // (product_coding_loop.c:4633) — real inter AND IntraBC take the inter

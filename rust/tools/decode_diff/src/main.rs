@@ -233,8 +233,8 @@ fn main() {
             });
         // KfTileDecode carries the (possibly mi-aligned) dims + strides.
         let mut bad = false;
-        let plist: [(usize, &aom_decode::plane::ReconPlane, usize, usize, usize); 3] = [
-            (0, &td.recon, td.width, td.height, td.stride),
+        let plist = [
+            (0usize, &td.recon, td.width, td.height, td.stride),
             (1, &td.recon_u, td.width_uv, td.height_uv, td.stride_uv),
             (2, &td.recon_v, td.width_uv, td.height_uv, td.stride_uv),
         ];

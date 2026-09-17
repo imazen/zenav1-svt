@@ -81,34 +81,28 @@ pub(super) fn chroma_detector_fires(
 /// prediction**, with the identical subsample shift and `cb > 2*y ||
 /// cr > 2*y` test.
 ///
-/// This is NOT redundant with the u8 form under the harness's `src10 =
-/// src8 << 2` ingestion. The SOURCE scales exactly x4, so it cancels in the
-/// ratio — but the PREDICTION does not: intra prediction rounds internally
-/// (DC averaging, smooth weighting, paeth), so `pred10 != pred8 << 2` in
-/// general. The three SADs therefore scale by slightly different factors and
-/// the comparison flips on near-ties — and this test is a CfL GATE, so a flip
-/// does not perturb a cost, it decides whether CfL is evaluated at all.
-///
-/// The sources stay `u8` + `shift`: the 10-bit source IS `src8 << shift` by
-/// construction (the same ingestion `Bd10Rd`'s `y_src10`/`u_src10`/`v_src10`
-/// use), so widening it here would allocate a frame-sized buffer per
-/// candidate to no numerical effect.
+/// This is NOT redundant with the u8 form. The PREDICTION does not scale
+/// (intra prediction rounds internally — DC averaging, smooth weighting,
+/// paeth — so `pred10 != pred8 << 2` in general), and the SOURCE does not
+/// either when a real HBD source was supplied: `HBD_SRC` dithers the low
+/// bits, so `src10 != src8 << 2` exactly. Both arms therefore read the true
+/// u16 planes (`Bd10Rd`'s `y_src10`/`u_src10`/`v_src10`, block-local at
+/// strides `w`/`cw`) — the `u8 << shift` approximation flips the comparison
+/// on near-ties, and this test is a CfL GATE, so a flip decides whether CfL
+/// is evaluated at all.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn chroma_detector_fires_hbd(
-    y_src: &[u8],
-    y_src_stride: usize,
-    y_src_off: usize,
+    y_src10: &[u16],
+    y_src10_stride: usize,
     y_pred10: &[u16],
     y_pred10_stride: usize,
-    u_src: &[u8],
-    v_src: &[u8],
+    u_src10: &[u16],
+    v_src10: &[u16],
     u_pred10: &[u16],
     v_pred10: &[u16],
-    c_stride: usize,
-    c_off: usize,
+    c_src10_stride: usize,
     cw: usize,
     chh: usize,
-    shift10: u32,
 ) -> bool {
     let shift = if chh > 8 {
         2usize
@@ -118,7 +112,7 @@ pub(super) fn chroma_detector_fires_hbd(
         0
     };
     let rows = chh >> shift;
-    let sad = |a: &[u8],
+    let sad = |a: &[u16],
                a_off: usize,
                a_stride: usize,
                b: &[u16],
@@ -130,14 +124,14 @@ pub(super) fn chroma_detector_fires_hbd(
             let ar = a_off + r * (a_stride << shift);
             let br = b_off + r * (b_stride << shift);
             for c in 0..cw {
-                s += ((i32::from(a[ar + c]) << shift10) - i32::from(b[br + c])).unsigned_abs();
+                s += (i32::from(a[ar + c]) - i32::from(b[br + c])).unsigned_abs();
             }
         }
         s
     };
-    let y_dist = sad(y_src, y_src_off, y_src_stride, y_pred10, 0, y_pred10_stride) << 1;
-    let cb_dist = sad(u_src, c_off, c_stride, u_pred10, 0, cw);
-    let cr_dist = sad(v_src, c_off, c_stride, v_pred10, 0, cw);
+    let y_dist = sad(y_src10, 0, y_src10_stride, y_pred10, 0, y_pred10_stride) << 1;
+    let cb_dist = sad(u_src10, 0, c_src10_stride, u_pred10, 0, cw);
+    let cr_dist = sad(v_src10, 0, c_src10_stride, v_pred10, 0, cw);
     cb_dist > y_dist || cr_dist > y_dist
 }
 
@@ -192,6 +186,15 @@ pub(super) fn chroma_var_arm_fires(
 /// chroma source against a flat `1 << (bd - 1)` reference
 /// (`eb_av1_var_offs_hbd`, product_coding_loop.c:6003), then
 /// `ROUND_POWER_OF_TWO` the same way.
+///
+/// `vf_hbd_10` is NOT the raw u16 variance: `svt_aom_highbd_10_variance`
+/// (svt_psnr.c:146-163) rounds the 64-bit accumulators down BEFORE the
+/// mean-subtraction — `sse = ROUND_POWER_OF_TWO(sse64, 4)` (÷16) and
+/// `sum = ROUND_POWER_OF_TWO(sum64, 2)` (÷4) — so the returned variance
+/// sits at ~u8 scale, ~1/16 of the naive `Σd² - (Σd)²/n`. Computing the
+/// raw u16 variance here instead over-fires the CfL gate ~16x
+/// (measured on partial-chroma p1q10: port bv_cr ≈ 170 vs C's 10).
+/// Negative `var` is clamped to 0 in C (`var >= 0 ? var : 0`).
 pub(super) fn chroma_var_arm_fires_hbd(
     u_src10: &[u16],
     v_src10: &[u16],
@@ -202,15 +205,20 @@ pub(super) fn chroma_var_arm_fires_hbd(
 ) -> bool {
     let offs = 1i64 << (bd - 1);
     let block_var = |src: &[u16]| -> u32 {
-        let mut sum: i64 = 0;
-        let mut sse: i64 = 0;
+        let mut sum_l: i64 = 0;
+        let mut sse_l: i64 = 0;
         for px in &src[..cw * chh] {
             let diff = i64::from(*px) - offs;
-            sum += diff;
-            sse += diff * diff;
+            sum_l += diff;
+            sse_l += diff * diff;
         }
+        // `highbd_10_variance` (svt_psnr.c:146): downscale the accumulators
+        // with ROUND_POWER_OF_TWO before combining — NOT after.
+        let sse = (sse_l + 8) >> 4; // ROUND_POWER_OF_TWO(sse_l, 4)
+        let sum = (sum_l + 2) >> 2; // ROUND_POWER_OF_TWO(sum_l, 2)
         let n = (cw * chh) as i64;
-        let var = (sse - (sum * sum) / n) as u32;
+        let var = (sse - (sum * sum) / n).max(0) as u32;
+        // block_var = ROUND_POWER_OF_TWO(var, log2(cw*chh)).
         let log2n = n.trailing_zeros();
         (var + (1 << (log2n - 1))) >> log2n
     };

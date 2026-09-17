@@ -13,12 +13,13 @@
       "bit_depth": 10,
       "preset": 1,
       "qp": 10,
-      "status": "open-parity-divergence",
+      "status": "closed-byte-identical",
       "c_sha256": "1956b0c6f686c68b7b541845248a5d221a30471d1bcf5d162ca51ada66627b59",
-      "rust_sha256": "5b75358bd74d04acfd8c44ddd345ba0e087fc2a8bfbb16a293e499e540acd0d2",
+      "rust_sha256": "1956b0c6f686c68b7b541845248a5d221a30471d1bcf5d162ca51ada66627b59",
       "c_bytes": 11465,
-      "rust_bytes": 11462,
-      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+      "rust_bytes": 11465,
+      "independent_decode": "decoder-derived block tree identical to x86-semantics C oracle stream",
+      "resolution": "bd10 CfL complexity detector: SAD arm fed u8<<2 instead of true u16 block sources, and variance arm used u8-scale variance instead of C vf_hbd_10 semantics (RPT(sse,4)/RPT(sum,2) pre-combination scaling). Fixed in leaf_funnel/detect.rs; stream verified byte-identical to recorded x86 oracle (aarch64 local oracle differs per SUSPECTED-C-BUGS.md #9)."
     },
     {
       "id": "partial-chroma-native10-p4-q10",
@@ -29,10 +30,10 @@
       "qp": 10,
       "status": "open-parity-divergence",
       "c_sha256": "6b5dafbc3fd33a18278cb02221809318a30157a64368cd363ba947ecf253d65e",
-      "rust_sha256": "26db6384dad23210def0ceb1fd2d9248bc61f7f2d0509784d92830aaf47b642d",
+      "rust_sha256": "476e8a0128cf003fad4c5d779bfb60992f07a2a1f23bea8f5a024b1eef621af6",
       "c_bytes": 11752,
-      "rust_bytes": 11718,
-      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+      "rust_bytes": 11695,
+      "independent_decode": "C and stored Rust streams accepted by decoder-derived block tree; first tree divergence now at mi=(48,52): C quads to four 8x8 leaves, port keeps one 16x16 (partition near-tie, distinct root cause from the resolved detector bug)"
     },
     {
       "id": "partial-chroma-native10-p4-q30",
@@ -55,12 +56,13 @@
       "bit_depth": 10,
       "preset": 5,
       "qp": 10,
-      "status": "open-parity-divergence",
+      "status": "closed-byte-identical",
       "c_sha256": "4d615964092720c9cb6e324d8afacb41b0c93ed33ed704a4b9861361c9ed56dc",
-      "rust_sha256": "fa7c8439b5830b709c54baeb314b34040268b5d36f54437f18435aa4781160c4",
+      "rust_sha256": "4d615964092720c9cb6e324d8afacb41b0c93ed33ed704a4b9861361c9ed56dc",
       "c_bytes": 11913,
       "rust_bytes": 11913,
-      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+      "independent_decode": "decoder-derived block tree identical to x86-semantics C oracle stream",
+      "resolution": "bd10 CfL complexity detector: SAD arm fed u8<<2 instead of true u16 block sources, and variance arm used u8-scale variance instead of C vf_hbd_10 semantics (RPT(sse,4)/RPT(sum,2) pre-combination scaling). Fixed in leaf_funnel/detect.rs; stream verified byte-identical to recorded x86 oracle (aarch64 local oracle differs per SUSPECTED-C-BUGS.md #9)."
     }
   ]
 }

@@ -1353,20 +1353,17 @@ fn eval_candidate(
                     (u.into_vec(), v.into_vec())
                 };
                 let s = chroma_detector_fires_hbd(
-                    y_src,
-                    y_src_stride,
-                    y_src_off,
+                    &b.y_src10,
+                    w,
                     &best_pred10,
                     w,
-                    fx.u_src,
-                    fx.v_src,
+                    &b.u_src10,
+                    &b.v_src10,
                     &det_u10,
                     &det_v10,
-                    fx.c_stride,
-                    c_off,
+                    cw,
                     cw,
                     chh,
-                    u32::from(b.bd - 8),
                 );
                 // HBD variance: same formula as the u8 arm but on
                 // 10-bit data — C calls vf_hbd_10 on the u16 source
@@ -1777,20 +1774,17 @@ fn eval_candidate(
                     );
                 }
                 chroma_detector_fires_hbd(
-                    y_src,
-                    y_src_stride,
-                    y_src_off,
+                    &b.y_src10,
+                    w,
                     &best_pred10,
                     w,
-                    fx.u_src,
-                    fx.v_src,
+                    &b.u_src10,
+                    &b.v_src10,
                     &u_p10d,
                     &v_p10d,
-                    fx.c_stride,
-                    c_off,
+                    cw,
                     cw,
                     chh,
-                    u32::from(b.bd - 8),
                 )
             }
             None => chroma_detector_fires(
@@ -1811,21 +1805,42 @@ fn eval_candidate(
         };
         // M6 cfl_level 4 -> cplx_th 10. Both detector arms use it: the
         // caller gates CfL on cfl_complexity == COMPONENT_CHROMA when
-        // cplx_th != 0 (product_coding_loop.c:7183).
+        // cplx_th != 0 (product_coding_loop.c:7183). At bd10 C runs the
+        // use_var arm through `vf_hbd_10` on the u16 source
+        // (product_coding_loop.c:6177-6190): the u8 arm reads the truncated
+        // source and uses different rounding, so it flips the razor-edge
+        // `> cplx_th` comparisons this gate exists to decide.
         let var_arm = cfg.cfl_cplx_th != 0
-            && chroma_var_arm_fires(
-                fx.u_src,
-                fx.v_src,
-                fx.c_stride,
-                c_off,
-                cw,
-                chh,
-                cfg.cfl_cplx_th,
-            );
+            && match &bd10_rd {
+                Some(b) => {
+                    chroma_var_arm_fires_hbd(&b.u_src10, &b.v_src10, cw, chh, cfg.cfl_cplx_th, b.bd)
+                }
+                None => chroma_var_arm_fires(
+                    fx.u_src,
+                    fx.v_src,
+                    fx.c_stride,
+                    c_off,
+                    cw,
+                    chh,
+                    cfg.cfl_cplx_th,
+                ),
+            };
         // cplx_th 0 (cfl_level 1/2, M0) BYPASSES the detector — CfL is
         // always evaluated (C :7183 `!cplx_th`); otherwise gate on either
         // detector arm (SAD 2x-luma or per-pixel variance > cplx_th).
         let cfl_would_run = cfg.cfl_cplx_th == 0 || sad_arm || var_arm;
+        #[cfg(feature = "std")]
+        if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+            eprintln!(
+                "NSQDBG CFDET mi=({},{}) {w}x{h} mode={} uv={} uvd={} cplx_th={} sad_arm={sad_arm} var_arm={var_arm} run={cfl_would_run}",
+                abs_y / 4,
+                abs_x / 4,
+                cand.mode,
+                cand.uv,
+                cand.uv_delta,
+                cfg.cfl_cplx_th,
+            );
+        }
         // Two CfL decision paths, both C `cfl_prediction`
         // (product_coding_loop.c:3795), gated identically on
         // `cfl_ctrls.enabled` + detector + intra + MDS3 + MAX(dims)<=32

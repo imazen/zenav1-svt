@@ -1470,6 +1470,47 @@ pub(super) fn tx_unit_inner(
     })
 }
 
+#[cfg(feature = "std")]
+fn neigh_dbg(
+    recon: &[u16],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    mode: u8,
+) {
+    use crate::leaf_funnel::predict::dbg_xy;
+    static XY: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    if dbg_xy(&XY, "SVTAV1_NEIGH_XY") != Some((abs_x, abs_y)) {
+        return;
+    }
+    let tl = if abs_x > 0 && abs_y > 0 {
+        recon[(abs_y - 1) * stride + abs_x - 1]
+    } else {
+        0
+    };
+    let top: Vec<u16> = (0..8.min(w))
+        .map(|i| recon[(abs_y - 1) * stride + abs_x + i])
+        .collect();
+    let left: Vec<u16> = (0..8.min(h))
+        .map(|j| recon[(abs_y + j) * stride + abs_x - 1])
+        .collect();
+    eprintln!("PNEIGH org=({abs_x},{abs_y}) mode={mode} tl={tl} top={top:?} left={left:?}");
+}
+
+#[cfg(not(feature = "std"))]
+fn neigh_dbg(
+    _recon: &[u16],
+    _stride: usize,
+    _abs_x: usize,
+    _abs_y: usize,
+    _w: usize,
+    _h: usize,
+    _mode: u8,
+) {
+}
+
 pub(super) fn energy_region(coeffs: &[i32], stride: usize, w: usize, h: usize) -> u64 {
     let mut e: u64 = 0;
     for r in 0..h {
@@ -1574,6 +1615,7 @@ pub(crate) fn predict_unit_hbd_partition(
             sb_mi_size: geom.sb_mi_size,
             tile: geom.tile,
         };
+        neigh_dbg(recon, stride, abs_x, abs_y, w, h, mode);
         crate::intra_edge::dr_predict_hbd(
             |x, y| recon[y * stride + x],
             &g,
@@ -1586,6 +1628,7 @@ pub(crate) fn predict_unit_hbd_partition(
         );
         return;
     }
+    neigh_dbg(recon, stride, abs_x, abs_y, w, h, mode);
     let (above, left, top_left, has_above, has_left) = crate::partition::extract_neighbors_hbd(
         recon,
         stride,

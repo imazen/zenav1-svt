@@ -1242,3 +1242,105 @@ fn rs_tx_size_table_matches_the_match_form() {
     }
     assert_eq!(accepted, 19, "the table must accept exactly 19 shapes");
 }
+
+/// `chroma_var_arm_fires_hbd` must reproduce `vf_hbd_10`
+/// (`svt_aom_highbd_10_variance`, svt_psnr.c:146) exactly — including its
+/// pre-combination accumulator downscaling, which puts the result at ~u8
+/// scale (~1/16 of the naive `Σd² - (Σd)²/n` on the u16 samples). That
+/// scale is the whole point of the bug this test witnesses: computing the
+/// raw u16 variance instead fires the CfL gate ~16x too often (measured:
+/// partial-chroma p1q10's (36,28) 8x8 leaf, port bv_cr ~170 vs C's 10 —
+/// strict `>` against `cplx_th=10` flips the CfL admission and the coded
+/// UV mode). This test compares the port's fire decision against the REAL
+/// C kernel through `svtav1_cref::chroma_variance10`, plus one fixed
+/// boundary vector where the scaled block_var sits exactly at the
+/// threshold (C's comparison is strict `>`).
+#[test]
+fn chroma_var_arm_hbd_matches_vf_hbd_10_against_c() {
+    let mut seed = 0x5eed_5eedu64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed & 1023) as u16
+    };
+    let flat512 = [512u16; 32];
+    let mut scaled_differs_from_raw = 0u32;
+    for &(w, h) in &[
+        (4usize, 4usize),
+        (8, 8),
+        (16, 16),
+        (8, 16),
+        (16, 8),
+        (32, 32),
+    ] {
+        let n = w * h;
+        let log2n = n.trailing_zeros();
+        for _ in 0..60 {
+            let u: Vec<u16> = (0..n).map(|_| next()).collect();
+            let v: Vec<u16> = (0..n).map(|_| next()).collect();
+            // C: var = vf_hbd_10(src, eb_av1_var_offs_hbd) — src first
+            // (signed accumulator rounding is asymmetric), flat-512 ref.
+            let c_var_u = svtav1_cref::chroma_variance10(&u, w, &flat512, 0, w, h);
+            let c_var_v = svtav1_cref::chroma_variance10(&v, w, &flat512, 0, w, h);
+            for th in [0u32, 1, 10, 40, 100] {
+                let expect = (c_var_u + (1 << (log2n - 1))) >> log2n > th
+                    || (c_var_v + (1 << (log2n - 1))) >> log2n > th;
+                assert_eq!(
+                    chroma_var_arm_fires_hbd(&u, &v, w, h, th, 10),
+                    expect,
+                    "{w}x{h} th={th} c_var=({c_var_u},{c_var_v})"
+                );
+            }
+            // Witness that the C scale diverges from the naive u16
+            // variance at least sometimes — a port that computed the raw
+            // variance would fail the comparison above, but this count
+            // also pins the ~16x downscale as load-bearing.
+            let raw_var = |src: &[u16]| -> i64 {
+                let mut sum: i64 = 0;
+                let mut sse: i64 = 0;
+                for &px in src {
+                    let d = i64::from(px) - 512;
+                    sum += d;
+                    sse += d * d;
+                }
+                sse - (sum * sum) / (n as i64)
+            };
+            if raw_var(&u) as u32 != c_var_u {
+                scaled_differs_from_raw += 1;
+            }
+        }
+    }
+    assert!(
+        scaled_differs_from_raw > 100,
+        "sweep must actually exercise the hbd downscale ({scaled_differs_from_raw})"
+    );
+
+    // Fixed boundary vector: a low-variance 8x8 whose scaled block_var
+    // lands at/below the threshold while its raw u16 variance is ~16x
+    // higher — the exact razor edge that decided partial-chroma p1q10's
+    // (36,28) leaf in C's favor.
+    let mut u = [512u16; 64];
+    let mut v = [512u16; 64];
+    // Symmetric +-dither around 512 so sum stays ~0. u: raw sse = 64*16
+    // = 1024 -> naive raw var = 1024, but C's scaled var:
+    // sse=RPT(1024,4)=64, var=64, block_var=RPT(64,6)=1.
+    for (i, px) in u.iter_mut().enumerate() {
+        *px = if i % 2 == 0 { 516 } else { 508 };
+    }
+    for (i, px) in v.iter_mut().enumerate() {
+        *px = if i % 2 == 0 { 520 } else { 504 };
+    }
+    let c_var_u = svtav1_cref::chroma_variance10(&u, 8, &flat512, 0, 8, 8);
+    let c_var_v = svtav1_cref::chroma_variance10(&v, 8, &flat512, 0, 8, 8);
+    // raw u16 vars are 16 and 64 — both >> a th of 10 scaled sense; C's
+    // scaled block vars are RPT(64,6)=1 and RPT(256,6)=4 — no fire.
+    assert_eq!(c_var_u, 64);
+    assert_eq!(c_var_v, 256);
+    assert!(!chroma_var_arm_fires_hbd(&u, &v, 8, 8, 10, 10));
+    // And one that does fire at the same threshold.
+    for (i, px) in v.iter_mut().enumerate() {
+        *px = if i % 2 == 0 { 700 } else { 324 };
+    }
+    assert!(chroma_var_arm_fires_hbd(&u, &v, 8, 8, 10, 10));
+}
