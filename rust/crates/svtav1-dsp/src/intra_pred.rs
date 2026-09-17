@@ -1070,6 +1070,26 @@ fn dr_z1_edged(
     // 256x256 p6 (a REGRESSION, span entirely above 1.0) while still being
     // 1.016x at 512x512 p2 -- the small-block call rate at the fast presets
     // pays the dispatch and gets nothing back.
+    //
+    // Below 16 the C `4xH`/`8xH` row-vector kernel takes over. Its loads
+    // top out at `edge[origin + base + 15]` (upsampled `vld1q`) or
+    // `edge[origin + base + 8]` with `base < max_base`, so the guard is
+    // `origin + max_base + 16` / `+ 9`. `svt_aom_use_intra_edge_upsample`
+    // can only return 1 for `bw + bh <= 16`, so `max_base <= 30` whenever
+    // the upsample branch runs in production and the 160-byte edged
+    // buffer always satisfies the guard there; oversized or short
+    // buffers still fall back to the scalar core.
+    if bw == 4 || bw == 8 {
+        let up = upsample_above as usize;
+        let max_base = ((bw + bh - 1) << up) as usize;
+        if above.len() >= origin + max_base + if upsample_above { 16 } else { 9 } {
+            incant!(
+                dr_z1_edged_small(dst, dst_stride, bw, bh, above, origin, upsample_above, dx),
+                [neon, scalar]
+            );
+            return;
+        }
+    }
     if bw >= 16 && !upsample_above && above.len() > origin + bw + bh {
         incant!(
             dr_z1_edged_flat(dst, dst_stride, bw, bh, above, origin, dx),
@@ -1184,6 +1204,113 @@ fn dr_z1_edged_flat_neon(
             c += 1;
         }
         drow[c..].fill(fill);
+        x += dx;
+    }
+}
+
+/// One `u8x8` output vector of the shared z1/z3 small-block kernel: z1
+/// row `r`, or z3 column `c` (the same computation on `left`/`dy` — C's
+/// `dr_prediction_z1_WxH_internal_neon_small` is reused for both). Lane
+/// `i` interpolates `edge[base + i * (1 << up)]` vs its successor, lanes
+/// past the valid count take `edge[max_base]` — the fill the scalar
+/// core's `else` arm writes.
+///
+/// SCALAR-EXACT, and deliberately NOT a transliteration of C's mask
+/// count: C computes `base_max_diff = (max_base - base) >> upsample`
+/// (floor), while the C scalar core interpolates column `c` whenever
+/// `base + c * base_inc < max_base` (ceil). On odd `max_base - base`
+/// with `upsample == 1` those differ by one lane — the x86 AVX2 kernel
+/// shares NEON's floor form, so C's own ISAs disagree with C's scalar
+/// on that lane. The port keeps every tier on the scalar formula:
+/// `n_valid = ceil(diff / base_inc)`, so this arm and the scalar core
+/// cannot diverge no matter which ISA runs.
+///
+/// Interpolation is `(a0 << 5) + (a1 - a0) * shift` in `u16x8` with a
+/// `vrshrn_n_u16::<5>` narrow — the same mod-2^16-exact rewrite
+/// [`dr_z1_edged_flat_neon`] documents.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dr_small_row_neon(
+    _token: NeonToken,
+    w: usize,
+    edge: &[u8],
+    origin: usize,
+    upsample: bool,
+    max_base: i32,
+    x: i32,
+) -> uint8x8_t {
+    let up = upsample as i32;
+    let fill_v = vdup_n_u8(edge[origin + max_base as usize]);
+    let base = x >> (6 - up);
+    if base >= max_base {
+        return fill_v;
+    }
+    let n_valid = (((max_base - base) + (1i32 << up) - 1) >> up).min(w as i32) as u8;
+    let shift = (((x << up) & 0x3f) >> 1) as u16;
+    let bi = origin + base as usize;
+    let (a0, a1) = if upsample {
+        // One 16-byte load + uzp deinterleave == C's `vld2_u8` pair
+        // (even lanes `edge[base + 2i]`, odd `edge[base + 2i + 1]`).
+        let v: &[u8; 16] = edge[bi..bi + 16].try_into().unwrap();
+        let q = vld1q_u8(v);
+        (vget_low_u8(vuzp1q_u8(q, q)), vget_low_u8(vuzp2q_u8(q, q)))
+    } else {
+        (
+            vld1_u8(edge[bi..bi + 8].try_into().unwrap()),
+            vld1_u8(edge[bi + 1..bi + 9].try_into().unwrap()),
+        )
+    };
+    let res = vmlaq_u16(vshll_n_u8::<5>(a0), vsubl_u8(a1, a0), vdupq_n_u16(shift));
+    vbsl_u8(
+        vclt_u8(vld1_u8(&Z2_IDX8), vdup_n_u8(n_valid)),
+        vrshrn_n_u16::<5>(res),
+        fill_v,
+    )
+}
+
+/// Scalar-tier mirror of [`dr_z1_edged_small_neon`] for `incant!`.
+fn dr_z1_edged_small_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    dx: i32,
+) {
+    dr_z1_edged_core(dst, dst_stride, bw, bh, above, origin, upsample_above, dx);
+}
+
+/// C `dr_prediction_z1_4xH_neon` / `dr_prediction_z1_8xH_neon`: one
+/// `u8x8` per row via [`dr_small_row_neon`], stored as 4 or 8 bytes.
+/// Handles `upsample_above` (the deinterleaved load) — the flat arm
+/// cannot — and any `bh <= 64`.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn dr_z1_edged_small_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    dx: i32,
+) {
+    let max_base = ((bw + bh) as i32 - 1) << upsample_above as i32;
+    let mut x = dx;
+    for r in 0..bh {
+        let v = dr_small_row_neon(token, bw, above, origin, upsample_above, max_base, x);
+        let d = &mut dst[r * dst_stride..r * dst_stride + bw];
+        if bw == 8 {
+            vst1_u8(d.try_into().unwrap(), v);
+        } else {
+            let word = vget_lane_u32::<0>(vreinterpret_u32_u8(v));
+            d.copy_from_slice(&word.to_le_bytes());
+        }
         x += dx;
     }
 }
@@ -2097,6 +2224,22 @@ fn dr_z3_edged(
     // `bh >= 16` for the same reason [`dr_z1_edged`] gates on `bw >= 16`:
     // this arm's 16-lane chunk walks ROWS, so below 16 rows it cannot run
     // one and the dispatch is pure overhead.
+    //
+    // `bh` of 4 or 8 takes the shared small kernel + a transposed store —
+    // C's z3 small shapes. Same buffer guard as [`dr_z1_edged`]'s: the
+    // loads top out at `edge[origin + max_base + {15,8}]`, and the
+    // upsample branch only runs for `bw + bh <= 16` in production.
+    if (bh == 4 || bh == 8) && (bw == 4 || bw % 8 == 0) && bw <= 64 {
+        let up = upsample_left as usize;
+        let max_base = ((bw + bh - 1) << up) as usize;
+        if left.len() >= origin + max_base + if upsample_left { 16 } else { 9 } {
+            incant!(
+                dr_z3_edged_small(dst, dst_stride, bw, bh, left, origin, upsample_left, dy),
+                [neon, scalar]
+            );
+            return;
+        }
+    }
     if bh >= 16 && !upsample_left && left.len() > origin + bw + bh {
         incant!(
             dr_z3_edged_flat(dst, dst_stride, bw, bh, left, origin, dy),
@@ -2192,6 +2335,112 @@ fn dr_z3_edged_flat_neon(
             r += 1;
         }
         y += dy;
+    }
+}
+
+/// C `transpose4x8_8x4_neon`: four `u8x8` column vectors (each = one z3
+/// column, rows in lanes) become four `u32x2`; element `r / 2` lane
+/// `r % 2` is output row `r` (4 bytes). `bh == 4` callers use only the
+/// first two elements (C's `_low` variant stops after `d[0]`).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn transpose4x8_8x4_neon(_token: NeonToken, x: &[uint8x8_t; 4]) -> [uint32x2_t; 4] {
+    let w0 = vzip_u8(x[0], x[1]);
+    let w1 = vzip_u8(x[2], x[3]);
+    let d0 = vzip_u16(vreinterpret_u16_u8(w0.0), vreinterpret_u16_u8(w1.0));
+    let d1 = vzip_u16(vreinterpret_u16_u8(w0.1), vreinterpret_u16_u8(w1.1));
+    [
+        vreinterpret_u32_u16(d0.0),
+        vreinterpret_u32_u16(d0.1),
+        vreinterpret_u32_u16(d1.0),
+        vreinterpret_u32_u16(d1.1),
+    ]
+}
+
+/// C `transpose8x8_neon`: eight `u8x8` column vectors become eight
+/// `u32x2` output rows (element `r` = row `r`, 8 bytes). `bh == 4`
+/// callers keep only the first four (C's `transpose8x8_low_neon`).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn transpose8x8_neon(_token: NeonToken, x: &[uint8x8_t; 8]) -> [uint32x2_t; 8] {
+    let w0 = vzip_u8(x[0], x[1]);
+    let w1 = vzip_u8(x[2], x[3]);
+    let w2 = vzip_u8(x[4], x[5]);
+    let w3 = vzip_u8(x[6], x[7]);
+    let w4 = vzip_u16(vreinterpret_u16_u8(w0.0), vreinterpret_u16_u8(w1.0));
+    let w5 = vzip_u16(vreinterpret_u16_u8(w2.0), vreinterpret_u16_u8(w3.0));
+    let w6 = vzip_u16(vreinterpret_u16_u8(w0.1), vreinterpret_u16_u8(w1.1));
+    let w7 = vzip_u16(vreinterpret_u16_u8(w2.1), vreinterpret_u16_u8(w3.1));
+    let d0 = vzip_u32(vreinterpret_u32_u16(w4.0), vreinterpret_u32_u16(w5.0));
+    let d1 = vzip_u32(vreinterpret_u32_u16(w4.1), vreinterpret_u32_u16(w5.1));
+    let d2 = vzip_u32(vreinterpret_u32_u16(w6.0), vreinterpret_u32_u16(w7.0));
+    let d3 = vzip_u32(vreinterpret_u32_u16(w6.1), vreinterpret_u32_u16(w7.1));
+    [d0.0, d0.1, d1.0, d1.1, d2.0, d2.1, d3.0, d3.1]
+}
+
+/// Scalar-tier mirror of [`dr_z3_edged_small_neon`] for `incant!`.
+fn dr_z3_edged_small_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    upsample_left: bool,
+    dy: i32,
+) {
+    dr_z3_edged_core(dst, dst_stride, bw, bh, left, origin, upsample_left, dy);
+}
+
+/// C's z3 small shapes (`dr_prediction_z3_{4x4,8x8,4x8,8x4,16x8,16x4,
+/// 32x8,32x4}_neon`): the shared [`dr_small_row_neon`] computes one
+/// `u8x8` per COLUMN (`left`/`dy` playing the z1 roles), then the
+/// vzip-transpose helpers store rows. Covers every `bw` that is 4 or a
+/// multiple of 8 with `bh` of 4 or 8 — the union of C's small switch
+/// arms, same semantics.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn dr_z3_edged_small_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    upsample_left: bool,
+    dy: i32,
+) {
+    let max_base = ((bw + bh) as i32 - 1) << upsample_left as i32;
+    let mut vecs = [vdup_n_u8(0); 64];
+    let mut y = dy;
+    for v in vecs.iter_mut().take(bw) {
+        *v = dr_small_row_neon(token, bh, left, origin, upsample_left, max_base, y);
+        y += dy;
+    }
+    // vecs[c][r] = dst[r][c]; store transposed.
+    if bw == 4 {
+        let rows = transpose4x8_8x4_neon(token, vecs[..4].try_into().unwrap());
+        for r in 0..bh {
+            let word = if r % 2 == 0 {
+                vget_lane_u32::<0>(rows[r / 2])
+            } else {
+                vget_lane_u32::<1>(rows[r / 2])
+            };
+            dst[r * dst_stride..r * dst_stride + 4].copy_from_slice(&word.to_le_bytes());
+        }
+    } else {
+        for g in 0..bw / 8 {
+            let rows = transpose8x8_neon(token, vecs[g * 8..g * 8 + 8].try_into().unwrap());
+            for (r, &rv) in rows.iter().enumerate().take(bh) {
+                let d: &mut [u8; 8] = (&mut dst
+                    [r * dst_stride + g * 8..r * dst_stride + g * 8 + 8])
+                    .try_into()
+                    .unwrap();
+                vst1_u8(d, vreinterpret_u8_u32(rv));
+            }
+        }
     }
 }
 
@@ -3004,6 +3253,93 @@ mod tests {
                             let i = want.iter().zip(&got).position(|(a, b)| a != b).unwrap();
                             panic!(
                                 "dr_z2_edged {bw}x{bh} dx={dx} dy={dy} ua={ua} ul={ul} \
+                                 diverges at ({}, {}): want {} got {}",
+                                i / bw,
+                                i % bw,
+                                want[i],
+                                got[i]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dr_z1_edged_dispatch_matches_core_all_sizes_flags_angles() {
+        // dr_z1_edged's arms — the 4xH/8xH row-vector NEON (with and
+        // without upsample) and the >= 16 flat NEON — against the scalar
+        // core over every size/flag/angle the arms take. The dx set is
+        // the legal `DR_INTRA_DERIVATIVE` range, shallow to steep, so
+        // `base` crosses `max_base` mid-block (the fill boundary) and
+        // odd `max_base - base` remainders exercise the scalar-exact
+        // `ceil` lane count.
+        let mut seed = 0x1357u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        let origin = EDGE_ORIGIN;
+        for &bw in &[4usize, 8, 16, 32] {
+            for &bh in &[4usize, 8, 16, 32, 64] {
+                // 256 > EDGE_BUF_LEN: `max_base` reaches
+                // `(32 + 64 - 1) << 1 = 190` under upsample, and the
+                // scalar core (like C) indexes up to `origin + max_base`
+                // unconditionally. Production can't generate that —
+                // `svt_aom_use_intra_edge_upsample` requires
+                // `bw + bh <= 16` — but the sweep covers it, so the
+                // buffer needs the headroom C's stack slack gave it.
+                let above: Vec<u8> = (0..256).map(|_| next()).collect();
+                for &dx in &[1023i32, 547, 372, 273, 151, 90, 64, 45, 27, 15, 7, 3] {
+                    for &ua in &[false, true] {
+                        let mut want = vec![0u8; bw * bh];
+                        let mut got = vec![0u8; bw * bh];
+                        dr_z1_edged_core(&mut want, bw, bw, bh, &above, origin, ua, dx);
+                        dr_z1_edged(&mut got, bw, bw, bh, &above, origin, ua, dx);
+                        if want != got {
+                            let i = want.iter().zip(&got).position(|(a, b)| a != b).unwrap();
+                            panic!(
+                                "dr_z1_edged {bw}x{bh} dx={dx} ua={ua} \
+                                 diverges at ({}, {}): want {} got {}",
+                                i / bw,
+                                i % bw,
+                                want[i],
+                                got[i]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dr_z3_edged_dispatch_matches_core_all_sizes_flags_angles() {
+        // dr_z3_edged's arms — the shared small kernel + transposed
+        // store (bh 4/8) and the >= 16-row flat NEON — against the
+        // scalar core. Same legal derivative set as the z1 sweep.
+        let mut seed = 0x8642u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        let origin = EDGE_ORIGIN;
+        for &bw in &[4usize, 8, 16, 32, 64] {
+            for &bh in &[4usize, 8, 16, 32] {
+                // 256-byte buffer for the same reason the z1 sweep notes:
+                // upsampled `max_base` reaches `(64 + 8 - 1) << 1 = 142`.
+                let left: Vec<u8> = (0..256).map(|_| next()).collect();
+                for &dy in &[1023i32, 547, 372, 273, 151, 90, 64, 45, 27, 15, 7, 3] {
+                    for &ul in &[false, true] {
+                        let mut want = vec![0u8; bw * bh];
+                        let mut got = vec![0u8; bw * bh];
+                        dr_z3_edged_core(&mut want, bw, bw, bh, &left, origin, ul, dy);
+                        dr_z3_edged(&mut got, bw, bw, bh, &left, origin, ul, dy);
+                        if want != got {
+                            let i = want.iter().zip(&got).position(|(a, b)| a != b).unwrap();
+                            panic!(
+                                "dr_z3_edged {bw}x{bh} dy={dy} ul={ul} \
                                  diverges at ({}, {}): want {} got {}",
                                 i / bw,
                                 i % bw,

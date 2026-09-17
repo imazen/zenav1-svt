@@ -138,7 +138,24 @@ Facts that ruled out easy answers:
   A/B 7r vs pre-change HEAD (a23fd5da): **1.034x at 256p4, 1.025x at
   512p4**, byte-identical. (ab_z2small_neon_2026-09-17.tsv)
 
+* **INTRA_PRED z1/z3 small blocks — LANDED**: shared
+  `dr_small_row_neon` (`u8x8` per row/column, `vld1q`+`vuzp`
+  deinterleave for the upsampled pair) serving z1 4xH/8xH directly and
+  z3 `bh in {4,8}` via vzip transposed stores. SCALAR-EXACT mask count
+  (`ceil`), NOT C's `>> upsample` floor — C's scalar core and BOTH C
+  SIMD ports (NEON + AVX2) genuinely disagree on the last boundary
+  lane of an upsampled block when `max_base - base` is odd, so the
+  port keeps every tier on the scalar formula. Dispatch-vs-core sweeps
+  over all sizes/flags/12 legal derivatives: exact; 829 dsp tests
+  pass. A/B 7r vs pre-change HEAD: **1.013x at 256p4, 1.008x at
+  512p4**, byte-identical. (ab_z1z3small_neon_2026-09-17.tsv)
+  NOTE: this also surfaced that the scalar z1/z3 cores can index past
+  EDGE_BUF_LEN (160) on upsampled `bw + bh >= 73` blocks — unreachable
+  in production (upsample requires `w + h <= 16`), same over-read C
+  does into stack slack; the sweeps use 256-byte buffers to cover it.
+
 ## Where the remaining gap actually lives
+
 
 
 * **Funnel orchestration** (MD_DRIVER, +9.3ms): `tx_unit_inner` +
@@ -148,9 +165,9 @@ Facts that ruled out easy answers:
   vs C's shared `cand_bf` arena. Largest single bucket; needs a
   profiling-guided flatten of the eval loop, not a kernel.
 * **INTRA_PRED** (+6.5ms): `dr_predictor_edged` is 1.8x C's combined
-  directional kernels. z2 small blocks now covered (above); z1/z3 NEON
-  arms still have the same >=16 gating z2 had — C's vqtbl4q approach
-  covers all sizes in one group per row.
+  directional kernels. z1/z2/z3 small blocks now covered (above);
+  what remains is the edged-driver itself (per-block setup + call
+  volume), not uncovered kernel shapes.
 * **CDEF** (3.58x): `cdef_filter_cols8_neon` 380 vs C's native 211 —
   same work, slower kernel; `cdef_dist_packed` 121 vs C dotprod 27
   (no i8mm/dotprod arm in the port?).
