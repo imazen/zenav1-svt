@@ -724,6 +724,9 @@ fn eval_candidate(
     // C's OWN depth-0 dist 15536, while the winning depth-1 dist is
     // 11904 (== this port's winner recon SSE).
     let mut d0_recon: crate::vecpool::PoolVec<u8> = crate::vecpool::PoolVec::new();
+    // The 10-bit twin (`dep_recon10` at depth 0): the u16 `cand_bf->recon`
+    // the bd10 quad-dist gates measure. Empty on the u8 path.
+    let mut d0_recon10: Vec<u16> = Vec::new();
     let mut best_coeff_count = u32::MAX;
 
     // Coded-lossless: C `get_start_end_tx_depth` ends with "Force the use of
@@ -1278,6 +1281,9 @@ fn eval_candidate(
         // is always populated for every candidate that reaches MDS3.
         if depth == 0 {
             d0_recon = dep_recon.clone();
+            if !dep_recon10.is_empty() {
+                d0_recon10 = dep_recon10.clone();
+            }
         }
         if cost < best_cost {
             best_cost = cost;
@@ -3462,6 +3468,7 @@ fn eval_candidate(
         // chroma recon, and the pred10 buffers can be populated on paths
         // (e.g. the bd10 post-pass presets) whose canvases are absent.
         if fx.y_recon10.is_some() {
+            cand.y_recon10_d0 = pred10.clone();
             cand.y_recon10 = pred10;
         }
         if fx.u_recon10.is_some() && fx.v_recon10.is_some() {
@@ -3486,6 +3493,7 @@ fn eval_candidate(
     cand.txb_type = best_txb_type;
     cand.y_recon = best_recon;
     cand.y_recon_d0 = d0_recon;
+    cand.y_recon10_d0 = d0_recon10;
     cand.y_bits = best_bits;
     cand.y_dist = best_dist;
     // Chroma coded levels / eobs / neighbour culs — 10-bit when the bd10

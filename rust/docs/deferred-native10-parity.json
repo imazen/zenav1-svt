@@ -28,12 +28,13 @@
       "bit_depth": 10,
       "preset": 4,
       "qp": 10,
-      "status": "open-parity-divergence",
+      "status": "closed-byte-identical",
       "c_sha256": "6b5dafbc3fd33a18278cb02221809318a30157a64368cd363ba947ecf253d65e",
-      "rust_sha256": "476e8a0128cf003fad4c5d779bfb60992f07a2a1f23bea8f5a024b1eef621af6",
+      "rust_sha256": "6b5dafbc3fd33a18278cb02221809318a30157a64368cd363ba947ecf253d65e",
       "c_bytes": 11752,
-      "rust_bytes": 11695,
-      "independent_decode": "C and stored Rust streams accepted by decoder-derived block tree; first tree divergence now at mi=(48,52): C quads to four 8x8 leaves, port keeps one 16x16 (partition near-tie, distinct root cause from the resolved detector bug)"
+      "rust_bytes": 11752,
+      "independent_decode": "decoder-derived block tree identical to x86-semantics C oracle stream",
+      "resolution": "bd10 quad-dist gate scale: skip_sub_depth cond1 compares rec_dist_per_quadrant std_deviation against quad_deviation_th=250 on the bd10 scale (C fills it via svt_full_distortion_kernel16_bits, ~16x the u8 SSE). The port's bypass_encdec=1 arm kept the u8 path (u8<<2 source vs u8 recon), so at p4+ std under-measured (~69 vs C's 588 at mi=(48,52)) and cond1 over-fired, quashing splits C tested. Fixed by threading the u16 twins through the whole gate: Cand::y_recon10_d0 (depth-0 dep_recon10 twin of cand_bf->recon), LeafEval::gate_y10/gate_u10/gate_v10 (last-MDS3-candidate recon at bypass=1, matching C's shared buffer state), and quad_rec_dists reading the real src10 planes when present. depth_refine.rs, leaf_funnel/types.rs, mod.rs, mds3.rs, inject.rs, light.rs. Stream verified byte-identical to recorded x86 oracle."
     },
     {
       "id": "partial-chroma-native10-p4-q30",
@@ -42,12 +43,13 @@
       "bit_depth": 10,
       "preset": 4,
       "qp": 30,
-      "status": "open-parity-divergence",
+      "status": "closed-byte-identical",
       "c_sha256": "b350c835c279f1682b91ae27c34ac41709ffc2cc792161f511b7ec76a6784090",
-      "rust_sha256": "0afdf28a7bc12fe26cae85822cf38812cbac2f250de235743e6743b68ba77e72",
+      "rust_sha256": "b350c835c279f1682b91ae27c34ac41709ffc2cc792161f511b7ec76a6784090",
       "c_bytes": 2827,
-      "rust_bytes": 2831,
-      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+      "rust_bytes": 2827,
+      "independent_decode": "decoder-derived block tree identical to x86-semantics C oracle stream",
+      "resolution": "Same bd10 quad-dist gate scale defect as p4-q10: u8-scale rec_dist_per_quadrant under-fired C's 16-bit std_deviation vs quad_deviation_th, so skip_sub_depth cond1 suppressed splits C evaluated (comparable divergence localized at mi=(72,52)). Closed by the same bypass_encdec=1 u16 gate-planes fix."
     },
     {
       "id": "partial-chroma-native10-p5-q10",

@@ -1676,30 +1676,39 @@ impl DepthWalk<'_, '_> {
         // bd10 (task #94, root #2): C `calc_scr_to_recon_dist_per_quadrant`
         // (product_coding_loop.c:8065) scores the per-quadrant SSE with
         // `svt_full_distortion_kernel16_bits` at `hbd_md` — the 10-bit source
-        // (u8 << 2, the C driver's input) vs the 10-bit `cand_bf->recon`. The
-        // ratio the NSQ H/V skip gate (`update_skip_nsq_based_on_sq_recon_dist`)
-        // reads is NOT scale-invariant once the 10-bit recon differs from
-        // `recon8 << 2` (the hbd-predictor rounding), so scoring it on the u8
-        // recon flips the skip on a near-tie. The bd10 recon twin of `gate_y`
-        // is `win_recon10` (chroma `win_uv_recon10`) — but ONLY at
-        // bypass_encdec=0 (preset <= 3): there `gate_y` is the WINNER's
-        // (winning-depth) recon, of which `win_recon10` is the exact twin. At
-        // bypass_encdec=1 (preset >= 4) `gate_y` is instead the LAST MDS3
-        // candidate's depth-0 recon (no 10-bit twin is kept), so the fix is
-        // strictly p0..p3-scoped and p4+ keeps the u8 path. bd8 (empty
-        // `win_recon10`) also keeps the u8 path. Both are byte-inert.
+        // (`input_pic` u16, real low bits under SVTAV1_HBD_SRC) vs the 10-bit
+        // `cand_bf->recon`. The measured `rec_dist_per_quadrant` therefore
+        // sits ~16x above its u8 twin — and `skip_sub_depth` cond1's
+        // `quad_deviation_th` (250 at every enabled level) is calibrated to
+        // that scale, so feeding it the u8 SSE over-fires the skip: at p4+
+        // the port quashed splits C still tested (measured on
+        // partial-chroma p4q10 (48,52): C quad=[1495,519,1972,712] std=588
+        // vs the port's u8 std=69).
+        //
+        // The recon the gate reads is the shared `cand_bf->recon` state:
+        // bypass_encdec=0 -> the WINNER's rebuild (`win_recon10`);
+        // bypass_encdec=1 -> the LAST MDS3 candidate's depth-0 luma recon +
+        // its chroma (`gate_y10`/`gate_uv10`). Chroma has no tx-depth split,
+        // so the chroma twin is the same recon in both cases.
         let yrec = ev.gate_y();
-        let yrec10 = ev.win_recon10();
-        let (urec10, vrec10) = ev.win_uv_recon10();
-        // Take the bd10 path only at bypass_encdec=0 AND when every plane the
-        // gate reads has its 10-bit recon (luma always; chroma only when the
-        // sub-quadrant carries it, `quad > 4`). This can never mix a 10-bit
-        // plane with an 8-bit one in a quadrant SSE, and falls back to the
-        // byte-inert u8 path on any block whose bd10 recon is absent (rather
-        // than panicking).
-        let bd10 = !self.fx.frame.cfg.bypass_encdec
-            && !yrec10.is_empty()
-            && (quad <= 4 || (!urec10.is_empty() && !vrec10.is_empty()));
+        let (yrec10, urec10, vrec10) = if self.fx.frame.cfg.bypass_encdec {
+            let (u, v) = ev.gate_uv10();
+            (ev.gate_y10(), u, v)
+        } else {
+            let (u, v) = ev.win_uv_recon10();
+            (ev.win_recon10(), u, v)
+        };
+        // The 10-bit SOURCE: `fx.src10` (real u16 planes on a native-HBD
+        // encode, where SVTAV1_HBD_SRC low bits are load-bearing) when it
+        // exists; `u8 << 2` otherwise — C's driver feeds exactly `u8 << 2`
+        // for an 8-bit input, so the fallback is C-exact there.
+        let s10 = self.fx.src10;
+        // Take the bd10 path only when every plane the gate reads has its
+        // 10-bit recon (luma always; chroma only when the sub-quadrant
+        // carries it, `quad > 4`). This can never mix a 10-bit plane with
+        // an 8-bit one in a quadrant SSE, and falls back to the u8 path on
+        // any block whose bd10 recon is absent (rather than panicking).
+        let bd10 = !yrec10.is_empty() && (quad <= 4 || (!urec10.is_empty() && !vrec10.is_empty()));
         for r in 0..2usize {
             for c in 0..2usize {
                 let mut d: u64 = 0;
@@ -1708,7 +1717,16 @@ impl DepthWalk<'_, '_> {
                     let ry = (r * quad + y) * sq + c * quad;
                     for x in 0..quad {
                         let diff = if bd10 {
-                            ((self.y_src[sy + x] as i64) << 2) - yrec10[ry + x] as i64
+                            let src = match s10 {
+                                Some(s) => {
+                                    s.y[(ev.abs_y + r * quad + y) * s.y_stride
+                                        + ev.abs_x
+                                        + c * quad
+                                        + x] as i64
+                                }
+                                None => (self.y_src[sy + x] as i64) << 2,
+                            };
+                            src - yrec10[ry + x] as i64
                         } else {
                             self.y_src[sy + x] as i64 - yrec[ry + x] as i64
                         };
@@ -1726,10 +1744,17 @@ impl DepthWalk<'_, '_> {
                         let ry = (r * cq + y) * cw + c * cq;
                         for x in 0..cq {
                             let (du, dv) = if bd10 {
-                                (
-                                    ((self.fx.u_src[sy + x] as i64) << 2) - urec10[ry + x] as i64,
-                                    ((self.fx.v_src[sy + x] as i64) << 2) - vrec10[ry + x] as i64,
-                                )
+                                let (us, vs) = match s10 {
+                                    Some(s) => (
+                                        s.u[(ccy + y) * s.c_stride + ccx + x] as i64,
+                                        s.v[(ccy + y) * s.c_stride + ccx + x] as i64,
+                                    ),
+                                    None => (
+                                        (self.fx.u_src[sy + x] as i64) << 2,
+                                        (self.fx.v_src[sy + x] as i64) << 2,
+                                    ),
+                                };
+                                (us - urec10[ry + x] as i64, vs - vrec10[ry + x] as i64)
                             } else {
                                 (
                                     self.fx.u_src[sy + x] as i64 - urec[ry + x] as i64,

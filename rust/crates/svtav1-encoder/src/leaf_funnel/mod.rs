@@ -918,6 +918,21 @@ pub(crate) fn evaluate_leaf(
         let wc = &cands[win];
         (wc.y_recon.clone(), wc.u_recon.clone(), wc.v_recon.clone())
     };
+    // The 10-bit gate twins — bypass=1 only, where C's u16 `cand_bf->recon`
+    // holds the LAST candidate's depth-0 luma recon + its chroma and the
+    // quad-dist gates measure them through `svt_full_distortion_kernel16_bits`
+    // (~16x the u8 SSE). At bypass=0 `quad_rec_dists` reads `win_recon10`
+    // (the winner rebuild twin) instead, so these stay empty.
+    let (gate_y10, gate_u10, gate_v10) = if cfg.bypass_encdec {
+        let last = &cands[order1[n3 - 1]];
+        (
+            last.y_recon10_d0.clone(),
+            last.u_recon10.clone(),
+            last.v_recon10.clone(),
+        )
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
 
     // bd10 mode funnel (task #94): reconstruct the winner at TRUE 10-bit for
     // the next block's neighbour prediction (`commit_leaf` writes this into the
@@ -952,6 +967,9 @@ pub(crate) fn evaluate_leaf(
             gate_y,
             gate_u,
             gate_v,
+            gate_y10,
+            gate_u10,
+            gate_v10,
             psq_resid: psq_resid.into_vec(),
             psq_resid10,
             win_recon10: wr,
@@ -1028,6 +1046,9 @@ pub(crate) fn evaluate_leaf(
         gate_y,
         gate_u,
         gate_v,
+        gate_y10,
+        gate_u10,
+        gate_v10,
         psq_resid: psq_resid.into_vec(),
         psq_resid10,
         win_recon10,

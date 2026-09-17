@@ -868,6 +868,11 @@ pub(super) fn finish_lpd1(
         gate_y,
         gate_u,
         gate_v,
+        // The light path is the 8-bit lane (hbd_md=0 in C); no u16 gate
+        // twins exist here.
+        gate_y10: Vec::new(),
+        gate_u10: Vec::new(),
+        gate_v10: Vec::new(),
         psq_resid,
         psq_resid10: Vec::new(),
         win_recon10: Vec::new(),

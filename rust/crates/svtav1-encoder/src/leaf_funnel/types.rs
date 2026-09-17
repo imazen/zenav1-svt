@@ -87,6 +87,15 @@ pub(super) struct Cand {
     /// TX loop — deeper depths reconstruct in aux buffers and are never
     /// copied back, so the quad-dist gates measure THIS, not `y_recon`).
     pub(super) y_recon_d0: crate::vecpool::PoolVec<u8>,
+    /// The 10-bit twin of `y_recon_d0` — the depth-0 luma recon from the
+    /// bd10 MDS3 loop (`dep_recon10` at `depth == 0`). At `hbd_md` C's
+    /// `cand_bf->recon` is a u16 buffer, so the quad-dist gates
+    /// (`calc_scr_to_recon_dist_per_quadrant` through
+    /// `svt_full_distortion_kernel16_bits`) measure ~16x the u8 SSE the u8
+    /// twin holds — feeding it the u8 recon under-scales
+    /// `rec_dist_per_quadrant` and over-fires `skip_sub_depth` cond1's
+    /// `quad_deviation_th` at bd10. Empty on the u8 path.
+    pub(super) y_recon10_d0: Vec<u16>,
     pub(super) y_bits: u64,
     pub(super) y_dist: u64,
     pub(super) u_q: crate::vecpool::PoolVec<i32>,
@@ -492,6 +501,15 @@ pub(crate) struct LeafEval {
     pub(super) gate_y: crate::vecpool::PoolVec<u8>,
     pub(super) gate_u: crate::vecpool::PoolVec<u8>,
     pub(super) gate_v: crate::vecpool::PoolVec<u8>,
+    /// The 10-bit twins of `gate_y`/`gate_u`/`gate_v` at bypass_encdec=1:
+    /// the LAST MDS3 candidate's depth-0 luma recon (`y_recon10_d0`) and
+    /// its chroma recon (`u_recon10`/`v_recon10`) — what C's u16
+    /// `cand_bf->recon` holds when `hbd_md` runs the quad-dist gates through
+    /// `svt_full_distortion_kernel16_bits`. Empty at bypass=0 (the gate
+    /// reads `win_recon10` there — the winner rebuild twin) and on u8.
+    pub(super) gate_y10: Vec<u16>,
+    pub(super) gate_u10: Vec<u16>,
+    pub(super) gate_v10: Vec<u16>,
     /// C `cand_bf->residual` content at `non_normative_txs` time: ALL
     /// MDS3 candidates share ONE residual workspace (verified by buffer-
     /// pointer instrumentation — docs/captures/nsq_m2m3), so the buffer
@@ -666,6 +684,17 @@ impl LeafEval {
 
     pub(crate) fn gate_uv(&self) -> (&[u8], &[u8]) {
         (&self.gate_u, &self.gate_v)
+    }
+
+    /// The 10-bit quad-dist gate planes (see the `gate_y10` field doc) —
+    /// populated only at bypass_encdec=1; empty elsewhere, where the gate
+    /// reads [`win_recon10`](Self::win_recon10) instead.
+    pub(crate) fn gate_y10(&self) -> &[u16] {
+        &self.gate_y10
+    }
+
+    pub(crate) fn gate_uv10(&self) -> (&[u16], &[u16]) {
+        (&self.gate_u10, &self.gate_v10)
     }
 
     /// bd10 (task #94, root #2): the 10-bit twin of [`gate_y`](Self::gate_y) for
