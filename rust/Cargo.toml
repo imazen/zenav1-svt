@@ -41,16 +41,19 @@ whereat = { version = "0.1.5", default-features = false }
 # SmallVec the same size as a Vec for the capacities used here.
 smallvec = { version = "1.16.0", default-features = false, features = ["union", "const_generics"] }
 
-# Iteration-time balance: opt-level 2 compiles markedly faster than opt-3
-# while keeping the encode/decode gates and codec tests fast at runtime
-# (the gates are entropy-walk + external-decoder bound, not raw-DSP bound,
-# so opt-2 vs opt-3 is a wash at run time but a clear win at build time).
-# Bit-exactness is unaffected: Rust does not auto-contract a*b+c into FMA
-# without target-feature=+fma, so integer/float results are identical
-# across opt-levels (identity matrix re-verified at opt-2). Dependencies
-# stay at full opt (compiled once, rarely rebuilt).
+# opt-3 + fat LTO + codegen-units=1: measured 2026-09-17 on i265 — the
+# encoder↔dsp crate split made every hot kernel a cross-crate call, and
+# only LTO inlines those back. gradient 512x512 q32 paired medians:
+# p6 42.8 -> 39.5 ms (1.085x), p10 12.1 -> 11.6 ms (1.043x); byte-identical
+# on every measured cell. Bit-exactness is unaffected: Rust does not
+# auto-contract a*b+c into FMA without target-feature=+fma, so
+# integer/float results are identical across opt-levels.
+# Build cost: ~35 s vs ~7 s for the encoder crate — the price of the
+# target being "faster than the C reference", not "compiles fastest".
 [profile.release]
-opt-level = 2
+opt-level = 3
+lto = "fat"
+codegen-units = 1
 
 [profile.test]
 opt-level = 2
