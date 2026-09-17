@@ -2264,7 +2264,7 @@ pub fn cdef_dist_packed(
 ) -> u64 {
     incant!(
         cdef_dist_packed_impl(plane, plane_off, pstride, packed, blocks, dim, sub),
-        [v3, neon, scalar]
+        [arm_v2, v3, neon, scalar]
     )
 }
 
@@ -2321,6 +2321,92 @@ fn cdef_dist_packed_impl_neon(
     sub: usize,
 ) -> u64 {
     cdef_dist_packed_core(plane, plane_off, pstride, packed, blocks, dim, sub)
+}
+
+/// AArch64+dotprod arm of [`cdef_dist_packed`], mirroring C's
+/// `svt_aom_compute_cdef_dist_8bit_neon_dotprod`: each block's sampled rows
+/// are staged contiguously (like [`dist_block_v3`]) and the squared diffs
+/// are folded with `vdotq_u32(acc, d, d)` on `vabdq_u8` lanes — one op per
+/// 16 pixels instead of the scalar core's per-pixel multiply. The staging
+/// buffers are zero-padded, so partial tails contribute 0.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn cdef_dist_packed_impl_arm_v2(
+    token: Arm64V2Token,
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    blocks: &[(usize, usize)],
+    dim: usize,
+    sub: usize,
+) -> u64 {
+    let mut sum = 0u64;
+    match dim {
+        8 => {
+            for (bi, &(by, bx)) in blocks.iter().enumerate() {
+                let poff = plane_off + by * 8 * pstride + bx * 8;
+                sum += cdef_dist_block_arm_v2::<8>(
+                    token,
+                    &packed[bi * 64..bi * 64 + 64],
+                    &plane[poff..],
+                    pstride,
+                    sub,
+                ) as u64;
+            }
+        }
+        4 => {
+            for (bi, &(by, bx)) in blocks.iter().enumerate() {
+                let poff = plane_off + by * 4 * pstride + bx * 4;
+                sum += cdef_dist_block_arm_v2::<4>(
+                    token,
+                    &packed[bi * 16..bi * 16 + 16],
+                    &plane[poff..],
+                    pstride,
+                    sub,
+                ) as u64;
+            }
+        }
+        _ => {
+            return cdef_dist_packed_core(plane, plane_off, pstride, packed, blocks, dim, sub);
+        }
+    }
+    sum
+}
+
+/// One block's subsampled SSE on aarch64 dotprod — the [`dist_block_v3`]
+/// staging shape with `vabdq_u8` + `vdotq_u32` folds. `DIM` is const-generic
+/// so every row gather is a fixed-size copy. The staged regions past
+/// `n * DIM` stay zero on BOTH sides, contributing 0 to the sum, so all four
+/// 16-byte chunks fold unconditionally.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_dist_block_arm_v2<const DIM: usize>(
+    _token: Arm64V2Token,
+    tmp_blk: &[u8],
+    src: &[u8],
+    src_stride: usize,
+    sub: usize,
+) -> u32 {
+    let n = DIM.div_ceil(sub.max(1));
+    let mut sa_buf = [0u8; 64];
+    for k in 0..n {
+        sa_buf[k * DIM..k * DIM + DIM]
+            .copy_from_slice(&tmp_blk[k * sub * DIM..k * sub * DIM + DIM]);
+    }
+    let mut sb = [0u8; 64];
+    for k in 0..n {
+        sb[k * DIM..k * DIM + DIM]
+            .copy_from_slice(&src[k * sub * src_stride..k * sub * src_stride + DIM]);
+    }
+    let mut acc = vdupq_n_u32(0);
+    for c in (0..64).step_by(16) {
+        let a: &[u8; 16] = sa_buf[c..c + 16].try_into().unwrap();
+        let b: &[u8; 16] = sb[c..c + 16].try_into().unwrap();
+        let d = vabdq_u8(vld1q_u8(a), vld1q_u8(b));
+        acc = vdotq_u32(acc, d, d);
+    }
+    vaddvq_u32(acc)
 }
 
 #[cfg(target_arch = "x86_64")]

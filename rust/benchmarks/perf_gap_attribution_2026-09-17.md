@@ -53,7 +53,25 @@ Facts that ruled out easy answers:
   `lbd_fwd_txfm2d_16x16_neon` 506; fdct32_x8 360 vs 560) — the composed
   1-D approach is fine; the loss is in the dispatch shell.
 
-## Measured attempts (all null or negative — DO NOT RETRY blindly)
+## Landed
+
+1. **`cdef_dist_packed` arm_v2 (dotprod) arm** — the NEON arm was a
+   *stub delegating to the scalar core* while x86 had `dist_block_v3`
+   and C runs `compute_cdef_dist_8bit_neon_dotprod` (121 vs 27
+   samples). New `cdef_dist_block_arm_v2` stages sampled rows
+   contiguously (the `dist_block_v3` shape) and folds with
+   `vdotq_u32(acc, vabdq_u8(a,b), vabdq_u8(a,b))`. A/B 7r at p4 (CDEF
+   search is `preset <= 6` only — the p10 deltas measured are layout
+   noise): **1.016x / 1.009x** at 256/512. ident=Y; the
+   `all_tiers_match_scalar` + `compute_cdef_dist_8bit_matches_c` FFI
+   tests pass. LANDED.
+2. Remaining stubs found by the same audit: `predict_smooth_impl_neon`
+   (but the scalar core is branch-free and likely already
+   LLVM-vectorized — LOW expected value) and
+   `predict_filter_intra_impl_neon` (C runs a real NEON+i8mm kernel
+   with a different algorithm shape — the real intra-pred port job).
+
+## Measured attempts (null or negative — DO NOT RETRY blindly)
 
 1. **residual_i32/i16 packed NEON strips for w<16** (`n<=512`):
    packed strided rows into stack arrays, contiguous vector subtract.
