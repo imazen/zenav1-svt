@@ -252,6 +252,10 @@ pub(super) fn inject_candidates(
         let mut u_pred10 = dirty_pool::<u16>(cw * chh);
         let mut v_pred10 = dirty_pool::<u16>(cw * chh);
         let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
+        // Every uv candidate sits at the same (ccx, ccy, cw, chh), so its
+        // neighbour extraction is identical — cached per plane.
+        let mut nb_u = None;
+        let mut nb_v = None;
         for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
             let fast_dist = match bd10_rd.as_ref() {
                 Some(b) => {
@@ -309,6 +313,7 @@ pub(super) fn inject_candidates(
                         &uv_geom,
                         cfg.edge_filter,
                         filt_type_uv,
+                        &mut nb_u,
                         &mut u_pred,
                     );
                     predict_unit(
@@ -324,6 +329,7 @@ pub(super) fn inject_candidates(
                         &uv_geom,
                         cfg.edge_filter,
                         filt_type_uv,
+                        &mut nb_v,
                         &mut v_pred,
                     );
                     if frame.reference == crate::reference::SvtReference::Mainline420 {
@@ -776,6 +782,9 @@ pub(super) fn inject_candidates(
     // `cand_elimination` early-out (:1020-1030). `None` until the first
     // candidate is scored — same sentinel as `mds0_best_cost`.
     let mut mds0_best_dist: Option<u64> = None;
+    // All candidates predict from the same `y_recon` neighbourhood at the
+    // same (abs_x, abs_y, w, h) — the extraction is loop-invariant.
+    let mut nb_y = None;
     for itr in 0..tot_itr {
         for &(mode, delta, fi) in &cand_modes {
             // C gates this skip on `itr == 0` (:1687). At itr 1 the regular modes
@@ -862,6 +871,7 @@ pub(super) fn inject_candidates(
                 &y_geom,
                 cfg.edge_filter,
                 filt_type_y,
+                &mut nb_y,
                 &mut pred,
             );
             // [SVT_HDR_MODE] complex-hvs: plain whole-block spatial SSD, no

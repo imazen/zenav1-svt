@@ -99,6 +99,7 @@ pub(super) fn eval_uv(
         &cx.uv_geom,
         frame.cfg.edge_filter,
         cx.filt_type_uv,
+        &mut None,
         &mut u_pred,
     );
     predict_unit(
@@ -114,6 +115,7 @@ pub(super) fn eval_uv(
         &cx.uv_geom,
         frame.cfg.edge_filter,
         cx.filt_type_uv,
+        &mut None,
         &mut v_pred,
     );
     let tt = uv_tx_type(uv, cw, chh);

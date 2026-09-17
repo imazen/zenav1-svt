@@ -367,6 +367,7 @@ fn light_chroma_pred(
                 &cx.uv_geom,
                 fx.frame.cfg.edge_filter,
                 cx.filt_type_uv,
+                &mut None,
                 &mut p,
             );
             p

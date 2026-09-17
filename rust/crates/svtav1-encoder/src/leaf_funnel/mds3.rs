@@ -510,6 +510,10 @@ fn eval_candidate(
         ..
     } = *g;
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
+    // Every chroma predict_unit call below sits at the same (ccx, ccy, cw, chh)
+    // on the same recon planes — the neighbour extraction is shared.
+    let mut nb_u = None;
+    let mut nb_v = None;
     let uv_geom = cx.uv_geom;
     let filt_type_uv = cx.filt_type_uv;
     let uv_crop = cx.uv_crop;
@@ -1389,6 +1393,7 @@ fn eval_candidate(
                         &uv_geom,
                         cfg.edge_filter,
                         filt_type_uv,
+                        &mut nb_u,
                         &mut u,
                     );
                     predict_unit(
@@ -1404,6 +1409,7 @@ fn eval_candidate(
                         &uv_geom,
                         cfg.edge_filter,
                         filt_type_uv,
+                        &mut nb_v,
                         &mut v,
                     );
                     (u.into_vec(), v.into_vec())
@@ -1699,6 +1705,7 @@ fn eval_candidate(
             &uv_geom,
             cfg.edge_filter,
             filt_type_uv,
+            &mut nb_u,
             &mut u_pred,
         );
         predict_unit(
@@ -1714,6 +1721,7 @@ fn eval_candidate(
             &uv_geom,
             cfg.edge_filter,
             filt_type_uv,
+            &mut nb_v,
             &mut v_pred,
         );
         let c_off = ccy * fx.c_stride + ccx;
@@ -1985,6 +1993,7 @@ fn eval_candidate(
                 &uv_geom,
                 cfg.edge_filter,
                 filt_type_uv,
+                &mut nb_u,
                 &mut u_dc,
             );
             predict_unit(
@@ -2000,6 +2009,7 @@ fn eval_candidate(
                 &uv_geom,
                 cfg.edge_filter,
                 filt_type_uv,
+                &mut nb_v,
                 &mut v_dc,
             );
             // bd10 decision depth: the 10-bit AC luma (subsampled from the
@@ -2484,6 +2494,7 @@ fn eval_candidate(
                 &uv_geom,
                 cfg.edge_filter,
                 filt_type_uv,
+                &mut nb_u,
                 &mut u_dc,
             );
             predict_unit(
@@ -2499,6 +2510,7 @@ fn eval_candidate(
                 &uv_geom,
                 cfg.edge_filter,
                 filt_type_uv,
+                &mut nb_v,
                 &mut v_dc,
             );
             // check_best_indepedant_cfl (product_coding_loop.c:3893): CfL vs

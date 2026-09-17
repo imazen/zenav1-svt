@@ -59,6 +59,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use archmage::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Variance map (pic_analysis_process.c compute_b64_variance, PREC_SUB)
@@ -86,26 +87,10 @@ pub(crate) fn compute_b64_variance(
 ) -> SbVariance {
     let mut mean8 = [0u64; 64];
     let mut msq8 = [0u64; 64];
-    for by in 0..8 {
-        for bx in 0..8 {
-            // u32 accumulation is exact: 32 u8 samples -> sum <= 8_160,
-            // sq <= 32 * 255^2 = 2_080_800. Keeping the accumulators 32-bit
-            // lets LLVM auto-vectorize the pixel loop; widening to u64 blocks
-            // it (~6.3K -> ~1.5K instructions per SB).
-            let mut sum = 0u32;
-            let mut sq = 0u32;
-            for r in [0usize, 2, 4, 6] {
-                let row = (org_y + by * 8 + r) * stride + org_x + bx * 8;
-                for c in 0..8 {
-                    let v = src[row + c] as u32;
-                    sum += v;
-                    sq += v * v;
-                }
-            }
-            mean8[by * 8 + bx] = (sum as u64) << 3;
-            msq8[by * 8 + bx] = (sq as u64) << 11;
-        }
-    }
+    incant!(
+        b64_stats_impl(src, stride, org_x, org_y, &mut mean8, &mut msq8),
+        [v3, scalar]
+    );
     let mut mean16 = [0u64; 16];
     let mut msq16 = [0u64; 16];
     for by in 0..4 {
@@ -140,6 +125,83 @@ pub(crate) fn compute_b64_variance(
         v[21 + i] = (msq8[i].wrapping_sub(mean8[i] * mean8[i]) >> VARIANCE_PRECISION) as u16;
     }
     SbVariance(v)
+}
+
+/// Per-8x8-block sampled stats for [`compute_b64_variance`]: the even-row
+/// (`r in {0,2,4,6}`) 32-sample `sum`/`sum_sq` of each 8x8 quadrant, stored as
+/// `sum << 3` / `sq << 11` fixed point into `mean8`/`msq8`.
+fn b64_stats_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    stride: usize,
+    org_x: usize,
+    org_y: usize,
+    mean8: &mut [u64; 64],
+    msq8: &mut [u64; 64],
+) {
+    for by in 0..8 {
+        for bx in 0..8 {
+            // u32 accumulation is exact: 32 u8 samples -> sum <= 8_160,
+            // sq <= 32 * 255^2 = 2_080_800. Keeping the accumulators 32-bit
+            // lets LLVM auto-vectorize the pixel loop; widening to u64 blocks
+            // it (~6.3K -> ~1.5K instructions per SB).
+            let mut sum = 0u32;
+            let mut sq = 0u32;
+            for r in [0usize, 2, 4, 6] {
+                let row = (org_y + by * 8 + r) * stride + org_x + bx * 8;
+                for c in 0..8 {
+                    let v = src[row + c] as u32;
+                    sum += v;
+                    sq += v * v;
+                }
+            }
+            mean8[by * 8 + bx] = (sum as u64) << 3;
+            msq8[by * 8 + bx] = (sq as u64) << 11;
+        }
+    }
+}
+
+/// AVX2 twin of [`b64_stats_impl_scalar`]: one `u8x16` load covers a horizontal
+/// PAIR of 8x8 blocks (their sampled columns are contiguous), so each loop
+/// iteration squares and sums 16 pixels with two `madd`s. Four i32x4
+/// accumulators keep the pair's lanes separate — per lane the max is
+/// `4 rows * 2 squares * 65025 = 520_200`, inside i32.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn b64_stats_impl_v3(
+    token: Desktop64,
+    src: &[u8],
+    stride: usize,
+    org_x: usize,
+    org_y: usize,
+    mean8: &mut [u64; 64],
+    msq8: &mut [u64; 64],
+) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let ones = i16x8::splat(token, 1);
+    for by in 0..8 {
+        for bxp in 0..4 {
+            let bx = bxp * 2;
+            let mut sum_lo = i32x4::splat(token, 0);
+            let mut sum_hi = i32x4::splat(token, 0);
+            let mut sq_lo = i32x4::splat(token, 0);
+            let mut sq_hi = i32x4::splat(token, 0);
+            for r in [0usize, 2, 4, 6] {
+                let row = (org_y + by * 8 + r) * stride + org_x + bx * 8;
+                let v = u8x16::load(token, src[row..row + 16].try_into().unwrap());
+                let lo = v.widen_low().bitcast_i16x8();
+                let hi = v.widen_high().bitcast_i16x8();
+                sum_lo += lo.madd_adjacent(ones);
+                sq_lo += lo.madd_adjacent(lo);
+                sum_hi += hi.madd_adjacent(ones);
+                sq_hi += hi.madd_adjacent(hi);
+            }
+            mean8[by * 8 + bx] = u64::from(sum_lo.reduce_add() as u32) << 3;
+            msq8[by * 8 + bx] = u64::from(sq_lo.reduce_add() as u32) << 11;
+            mean8[by * 8 + bx + 1] = u64::from(sum_hi.reduce_add() as u32) << 3;
+            msq8[by * 8 + bx + 1] = u64::from(sq_hi.reduce_add() as u32) << 11;
+        }
+    }
 }
 
 /// C `svt_aom_get_blk_var_map` (product_coding_loop.c:8368): variance-map

@@ -59,6 +59,11 @@ pub(super) fn predict_unit(
     geom: &UnitGeom,
     edge_filter: bool,
     filt_type: i32,
+    // Per-candidate-loop cache: every candidate at one block position extracts
+    // the same neighbours, so the caller passes a slot that survives its loop;
+    // one-shot callers pass `&mut None`. Filled lazily — directional modes take
+    // the `dr_predict` arm above and never touch it.
+    nb_cache: &mut Option<crate::partition::NeighborEdges>,
     dst: &mut [u8],
 ) {
     use svtav1_dsp::intra_pred as ip;
@@ -96,21 +101,23 @@ pub(super) fn predict_unit(
     // Task #96: tile-scoped neighbour availability. `geom.tile` is the
     // whole frame for a single-tile encode, where `tile_top/left` are 0
     // and this is bit-for-bit `extract_neighbors`.
-    let nb = crate::partition::extract_neighbors_tiled(
-        recon,
-        stride,
-        abs_x,
-        abs_y,
-        w,
-        h,
-        geom.tile.top_px(geom.ss),
-        geom.tile.left_px(geom.ss),
-        // C n_top_px/n_left_px: this plane's ALIGNED extent, so a block
-        // straddling a partial superblock replicates the frame edge instead
-        // of reading recon a conforming decoder never produces.
-        geom.frame_w >> geom.ss,
-        geom.frame_h >> geom.ss,
-    );
+    let nb = nb_cache.get_or_insert_with(|| {
+        crate::partition::extract_neighbors_tiled(
+            recon,
+            stride,
+            abs_x,
+            abs_y,
+            w,
+            h,
+            geom.tile.top_px(geom.ss),
+            geom.tile.left_px(geom.ss),
+            // C n_top_px/n_left_px: this plane's ALIGNED extent, so a block
+            // straddling a partial superblock replicates the frame edge instead
+            // of reading recon a conforming decoder never produces.
+            geom.frame_w >> geom.ss,
+            geom.frame_h >> geom.ss,
+        )
+    });
     let (above, left, top_left, has_above, has_left) = nb.parts();
     if fi_mode != FI_NONE {
         // `w` is a TX width, at most 64, so this never spills. It was 60,685
