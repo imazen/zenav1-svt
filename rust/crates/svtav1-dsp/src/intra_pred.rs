@@ -65,10 +65,7 @@ pub fn predict_v(dst: &mut [u8], dst_stride: usize, above: &[u8], width: usize, 
 /// Predict a block using horizontal prediction (copy left column).
 pub fn predict_h(dst: &mut [u8], dst_stride: usize, left: &[u8], width: usize, height: usize) {
     for row in 0..height {
-        let val = left[row];
-        for col in 0..width {
-            dst[row * dst_stride + col] = val;
-        }
+        dst[row * dst_stride..row * dst_stride + width].fill(left[row]);
     }
 }
 
