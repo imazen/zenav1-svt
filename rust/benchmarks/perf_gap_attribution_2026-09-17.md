@@ -125,7 +125,21 @@ Facts that ruled out easy answers:
    [p25,p75]=[0.991,1.004] — true null. LLVM was already handling it.
    REVERTED.
 
+* **INTRA_PRED z2 small blocks — LANDED**: faithful ports of C's
+  `dr_prediction_z2_4xH_neon` / `dr_prediction_z2_8xH_neon` (one
+  vmlaq/vrshrn/vbsl row pass, vqtbl3 gather over a CONTIGUOUS 48-byte
+  `left[-2..45]` table — C's own 4xH table wraps past index 17 and is
+  only sound while base_y <= 14, so the port could not clone it; the
+  x86 oracle computes the scalar formula). Rows whose left reach
+  exceeds the table (`(y_hi >> frac_bits_y) > 44`) fall back to the
+  scalar core. Dispatch-vs-core sweep over w{4,8,16} x h{4..32} x all
+  upsample flag combos x all legal (dx,dy) pairs: exact; 827 dsp
+  tests pass incl. `dr_prediction_all_tiers_match_c` FFI.
+  A/B 7r vs pre-change HEAD (a23fd5da): **1.034x at 256p4, 1.025x at
+  512p4**, byte-identical. (ab_z2small_neon_2026-09-17.tsv)
+
 ## Where the remaining gap actually lives
+
 
 * **Funnel orchestration** (MD_DRIVER, +9.3ms): `tx_unit_inner` +
   `inject_candidates` (307) + `evaluate_leaf` (182) + nic/mds3 closures
@@ -134,8 +148,9 @@ Facts that ruled out easy answers:
   vs C's shared `cand_bf` arena. Largest single bucket; needs a
   profiling-guided flatten of the eval loop, not a kernel.
 * **INTRA_PRED** (+6.5ms): `dr_predictor_edged` is 1.8x C's combined
-  directional kernels; z1/z3 NEON arms have the same >=16 gating as z2.
-  C's vqtbl4q approach covers all sizes in one group per row.
+  directional kernels. z2 small blocks now covered (above); z1/z3 NEON
+  arms still have the same >=16 gating z2 had — C's vqtbl4q approach
+  covers all sizes in one group per row.
 * **CDEF** (3.58x): `cdef_filter_cols8_neon` 380 vs C's native 211 —
   same work, slower kernel; `cdef_dist_packed` 121 vs C dotprod 27
   (no i8mm/dotprod arm in the port?).

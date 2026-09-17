@@ -1300,6 +1300,36 @@ fn dr_z2_edged(
         );
         return;
     }
+    // Small blocks: C's `dr_prediction_z2_4xH_neon` / `_8xH_neon` (any
+    // upsample combination). The loads reach `above[base_x .. base_x + 16)`
+    // for `base_x` as low as `min_base_x - 1 - 8 * (1 << upsample_above)`
+    // (only fully-masked lanes ever underflow, and the kernel clamps the
+    // start index to 0 in that case) and `left[origin - 2 .. origin + 46)`,
+    // so `origin >= 16` plus the length guards cover every read.
+    #[cfg(target_arch = "aarch64")]
+    if (bw == 4 || bw == 8)
+        && origin >= 16
+        && above.len() >= origin + 16
+        && left.len() >= origin + 46
+    {
+        incant!(
+            dr_z2_edged_small(
+                dst,
+                dst_stride,
+                bw,
+                bh,
+                above,
+                left,
+                origin,
+                upsample_above,
+                upsample_left,
+                dx,
+                dy,
+            ),
+            [neon, scalar]
+        );
+        return;
+    }
     dr_z2_edged_core(
         dst,
         dst_stride,
@@ -1630,6 +1660,367 @@ fn dr_z2_edged_flat_neon(
             dst[r * dst_stride + c] = v as u8;
             r += 1;
         }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_small_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    dr_z2_edged_core(
+        dst,
+        dst_stride,
+        bw,
+        bh,
+        above,
+        left,
+        origin,
+        upsample_above,
+        upsample_left,
+        dx,
+        dy,
+    );
+}
+
+/// NEON arms for `bw` 4 and 8 — faithful transliterations of C
+/// `dr_prediction_z2_4xH_neon` / `dr_prediction_z2_8xH_neon`
+/// (`ASM_NEON/intra_prediction_neon.c:302` / `:400`), which compute BOTH
+/// the above-edge and the left-edge interpolation for a whole row and
+/// select per column with `vbsl` over `base_mask`. Unlike the `>= 16`
+/// [`dr_z2_edged_flat_neon`] staircase split this handles upsampling too,
+/// because the table gather (`vqtbl`) covers it for free.
+///
+/// Exactness: `vmlaq_u16` is mod-2^16 and the true interpolation value is
+/// a convex combination in `[0, 255 * 32]`, so the wrapped difference
+/// term cancels — same argument [`dr_z2_edged_flat_neon`] records.
+/// `vrshrn_n_u16::<5>` IS `(v + 16) >> 5`. `vshl_s16` by `-frac_bits_y`
+/// is the scalar `y >> frac_bits_y` on the s16 lanes; lanes whose wrapped
+/// `y` exceeds s16 are always outside the left region and masked away
+/// (the same lanes C's own s16 kernel computes).
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_small_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    // The left-edge gather table covers `left[-2 .. 45]` (48 bytes), so the
+    // largest usable `base_y` is 44 (`idx = base_y + 3 <= 47`). The left
+    // region is a row SUFFIX (`base_x` decreases in `r`), and a used lane's
+    // `base_y = (r << 6 - (c+1) * dy) >> frac_bits_y` peaks at lane 0 of
+    // the last row — one scalar check bounds every lane the `vbsl` can
+    // keep. Beyond it the scalar core runs (same as today). C's own 4xH
+    // table WRAPS past index 17 (`vextq_u8(left_0, left_0, 14)`), which is
+    // only sound while `base_y <= 14`; the port cannot copy that because
+    // its oracle is the x86 kernel's scalar formula, not aarch64-C.
+    let up_l = upsample_left as i32;
+    let frac_bits_y = 6 - up_l;
+    let min_base_x = -(1i32 << upsample_above as i32);
+    let frac_bits_x = 6 - upsample_above as i32;
+    let last_row_has_left = (-(bh as i32) * dx >> frac_bits_x) < min_base_x;
+    let y_hi = (((bh - 1) as i32) << 6) - dy;
+    if last_row_has_left && (y_hi >> frac_bits_y) > 44 {
+        dr_z2_edged_core(
+            dst,
+            dst_stride,
+            bw,
+            bh,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        );
+        return;
+    }
+    match bw {
+        4 => dr_z2_4xh_neon(
+            token,
+            dst,
+            dst_stride,
+            bh,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        ),
+        8 => dr_z2_8xh_neon(
+            token,
+            dst,
+            dst_stride,
+            bh,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        ),
+        _ => dr_z2_edged_core(
+            dst,
+            dst_stride,
+            bw,
+            bh,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        ),
+    }
+}
+
+/// Load `above` at `origin + base_x`, clamped to index 0 on underflow.
+/// With `origin >= 16` an underflow implies `base_x <= -17`, at which
+/// every lane of the row is left-region and the vector is discarded by
+/// the `base_mask` blend, so any in-bounds bytes are a correct load.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn z2_above_neon(_token: NeonToken, origin: usize, base_x: i32) -> usize {
+    (origin as i32 + base_x).max(0) as usize
+}
+
+/// Column index vector `[0 .. 8)` for `vclt` mask construction.
+#[cfg(target_arch = "aarch64")]
+const Z2_IDX8: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+/// The shared `vqtbl3` gather table: three contiguous 16-byte loads
+/// covering `left[-2 .. 45]`. The edged buffer is 160 bytes with
+/// `origin >= 16`, so all three reads are in bounds.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn z2_left_table_neon(_token: NeonToken, left: &[u8], origin: usize) -> uint8x16x3_t {
+    let m2: &[u8; 16] = left[origin - 2..origin + 14].try_into().unwrap();
+    let l14: &[u8; 16] = left[origin + 14..origin + 30].try_into().unwrap();
+    let l30: &[u8; 16] = left[origin + 30..origin + 46].try_into().unwrap();
+    uint8x16x3_t(vld1q_u8(m2), vld1q_u8(l14), vld1q_u8(l30))
+}
+
+/// C `dr_prediction_z2_4xH_neon`: one `uint16x8` per row, low four lanes
+/// the above-edge interpolation, high four the left-edge gather, then one
+/// `vmlaq` + `vrshrn` + `vbsl` + a 4-byte lane store.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_4xh_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    let up_a = upsample_above as i32;
+    let up_l = upsample_left as i32;
+    let min_base_x = -(1i32 << up_a);
+    let frac_bits_x = 6 - up_a;
+    let frac_bits_y = 6 - up_l;
+
+    let idx8 = vld1_u8(&Z2_IDX8);
+    let c1f = vdup_n_u16(0x1f);
+    let v_1234 = vcreate_s16(0x0004_0003_0002_0001);
+    let dy64 = vdup_n_s16(dy as i16);
+    let neg_fby = vdup_n_s16(-(frac_bits_y as i16));
+
+    // 48-byte CONTIGUOUS gather table covering `left[-2 .. 45]` — unlike
+    // C's wrapped 32-byte table this keeps the scalar formula's values for
+    // `base_y` up to 44 (the caller guards taller reaches).
+    let left_vals = z2_left_table_neon(token, left, origin);
+
+    for r in 0..bh {
+        let y = r as i32 + 1;
+        let x = -y * dx;
+        let base_x = x >> frac_bits_x;
+        let mut base_shift = 0;
+        if base_x < min_base_x - 1 {
+            base_shift = (min_base_x - base_x - 1) >> up_a;
+        }
+        let base_min_diff = ((min_base_x - base_x + up_a) >> up_a).clamp(0, 4);
+
+        let mut a0_x = vdupq_n_u16(0);
+        let mut a1_x = vdupq_n_u16(0);
+        let mut sh_lo = vdup_n_u16(0);
+        let mut sh_hi = vdup_n_u16(0);
+
+        if base_shift <= 4 {
+            let lo = z2_above_neon(token, origin, base_x);
+            if upsample_above {
+                // `vld2` deinterleave via load + unzip.
+                let a: &[u8; 16] = above[lo..lo + 16].try_into().unwrap();
+                let v = vld1q_u8(a);
+                a0_x = vmovl_u8(vget_low_u8(vuzp1q_u8(v, v)));
+                a1_x = vmovl_u8(vget_low_u8(vuzp2q_u8(v, v)));
+                sh_lo = vdup_n_u16((x & 0x1f) as u16);
+            } else {
+                let a: &[u8; 8] = above[lo..lo + 8].try_into().unwrap();
+                let b: &[u8; 8] = above[lo + 1..lo + 9].try_into().unwrap();
+                a0_x = vmovl_u8(vld1_u8(a));
+                a1_x = vmovl_u8(vld1_u8(b));
+                sh_lo = vdup_n_u16(((x & 0x3f) >> 1) as u16);
+            }
+        }
+
+        if base_x < min_base_x {
+            let y_c64 = vmls_s16(vdup_n_s16((r << 6) as i16), v_1234, dy64);
+            let base_y = vshl_s16(y_c64, neg_fby);
+            let idx0 = vreinterpret_u8_s16(vadd_s16(base_y, vdup_n_s16(2)));
+            let idx1 = vreinterpret_u8_s16(vadd_s16(base_y, vdup_n_s16(3)));
+            // Gathered byte + a zero byte make each u16 lane.
+            let a0_y = vtrn1_u8(vqtbl3_u8(left_vals, idx0), vdup_n_u8(0));
+            let a1_y = vtrn1_u8(vqtbl3_u8(left_vals, idx1), vdup_n_u8(0));
+            a0_x = vcombine_u16(vget_low_u16(a0_x), vreinterpret_u16_u8(a0_y));
+            a1_x = vcombine_u16(vget_low_u16(a1_x), vreinterpret_u16_u8(a1_y));
+            sh_hi = if upsample_left {
+                vand_u16(vreinterpret_u16_s16(y_c64), c1f)
+            } else {
+                vand_u16(vshr_n_u16::<1>(vreinterpret_u16_s16(y_c64)), c1f)
+            };
+        }
+
+        let shift = vcombine_u16(sh_lo, sh_hi);
+        let res = vmlaq_u16(vshlq_n_u16::<5>(a0_x), vsubq_u16(a1_x, a0_x), shift);
+        let resx = vrshrn_n_u16::<5>(res);
+        let resy = vext_u8::<4>(resx, vdup_n_u8(0));
+        let mask = vclt_u8(idx8, vdup_n_u8(base_min_diff as u8));
+        let resxy = vbsl_u8(mask, resy, resx);
+        let word = vget_lane_u32::<0>(vreinterpret_u32_u8(resxy));
+        dst[r * dst_stride..r * dst_stride + 4].copy_from_slice(&word.to_le_bytes());
+    }
+}
+
+/// C `dr_prediction_z2_8xH_neon`: `uint16x8x2` per row — `val[0]` the
+/// above-edge interpolation, `val[1]` the 48-entry `vqtbl3q` left-edge
+/// gather — then `vmlaq` + `vrshrn` + `vbsl` + an 8-byte store.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_8xh_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    let up_a = upsample_above as i32;
+    let up_l = upsample_left as i32;
+    let min_base_x = -(1i32 << up_a);
+    let frac_bits_x = 6 - up_a;
+    let frac_bits_y = 6 - up_l;
+
+    let idx8 = vld1_u8(&Z2_IDX8);
+    let c1f = vdupq_n_u16(0x1f);
+    let c1234 = vcombine_s16(
+        vcreate_s16(0x0004_0003_0002_0001),
+        vcreate_s16(0x0008_0007_0006_0005),
+    );
+    let dy128 = vdupq_n_s16(dy as i16);
+    let neg_fby = vdupq_n_s16(-(frac_bits_y as i16));
+
+    // Same contiguous 48-byte gather table as the 4xH kernel.
+    let left_vals = z2_left_table_neon(token, left, origin);
+
+    for r in 0..bh {
+        let y = r as i32 + 1;
+        let x = -y * dx;
+        let base_x = x >> frac_bits_x;
+        let mut base_shift = 0;
+        if base_x < min_base_x - 1 {
+            base_shift = (min_base_x - base_x - 1) >> up_a;
+        }
+        let base_min_diff = ((min_base_x - base_x + up_a) >> up_a).clamp(0, 8);
+
+        let resx = if base_shift <= 8 {
+            let lo = z2_above_neon(token, origin, base_x);
+            let (a0, a1, sx) = if upsample_above {
+                let a: &[u8; 16] = above[lo..lo + 16].try_into().unwrap();
+                let v = vld1q_u8(a);
+                (
+                    vget_low_u8(vuzp1q_u8(v, v)),
+                    vget_low_u8(vuzp2q_u8(v, v)),
+                    (x & 0x1f) as u16,
+                )
+            } else {
+                let a: &[u8; 8] = above[lo..lo + 8].try_into().unwrap();
+                let b: &[u8; 8] = above[lo + 1..lo + 9].try_into().unwrap();
+                (vld1_u8(a), vld1_u8(b), ((x & 0x3f) >> 1) as u16)
+            };
+            vrshrn_n_u16::<5>(vmlaq_u16(
+                vshll_n_u8::<5>(a0),
+                vsubl_u8(a1, a0),
+                vdupq_n_u16(sx),
+            ))
+        } else {
+            vdup_n_u8(0)
+        };
+
+        let mut resxy = resx;
+        if base_x < min_base_x {
+            let y_c128 = vmlsq_s16(vdupq_n_s16((r << 6) as i16), c1234, dy128);
+            let base_y = vshlq_s16(y_c128, neg_fby);
+            let idx0 = vreinterpretq_u8_s16(vaddq_s16(base_y, vdupq_n_s16(2)));
+            let idx1 = vreinterpretq_u8_s16(vaddq_s16(base_y, vdupq_n_s16(3)));
+            // Even bytes of each s16 lane are the gather indices; uzp1 packs
+            // the eight a0 indices then the eight a1 indices.
+            let idx01 = vuzp1q_u8(idx0, idx1);
+            let a01 = vqtbl3q_u8(left_vals, idx01);
+            let a0_y = vget_low_u8(a01);
+            let a1_y = vget_high_u8(a01);
+            let sh_y = if upsample_left {
+                vandq_u16(vreinterpretq_u16_s16(y_c128), c1f)
+            } else {
+                vandq_u16(vshrq_n_u16::<1>(vreinterpretq_u16_s16(y_c128)), c1f)
+            };
+            let resy =
+                vrshrn_n_u16::<5>(vmlaq_u16(vshll_n_u8::<5>(a0_y), vsubl_u8(a1_y, a0_y), sh_y));
+            let mask = vclt_u8(idx8, vdup_n_u8(base_min_diff as u8));
+            resxy = vbsl_u8(mask, resy, resx);
+        }
+
+        let d: &mut [u8; 8] = (&mut dst[r * dst_stride..r * dst_stride + 8])
+            .try_into()
+            .unwrap();
+        vst1_u8(d, resxy);
     }
 }
 
@@ -2565,6 +2956,62 @@ mod tests {
                         want[i],
                         got[i]
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dr_z2_edged_dispatch_matches_core_all_sizes_flags_angles() {
+        // Exercises dr_z2_edged's dispatch arms (the >= 16 staircase NEON,
+        // the 4xH/8xH table-gather NEON, and the scalar tail) against the
+        // scalar core over every upsample combination, all block sizes the
+        // arms take, and (dx, dy) pairs spanning shallow to steep slopes —
+        // including dy large enough to push base_x past the load-clamp
+        // region (fully left-region rows).
+        let mut seed = 0x2468u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        let origin = EDGE_ORIGIN;
+        for &bw in &[4usize, 8, 16] {
+            for &bh in &[4usize, 8, 16, 32] {
+                let above: Vec<u8> = (0..EDGE_BUF_LEN).map(|_| next()).collect();
+                let left: Vec<u8> = (0..EDGE_BUF_LEN).map(|_| next()).collect();
+                // Real angle-derived (dx, dy) pairs — the inverse slope
+                // relationship is what keeps base_y >= -1 inside the left
+                // region. (547, 3) + upsample_above drives base_x to -18 at
+                // r = 0, exercising the clamped load on a fully-masked row.
+                for &(dx, dy) in &[
+                    (27i32, 151i32),
+                    (151, 27),
+                    (64, 64),
+                    (7, 372),
+                    (372, 7),
+                    (3, 1023),
+                    (1023, 3),
+                    (547, 3),
+                ] {
+                    for &(ua, ul) in &[(false, false), (true, false), (false, true), (true, true)] {
+                        let mut want = vec![0u8; bw * bh];
+                        let mut got = vec![0u8; bw * bh];
+                        dr_z2_edged_core(
+                            &mut want, bw, bw, bh, &above, &left, origin, ua, ul, dx, dy,
+                        );
+                        dr_z2_edged(&mut got, bw, bw, bh, &above, &left, origin, ua, ul, dx, dy);
+                        if want != got {
+                            let i = want.iter().zip(&got).position(|(a, b)| a != b).unwrap();
+                            panic!(
+                                "dr_z2_edged {bw}x{bh} dx={dx} dy={dy} ua={ua} ul={ul} \
+                                 diverges at ({}, {}): want {} got {}",
+                                i / bw,
+                                i % bw,
+                                want[i],
+                                got[i]
+                            );
+                        }
+                    }
                 }
             }
         }
