@@ -597,10 +597,7 @@ fn build_src<P: Copy + Into<u16>>(
             .max(c0);
         row[..c0].fill(k::CDEF_VERY_LARGE);
         let gx0 = x0 + c0 - k::CDEF_HBORDER;
-        for (out, &p) in row[c0..c1]
-            .iter_mut()
-            .zip(&pre[gy * plane_w + gx0..])
-        {
+        for (out, &p) in row[c0..c1].iter_mut().zip(&pre[gy * plane_w + gx0..]) {
             *out = p.into();
         }
         row[c1..].fill(k::CDEF_VERY_LARGE);

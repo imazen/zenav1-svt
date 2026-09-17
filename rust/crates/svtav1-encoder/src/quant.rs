@@ -560,9 +560,7 @@ pub fn build_coeff_cost_tables_from_fc(
         for plane in 0..2 {
             let idx = txs_ctx * 2 + plane;
             let mut base_cost: [[i32; 8]; SIG_COEF_CONTEXTS] =
-                std::array::from_fn(|ctx| {
-                    costs_from_cdf(&fc.coeff_base_cdf[idx * 42 + ctx])
-                });
+                std::array::from_fn(|ctx| costs_from_cdf(&fc.coeff_base_cdf[idx * 42 + ctx]));
             for ctx in 0..SIG_COEF_CONTEXTS {
                 base_cost[ctx][4] = 0;
                 base_cost[ctx][5] = base_cost[ctx][1] + cost_literal(1) - base_cost[ctx][0];

@@ -426,9 +426,7 @@ fn nz_map_ctxs_impl_v3(
                             &$gather(win, $o1, $stride),
                             &$gather(win, $o2, $stride),
                             table[idx..idx + $chunk].try_into().unwrap(),
-                            (&mut coeff_contexts[idx..idx + $chunk])
-                                .try_into()
-                                .unwrap(),
+                            (&mut coeff_contexts[idx..idx + $chunk]).try_into().unwrap(),
                         );
                         row += $step;
                     }
@@ -445,28 +443,52 @@ fn nz_map_ctxs_impl_v3(
     match w {
         // 4 rows × 4 columns per iteration (h % 4 == 0), stride 8.
         4 => nz_rows!(
-            4, 8, 4, 60, 16, gather4, nz_kernel16_v3,
+            4,
+            8,
+            4,
+            60,
+            16,
+            gather4,
+            nz_kernel16_v3,
             (2, 9, 16),
             (2, 3, 4),
             (16, 24, 32)
         ),
         // 2 rows × 8 columns per iteration (h % 2 == 0), stride 12.
         8 => nz_rows!(
-            8, 12, 2, 68, 16, gather8, nz_kernel16_v3,
+            8,
+            12,
+            2,
+            68,
+            16,
+            gather8,
+            nz_kernel16_v3,
             (2, 13, 24),
             (2, 3, 4),
             (24, 36, 48)
         ),
         // 1 row × 16 columns per iteration, stride 20.
         16 => nz_rows!(
-            16, 20, 1, 96, 16, gather16, nz_kernel16_v3,
+            16,
+            20,
+            1,
+            96,
+            16,
+            gather16,
+            nz_kernel16_v3,
             (2, 21, 40),
             (2, 3, 4),
             (40, 60, 80)
         ),
         // 1 row × 32 columns per iteration, stride 36.
         _ => nz_rows!(
-            32, 36, 1, 176, 32, gather32, nz_kernel32_v3,
+            32,
+            36,
+            1,
+            176,
+            32,
+            gather32,
+            nz_kernel32_v3,
             (2, 37, 72),
             (2, 3, 4),
             (72, 108, 144)
