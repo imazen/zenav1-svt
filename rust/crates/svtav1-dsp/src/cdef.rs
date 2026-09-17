@@ -1331,7 +1331,7 @@ fn cdef_filter_block_impl_neon(
 
 /// AVX2 dst8 filter, in C's shape (`svt_cdef_filter_block_avx2`,
 /// `ASM_AVX2/cdef_block_avx2.c:1001`): BOTH column widths take a vector path,
-/// through [`cdef_filter_rows_v3`], which keeps the filter in i16 lanes and
+/// through [`cdef_rows_dir_v3`], which keeps the filter in i16 lanes and
 /// packs `16 / cols` rows into each 256-bit register. Byte-identical to
 /// [`cdef_filter_block_core`] — each output pixel is an independent 12-tap
 /// integer sum, so there is no cross-lane reduction anywhere.
@@ -1369,7 +1369,7 @@ fn cdef_filter_block_impl_v3(
         4usize
     };
     let sub = subsampling_factor;
-    // `cdef_filter_rows_v3` consumes `16 / cols` rows per iteration, so it can
+    // `cdef_rows_dir_v3` consumes `16 / cols` rows per iteration, so it can
     // only run when the visited rows divide evenly into groups. Every shape the
     // encoder produces does (8x8/8x4 at sub 1 or 2, 4x8 at sub 1 or 2, 4x4 at
     // sub 1 — C's own `svt_cdef_filter_block_avx2` hard-codes sub = 1 for 4x4
@@ -1394,40 +1394,277 @@ fn cdef_filter_block_impl_v3(
         );
         return;
     }
-    if cols == 8 {
-        cdef_filter_rows_v3::<8>(
-            token,
-            dst,
-            doff,
-            dstride,
-            inb,
-            ioff,
-            pri_strength,
-            sec_strength,
-            dir,
-            pri_damping,
-            sec_damping,
-            coeff_shift,
-            rows,
-            sub,
-        );
+    // `(dir, sub)` dispatch onto const-generic specializations: inside each
+    // instantiation every tap offset folds to a compile-time constant, so the
+    // row-group gathers index a single per-iteration window slice with
+    // statically-provable bounds instead of paying a bounds check per row
+    // load (~26 checks per 8x8 iteration pair).
+    macro_rules! rows_dir {
+        ($c:literal, $d:literal, $s:literal) => {
+            cdef_rows_dir_v3::<$c, $d, $s>(
+                token,
+                dst,
+                doff,
+                dstride,
+                inb,
+                ioff,
+                pri_strength,
+                sec_strength,
+                pri_damping,
+                sec_damping,
+                coeff_shift,
+                rows,
+            )
+        };
+    }
+    match (cols, dir, sub) {
+        (8, 0, 1) => rows_dir!(8, 0, 1),
+        (8, 0, 2) => rows_dir!(8, 0, 2),
+        (8, 1, 1) => rows_dir!(8, 1, 1),
+        (8, 1, 2) => rows_dir!(8, 1, 2),
+        (8, 2, 1) => rows_dir!(8, 2, 1),
+        (8, 2, 2) => rows_dir!(8, 2, 2),
+        (8, 3, 1) => rows_dir!(8, 3, 1),
+        (8, 3, 2) => rows_dir!(8, 3, 2),
+        (8, 4, 1) => rows_dir!(8, 4, 1),
+        (8, 4, 2) => rows_dir!(8, 4, 2),
+        (8, 5, 1) => rows_dir!(8, 5, 1),
+        (8, 5, 2) => rows_dir!(8, 5, 2),
+        (8, 6, 1) => rows_dir!(8, 6, 1),
+        (8, 6, 2) => rows_dir!(8, 6, 2),
+        (8, 7, 1) => rows_dir!(8, 7, 1),
+        (8, 7, 2) => rows_dir!(8, 7, 2),
+        // sub = 4 is the strength-search stride (`svt_av1_cdef_search`
+        // visits every 4th row): 8x8 only — the 4-col group needs
+        // rows % 16 == 0 and never reaches this match.
+        (8, 0, 4) => rows_dir!(8, 0, 4),
+        (8, 1, 4) => rows_dir!(8, 1, 4),
+        (8, 2, 4) => rows_dir!(8, 2, 4),
+        (8, 3, 4) => rows_dir!(8, 3, 4),
+        (8, 4, 4) => rows_dir!(8, 4, 4),
+        (8, 5, 4) => rows_dir!(8, 5, 4),
+        (8, 6, 4) => rows_dir!(8, 6, 4),
+        (8, 7, 4) => rows_dir!(8, 7, 4),
+        (4, 0, 1) => rows_dir!(4, 0, 1),
+        (4, 0, 2) => rows_dir!(4, 0, 2),
+        (4, 1, 1) => rows_dir!(4, 1, 1),
+        (4, 1, 2) => rows_dir!(4, 1, 2),
+        (4, 2, 1) => rows_dir!(4, 2, 1),
+        (4, 2, 2) => rows_dir!(4, 2, 2),
+        (4, 3, 1) => rows_dir!(4, 3, 1),
+        (4, 3, 2) => rows_dir!(4, 3, 2),
+        (4, 4, 1) => rows_dir!(4, 4, 1),
+        (4, 4, 2) => rows_dir!(4, 4, 2),
+        (4, 5, 1) => rows_dir!(4, 5, 1),
+        (4, 5, 2) => rows_dir!(4, 5, 2),
+        (4, 6, 1) => rows_dir!(4, 6, 1),
+        (4, 6, 2) => rows_dir!(4, 6, 2),
+        (4, 7, 1) => rows_dir!(4, 7, 1),
+        (4, 7, 2) => rows_dir!(4, 7, 2),
+        _ => {
+            cdef_filter_block_core(
+                dst,
+                doff,
+                dstride,
+                inb,
+                ioff,
+                pri_strength,
+                sec_strength,
+                dir,
+                pri_damping,
+                sec_damping,
+                bsize,
+                coeff_shift,
+                subsampling_factor,
+            );
+        }
+    }
+}
+
+/// Gather `COLS` pixels from each of `16 / COLS` window rows at tap-relative
+/// index `rel` into one i16x16, in C's lane order — the
+/// [`cdef_load_group_v3`] shape, but indexing a per-iteration window slice
+/// whose length is a compile-time constant inside each
+/// [`cdef_rows_dir_v3`] instantiation, so every offset here folds.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_load_w_v3<const COLS: usize, const SUB: usize>(
+    _token: Desktop64,
+    w: &[u16],
+    rel: usize,
+) -> __m256i {
+    const S: usize = CDEF_BSTRIDE;
+    if COLS == 8 {
+        let lo: &[u16; 8] = w[rel + SUB * S..rel + SUB * S + 8].try_into().unwrap();
+        let hi: &[u16; 8] = w[rel..rel + 8].try_into().unwrap();
+        _mm256_setr_m128i(_mm_loadu_si128(lo), _mm_loadu_si128(hi))
     } else {
-        cdef_filter_rows_v3::<4>(
-            token,
-            dst,
-            doff,
-            dstride,
-            inb,
-            ioff,
-            pri_strength,
-            sec_strength,
-            dir,
-            pri_damping,
-            sec_damping,
-            coeff_shift,
-            rows,
-            sub,
+        let r0: &[u16; 4] = w[rel..rel + 4].try_into().unwrap();
+        let r1: &[u16; 4] = w[rel + S * SUB..rel + S * SUB + 4].try_into().unwrap();
+        let r2: &[u16; 4] = w[rel + 2 * S * SUB..rel + 2 * S * SUB + 4]
+            .try_into()
+            .unwrap();
+        let r3: &[u16; 4] = w[rel + 3 * S * SUB..rel + 3 * S * SUB + 4]
+            .try_into()
+            .unwrap();
+        let lo = _mm_unpacklo_epi64(_mm_loadu_si64(r3), _mm_loadu_si64(r2));
+        let hi = _mm_unpacklo_epi64(_mm_loadu_si64(r1), _mm_loadu_si64(r0));
+        _mm256_setr_m128i(lo, hi)
+    }
+}
+
+/// [`cdef_rows_dir_v3`] with `DIR` and `SUB` as const generics: the 13 tap
+/// offsets and the row stride are literals inside each instantiation, so all
+/// gathers index ONE per-iteration window `w` — sliced once with a single
+/// bounds check — at compile-time-constant indices.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn cdef_rows_dir_v3<const COLS: usize, const DIR: i32, const SUB: usize>(
+    token: Desktop64,
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    coeff_shift: i32,
+    rows: usize,
+) {
+    const S: usize = CDEF_BSTRIDE;
+    let nr = 16 / COLS;
+    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+
+    let pri_shift = if pri_strength != 0 {
+        (pri_damping - get_msb(pri_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let sec_shift = if sec_strength != 0 {
+        (sec_damping - get_msb(sec_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let pri_shift_c = _mm_cvtsi32_si128(pri_shift);
+    let sec_shift_c = _mm_cvtsi32_si128(sec_shift);
+    let pri_thr = _mm256_set1_epi16(pri_strength as i16);
+    let sec_thr = _mm256_set1_epi16(sec_strength as i16);
+    let pri_tap0 = _mm256_set1_epi16(pri_taps[0] as i16);
+    let pri_tap1 = _mm256_set1_epi16(pri_taps[1] as i16);
+    let sec_tap0 = _mm256_set1_epi16(sec_taps[0] as i16);
+    let sec_tap1 = _mm256_set1_epi16(sec_taps[1] as i16);
+    let large = _mm256_set1_epi16(CDEF_VERY_LARGE as i16);
+    let eight = _mm256_set1_epi16(8);
+    let zero = _mm256_setzero_si256();
+
+    // Folded per instantiation: literal offsets and the window span. The
+    // window covers the widest tap reach in either direction plus the row
+    // group and the row's COLS pixels.
+    let po1 = cdef_direction(DIR, 0);
+    let po2 = cdef_direction(DIR, 1);
+    let s1o1 = cdef_direction(DIR + 2, 0);
+    let s1o2 = cdef_direction(DIR + 2, 1);
+    let s2o1 = cdef_direction(DIR - 2, 0);
+    let s2o2 = cdef_direction(DIR - 2, 1);
+    let maxabs = po1
+        .abs()
+        .max(po2.abs())
+        .max(s1o1.abs())
+        .max(s1o2.abs())
+        .max(s2o1.abs())
+        .max(s2o2.abs()) as usize;
+    let wlen = (nr - 1) * SUB * S + 2 * maxabs + COLS;
+    let rel0 = maxabs;
+
+    let mut i = 0usize;
+    while i < rows {
+        let base = ioff + i * S;
+        let w = &inb[base - maxabs..base - maxabs + wlen];
+        let mut db = [0usize; 4];
+        for k in 0..4usize {
+            db[k] = doff + (i + (k % nr) * SUB) * dstride;
+        }
+        let g = |off: i32| cdef_load_w_v3::<COLS, SUB>(token, w, (rel0 as i32 + off) as usize);
+        let row = g(0);
+        let mut mx = row;
+        let mut mn = row;
+        let mut sum = zero;
+
+        let acc_max = |mx: &mut __m256i, mn: &mut __m256i, p: __m256i| {
+            let is_sent = _mm256_cmpeq_epi16(p, large);
+            *mx = _mm256_blendv_epi8(_mm256_max_epi16(*mx, p), *mx, is_sent);
+            *mn = _mm256_min_epi16(*mn, p);
+        };
+
+        let p0 = g(po1);
+        let p1 = g(-po1);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
+        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap0, _mm256_add_epi16(c0, c1)));
+
+        let p0 = g(po2);
+        let p1 = g(-po2);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
+        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap1, _mm256_add_epi16(c0, c1)));
+
+        let p0 = g(s1o1);
+        let p1 = g(-s1o1);
+        let p2 = g(s2o1);
+        let p3 = g(-s2o1);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        acc_max(&mut mx, &mut mn, p2);
+        acc_max(&mut mx, &mut mn, p3);
+        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
+        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
+        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
+        sum = _mm256_add_epi16(
+            sum,
+            _mm256_mullo_epi16(
+                sec_tap0,
+                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
+            ),
         );
+
+        let p0 = g(s1o2);
+        let p1 = g(-s1o2);
+        let p2 = g(s2o2);
+        let p3 = g(-s2o2);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        acc_max(&mut mx, &mut mn, p2);
+        acc_max(&mut mx, &mut mn, p3);
+        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
+        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
+        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
+        sum = _mm256_add_epi16(
+            sum,
+            _mm256_mullo_epi16(
+                sec_tap1,
+                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
+            ),
+        );
+
+        // res = clamp(row + ((sum - (sum < 0) + 8) >> 4), mn, mx) — same
+        // i16-domain argument as `cdef_rows_dir_v3`.
+        let sum = _mm256_add_epi16(sum, _mm256_cmpgt_epi16(zero, sum));
+        let res = _mm256_srai_epi16::<4>(_mm256_add_epi16(sum, eight));
+        let res = _mm256_adds_epi16(row, res);
+        let res = _mm256_min_epi16(_mm256_max_epi16(res, mn), mx);
+        cdef_store_group_v3::<COLS>(token, dst, &db, res);
+
+        i += nr * SUB;
     }
 }
 
@@ -1662,36 +1899,6 @@ fn cdef_constrain16_v3(
     _mm256_xor_si256(_mm256_add_epi16(sign, m), sign)
 }
 
-/// Gather `COLS` pixels from each of `16 / COLS` input rows at tap offset `off`
-/// into one i16x16, in C's lane order.
-///
-/// `COLS == 8`: low 128 = row `ib[1]`, high 128 = row `ib[0]`
-/// (C's `_mm256_setr_m128i(load(i + sub), load(i))`).
-/// `COLS == 4`: lanes 0..3 = `ib[3]`, 4..7 = `ib[2]`, 8..11 = `ib[1]`,
-/// 12..15 = `ib[0]` (C's `_mm256_set_epi64x(row_i, row_i1, row_i2, row_i3)`).
-#[cfg(target_arch = "x86_64")]
-#[rite]
-fn cdef_load_group_v3<const COLS: usize>(
-    _token: Desktop64,
-    inb: &[u16],
-    ib: &[usize; 4],
-    off: i32,
-) -> __m256i {
-    let at = |k: usize| ib[k].wrapping_add_signed(off as isize);
-    if COLS == 8 {
-        let lo: &[u16; 8] = inb[at(1)..][..8].try_into().unwrap();
-        let hi: &[u16; 8] = inb[at(0)..][..8].try_into().unwrap();
-        _mm256_setr_m128i(_mm_loadu_si128(lo), _mm_loadu_si128(hi))
-    } else {
-        let r0: &[u16; 4] = inb[at(0)..][..4].try_into().unwrap();
-        let r1: &[u16; 4] = inb[at(1)..][..4].try_into().unwrap();
-        let r2: &[u16; 4] = inb[at(2)..][..4].try_into().unwrap();
-        let r3: &[u16; 4] = inb[at(3)..][..4].try_into().unwrap();
-        let lo = _mm_unpacklo_epi64(_mm_loadu_si64(r3), _mm_loadu_si64(r2));
-        let hi = _mm_unpacklo_epi64(_mm_loadu_si64(r1), _mm_loadu_si64(r0));
-        _mm256_setr_m128i(lo, hi)
-    }
-}
 
 /// Narrow the i16x16 result to bytes and scatter it back to the `16 / COLS`
 /// output rows — the inverse of [`cdef_load_group_v3`]'s lane order.
@@ -1739,171 +1946,6 @@ fn cdef_store_group_v3<const COLS: usize>(
         _mm_storeu_si32(d2, _mm_srli_si128::<4>(lo));
         let d3: &mut [u8; 4] = (&mut dst[db[3]..db[3] + 4]).try_into().unwrap();
         _mm_storeu_si32(d3, lo);
-    }
-}
-
-/// The AVX2 dst8 CDEF filter in C's shape: `16 / COLS` rows per 256-bit i16
-/// register, taps grouped by coefficient so the whole 12-tap sum costs FOUR
-/// `_mm256_mullo_epi16` instead of twelve `_mm256_mullo_epi32`.
-///
-/// `COLS` is 8 (`BLOCK_8X8` / `BLOCK_8X4`) or 4 (`BLOCK_4X8` / `BLOCK_4X4`).
-/// The caller guarantees `rows % ((16 / COLS) * sub) == 0`.
-#[cfg(target_arch = "x86_64")]
-#[rite]
-#[allow(clippy::too_many_arguments)]
-fn cdef_filter_rows_v3<const COLS: usize>(
-    token: Desktop64,
-    dst: &mut [u8],
-    doff: usize,
-    dstride: usize,
-    inb: &[u16],
-    ioff: usize,
-    pri_strength: i32,
-    sec_strength: i32,
-    dir: i32,
-    pri_damping: i32,
-    sec_damping: i32,
-    coeff_shift: i32,
-    rows: usize,
-    sub: usize,
-) {
-    const S: usize = CDEF_BSTRIDE;
-    let nr = 16 / COLS;
-    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
-    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
-
-    // C: `pri_damping = AOMMAX(0, pri_damping - get_msb(pri_strength))`, guarded
-    // on a non-zero strength because `get_msb(0)` is undefined. With a zero
-    // strength the shift never affects the result (`constrain16` returns 0).
-    let pri_shift = if pri_strength != 0 {
-        (pri_damping - get_msb(pri_strength as u32)).max(0)
-    } else {
-        0
-    };
-    let sec_shift = if sec_strength != 0 {
-        (sec_damping - get_msb(sec_strength as u32)).max(0)
-    } else {
-        0
-    };
-    let pri_shift_c = _mm_cvtsi32_si128(pri_shift);
-    let sec_shift_c = _mm_cvtsi32_si128(sec_shift);
-    let pri_thr = _mm256_set1_epi16(pri_strength as i16);
-    let sec_thr = _mm256_set1_epi16(sec_strength as i16);
-    let pri_tap0 = _mm256_set1_epi16(pri_taps[0] as i16);
-    let pri_tap1 = _mm256_set1_epi16(pri_taps[1] as i16);
-    let sec_tap0 = _mm256_set1_epi16(sec_taps[0] as i16);
-    let sec_tap1 = _mm256_set1_epi16(sec_taps[1] as i16);
-    let large = _mm256_set1_epi16(CDEF_VERY_LARGE as i16);
-    let eight = _mm256_set1_epi16(8);
-    let zero = _mm256_setzero_si256();
-
-    let po1 = cdef_direction(dir, 0);
-    let po2 = cdef_direction(dir, 1);
-    let s1o1 = cdef_direction(dir + 2, 0);
-    let s1o2 = cdef_direction(dir + 2, 1);
-    let s2o1 = cdef_direction(dir - 2, 0);
-    let s2o2 = cdef_direction(dir - 2, 1);
-
-    let mut i = 0usize;
-    while i < rows {
-        let mut ib = [0usize; 4];
-        let mut db = [0usize; 4];
-        for k in 0..4usize {
-            let r = i + (k % nr) * sub;
-            ib[k] = ioff + r * S;
-            db[k] = doff + r * dstride;
-        }
-        let row = cdef_load_group_v3::<COLS>(token, inb, &ib, 0);
-        let mut mx = row;
-        let mut mn = row;
-        let mut sum = zero;
-
-        // Primary near / far, then secondary near / far — C's grouping:
-        // `sum += tap * (p0 + p1)` costs one multiply per PAIR (or quad), not
-        // one per tap.
-        // The sentinel is EXCLUDED from `max` by a blend, not by C's
-        // `andnot(cmpeq(p, large), p)` substitution of zero. The scalar core
-        // skips the tap (`if p != CDEF_VERY_LARGE`); substituting 0 only
-        // matches that while the running max is non-negative, which is true of
-        // every real pixel but not of the whole `u16` input domain
-        // `cdef_filter_block` accepts. Same instruction count.
-        let acc_max = |mx: &mut __m256i, mn: &mut __m256i, p: __m256i| {
-            let is_sent = _mm256_cmpeq_epi16(p, large);
-            *mx = _mm256_blendv_epi8(_mm256_max_epi16(*mx, p), *mx, is_sent);
-            *mn = _mm256_min_epi16(*mn, p);
-        };
-
-        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, po1);
-        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -po1);
-        acc_max(&mut mx, &mut mn, p0);
-        acc_max(&mut mx, &mut mn, p1);
-        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
-        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
-        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap0, _mm256_add_epi16(c0, c1)));
-
-        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, po2);
-        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -po2);
-        acc_max(&mut mx, &mut mn, p0);
-        acc_max(&mut mx, &mut mn, p1);
-        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
-        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
-        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap1, _mm256_add_epi16(c0, c1)));
-
-        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, s1o1);
-        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s1o1);
-        let p2 = cdef_load_group_v3::<COLS>(token, inb, &ib, s2o1);
-        let p3 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s2o1);
-        acc_max(&mut mx, &mut mn, p0);
-        acc_max(&mut mx, &mut mn, p1);
-        acc_max(&mut mx, &mut mn, p2);
-        acc_max(&mut mx, &mut mn, p3);
-        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
-        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
-        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
-        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
-        sum = _mm256_add_epi16(
-            sum,
-            _mm256_mullo_epi16(
-                sec_tap0,
-                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
-            ),
-        );
-
-        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, s1o2);
-        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s1o2);
-        let p2 = cdef_load_group_v3::<COLS>(token, inb, &ib, s2o2);
-        let p3 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s2o2);
-        acc_max(&mut mx, &mut mn, p0);
-        acc_max(&mut mx, &mut mn, p1);
-        acc_max(&mut mx, &mut mn, p2);
-        acc_max(&mut mx, &mut mn, p3);
-        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
-        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
-        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
-        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
-        sum = _mm256_add_epi16(
-            sum,
-            _mm256_mullo_epi16(
-                sec_tap1,
-                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
-            ),
-        );
-
-        // res = clamp(row + ((sum - (sum < 0) + 8) >> 4), mn, mx).
-        // `sum` is bounded by +-228 on the legal strength domain (see
-        // `i16_sum_accumulator_cannot_overflow_on_the_legal_strength_domain`),
-        // so `sum + 8` cannot overflow; `row` can be anywhere in `i16`, so the
-        // final add SATURATES (`_mm256_adds_epi16`) where the scalar widens to
-        // i32. That is exact: the clamp to `[mn, mx]` immediately follows and
-        // `mn <= row <= mx`, so a saturated sum and the true i32 sum clamp to
-        // the same value.
-        let sum = _mm256_add_epi16(sum, _mm256_cmpgt_epi16(zero, sum));
-        let res = _mm256_srai_epi16::<4>(_mm256_add_epi16(sum, eight));
-        let res = _mm256_adds_epi16(row, res);
-        let res = _mm256_min_epi16(_mm256_max_epi16(res, mn), mx);
-        cdef_store_group_v3::<COLS>(token, dst, &db, res);
-
-        i += nr * sub;
     }
 }
 
@@ -2422,7 +2464,7 @@ mod tests {
         );
     }
 
-    /// The i16 accumulator in [`cdef_filter_rows_v3`] is exact only while
+    /// The i16 accumulator in [`cdef_rows_dir_v3`] is exact only while
     /// `|sum|` stays inside `i16` with room for the `+ 8` rounding. This
     /// recomputes the worst case from the ACTUAL tap tables and the legal
     /// 8-bit strength ranges (primary `0..=CDEF_PRI_STRENGTHS-1` after
