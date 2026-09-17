@@ -479,23 +479,34 @@ fn clip_max3(v: u8) -> u32 {
 /// [`nz_mag`] for the runtime-dispatched wrapper.
 #[inline(always)]
 fn nz_mag_tc<const TC: usize>(levels: &[u8], base: usize, bwl: usize) -> u32 {
-    let mut mag = clip_max3(levels[base + 1]);
-    mag += clip_max3(levels[base + (1 << bwl) + TX_PAD_HOR]);
+    let stride = (1 << bwl) + TX_PAD_HOR;
+    // One range check covers the whole tap window: the padded map is
+    // bottom-anchored with a permanent tail, so `base + span` stays
+    // in-bounds, and each `w[..]` index is affine in `stride` against the
+    // class reach — `k * stride < span` folds statically.
+    let span = match TC {
+        TX_CLASS_VERT => 4 * stride + 1,
+        TX_CLASS_2D => 2 * stride + 1,
+        _ => stride + 1,
+    };
+    let w = &levels[base..base + span];
+    let mut mag = clip_max3(w[1]);
+    mag += clip_max3(w[stride]);
     match TC {
         TX_CLASS_2D => {
-            mag += clip_max3(levels[base + (1 << bwl) + TX_PAD_HOR + 1]);
-            mag += clip_max3(levels[base + 2]);
-            mag += clip_max3(levels[base + (2 << bwl) + (2 << TX_PAD_HOR_LOG2)]);
+            mag += clip_max3(w[stride + 1]);
+            mag += clip_max3(w[2]);
+            mag += clip_max3(w[2 * stride]);
         }
         TX_CLASS_VERT => {
-            mag += clip_max3(levels[base + (2 << bwl) + (2 << TX_PAD_HOR_LOG2)]);
-            mag += clip_max3(levels[base + (3 << bwl) + (3 << TX_PAD_HOR_LOG2)]);
-            mag += clip_max3(levels[base + (4 << bwl) + (4 << TX_PAD_HOR_LOG2)]);
+            mag += clip_max3(w[2 * stride]);
+            mag += clip_max3(w[3 * stride]);
+            mag += clip_max3(w[4 * stride]);
         }
         _ => {
-            mag += clip_max3(levels[base + 2]);
-            mag += clip_max3(levels[base + 3]);
-            mag += clip_max3(levels[base + 4]);
+            mag += clip_max3(w[2]);
+            mag += clip_max3(w[3]);
+            mag += clip_max3(w[4]);
         }
     }
     mag
@@ -811,11 +822,18 @@ pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> us
     let stride = (1 << bwl) + TX_PAD_HOR;
     // `levels_buf` is the body-anchored sub-slice (C's `levels` pointer).
     let pos = row * stride + col;
-    let mut mag = levels_buf[pos + 1] as u32;
-    mag += levels_buf[pos + stride] as u32;
+    // Same single-check window as `nz_mag_tc`: `k * stride < span` is affine
+    // in `stride`, so the per-tap bounds checks fold away.
+    let span = match TC {
+        TX_CLASS_VERT => 2 * stride + 1,
+        _ => stride + 2,
+    };
+    let w = &levels_buf[pos..pos + span];
+    let mut mag = w[1] as u32;
+    mag += w[stride] as u32;
     match TC {
         TX_CLASS_2D => {
-            mag += levels_buf[pos + stride + 1] as u32;
+            mag += w[stride + 1] as u32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag as usize;
@@ -825,7 +843,7 @@ pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> us
             }
         }
         TX_CLASS_HORIZ => {
-            mag += levels_buf[pos + 2] as u32;
+            mag += w[2] as u32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag as usize;
@@ -835,7 +853,7 @@ pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> us
             }
         }
         TX_CLASS_VERT => {
-            mag += levels_buf[pos + (stride << 1)] as u32;
+            mag += w[stride << 1] as u32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag as usize;
