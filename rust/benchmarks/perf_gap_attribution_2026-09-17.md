@@ -74,7 +74,21 @@ Facts that ruled out easy answers:
    `ROUND_POWER_OF_TWO_SIGNED` because negatives clamp to 0 under both
    roundings. ident=Y; `filter_intra_all_tiers_match_scalar` +
    `filter_intra_predictor_matches_c` (FFI vs C) pass. LANDED.
-3. Last stub of the audit: `predict_smooth_impl_neon` (plus
+3. **Loop filters `lpf_{horizontal,vertical}_{6,8,14}` NEON arms** —
+   the entire deblock ran scalar on aarch64 (`[v3, scalar]` dispatch);
+   DEBLOCK was a +2.0ms/3.56x gap bucket with `filter8_line`/
+   `lpf14_window` in the top self-time symbols. Full transliteration
+   of the v3 (SSE2 `dlf_intrin_sse2.c` port) arms: same merged-pair
+   vector shapes, `vabdq_u8`/`vqsubq_*`/`vzip1q_*`/`vextq`-against-zero/
+   `vqmov{n,un}_s16`/`vbicq`/`vminvq_u8` mappings. Two transliteration
+   traps fixed during bring-up: `_mm_packs_epi16` is a SIGNED narrow
+   (0xFFFF -> 0xFF, not `vqmovun`'s clamp) for the blimit flag, and
+   `blimit16` is a `_mm_set1_epi16` (u16-lane) broadcast, not u8.
+   `lpf_all_tiers_match_c` + `lpf_kernels_match_c_*` (FFI vs C, full
+   level/sharpness space) pass; ident=Y.
+   A/B (cumulative with the two arms above): **1.035x / 1.052x** at
+   256/512 p4, tight bands. LANDED.
+4. Last stub of the audit: `predict_smooth_impl_neon` (plus
    `predict_smooth_v`/`predict_smooth_h`, which have no dispatch at
    all). The scalar core is branch-free and likely already
    LLVM-vectorized — LOW expected value, untried.
