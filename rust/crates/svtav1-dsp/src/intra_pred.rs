@@ -180,8 +180,7 @@ fn predict_smooth_impl_v3(
                 .narrow_saturating_u8(halves[2].narrow_saturating_i16(halves[3]))
                 .store(&mut tmp);
             dst[row * dst_stride..row * dst_stride + 8].copy_from_slice(&tmp[..8]);
-            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 8]
-                .copy_from_slice(&tmp[16..24]);
+            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 8].copy_from_slice(&tmp[16..24]);
             row += 2;
         }
         if row < height {
@@ -208,10 +207,8 @@ fn predict_smooth_impl_v3(
                 let wh = i32::from(sm_h[r]);
                 let d = i32::from(left[r]) - right;
                 let k = 256 * right + (256 - wh) * below + 256;
-                halves[2 * i] =
-                    (tops[0] * wh + wws[0] * d + k).shr_logical_const::<9>();
-                halves[2 * i + 1] =
-                    (tops[1] * wh + wws[1] * d + k).shr_logical_const::<9>();
+                halves[2 * i] = (tops[0] * wh + wws[0] * d + k).shr_logical_const::<9>();
+                halves[2 * i + 1] = (tops[1] * wh + wws[1] * d + k).shr_logical_const::<9>();
             }
             let mut tmp = [0u8; 32];
             halves[0]
@@ -219,8 +216,7 @@ fn predict_smooth_impl_v3(
                 .narrow_saturating_u8(halves[2].narrow_saturating_i16(halves[3]))
                 .store(&mut tmp);
             dst[row * dst_stride..row * dst_stride + 16].copy_from_slice(&tmp[..16]);
-            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 16]
-                .copy_from_slice(&tmp[16..]);
+            dst[(row + 1) * dst_stride..(row + 1) * dst_stride + 16].copy_from_slice(&tmp[16..]);
             row += 2;
         }
         if row < height {
@@ -245,12 +241,9 @@ fn predict_smooth_impl_v3(
         // 32 output pixels per fold: two 16-lane halves narrowed into u8x32.
         while c * 32 < width {
             let a0 = (tops[2 * c] * wh + wws[2 * c] * d + k).shr_logical_const::<9>();
-            let a1 =
-                (tops[2 * c + 1] * wh + wws[2 * c + 1] * d + k).shr_logical_const::<9>();
-            let b0 =
-                (tops[2 * c + 2] * wh + wws[2 * c + 2] * d + k).shr_logical_const::<9>();
-            let b1 =
-                (tops[2 * c + 3] * wh + wws[2 * c + 3] * d + k).shr_logical_const::<9>();
+            let a1 = (tops[2 * c + 1] * wh + wws[2 * c + 1] * d + k).shr_logical_const::<9>();
+            let b0 = (tops[2 * c + 2] * wh + wws[2 * c + 2] * d + k).shr_logical_const::<9>();
+            let b1 = (tops[2 * c + 3] * wh + wws[2 * c + 3] * d + k).shr_logical_const::<9>();
             a0.narrow_saturating_i16(a1)
                 .narrow_saturating_u8(b0.narrow_saturating_i16(b1))
                 .store(

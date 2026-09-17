@@ -409,50 +409,50 @@ fn wiener_convolve_simd(
 
     // One horizontal-pass row into `out`. `j >= ih` is the row C memsets: its
     // vertical weight is zero, but the sample is read.
-    let fill =
-        |j: usize, s32: &mut [i32; WIENER_SIMD_SRC_W], out: &mut [i32; WIENER_SIMD_RING_W]| {
-            if j >= ih {
-                out.fill(0);
-                return;
-            }
-            let base = h_row_base(j);
-            // Widen the row's `w + 7` source bytes once (LLVM: `vpmovzxbd`).
-            // Zero-filling the tail is load-bearing — the last vector block reads
-            // past `n_src`, and a zero there keeps stale data from the previous
-            // row out of lanes that a narrower `w` would otherwise carry forward.
-            for t in 0..n_src {
-                s32[t] = i32::from(src[base + t]);
-            }
-            for t in n_src..WIENER_SIMD_SRC_W {
-                s32[t] = 0;
-            }
+    let fill = |j: usize,
+                s32: &mut [i32; WIENER_SIMD_SRC_W],
+                out: &mut [i32; WIENER_SIMD_RING_W]| {
+        if j >= ih {
+            out.fill(0);
+            return;
+        }
+        let base = h_row_base(j);
+        // Widen the row's `w + 7` source bytes once (LLVM: `vpmovzxbd`).
+        // Zero-filling the tail is load-bearing — the last vector block reads
+        // past `n_src`, and a zero there keeps stale data from the previous
+        // row out of lanes that a narrower `w` would otherwise carry forward.
+        for t in 0..n_src {
+            s32[t] = i32::from(src[base + t]);
+        }
+        for t in n_src..WIENER_SIMD_SRC_W {
+            s32[t] = 0;
+        }
 
-            let mut x = 0;
-            while x < w {
-                // Symmetric taps (certified by `wiener_simd_applicable`):
-                // fold `s[k]*h[k] + s[7-k]*h[7-k]` into `h[k]*(s[k]+s[7-k])`
-                // — C's `wiener_convolve_h_tap7_kernel_avx512` pair-sum, four
-                // multiplies instead of eight.
-                let acc = bias_h
-                    + (i32x16::from_slice(token, &s32[x..])
-                        + i32x16::from_slice(token, &s32[x + 6..]))
-                        * hc[0]
-                    + (i32x16::from_slice(token, &s32[x + 1..])
-                        + i32x16::from_slice(token, &s32[x + 5..]))
-                        * hc[1]
-                    + (i32x16::from_slice(token, &s32[x + 2..])
-                        + i32x16::from_slice(token, &s32[x + 4..]))
-                        * hc[2]
-                    + i32x16::from_slice(token, &s32[x + 3..]) * hc[3];
-                let v = acc
-                    .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
-                    .max(zero)
-                    .min(hi_h);
-                let slot: &mut [i32; LANES] = (&mut out[x..x + LANES]).try_into().unwrap();
-                v.store(slot);
-                x += LANES;
-            }
-        };
+        let mut x = 0;
+        while x < w {
+            // Symmetric taps (certified by `wiener_simd_applicable`):
+            // fold `s[k]*h[k] + s[7-k]*h[7-k]` into `h[k]*(s[k]+s[7-k])`
+            // — C's `wiener_convolve_h_tap7_kernel_avx512` pair-sum, four
+            // multiplies instead of eight.
+            let acc = bias_h
+                + (i32x16::from_slice(token, &s32[x..]) + i32x16::from_slice(token, &s32[x + 6..]))
+                    * hc[0]
+                + (i32x16::from_slice(token, &s32[x + 1..])
+                    + i32x16::from_slice(token, &s32[x + 5..]))
+                    * hc[1]
+                + (i32x16::from_slice(token, &s32[x + 2..])
+                    + i32x16::from_slice(token, &s32[x + 4..]))
+                    * hc[2]
+                + i32x16::from_slice(token, &s32[x + 3..]) * hc[3];
+            let v = acc
+                .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
+                .max(zero)
+                .min(hi_h);
+            let slot: &mut [i32; LANES] = (&mut out[x..x + LANES]).try_into().unwrap();
+            v.store(slot);
+            x += LANES;
+        }
+    };
 
     for j in 0..8 {
         fill(j, &mut s32, &mut ring[j % 8]);

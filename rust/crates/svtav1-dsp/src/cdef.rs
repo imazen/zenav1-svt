@@ -1899,7 +1899,6 @@ fn cdef_constrain16_v3(
     _mm256_xor_si256(_mm256_add_epi16(sign, m), sign)
 }
 
-
 /// Narrow the i16x16 result to bytes and scatter it back to the `16 / COLS`
 /// output rows — the inverse of [`cdef_load_group_v3`]'s lane order.
 ///
@@ -2363,9 +2362,7 @@ fn cdef_dist_packed_impl_v3(
             }
         }
         _ => {
-            return cdef_dist_packed_core(
-                plane, plane_off, pstride, packed, blocks, dim, sub,
-            );
+            return cdef_dist_packed_core(plane, plane_off, pstride, packed, blocks, dim, sub);
         }
     }
     sum
@@ -2417,10 +2414,8 @@ fn dist_block_v3<const DIM: usize>(
         if total - c >= 32 {
             let a = u8x32::load(token, (&sa[c..c + 32]).try_into().unwrap());
             let b = u8x32::load(token, (&sb[c..c + 32]).try_into().unwrap());
-            let d_lo =
-                a.widen_low().bitcast_i16x16() - b.widen_low().bitcast_i16x16();
-            let d_hi =
-                a.widen_high().bitcast_i16x16() - b.widen_high().bitcast_i16x16();
+            let d_lo = a.widen_low().bitcast_i16x16() - b.widen_low().bitcast_i16x16();
+            let d_hi = a.widen_high().bitcast_i16x16() - b.widen_high().bitcast_i16x16();
             let acc = d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
             sum += u64::from(acc.reduce_add() as u32);
             c += 32;
@@ -2746,11 +2741,16 @@ mod tests {
                 let nblk = blocks.len().min(packed.len() / (dim * dim));
                 let bl = &blocks[..nblk];
                 for &sub in &[1usize, 2, 3, 4] {
-                    let got = cdef_dist_packed(
-                        &plane, 0, pw, &packed[..nblk * dim * dim], bl, dim, sub,
-                    );
+                    let got =
+                        cdef_dist_packed(&plane, 0, pw, &packed[..nblk * dim * dim], bl, dim, sub);
                     let want = cdef_dist_packed_core(
-                        &plane, 0, pw, &packed[..nblk * dim * dim], bl, dim, sub,
+                        &plane,
+                        0,
+                        pw,
+                        &packed[..nblk * dim * dim],
+                        bl,
+                        dim,
+                        sub,
                     );
                     assert_eq!(got, want, "dim={dim} sub={sub}");
                 }
