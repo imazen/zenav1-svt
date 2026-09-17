@@ -5598,8 +5598,12 @@ impl EncodePipeline {
             core::cell::RefCell::new(None);
         #[allow(clippy::type_complexity)]
         // inline tuple documents the shape; a `type` alias would hide it
+        // `recon_only` — see the call-site comment at the recon walk below:
+        // the traversal and its reconstruction side effects are identical,
+        // but no symbol is written and no CDF/coded-area state is kept.
         let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>,
-                                cdef_walk: Option<&crate::cdef::CdefPick>|
+                                cdef_walk: Option<&crate::cdef::CdefPick>,
+                                recon_only: bool|
          -> crate::EncodeResult<(
             Vec<u8>,
             crate::deblock::DeblockGeom,
@@ -5892,6 +5896,7 @@ impl EncodePipeline {
                             by,
                             &mut chroma_pass,
                             &mut deblock_geom,
+                            recon_only,
                         );
                     }
                 }
@@ -5900,7 +5905,13 @@ impl EncodePipeline {
                 // C `enc_dec_process.c:3166-3170`: each EncDec context's
                 // coded-area totals are summed into the picture under
                 // `pcs->intra_mutex`. One tile per context here.
-                if let Some(acc) = ectx.coded_area.as_ref() {
+                // The recon-only walk keeps NO coded-area / CDF state: its
+                // sums would be re-added by the bit-producing walk that
+                // follows, inflating `intra_area`/`skip_area`/`hp_area` past
+                // C's single `update_b` pass. (This is also the latent fix
+                // for the pre-split walks double-merging on re-walk frames —
+                // only ONE bit-producing walk now runs per frame.)
+                if !recon_only && let Some(acc) = ectx.coded_area.as_ref() {
                     let mut slot = frame_coded_area.borrow_mut();
                     match slot.as_mut() {
                         Some(f) => f.merge(acc),
@@ -5910,10 +5921,12 @@ impl EncodePipeline {
                 // See `walk_end_cdfs`: overwritten per tile AND per walk, so
                 // it ends holding the last tile of the last walk — C's own
                 // "last tile wins" save order.
-                *walk_end_cdfs.borrow_mut() = Some(crate::port_frame_cdf::FrameCdfs {
-                    fc: frame_ctx,
-                    coeff: coeff_fc,
-                });
+                if !recon_only {
+                    *walk_end_cdfs.borrow_mut() = Some(crate::port_frame_cdf::FrameCdfs {
+                        fc: frame_ctx,
+                        coeff: coeff_fc,
+                    });
+                }
             }
 
             // Shared derivation for the frame header's tile_info() trailer
@@ -5939,13 +5952,54 @@ impl EncodePipeline {
                 tile_size_bytes_minus_1,
             ))
         };
+        // Whether the walk's side effects (the recon planes + deblock
+        // geometry) are consumed downstream: the CDEF search (when this
+        // preset runs it), the loop-restoration search, both preset <= 6 —
+        // or the LR stripe-boundary save; (2) the caller, via `last_recon*` /
+        // a later frame predicting from this recon through the DPB. When NONE
+        // of those exist the filtered pixels are dead: nothing reads them and
+        // the bitstream is already written. C behaves identically (its
+        // preset-10 profile contains zero CDEF/LPF samples for
+        // byte-identical output).
+        //
+        // Byte-inertness is measured, not assumed: skipping the two apply
+        // passes changed 0/90 cells at presets 7..13 and 13/36 at presets 2/6
+        // (tools/byteid_fingerprint.sh, {64,128,256} x qp{20,40,55} x
+        // {gradient,uniform}) — see benchmarks/perf_postfilter_2026-08-11.meta.
+        //
+        // Hoisted above the entropy walk: the same condition selects the
+        // walk SPLIT below — when side effects are consumed, a cheap
+        // recon-only walk produces them and the ONE bit-producing walk runs
+        // after every filter parameter is known (C order: rest_process
+        // before the EC kernel), so a CDEF/LR re-walk never discards a full
+        // pass of symbol work.
+        let postfilter_consumed = seq_tools.enable_restoration
+            || crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
+            || self.recon_output
+            // A later frame may predict from this recon via the DPB. Only an
+            // all-key sequence (`intra_period <= 1`) provably has no such
+            // reader — every `self.dpb.get(..)` site is gated on `!is_key`.
+            || !is_single_frame;
         let (
             mut tile_data,
             mut deblock_geom,
             mut u_recon,
             mut v_recon,
             mut tile_size_bytes_minus_1,
-        ) = run_entropy_walk(None, None)?;
+        ) = if postfilter_consumed {
+            // Recon-only walk: identical traversal and reconstruction side
+            // effects (the chroma recon planes + deblock geometry the
+            // searches below read), but no symbols — its tile bytes would be
+            // discarded whenever a CDEF/LR re-walk followed, and the
+            // bit-producing walk now runs once, at the end, armed with every
+            // syntax the searches picked.
+            let (_t, geom, u, v, _s) = run_entropy_walk(None, None, true)?;
+            (Vec::new(), geom, u, v, 0)
+        } else {
+            // Nothing downstream reads the walk's side effects: a single
+            // full walk is the final bitstream (unchanged fast path).
+            run_entropy_walk(None, None, false)?
+        };
 
         crate::stop_check(&stop)?;
 
@@ -6334,27 +6388,9 @@ impl EncodePipeline {
                 crate::dlf_arm::pick_filter_level_by_q(&dlf_pick_inputs)
             }
         };
-        // The in-loop post-filters (deblock -> CDEF) are applied here for two
-        // possible consumers: (1) an in-frame search that measures distortion
-        // on the filtered pixels — the CDEF search and the Wiener loop-
-        // restoration search, both preset <= 6 — or the LR stripe-boundary
-        // save; (2) the caller, via `last_recon*` / a later frame predicting
-        // from this recon through the DPB. When NONE of those exist the
-        // filtered pixels are dead: nothing reads them and the bitstream is
-        // already written. C behaves identically (its preset-10 profile
-        // contains zero CDEF/LPF samples for byte-identical output).
-        //
-        // Byte-inertness is measured, not assumed: skipping the two apply
-        // passes changed 0/90 cells at presets 7..13 and 13/36 at presets 2/6
-        // (tools/byteid_fingerprint.sh, {64,128,256} x qp{20,40,55} x
-        // {gradient,uniform}) — see benchmarks/perf_postfilter_2026-08-11.meta.
-        let postfilter_consumed = seq_tools.enable_restoration
-            || crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
-            || self.recon_output
-            // A later frame may predict from this recon via the DPB. Only an
-            // all-key sequence (`intra_period <= 1`) provably has no such
-            // reader — every `self.dpb.get(..)` site is gated on `!is_key`.
-            || !is_single_frame;
+        // The in-loop post-filters (deblock -> CDEF) apply only when
+        // `postfilter_consumed` says the filtered pixels have a reader —
+        // see the derivation comment at the entropy walk above.
         if self.recon_output {
             self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         }
@@ -6905,26 +6941,10 @@ impl EncodePipeline {
             uv_strength: cdef_params.strengths[0].1,
         });
         // cdef_bits > 0 adds per-SB cdef_idx literals to the tile — the
-        // walk is re-run with the emission armed (recon is untouched by
-        // the extra syntax; C's EC pass simply runs after the cdef
-        // search, ours re-runs the deterministic walk).
-        if cdef_params.bits > 0 {
-            let (tile_cdef, _geom_c, u_c, v_c, tsb_c) = run_entropy_walk(None, Some(&cdef_params))?;
-            // The re-walk reproduces the PRE-filter recon; u_recon/v_recon
-            // were deblocked IN PLACE above, so compare against the
-            // pre-deblock copy (the old `== u_recon` form only held on
-            // content where chroma deblock was a no-op — it fired
-            // spuriously on flat+textured content at mid qp, mainline
-            // included, pre-dating the fork work).
-            #[cfg(debug_assertions)]
-            if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
-                debug_assert_eq!(&u_c, u_unf, "cdef re-walk chroma recon must be identical");
-                debug_assert_eq!(&v_c, v_unf, "cdef re-walk chroma recon must be identical");
-            }
-            let _ = (&u_c, &v_c);
-            tile_data = tile_cdef;
-            tile_size_bytes_minus_1 = tsb_c;
-        }
+        // walk is re-run with the emission armed, but NOT yet: when the LR
+        // search below also signals, its walk carries the cdef syntax too
+        // (`cdef_walk_opt`) and the intermediate walk's bytes would be
+        // overwritten unread. The re-walk runs once, after both searches.
         // The pre-CDEF snapshot is load-bearing when LR is on (its stripe
         // boundaries are saved from it below), and an evidence aid otherwise.
         if seq_tools.enable_restoration || self.recon_output {
@@ -6989,6 +7009,11 @@ impl EncodePipeline {
         self.last_lr_stats = ([0; 3], 0);
         self.last_lr_unit_size = None;
         let mut lr_signal = crate::entropy::obu::LrSignal::none(seq_tools.enable_restoration);
+        // The search result the bit-producing walk below is armed with —
+        // `Some` exactly when the old code would have run an LR re-walk
+        // (`rest_info.any_non_none()`); the walk itself now runs once,
+        // after both searches.
+        let mut walk_rest_info: Option<crate::restoration::FrameRestInfo> = None;
         let decoder_chroma_recon = self.recon_output
             && chroma.is_some()
             && (!self.true_width.is_multiple_of(2) || !self.true_height.is_multiple_of(2));
@@ -7267,22 +7292,6 @@ impl EncodePipeline {
                     }
                 }
                 if rest_info.any_non_none() {
-                    // Tile pass 2: identical symbol stream + LR syntax.
-                    let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
-                    let (tile_lr, _geom2, u2, v2, tsb_lr) =
-                        run_entropy_walk(Some(&rest_info), cdef_walk_opt)?;
-                    // Same pre-deblock reference as the CDEF re-walk assert:
-                    // u_recon/v_recon have been deblocked (and CDEF'd) in
-                    // place by now; the walk reproduces the pre-filter state.
-                    #[cfg(debug_assertions)]
-                    if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
-                        debug_assert_eq!(&u2, u_unf, "LR re-walk chroma recon must be identical");
-                        debug_assert_eq!(&v2, v_unf, "LR re-walk chroma recon must be identical");
-                    }
-                    let _ = (&u2, &v2);
-                    tile_data = tile_lr;
-                    tile_size_bytes_minus_1 = tsb_lr;
-
                     // Decoder-exact application to the output copy: stripe
                     // boundaries from the post-deblock (pre-CDEF) and
                     // post-CDEF planes (dlf_process.c:134 after_cdef=0,
@@ -7397,9 +7406,40 @@ impl EncodePipeline {
                     uv_size_differs: false,
                 };
                 if decoder_chroma_recon {
-                    output_restoration = Some(rest_info);
+                    output_restoration = Some(rest_info.clone());
                 }
+                // Arm the bit-producing walk below with the LR syntax —
+                // `Some` here is exactly the old `if rest_info.any_non_none()`
+                // re-walk gate.
+                walk_rest_info = Some(rest_info);
             }
+        }
+
+        // The ONE bit-producing walk — C order (rest_process before the EC
+        // kernel): armed with whatever CDEF/LR syntax the searches picked,
+        // or none. Runs only on the recon-pass split; the no-consumer path
+        // above already produced its single full walk. Exactly one of these
+        // cases holds: LR syntax (`walk_rest_info`), CDEF syntax
+        // (`cdef_params.bits > 0`), both, or neither — the old code ran up
+        // to three walks for the same matrix.
+        if postfilter_consumed {
+            let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
+            let (tile_f, _geom_f, u_f, v_f, tsb_f) =
+                run_entropy_walk(walk_rest_info.as_ref(), cdef_walk_opt, false)?;
+            // The final walk reproduces the PRE-filter recon; u_recon/v_recon
+            // were deblocked (and possibly CDEF'd/restored) IN PLACE above,
+            // so compare against the pre-deblock copy (the old `== u_recon`
+            // form only held on content where chroma deblock was a no-op —
+            // it fired spuriously on flat+textured content at mid qp,
+            // mainline included, pre-dating the fork work).
+            #[cfg(debug_assertions)]
+            if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
+                debug_assert_eq!(&u_f, u_unf, "final walk chroma recon must be identical");
+                debug_assert_eq!(&v_f, v_unf, "final walk chroma recon must be identical");
+            }
+            let _ = (&u_f, &v_f);
+            tile_data = tile_f;
+            tile_size_bytes_minus_1 = tsb_f;
         }
 
         crate::stop_check(&stop)?;
@@ -10145,6 +10185,7 @@ fn encode_block_syntax(
     block_y: usize,
     chroma: &mut Option<ChromaPass<'_>>,
     geom: &mut crate::deblock::DeblockGeom,
+    recon_only: bool,
 ) {
     // Diagnostic (SVTAV1_TRACEMARK=1): a block-boundary marker written INTO
     // the symtrace op stream on stderr, so a first-diverging-op index maps
@@ -10152,7 +10193,7 @@ fn encode_block_syntax(
     // because that stream is parsed as data by identity_diff.py, which
     // ignores unknown `#` lines (as does any C-side counterpart marker).
     #[cfg(feature = "std")]
-    if crate::dbgenv::tracemark() {
+    if !recon_only && crate::dbgenv::tracemark() {
         std::eprintln!(
             "# BLK mi=({},{}) bsize={} ibc={}",
             block_y / 4,
@@ -10177,7 +10218,7 @@ fn encode_block_syntax(
     // block_size_index; fi 5 = none; uv 13 = CFL; skip is derived on the
     // diff side from yeob/ueob/veob (C dumps the all-plane skip bit).
     #[cfg(feature = "std")]
-    if let Some(path) = crate::dbgenv::packtree() {
+    if !recon_only && let Some(path) = crate::dbgenv::packtree() {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -10258,7 +10299,7 @@ fn encode_block_syntax(
     // `encode_block_syntax`, i.e. after the block's partition symbol and
     // before every one of its mode/coeff symbols.
     #[cfg(feature = "std")]
-    if crate::dbgenv::blkmark() {
+    if !recon_only && crate::dbgenv::blkmark() {
         if let Some(id) = decision.inter.as_deref() {
             // Inter leaves join to C's `CWIN poc=<p> blk=(<x>,<y>) mode=<m>
             // rf0=<r> rf1=<r> mv=(<x>,<y>) drl=<d> skip=<s> skm=<s> bhc=<b>
@@ -10305,7 +10346,7 @@ fn encode_block_syntax(
     //     (coding order), for a whole-frame join vs the C SVT_QLEVELS_OUT
     //     dump. Backward-compatible: existing "r,c" callers are unchanged.
     #[cfg(feature = "std")]
-    if let Some(xy) = crate::dbgenv::packtree_coeff() {
+    if !recon_only && let Some(xy) = crate::dbgenv::packtree_coeff() {
         let is_pin = xy.contains(',');
         let want: alloc::vec::Vec<usize> = xy
             .split(',')
@@ -10359,7 +10400,7 @@ fn encode_block_syntax(
     // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
     // diff the partition tree against the C entropy coder. No output change.
     #[cfg(feature = "std")]
-    if crate::dbgenv::part_dump() {
+    if !recon_only && crate::dbgenv::part_dump() {
         eprintln!(
             "RSPART x{block_x} y{block_y} {}x{} skip={} ymode={} uvmode={} txd={}",
             decision.width,
@@ -10427,7 +10468,13 @@ fn encode_block_syntax(
                 cp.u_recon[dst..dst + copy_w].copy_from_slice(&u_rec[r * cw..r * cw + copy_w]);
                 cp.v_recon[dst..dst + copy_w].copy_from_slice(&v_rec[r * cw..r * cw + copy_w]);
             }
-            (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
+            if recon_only {
+                // The coefficient vecs only feed `write_chroma_txb` below —
+                // skipped in recon mode, so the clones are dead work.
+                (Vec::new(), *u_eob, Vec::new(), *v_eob)
+            } else {
+                (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
+            }
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
                 cp.u_src,
@@ -10474,6 +10521,40 @@ fn encode_block_syntax(
         && chroma_blocks
             .as_ref()
             .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
+    if recon_only {
+        // Recon-only walk: every symbol write, CDF update, context track and
+        // coded-area sum below is walk-local state — the only survivors of a
+        // walk whose bytes never ship are the chroma recon planes (written
+        // above) and the deblock geometry. Record exactly what the tail of
+        // this function records on the bit-producing walk and stop here.
+        geom.record_block(
+            block_x,
+            block_y,
+            decision.width as usize,
+            decision.height as usize,
+            decision.is_inter,
+            skip,
+        );
+        let deblock_tx_is_block_max = decision.is_inter && skip;
+        if decision.tx_depth > 0 && !deblock_tx_is_block_max {
+            let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(
+                decision.width as usize,
+                decision.height as usize,
+                decision.tx_depth,
+            );
+            let cols = decision.width as usize / txw;
+            let txbs = cols * (decision.height as usize / txh);
+            for txb in 0..txbs {
+                geom.record_tx_dims(
+                    block_x + (txb % cols) * txw,
+                    block_y + (txb / cols) * txh,
+                    txw,
+                    txh,
+                );
+            }
+        }
+        return;
+    }
     // C `update_b` (coding_loop.c:1605-1643), which runs on every coded block
     // of a `!scs->allintra` picture and is the SOURCE of the three coded-area
     // statistics the NEXT frame reads off this picture's reference object.
@@ -11718,13 +11799,13 @@ fn encode_partition_tree(
     block_y: usize,
     chroma: &mut Option<ChromaPass<'_>>,
     geom: &mut crate::deblock::DeblockGeom,
+    recon_only: bool,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
             let w = decision.width as usize;
             let h = decision.height as usize;
             if w > 4 || h > 4 {
-                let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
                 let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
                 // A PARTITION_NONE leaf is only legal where the node lies wholly
                 // inside the frame: at an edge the non-SPLIT outcome is VERT
@@ -11736,30 +11817,35 @@ fn encode_partition_tree(
                     "PARTITION_NONE leaf at a frame edge ({block_x},{block_y}) {w}x{h}: \
                      has_rows={has_rows} has_cols={has_cols} — illegal per spec 5.11.4"
                 );
-                crate::entropy::context::write_partition_edge(
-                    writer,
-                    frame_ctx,
-                    ctx,
-                    0,
-                    nsymbs, // 0 = PARTITION_NONE
-                    w == 128,
-                    has_rows,
-                    has_cols,
-                );
+                if !recon_only {
+                    let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
+                    crate::entropy::context::write_partition_edge(
+                        writer,
+                        frame_ctx,
+                        ctx,
+                        0,
+                        nsymbs, // 0 = PARTITION_NONE
+                        w == 128,
+                        has_rows,
+                        has_cols,
+                    );
+                }
             }
 
             // Update partition context for PARTITION_NONE
-            ectx.update_partition_ctx(
-                block_x,
-                block_y,
-                w,
-                h,
-                crate::partition::PartitionType::None,
-            );
+            if !recon_only {
+                ectx.update_partition_ctx(
+                    block_x,
+                    block_y,
+                    w,
+                    h,
+                    crate::partition::PartitionType::None,
+                );
+            }
 
             encode_block_syntax(
                 decision, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                chroma, geom,
+                chroma, geom, recon_only,
             );
         }
         crate::partition::PartitionTree::Split {
@@ -11770,18 +11856,20 @@ fn encode_partition_tree(
         } => {
             let w = *width as usize;
             let h = *height as usize;
-            let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
-            let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
-            crate::entropy::context::write_partition_edge(
-                writer,
-                frame_ctx,
-                ctx,
-                *partition_type as u8,
-                nsymbs,
-                w == 128,
-                has_rows,
-                has_cols,
-            );
+            if !recon_only {
+                let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
+                let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
+                crate::entropy::context::write_partition_edge(
+                    writer,
+                    frame_ctx,
+                    ctx,
+                    *partition_type as u8,
+                    nsymbs,
+                    w == 128,
+                    has_rows,
+                    has_cols,
+                );
+            }
 
             let half_w = w / 2;
             let half_h = h / 2;
@@ -11800,7 +11888,7 @@ fn encode_partition_tree(
                     // partition bytes; the decoder sets the 8x8 cell to the
                     // SPLIT value, dav1d decode_sb BL_8X8). An 8x8 node is never
                     // a frame edge, so all four 4x4 quadrants are in-frame.
-                    if half_w == 4 {
+                    if half_w == 4 && !recon_only {
                         ectx.update_partition_ctx(
                             block_x,
                             block_y,
@@ -11830,6 +11918,7 @@ fn encode_partition_tree(
                             cy,
                             chroma,
                             geom,
+                            recon_only,
                         );
                         ci += 1;
                     }
@@ -11846,20 +11935,22 @@ fn encode_partition_tree(
                     // off-frame (C write_modes_sb codes block 1 only if
                     // `mi_row + hbs < mi_rows`, entropy_coding.c:5490).
                     // Update partition context for HORZ (children don't do it).
-                    ectx.update_partition_ctx(
-                        block_x,
-                        block_y,
-                        w,
-                        h,
-                        crate::partition::PartitionType::Horz,
-                    );
+                    if !recon_only {
+                        ectx.update_partition_ctx(
+                            block_x,
+                            block_y,
+                            w,
+                            h,
+                            crate::partition::PartitionType::Horz,
+                        );
+                    }
 
                     // Children are leaf blocks — encode directly without
                     // partition symbols (decoder reads them as direct blocks).
                     let top = expect_leaf(&children[0]);
                     encode_block_syntax(
                         top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
-                        block_y, chroma, geom,
+                        block_y, chroma, geom, recon_only,
                     );
                     if let Some(bot_tree) = children.get(1) {
                         let bot = expect_leaf(bot_tree);
@@ -11875,6 +11966,7 @@ fn encode_partition_tree(
                             block_y + half_h,
                             chroma,
                             geom,
+                            recon_only,
                         );
                     }
                 }
@@ -11883,18 +11975,20 @@ fn encode_partition_tree(
                     // in-frame left block on a partial SB (task #95 chunk 2),
                     // the right half being off-frame.
                     // Update partition context for VERT.
-                    ectx.update_partition_ctx(
-                        block_x,
-                        block_y,
-                        w,
-                        h,
-                        crate::partition::PartitionType::Vert,
-                    );
+                    if !recon_only {
+                        ectx.update_partition_ctx(
+                            block_x,
+                            block_y,
+                            w,
+                            h,
+                            crate::partition::PartitionType::Vert,
+                        );
+                    }
 
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(
                         left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
-                        block_y, chroma, geom,
+                        block_y, chroma, geom, recon_only,
                     );
                     if let Some(right_tree) = children.get(1) {
                         let right = expect_leaf(right_tree);
@@ -11910,6 +12004,7 @@ fn encode_partition_tree(
                             block_y,
                             chroma,
                             geom,
+                            recon_only,
                         );
                     }
                 }
@@ -11968,7 +12063,9 @@ fn encode_partition_tree(
                         ],
                         other => panic!("unsupported partition shape {other:?}"),
                     };
-                    ectx.update_partition_ctx(block_x, block_y, w, h, ptype);
+                    if !recon_only {
+                        ectx.update_partition_ctx(block_x, block_y, w, h, ptype);
+                    }
                     for (child, &(dx, dy)) in children.iter().zip(offsets) {
                         let leaf = expect_leaf(child);
                         encode_block_syntax(
@@ -11983,6 +12080,7 @@ fn encode_partition_tree(
                             block_y + dy,
                             chroma,
                             geom,
+                            recon_only,
                         );
                     }
                 }
@@ -15476,6 +15574,7 @@ fn encode_tile_rows(
                             sb_y0,
                             &mut sim_chroma,
                             &mut sim_geom,
+                            false,
                         );
                     }
                     chain_snaps.push((fc, cfc));
@@ -17309,6 +17408,7 @@ mod inter_decision_probe {
             0,
             &mut None,
             &mut geom,
+            false,
         );
         let tile = writer.done().to_vec();
         assert_eq!(
