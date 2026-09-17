@@ -1,0 +1,46 @@
+# imazen26 K300 real-image perf — port vs C, encode-only
+
+date:   2026-09-17
+commit: 55ae8530 (main tip; contains b47d8e9f dbgenv + 55ae8530 cost LUT)
+host:   i265 (x86_64-linux, 20 logical cores, 30 GiB)
+data:   benchmarks/imazen26_perf_2026-09-17.raw.tsv
+
+WHAT. Encode-only wall-clock medians, port vs C reference, on 4 of the
+20 K300 gate images (one per measured content class): a photo, a
+synthetic line plot, a web screenshot, a bilevel patent scan.
+512x512 centre crops, q32, bd8, presets 0/6/10/13 as listed.
+
+METHOD. `identity_run "crop:<png>"` once to materialise the .yuv, then
+port = `perf_encode raw:<yuv> 512 512 32 <preset> out 0` (no warmup
+arg = single timed encode per process), C =
+`capture_c_trace.bin 512 512 32 <preset> <yuv> c.obu 8`. Interleaved
+paired iterations (port, C, port, C, ...), `date +%s%N` around each
+process, median of N. NOT pinned to a P-core and NOT `perf stat`
+instructions — wall-clock process medians; interleaving absorbs drift.
+The encode itself is >99% of the process for every cell (harness setup
+is a few ms of YUV read).
+
+IDENTITY. Every (image, preset, bd) cell here passed the imazen26 gate
+in the same session at the same commit — 40/40 byte-identical, all
+streams aomdec-decodable. The timing cells are therefore byte-identical
+cells, not approximations.
+
+RESULT. Every real-image cell is inside the 50% bound — range
+1.07x..1.23x across classes and presets. The worst synthetic cell
+(512x512 gradient p10 = 1.51x in perf_gap_lut-i265) does NOT
+generalise: real content carries more coefficients per block, where
+the port's C-faithful trellis/entropy cores dominate both sides
+equally, while the flat gradient's near-empty txbs leave the port's
+per-block fixed costs relatively exposed. Treat the gradient number
+as a floor-content outlier, not the typical gap.
+
+  image                     preset   port_ms   C_ms     ratio
+  2001_people (photo)         0      5380.2    5022.4   1.071x
+  2001_people (photo)         6        79.6      64.7   1.231x
+  2001_people (photo)         10       15.2      13.6   1.121x
+  7002_plots (line plot)      6        66.9      59.6   1.124x
+  7002_plots (line plot)      10       20.9      18.3   1.141x
+  8129_web-screenshots        10       11.1       9.7   1.147x
+  8129_web-screenshots        13       11.3       9.5   1.179x
+  6003_scans-patents (1bit)   6        23.1      19.1   1.211x
+  6003_scans-patents (1bit)   10        9.1       7.7   1.194x

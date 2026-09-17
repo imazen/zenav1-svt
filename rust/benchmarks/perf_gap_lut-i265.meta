@@ -1,0 +1,9 @@
+# perf_gap fit
+date: 2026-09-17T05:20:15Z
+commit: 55ae8530c
+host: i265 ( logical cores)
+grid: content=gradient sizes=[128 256 512] presets=[6 10] qp=40 rounds=7 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):
+  p6   port: a=2.2616 ms  b=90.46 ms/MP   |   C: a=1.2925 ms  b=76.90 ms/MP   |   slope-ratio=1.18x  intercept-ratio=1.75x
+  p10  port: a=-0.1302 ms  b=26.16 ms/MP   |   C: a=0.2024 ms  b=16.16 ms/MP   |   slope-ratio=1.62x  intercept-ratio=-0.64x
