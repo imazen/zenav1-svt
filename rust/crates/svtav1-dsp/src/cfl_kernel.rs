@@ -91,7 +91,7 @@ fn cfl_predict_lbd_impl_scalar(
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn cfl_predict_lbd_impl_v3(
-    _token: Desktop64,
+    token: Desktop64,
     pred_buf_q3: &[i16],
     pred: &[u8],
     pred_stride: usize,
@@ -109,13 +109,68 @@ fn cfl_predict_lbd_impl_v3(
     let aneg_128 = _mm_set1_epi16(neg16);
     let aneg_256 = _mm256_set1_epi16(neg16);
 
+    // Width-specialized row loops: C ships a kernel per block width
+    // (`cfl_predict_lbd_{4,8,16,32}xN_avx2`), and folding the arm tests at
+    // compile time keeps the hot widths — 4 and 8 — out of a failed 16- and
+    // 8-byte bound check per row.
+    match width {
+        32 => cfl_rows_lbd_v3::<32>(
+            token, pred_buf_q3, pred, pred_stride, dst, dst_stride, alpha_q3,
+            height, aneg_128, aneg_256, q12_128, q12_256,
+        ),
+        16 => cfl_rows_lbd_v3::<16>(
+            token, pred_buf_q3, pred, pred_stride, dst, dst_stride, alpha_q3,
+            height, aneg_128, aneg_256, q12_128, q12_256,
+        ),
+        8 => cfl_rows_lbd_v3::<8>(
+            token, pred_buf_q3, pred, pred_stride, dst, dst_stride, alpha_q3,
+            height, aneg_128, aneg_256, q12_128, q12_256,
+        ),
+        4 => cfl_rows_lbd_v3::<4>(
+            token, pred_buf_q3, pred, pred_stride, dst, dst_stride, alpha_q3,
+            height, aneg_128, aneg_256, q12_128, q12_256,
+        ),
+        _ => {
+            for j in 0..height {
+                let acr = &pred_buf_q3[j * CFL_BUF_LINE..j * CFL_BUF_LINE + width];
+                let pr = &pred[j * pred_stride..j * pred_stride + width];
+                let or = &mut dst[j * dst_stride..j * dst_stride + width];
+                for k in 0..width {
+                    or[k] = scalar_one(alpha_q3, acr[k], pr[k]);
+                }
+            }
+        }
+    }
+}
+
+/// Per-width row loop for [`cfl_predict_lbd_impl_v3`]. `W` is a compile-time
+/// constant, so the `i + 16/8/4 <= W` arm tests fold: width 4 emits only the
+/// 4-wide body, width 8 only the 8-wide, and the 32-wide loop unrolls to two
+/// 16-byte folds with no runtime arm cascade.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn cfl_rows_lbd_v3<const W: usize>(
+    _token: Desktop64,
+    pred_buf_q3: &[i16],
+    pred: &[u8],
+    pred_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    alpha_q3: i32,
+    height: usize,
+    aneg_128: __m128i,
+    aneg_256: __m256i,
+    q12_128: __m128i,
+    q12_256: __m256i,
+) {
     for j in 0..height {
-        let acr = &pred_buf_q3[j * CFL_BUF_LINE..j * CFL_BUF_LINE + width];
-        let pr = &pred[j * pred_stride..j * pred_stride + width];
-        let or = &mut dst[j * dst_stride..j * dst_stride + width];
+        let acr = &pred_buf_q3[j * CFL_BUF_LINE..j * CFL_BUF_LINE + W];
+        let pr = &pred[j * pred_stride..j * pred_stride + W];
+        let or = &mut dst[j * dst_stride..j * dst_stride + W];
         let mut i = 0;
 
-        while i + 16 <= width {
+        while i + 16 <= W {
             let ac: &[i16; 16] = acr[i..i + 16].try_into().unwrap();
             let pb: &[u8; 16] = pr[i..i + 16].try_into().unwrap();
             let ac = _mm256_loadu_si256(ac);
@@ -132,7 +187,7 @@ fn cfl_predict_lbd_impl_v3(
             _mm_storeu_si128(ob, packed);
             i += 16;
         }
-        while i + 8 <= width {
+        while i + 8 <= W {
             let ac: &[i16; 8] = acr[i..i + 8].try_into().unwrap();
             let pb: &[u8; 8] = pr[i..i + 8].try_into().unwrap();
             let ac = _mm_loadu_si128(ac);
@@ -145,7 +200,7 @@ fn cfl_predict_lbd_impl_v3(
             _mm_storeu_si64(ob, _mm_packus_epi16(sum, sum));
             i += 8;
         }
-        while i + 4 <= width {
+        while i + 4 <= W {
             let ac: &[i16; 4] = acr[i..i + 4].try_into().unwrap();
             let pb: &[u8; 4] = pr[i..i + 4].try_into().unwrap();
             let ac = _mm_loadu_si64(ac);
@@ -158,8 +213,8 @@ fn cfl_predict_lbd_impl_v3(
             _mm_storeu_si32(ob, _mm_packus_epi16(sum, sum));
             i += 4;
         }
-        // Tail (width % 4): the scalar core's body verbatim.
-        for k in i..width {
+        // Tail (W % 4 == 0 on every arm, so this loop never runs).
+        for k in i..W {
             or[k] = scalar_one(alpha_q3, acr[k], pr[k]);
         }
     }
