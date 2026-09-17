@@ -1793,6 +1793,22 @@ then
   byte "partial-chroma-source-stride-p4" "raw:$W/partial-chroma.yuv" 376 512 30 4 8
   byte "partial-chroma-source-stride-p5" "raw:$W/partial-chroma.yuv" 376 512 30 5 8
   byte "partial-sb128-depth-limits-p1" "raw:$W/partial-chroma.yuv" 376 512 10 1 8
+  # 2026-09-17 — the four deferred native-10 cells (deferred-native10-parity
+  # .json, "open-parity-divergence") closed byte-identical. Two root causes,
+  # both u8-proxies where C reads real u16 data at hbd_md: (1) the CfL
+  # complexity detector compared (src8<<2) vs u16 preds and computed RAW u16
+  # variance, while C's vf_hbd_10 kernel pre-scales sum/sse to the 8-bit
+  # domain — a ~16x over-fire that evaluated CfL where C skipped it;
+  # (2) the NSQ skip_sub quadrant gate scored u8 recon distances while C's
+  # calc_scr_to_recon_dist_per_quadrant runs svt_full_distortion_kernel16_bits
+  # on the u16 source vs u16 cand_bf->recon — u8-domain distances fell under
+  # quad_deviation_th and skipped split tests C ran. Native low bits now
+  # survive end-to-end (SVTAV1_HBD_SRC=1 generates nonzero low bits).
+  # Before: 11462/11718/2831/11913 port bytes vs C 11465/11752/2827/11913.
+  SVTAV1_HBD_SRC=1 byte "partial-chroma-native10-p1-q10" "raw:$W/partial-chroma.yuv" 376 512 10 1 10
+  SVTAV1_HBD_SRC=1 byte "partial-chroma-native10-p4-q10" "raw:$W/partial-chroma.yuv" 376 512 10 4 10
+  SVTAV1_HBD_SRC=1 byte "partial-chroma-native10-p4-q30" "raw:$W/partial-chroma.yuv" 376 512 30 4 10
+  SVTAV1_HBD_SRC=1 byte "partial-chroma-native10-p5-q10" "raw:$W/partial-chroma.yuv" 376 512 10 5 10
 else
   fail=$((fail+1)); failed+=("partial-chroma fixture integrity")
 fi

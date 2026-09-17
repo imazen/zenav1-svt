@@ -31,31 +31,32 @@ pairs. Neither result closes native10 or every optional/inter/HDR combination.
 Pristine Mainline420 and Hybrid3115 are distinct C targets; source, HDR mode,
 compiler and ISA belong in each parity record.
 
-## Explicitly open native10 cells
+## Native10 cells — closed 2026-09-17
 
 376×512 photo fixture, `SVTAV1_BD=10 SVTAV1_HBD_SRC=1`:
 
 | Native preset | QP | C bytes | Rust bytes | Status |
 |---|---|---|---|---|
-| 1 | 10 | 11465 | 11462 | open |
-| 4 | 10 | 11752 | 11718 | open |
-| 4 | 30 | 2827 | 2831 | open |
-| 5 | 10 | 11913 | 11913 | open |
+| 1 | 10 | 11465 | 11465 | byte-identical |
+| 4 | 10 | 11752 | 11752 | byte-identical |
+| 4 | 30 | 2827 | 2827 | byte-identical |
+| 5 | 10 | 11913 | 11913 | byte-identical |
 
-The stored C and Rust streams all decode independently. These are byte
-mismatches, not demonstrated decoder failures. Hashes, exact fixture and
-retained unproven experiment: [deferred manifest](deferred-native10-parity.json).
+All four formerly deferred cells now match C byte-for-byte and are permanent
+`regression_spotcheck.sh` witnesses (`partial-chroma-native10-*`). Two root
+causes, both u8 proxies where C reads real u16 data at `hbd_md`: the CfL
+complexity detector used `(src8<<2)` vs u16 preds and raw u16 variance — C's
+`vf_hbd_10` kernel pre-scales sum/sse to the 8-bit domain (~16× over-fire);
+and the NSQ `skip_sub` quadrant gate scored u8 recon distances while C's
+`calc_scr_to_recon_dist_per_quadrant` runs `svt_full_distortion_kernel16_bits`
+on the u16 source vs u16 `cand_bf->recon`. Hashes, exact fixture and retained
+unproven experiment: [deferred manifest](deferred-native10-parity.json).
 
-**These four cells do not share one root cause** (measured 2026-09-09): p1q10 and
-p4q10 first diverge at arithmetic-coder op 0 in the `lr-taps` class, p4q30 at op
-11758 and p5q10 at op 67328, both in unrelated CDF families, with p1q30 identical
-across all 18413 ops as the control. A fix for one is not evidence for the others.
-Start at [the coding-order witness](HANDOFF-2026-09-08-PARITY.md), not downstream
-loop filters or the old raster-first pixel. **Updated 2026-09-09:** for p1q10 the
-first real divergence is block **mi(32,36)** (pixel 144,128), a partition-size flip
-(C bsize=3 vs port bsize=1) — not the previously recorded mi(48,8) CfL witness,
-which is downstream of it. Established by capturing recon planes and the decision
-tree from one run. Archive retrieval:
+Historical investigation trail (the divergences, now closed): p1q10 and p4q10
+first diverged at arithmetic-coder op 0 in the `lr-taps` class, p4q30 at op
+11758 and p5q10 at op 67328; for p1q10 the first real divergence was block
+**mi(32,36)** (pixel 144,128), a partition-size flip. Established by capturing
+recon planes and the decision tree from one run. Archive retrieval:
 [native10 receipt](native10-handoff-receipt.json).
 
 ## Inter identity on REAL video (new surface, 2026-09-10)

@@ -34,8 +34,9 @@ At implementation main **`0cbd1279`**, the latest native workspace gate passed
 These local checks are not a claim of a new CI run.
 
 The preceding eight-bit landing matrix passed **1100/1100** in its named
-reference envelope. **Four native10 parity cells remain open**; their streams
-decode but differ from C. See [identity status](rust/docs/IDENTITY-STATUS.md).
+reference envelope. The four formerly deferred **native10 parity cells closed
+byte-identical on 2026-09-17**. See
+[identity status](rust/docs/IDENTITY-STATUS.md).
 HDR MODE=ON has a standing 10-bit gate; older 8-bit 48/48 prose is historical,
 without a corresponding retained standing gate. Per-reference, per-ISA and
 corpus boundaries matter. No universal C parity or calibrated RD/time routing

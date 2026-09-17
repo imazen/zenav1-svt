@@ -32,7 +32,7 @@ At implementation `0cbd1279`, the native suite passed 2631/2631. Strict ARM
 Clippy has 15 pre-existing architecture-independent diagnostics. The declared
 floor is 1.98, which is what the aarch64 dotprod intrinsics require.
 
-[Identity status](docs/IDENTITY-STATUS.md) records the four deferred native10
-cells. [HDR history](docs/HDR-ON-4.2.md) retains feature/kernel evidence, not a
+[Identity status](docs/IDENTITY-STATUS.md) records the four native10 cells,
+closed byte-identical on 2026-09-17. [HDR history](docs/HDR-ON-4.2.md) retains feature/kernel evidence, not a
 current completeness claim. [The documentation index](docs/DOCUMENTATION-INDEX.md)
 separates historical results from live API and handoff documents.

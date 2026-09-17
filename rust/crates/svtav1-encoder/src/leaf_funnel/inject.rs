@@ -442,8 +442,19 @@ pub(super) fn inject_candidates(
             uv_rd.push((uvm, uvd, bits, dist));
             #[cfg(feature = "std")]
             if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                let (ub, ud, vb, vd) = match bd10_rd.as_ref() {
+                    Some(b) => {
+                        let (u_out, v_out) =
+                            chroma::eval_uv_hbd(cx, fx, b, uvm, uvd, TxGate::default());
+                        (u_out.bits as u64, u_out.dist, v_out.bits as u64, v_out.dist)
+                    }
+                    None => {
+                        let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd, TxGate::default());
+                        (u_out.bits as u64, u_out.dist, v_out.bits as u64, v_out.dist)
+                    }
+                };
                 eprintln!(
-                    "NSQDBG UVRD mi=({},{}) {}x{} uv={uvm} uvd={uvd} bits={bits} dist={dist}",
+                    "NSQDBG UVRD mi=({},{}) {}x{} uv={uvm} uvd={uvd} bits={bits} dist={dist} ub={ub} ud={ud} vb={vb} vd={vd}",
                     abs_y / 4,
                     abs_x / 4,
                     w,

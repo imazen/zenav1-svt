@@ -81,11 +81,13 @@ Backend suitability starts unknown wherever broad evidence is missing. Complete
 calibration, adaptive fractional budgets, additional formats and optimality
 claims are tracked follow-ups, not API placeholders described as implemented.
 AOM ownership and its PR stack remain in imazen/zenav1-aom#16. The four SVT
-native10 cells remain in deferred-native10-parity.json, with retained hashes,
-fixtures and the unproven precision experiment available in handoff history.
+native10 cells were closed byte-identical on 2026-09-17
+(deferred-native10-parity.json records the resolution); the unproven precision
+experiment remains available in handoff history.
 
 Landing-base verification: 2627/2627 workspace tests (zero skipped), 139/139
 regression witnesses, 1100/1100 eight-bit identity cells (zero pins/errors).
-All four stored native10 C/Rust pairs independently decode with aomdec; their
-byte-parity differences remain explicitly open. Full logs are preserved under
-`~/tmp/svt-tracking/policy-landing-*`. No calibration completeness is claimed.
+All four stored native10 C/Rust pairs independently decode with aomdec and are
+now byte-identical to C, witnessed permanently in regression_spotcheck.sh.
+Full logs are preserved under `~/tmp/svt-tracking/policy-landing-*`. No
+calibration completeness is claimed.

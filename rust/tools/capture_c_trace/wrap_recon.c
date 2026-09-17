@@ -1488,11 +1488,76 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
                 fprintf(ef, " cv=");
                 for (int j = 0; j < g->bheight_uv; ++j)
                     fprintf(ef, "%s%u", j ? "," : "", (unsigned)b->neigh_left_recon_16bit[2][j]);
+                if (rxy && *rxy) {
+                    int rx = -1, ry = -1;
+                    sscanf(rxy, "%d,%d", &rx, &ry);
+                    if ((int)ctx->blk_org_x == rx && (int)ctx->blk_org_y == ry) {
+                        fprintf(ef, " cub=");
+                        for (int i = 0; i < g->bwidth_uv; ++i)
+                            fprintf(ef, "%s%u", i ? "," : "", (unsigned)b->neigh_top_recon_16bit[1][i]);
+                        fprintf(ef, " cvb=");
+                        for (int i = 0; i < g->bwidth_uv; ++i)
+                            fprintf(ef, "%s%u", i ? "," : "", (unsigned)b->neigh_top_recon_16bit[2][i]);
+                    }
+                }
             }
             fprintf(ef, "\n");
             fflush(ef);
         }
     }
+}
+
+/* ---- intra-prediction input interposer -----------------------------------
+ * svt_av1_intra_prediction (enc_intra_prediction.c:569, exported T, called
+ * cross-TU from product_coding_loop.c through the prediction tables) builds
+ * the per-plane top/left neighbour strips inside its own frame, so the strips
+ * cannot be hooked at predict_intra_block (intra-TU call). What CAN be read
+ * from the wrap is their SOURCE: ctx->cb/cr_recon_na_16bit->top_array /
+ * left_array at the rounded chroma origin — plus cand_bf->pred's origin
+ * sample after the real call (the predicted pixel itself).
+ * Env: SVT_NBDUMP_OUT + SVT_NBDUMP_XY="mi_row,mi_col" (luma mi of the block).
+ * Pure pass-through when unset. */
+EbErrorType __real_svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                            ModeDecisionCandidateBuffer* cand_bf);
+
+EbErrorType __wrap_svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                            ModeDecisionCandidateBuffer* cand_bf) {
+    EbErrorType r = __real_svt_av1_intra_prediction(hbd_md, ctx, pcs, cand_bf);
+    const char* path = getenv("SVT_NBDUMP_OUT");
+    if (path && *path && hbd_md && ctx->has_uv) {
+        const char* xy = getenv("SVT_NBDUMP_XY");
+        int px = -1, py = -1;
+        if (xy && *xy)
+            sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_y == py * 4 && (int)ctx->blk_org_x == px * 4) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                const int bw_uv   = ctx->blk_geom->bwidth_uv;
+                const int bh_uv   = ctx->blk_geom->bheight_uv;
+                const int org_u   = ctx->round_origin_x >> 1;
+                const int org_v   = ctx->round_origin_y >> 1;
+                const uint16_t* t = (const uint16_t*)ctx->cr_recon_na_16bit->top_array + org_u;
+                const uint16_t* l = (const uint16_t*)ctx->cr_recon_na_16bit->left_array + org_v;
+                fprintf(f,
+                        "NBD org=(%u,%u) %ux%u uvorg=(%d,%d) %dx%d mode=%d uv=%d uvd=%d top=[",
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                        (int)block_size_wide[ctx->blk_geom->bsize],
+                        (int)block_size_high[ctx->blk_geom->bsize], org_u, org_v, bw_uv, bh_uv,
+                        (int)cand_bf->cand->block_mi.mode, (int)cand_bf->cand->block_mi.uv_mode,
+                        (int)cand_bf->cand->block_mi.angle_delta[1]);
+                for (int i = 0; i < 2 * bw_uv; ++i)
+                    fprintf(f, "%s%u", i ? "," : "", (unsigned)t[i]);
+                fprintf(f, "] left=[");
+                for (int i = 0; i < 2 * bh_uv; ++i)
+                    fprintf(f, "%s%u", i ? "," : "", (unsigned)l[i]);
+                fprintf(f, "] pv=%u\n", (unsigned)((const uint16_t*)cand_bf->pred->v_buffer)[0]);
+                fflush(f);
+            }
+        }
+    }
+    return r;
 }
 
 /* ---- chroma FAST-RATE interposer (issue #15, the last 2 unaligned cells) --
