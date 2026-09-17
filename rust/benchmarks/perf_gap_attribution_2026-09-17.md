@@ -96,10 +96,14 @@ Facts that ruled out easy answers:
    i32 `>> 2` + `vqmovn_s32` (`packs_epi32`) + wrapping-i16 tail.
    `hadamard_{16,32}x32_matches_c` FFI tests pass (8-bit + bd10 wrap
    ranges). ident=Y. LANDED.
-5. Last stub of the audit: `predict_smooth_impl_neon` (plus
-   `predict_smooth_v`/`predict_smooth_h`, which have no dispatch at
-   all). The scalar core is branch-free and likely already
-   LLVM-vectorized — LOW expected value, untried.
+5. **`predict_smooth{,_v,_h}` NEON arms** — last intra_pred stub;
+   smooth_v/h had no dispatch at all. Transliterates the v3 factored
+   form (`(wh*top + ww*d + K) >> 9`, per-row scalars hoisted, column
+   vectors widened once per block) to i32x4 `vmlaq` + `vshrq` +
+   `vqmovn`/`vqmovun` narrows; w%8==0 && w<=64 vectorized, w=4 stays
+   scalar. All-sizes dispatch tests (w,h in 4..64) byte-exact vs scalar;
+   ident=Y. A/B (vs post-hadamard base): **1.009x / 1.011x** at
+   256/512 p4 — small but consistent, and it closes the stub. LANDED.
 
 ## Measured attempts (null or negative — DO NOT RETRY blindly)
 

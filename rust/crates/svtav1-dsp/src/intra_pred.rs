@@ -103,7 +103,7 @@ fn predict_smooth_impl_scalar(
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn predict_smooth_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     dst: &mut [u8],
     dst_stride: usize,
     above: &[u8],
@@ -111,7 +111,58 @@ fn predict_smooth_impl_neon(
     width: usize,
     height: usize,
 ) {
-    predict_smooth_core(dst, dst_stride, above, left, width, height);
+    // Same factored form as the v3 arm:
+    //   pred[c] = (wh * top[c] + ww[c] * d + K) >> 9
+    //   d = left[row] - right,  K = 256*right + (256 - wh)*below + 256
+    // — every product is nonneg and the total is <= 260,866, so i32 lanes
+    // are exact, `>> 9` is the scalar floor-div, and `.min(255)` is the
+    // u8 saturating narrow.
+    if width < 8 || width % 8 != 0 || width > 64 {
+        predict_smooth_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    let below = left[height - 1] as i32;
+    let right = above[width - 1] as i32;
+    let sm_h = smooth_weights(height);
+    let sm_w = smooth_weights(width);
+    // Hoist the column-varying vectors (top, ww) widened to i32 per block.
+    let mut tops = [vdupq_n_s32(0); 16];
+    let mut wws = [vdupq_n_s32(0); 16];
+    for j in 0..width / 4 {
+        tops[j] = smooth_ld4_widen_neon(token, &above[j * 4..j * 4 + 4]);
+        wws[j] = smooth_ld4_widen_neon(token, &sm_w[j * 4..j * 4 + 4]);
+    }
+    for row in 0..height {
+        let wh = sm_h[row] as i32;
+        let dv = vdupq_n_s32(left[row] as i32 - right);
+        let kv = vdupq_n_s32(256 * right + (256 - wh) * below + 256);
+        let whv = vdupq_n_s32(wh);
+        let base = row * dst_stride;
+        for j in 0..width / 8 {
+            let a0 = vshrq_n_s32::<9>(vmlaq_s32(vmlaq_s32(kv, tops[2 * j], whv), wws[2 * j], dv));
+            let a1 = vshrq_n_s32::<9>(vmlaq_s32(
+                vmlaq_s32(kv, tops[2 * j + 1], whv),
+                wws[2 * j + 1],
+                dv,
+            ));
+            // i32 -> i16 saturate (values <= 511, exact) -> u8 saturate.
+            let lo = vcombine_s16(vqmovn_s32(a0), vqmovn_s32(a1));
+            let d8: &mut [u8; 8] = (&mut dst[base + j * 8..base + j * 8 + 8])
+                .try_into()
+                .unwrap();
+            vst1_u8(d8, vqmovun_s16(lo));
+        }
+    }
+}
+
+/// Widen 4 u8 values to i32 lanes via a broadcast-load (the dup lands the
+/// same 4 bytes in both halves; only the low half is widened).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn smooth_ld4_widen_neon(_token: NeonToken, v: &[u8]) -> int32x4_t {
+    let b: &[u8; 4] = v.try_into().unwrap();
+    let d = vreinterpret_u8_u32(vld1_dup_u32(&u32::from_le_bytes(*b)));
+    vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(vmovl_u8(d))))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -299,6 +350,32 @@ pub fn predict_smooth_v(
     height: usize,
     width: usize,
 ) {
+    incant!(
+        predict_smooth_v_impl(dst, dst_stride, above, left, height, width),
+        [neon, scalar]
+    );
+}
+
+fn predict_smooth_v_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    height: usize,
+    width: usize,
+) {
+    predict_smooth_v_core(dst, dst_stride, above, left, height, width);
+}
+
+fn predict_smooth_v_core(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    height: usize,
+    width: usize,
+) {
     let below_pred = left[height - 1] as u32;
     let sm_weights = smooth_weights(height);
 
@@ -312,8 +389,74 @@ pub fn predict_smooth_v(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_v_impl_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    height: usize,
+    width: usize,
+) {
+    // pred[c] = (w * top[c] + K) >> 8,  K = (256 - w)*below + 128 — same
+    // factored form as predict_smooth; i32 lanes exact (<= 131,200).
+    if width < 8 || width % 8 != 0 || width > 64 {
+        predict_smooth_v_core(dst, dst_stride, above, left, height, width);
+        return;
+    }
+    let below = left[height - 1] as i32;
+    let sm_weights = smooth_weights(height);
+    let mut tops = [vdupq_n_s32(0); 16];
+    for j in 0..width / 4 {
+        tops[j] = smooth_ld4_widen_neon(token, &above[j * 4..j * 4 + 4]);
+    }
+    for row in 0..height {
+        let w = sm_weights[row] as i32;
+        let wv = vdupq_n_s32(w);
+        let kv = vdupq_n_s32((256 - w) * below + 128);
+        let base = row * dst_stride;
+        for j in 0..width / 8 {
+            let a0 = vshrq_n_s32::<8>(vmlaq_s32(kv, tops[2 * j], wv));
+            let a1 = vshrq_n_s32::<8>(vmlaq_s32(kv, tops[2 * j + 1], wv));
+            let lo = vcombine_s16(vqmovn_s32(a0), vqmovn_s32(a1));
+            let d8: &mut [u8; 8] = (&mut dst[base + j * 8..base + j * 8 + 8])
+                .try_into()
+                .unwrap();
+            vst1_u8(d8, vqmovun_s16(lo));
+        }
+    }
+}
+
 /// Predict a block using smooth horizontal (only horizontal interpolation).
 pub fn predict_smooth_h(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    incant!(
+        predict_smooth_h_impl(dst, dst_stride, above, left, width, height),
+        [neon, scalar]
+    );
+}
+
+fn predict_smooth_h_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_h_core(dst, dst_stride, above, left, width, height);
+}
+
+fn predict_smooth_h_core(
     dst: &mut [u8],
     dst_stride: usize,
     above: &[u8],
@@ -330,6 +473,45 @@ pub fn predict_smooth_h(
             let w = sm_weights[col] as u32;
             let pred = (w * lft + (256 - w) * right_pred + 128) / 256;
             dst[row * dst_stride + col] = pred.min(255) as u8;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_h_impl_neon(
+    token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    // pred[c] = (ww[c] * d + K) >> 8,  d = left[row] - right,
+    // K = 256*right + 128 — same factored form; i32 lanes exact.
+    if width < 8 || width % 8 != 0 || width > 64 {
+        predict_smooth_h_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    let right = above[width - 1] as i32;
+    let sm_w = smooth_weights(width);
+    let mut wws = [vdupq_n_s32(0); 16];
+    for j in 0..width / 4 {
+        wws[j] = smooth_ld4_widen_neon(token, &sm_w[j * 4..j * 4 + 4]);
+    }
+    let kv = vdupq_n_s32(256 * right + 128);
+    for row in 0..height {
+        let dv = vdupq_n_s32(left[row] as i32 - right);
+        let base = row * dst_stride;
+        for j in 0..width / 8 {
+            let a0 = vshrq_n_s32::<8>(vmlaq_s32(kv, wws[2 * j], dv));
+            let a1 = vshrq_n_s32::<8>(vmlaq_s32(kv, wws[2 * j + 1], dv));
+            let lo = vcombine_s16(vqmovn_s32(a0), vqmovn_s32(a1));
+            let d8: &mut [u8; 8] = (&mut dst[base + j * 8..base + j * 8 + 8])
+                .try_into()
+                .unwrap();
+            vst1_u8(d8, vqmovun_s16(lo));
         }
     }
 }
@@ -2384,6 +2566,29 @@ mod tests {
                         got[i]
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn predict_smooth_vh_dispatch_matches_core_all_sizes() {
+        let mut seed = 0x6789au32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for &width in &[4usize, 8, 16, 32, 64] {
+            for &height in &[4usize, 8, 16, 32, 64] {
+                let above: Vec<u8> = (0..width).map(|_| next()).collect();
+                let left: Vec<u8> = (0..height).map(|_| next()).collect();
+                let mut want = vec![0u8; width * height];
+                let mut got = vec![0u8; width * height];
+                predict_smooth_v_core(&mut want, width, &above, &left, height, width);
+                predict_smooth_v(&mut got, width, &above, &left, 0, height, width);
+                assert_eq!(want, got, "predict_smooth_v {width}x{height}");
+                predict_smooth_h_core(&mut want, width, &above, &left, width, height);
+                predict_smooth_h(&mut got, width, &above, &left, width, height);
+                assert_eq!(want, got, "predict_smooth_h {width}x{height}");
             }
         }
     }
