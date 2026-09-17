@@ -72,6 +72,10 @@ fn residual_i32_impl_scalar(
     residual_i32_core(src, src_stride, pred, pred_stride, w, h, out);
 }
 
+/// The scalar core auto-vectorizes to the same widen/subtract pattern a
+/// hand-written arm produces; a measured AVX2 port of it was slower
+/// (callgrind A/B, 512x512 q32 p6: +3.3M Ir — per-step slice conversion and
+/// loop-chunk dispatch cost more than LLVM's straight-row vectorization).
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
@@ -208,6 +212,9 @@ fn residual_i16_impl_scalar(
     residual_i16_core(src, src_stride, pred, pred_stride, w, h, out);
 }
 
+/// Same measured outcome as [`residual_i32_impl_v3`]: the scalar core
+/// auto-vectorizes better than a hand-written arm (+1.1M Ir on the same
+/// callgrind A/B).
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
@@ -313,6 +320,9 @@ fn recon_add_clamp_impl_scalar(
     recon_add_clamp_core(pred, pred_stride, inv, w, h, out);
 }
 
+/// Same measured outcome as [`residual_i32_impl_v3`]: the scalar core
+/// auto-vectorizes better than a hand-written arm (+2.2M Ir on the same
+/// callgrind A/B).
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn recon_add_clamp_impl_v3(
@@ -417,10 +427,61 @@ fn sse_i32_impl_scalar(_token: ScalarToken, a: &[i32], b: &[i32]) -> u64 {
     sse_i32_core(a, b)
 }
 
+/// Eight i32 lanes per iteration; `mul_epi32` gives the exact widened
+/// product-accumulate on the even lanes and `srli_epi64` feeds the odd lanes.
+///
+/// The difference is taken in i32 for the same reason the NEON arm documents:
+/// there is no i32 signed-saturating subtract on x86 (and no i64xi64
+/// multiply), so this arm keeps the cheap wrapping `sub_epi32` and detects the
+/// only case where it is not the C answer: an i32 subtraction wraps iff
+/// `sign(x) != sign(y)` and `sign(d) != sign(x)`, i.e. the sign bit of
+/// `(x ^ y) & (x ^ d)` is set. The loop ORs that into a witness (three extra
+/// instructions per 8 lanes); a nonzero witness at the end discards the
+/// vector result and returns the exact scalar core. Fast path exact, slow
+/// path exact — no tier silently wraps.
+///
+/// Re-association: four independent i64 lanes summed at the end are bit-exact
+/// vs the scalar left-to-right order — two's-complement addition is a group
+/// operation mod 2^64 — and on the fast path every TERM is exact.
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn sse_i32_impl_v3(_token: Desktop64, a: &[i32], b: &[i32]) -> u64 {
-    sse_i32_core(a, b)
+    let n = a.len().min(b.len());
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
+    let mut wrapped = _mm256_setzero_si256();
+    let mut i = 0usize;
+    while i + 8 <= n {
+        let xa: &[i32; 8] = a[i..i + 8].try_into().unwrap();
+        let ya: &[i32; 8] = b[i..i + 8].try_into().unwrap();
+        let x = _mm256_loadu_si256(xa);
+        let y = _mm256_loadu_si256(ya);
+        let d = _mm256_sub_epi32(x, y);
+        wrapped = _mm256_or_si256(
+            wrapped,
+            _mm256_and_si256(_mm256_xor_si256(x, y), _mm256_xor_si256(x, d)),
+        );
+        let d_odd = _mm256_srli_epi64::<32>(d);
+        acc0 = _mm256_add_epi64(acc0, _mm256_mul_epi32(d, d));
+        acc1 = _mm256_add_epi64(acc1, _mm256_mul_epi32(d_odd, d_odd));
+        i += 8;
+    }
+    // Sign bit of `(x ^ y) & (x ^ d)` set in any lane => an i32 difference
+    // wrapped somewhere; only the scalar core computes those terms exactly.
+    let wsign = _mm256_srai_epi32::<31>(wrapped);
+    if _mm256_testz_si256(wsign, wsign) == 0 {
+        return sse_i32_core(a, b);
+    }
+    let acc = _mm256_add_epi64(acc0, acc1);
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(&mut lanes, acc);
+    let mut d =
+        (lanes[0].wrapping_add(lanes[1])).wrapping_add(lanes[2].wrapping_add(lanes[3])) as u64;
+    for k in i..n {
+        let e = (a[k] as i64) - (b[k] as i64);
+        d = d.wrapping_add(e.wrapping_mul(e) as u64);
+    }
+    d
 }
 
 /// Four i64 lanes accumulate the squared differences; `vmlal_s32` /
@@ -514,6 +575,10 @@ fn sq_sum_i32_impl_scalar(_token: ScalarToken, a: &[i32]) -> u64 {
     sq_sum_i32_core(a)
 }
 
+/// Unlike [`sse_i32_impl_v3`] (which won its A/B because the i32 subtract
+/// halves the widened-multiply count), this kernel's LLVM auto-vectorization
+/// already produces the same `mul_epi32` widening — the hand arm measured
+/// slower (+1.0M Ir, same callgrind A/B).
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn sq_sum_i32_impl_v3(_token: Desktop64, a: &[i32]) -> u64 {
