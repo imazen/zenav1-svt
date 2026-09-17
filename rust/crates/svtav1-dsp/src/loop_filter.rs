@@ -26,6 +26,9 @@
 // parameter space).
 // =============================================================================
 
+#[allow(unused_imports)]
+use archmage::prelude::*;
+
 /// Loop-filter thresholds for one filter level, as passed to the kernels.
 ///
 /// C: `LoopFilterThresh { mblim, lim, hev_thr }` (definitions.h:1710); the
@@ -391,8 +394,20 @@ fn lpf14_window(w: &mut [u8; 14], t: LfThresh) {
     filter14_line(mask, t.hev_thr, flat, flat2, w);
 }
 
-/// C `svt_aom_lpf_horizontal_14_c` (4 columns).
+/// C `svt_aom_lpf_horizontal_14` — RTCD dispatches to the `_sse2` kernel on
+/// x86 (ported below) and `_c` elsewhere.
 pub fn lpf_horizontal_14(buf: &mut [u8], off: usize, pitch: usize, t: LfThresh) {
+    incant!(lpf_horizontal_14_impl(buf, off, pitch, t), [v3, scalar])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lpf_horizontal_14_impl_scalar(
+    _t: ScalarToken,
+    buf: &mut [u8],
+    off: usize,
+    pitch: usize,
+    t: LfThresh,
+) {
     for i in 0..4 {
         let base = off + i;
         let mut w: [u8; 14] = gather(buf, base, pitch);
@@ -401,12 +416,494 @@ pub fn lpf_horizontal_14(buf: &mut [u8], off: usize, pitch: usize, t: LfThresh) 
     }
 }
 
-/// C `svt_aom_lpf_vertical_14_c` (4 rows).
+/// C `svt_aom_lpf_vertical_14` — same dispatch as [`lpf_horizontal_14`].
 pub fn lpf_vertical_14(buf: &mut [u8], off: usize, pitch: usize, t: LfThresh) {
+    incant!(lpf_vertical_14_impl(buf, off, pitch, t), [v3, scalar])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lpf_vertical_14_impl_scalar(
+    _t: ScalarToken,
+    buf: &mut [u8],
+    off: usize,
+    pitch: usize,
+    t: LfThresh,
+) {
     for i in 0..4 {
         let base = off + i * pitch;
         let mut w: [u8; 14] = gather(buf, base, 1);
         lpf14_window(&mut w, t);
         scatter(buf, base, 1, &w);
+    }
+}
+
+// =============================================================================
+// AVX2 (v3) 14-tap kernels — ports of `ASM_SSE2/dlf_intrin_sse2.c`
+// `svt_aom_lpf_{horizontal,vertical}_14_sse2` + their shared
+// `lpf_internal_14_sse2` / `filter4_14_sse2` / `transpose_pq_14*` helpers.
+//
+// The SSE2 kernels are what the C encoder actually runs on x86 (RTCD maps
+// lpf_14 to the _sse2 forms); the scalar bodies above remain the reference
+// and the non-x86 fallback. Every op is exact integer math, so the vector
+// arms are byte-identical to scalar by construction — both are fuzzed
+// against the linked C reference in tests/c_parity_lpf.rs.
+//
+// Bounds: lpf14 only runs where `lpf_params` measured BOTH adjacent blocks
+// at >=16 px (min_dim > 8 -> len 14), so the s-7..s+6 row window (horizontal)
+// and the s-8..s+7 column window (vertical) are always inside the plane.
+// =============================================================================
+
+/// C `abs_diff` (dlf_intrin_sse2.c:143).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn lpf_abs_diff_v3(_t: Desktop64, a: __m128i, b: __m128i) -> __m128i {
+    _mm_or_si128(_mm_subs_epu8(a, b), _mm_subs_epu8(b, a))
+}
+
+/// C `filter4_14_sse2` (dlf_intrin_sse2.c:227): the narrow-filter half of
+/// the 14-tap kernel. Returns the (qs1qs0, ps1ps0) merged output pairs.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn filter4_14_v3(
+    _t: Desktop64,
+    p1p0: __m128i,
+    q1q0: __m128i,
+    hev: __m128i,
+    mask: __m128i,
+) -> (__m128i, __m128i) {
+    let t3t4 = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 4, 4, 4, 4);
+    let t80 = _mm_set1_epi8(0x80u8 as i8);
+    let ff = _mm_cmpeq_epi8(t80, t80);
+
+    let ps1ps0_work = _mm_xor_si128(p1p0, t80);
+    let mut qs1qs0_work = _mm_xor_si128(q1q0, t80);
+
+    // filter = signed_char_clamp(ps1 - qs1) & hev
+    let work = _mm_subs_epi8(ps1ps0_work, qs1qs0_work);
+    let mut filter = _mm_and_si128(_mm_srli_si128::<4>(work), hev);
+    // filter = signed_char_clamp(filter + 3 * (qs0 - ps0)) & mask
+    filter = _mm_subs_epi8(filter, work);
+    filter = _mm_subs_epi8(filter, work);
+    filter = _mm_subs_epi8(filter, work);
+    filter = _mm_and_si128(filter, mask);
+    filter = _mm_unpacklo_epi32(filter, filter);
+
+    // filter1 = signed_char_clamp(filter + 4) >> 3;
+    // filter2 = signed_char_clamp(filter + 3) >> 3
+    let mut f21 = _mm_adds_epi8(filter, t3t4);
+    f21 = _mm_unpacklo_epi8(f21, f21);
+    f21 = _mm_srai_epi16::<11>(f21);
+    f21 = _mm_packs_epi16(f21, f21);
+
+    // filter = ROUND_POWER_OF_TWO(filter1, 1) & ~hev
+    filter = _mm_subs_epi8(f21, ff);
+    filter = _mm_unpacklo_epi8(filter, filter);
+    filter = _mm_srai_epi16::<9>(filter);
+    filter = _mm_packs_epi16(filter, filter);
+    filter = _mm_andnot_si128(hev, filter);
+    filter = _mm_unpacklo_epi32(filter, filter);
+
+    let f21m = _mm_unpacklo_epi32(f21, filter);
+    let hev1 = _mm_srli_si128::<8>(f21m);
+    // signed_char_clamp(qs1 - filter), signed_char_clamp(qs0 - filter1)
+    qs1qs0_work = _mm_subs_epi8(qs1qs0_work, f21m);
+    // signed_char_clamp(ps1 + filter), signed_char_clamp(ps0 + filter2)
+    let ps1ps0_out = _mm_adds_epi8(ps1ps0_work, hev1);
+
+    (
+        _mm_xor_si128(qs1qs0_work, t80),
+        _mm_xor_si128(ps1ps0_out, t80),
+    )
+}
+
+/// C `lpf_internal_14_sse2` (dlf_intrin_sse2.c:357). `qp[i]` is the merged
+/// `q{i}p{i}` pair vector; `qp[0..=5]` are written back, `qp[6]` is
+/// read-only (the outermost tap pair never changes).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn lpf_internal_14_v3(
+    token: Desktop64,
+    qp: &mut [__m128i; 7],
+    blimit16: __m128i,
+    limit: __m128i,
+    thresh: __m128i,
+) {
+    let zero = _mm_setzero_si128();
+    let one = _mm_set1_epi8(1);
+    let fe = _mm_set1_epi8(0xfeu8 as i8);
+    let ff = _mm_cmpeq_epi8(fe, fe);
+
+    let p1p0 = _mm_unpacklo_epi32(qp[0], qp[1]);
+    let q1q0 = _mm_srli_si128::<8>(p1p0);
+
+    // filter_mask + hev_mask (dlf_intrin_sse2.c:371-404)
+    let abs_p1p0 = lpf_abs_diff_v3(token, qp[1], qp[0]);
+    let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+    let abs_p0q0 = lpf_abs_diff_v3(token, p1p0, q1q0);
+    let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+
+    let flat_a = _mm_max_epu8(abs_p1p0, abs_q1q0);
+    let mut hev = _mm_subs_epu8(flat_a, thresh);
+    hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+    // replicate for the "merged variables" usage
+    hev = _mm_unpacklo_epi32(hev, hev);
+
+    abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+    // The sum>blimit "don't filter" flag, computed in u16 and kept separate
+    // from the diff max. C's _sse2 kernel (a) saturates the u8 sum at 255,
+    // dropping the flag for true sums 256..510 at blimit=255, and (b) folds
+    // the FF flag through subs(x, limit) where it collapses at limit=255.
+    // _c's `~mask` keeps both. mblim <= 193 and lim <= 63 in every
+    // derivable threshold (deblocking_common.c:574-587), so this is
+    // _sse2-exact on all reachable inputs and _c-exact everywhere.
+    let a16 = _mm_unpacklo_epi8(abs_p0q0, zero);
+    let s16 = _mm_add_epi16(_mm_add_epi16(a16, a16), _mm_unpacklo_epi8(abs_p1q1, zero));
+    let flag = _mm_packs_epi16(
+        _mm_cmpgt_epi16(s16, blimit16),
+        _mm_cmpgt_epi16(s16, blimit16),
+    );
+
+    let mut work = _mm_max_epu8(
+        lpf_abs_diff_v3(token, qp[2], qp[1]),
+        lpf_abs_diff_v3(token, qp[3], qp[2]),
+    );
+    work = _mm_max_epu8(abs_p1p0, work);
+    work = _mm_max_epu8(work, _mm_srli_si128::<4>(work));
+    work = _mm_subs_epu8(work, limit);
+    let mask = _mm_andnot_si128(flag, _mm_cmpeq_epi8(work, zero));
+
+    // lp filter (shared with the 6/8-tap kernels)
+    let (qs1qs0, ps1ps0) = filter4_14_v3(token, p1p0, q1q0, hev, mask);
+    let mut qs0ps0 = _mm_unpacklo_epi32(ps1ps0, qs1qs0);
+    let mut qs1ps1 = _mm_srli_si128::<8>(qs0ps0);
+
+    // flat mask
+    let mut flat = _mm_max_epu8(
+        lpf_abs_diff_v3(token, qp[2], qp[0]),
+        lpf_abs_diff_v3(token, qp[3], qp[0]),
+    );
+    flat = _mm_max_epu8(abs_p1p0, flat);
+    flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+    flat = _mm_subs_epu8(flat, one);
+    flat = _mm_cmpeq_epi8(flat, zero);
+    flat = _mm_and_si128(flat, mask);
+    flat = _mm_unpacklo_epi32(flat, flat);
+    flat = _mm_unpacklo_epi64(flat, flat);
+
+    // if flat == 0 then flat2 is zero as well and none of this is needed
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(flat, zero)) != 0xffff {
+        // flat and wide-flat calculations
+        let eight = _mm_set1_epi16(8);
+        let four = _mm_set1_epi16(4);
+        let mut pq_16 = [zero; 7];
+        for (i, v) in pq_16.iter_mut().enumerate() {
+            *v = _mm_unpacklo_epi8(qp[i], zero);
+        }
+        let q0_16 = _mm_srli_si128::<8>(pq_16[0]);
+        let q1_16 = _mm_srli_si128::<8>(pq_16[1]);
+        let q2_16 = _mm_srli_si128::<8>(pq_16[2]);
+        let q3_16 = _mm_srli_si128::<8>(pq_16[3]);
+        let q4_16 = _mm_srli_si128::<8>(pq_16[4]);
+        let q5_16 = _mm_srli_si128::<8>(pq_16[5]);
+
+        let mut sum_p = _mm_add_epi16(pq_16[5], _mm_add_epi16(pq_16[4], pq_16[3]));
+        let mut sum_lp = _mm_add_epi16(pq_16[0], _mm_add_epi16(pq_16[2], pq_16[1]));
+        sum_p = _mm_add_epi16(sum_p, sum_lp);
+
+        let mut sum_lq = _mm_srli_si128::<8>(sum_lp);
+        let mut sum_q = _mm_srli_si128::<8>(sum_p);
+
+        let sum_p_0 = _mm_add_epi16(eight, _mm_add_epi16(sum_p, sum_q));
+        sum_lp = _mm_add_epi16(four, _mm_add_epi16(sum_lp, sum_lq));
+
+        let flat_p0 = _mm_add_epi16(sum_lp, _mm_add_epi16(pq_16[3], pq_16[0]));
+        let flat_q0 = _mm_add_epi16(sum_lp, _mm_add_epi16(q3_16, q0_16));
+
+        let mut sum_p6 = _mm_add_epi16(pq_16[6], pq_16[6]);
+        let mut sum_p3 = _mm_add_epi16(pq_16[3], pq_16[3]);
+
+        sum_q = _mm_sub_epi16(sum_p_0, pq_16[5]);
+        sum_p = _mm_sub_epi16(sum_p_0, q5_16);
+
+        let work0_0 = _mm_add_epi16(_mm_add_epi16(pq_16[6], pq_16[0]), pq_16[1]);
+        let work0_1 = _mm_add_epi16(
+            sum_p6,
+            _mm_add_epi16(pq_16[1], _mm_add_epi16(pq_16[2], pq_16[0])),
+        );
+
+        sum_lq = _mm_sub_epi16(sum_lp, pq_16[2]);
+        sum_lp = _mm_sub_epi16(sum_lp, q2_16);
+
+        work = _mm_add_epi16(sum_p3, pq_16[1]);
+        let flat_p1 = _mm_add_epi16(sum_lp, work);
+        let flat_q1 = _mm_add_epi16(sum_lq, _mm_srli_si128::<8>(work));
+
+        let mut flat_pq0 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p0, flat_q0));
+        let mut flat_pq1 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p1, flat_q1));
+        flat_pq0 = _mm_packus_epi16(flat_pq0, flat_pq0);
+        flat_pq1 = _mm_packus_epi16(flat_pq1, flat_pq1);
+
+        sum_lp = _mm_sub_epi16(sum_lp, q1_16);
+        sum_lq = _mm_sub_epi16(sum_lq, pq_16[1]);
+
+        sum_p3 = _mm_add_epi16(sum_p3, pq_16[3]);
+        work = _mm_add_epi16(sum_p3, pq_16[2]);
+
+        let flat_p2 = _mm_add_epi16(sum_lp, work);
+        let flat_q2 = _mm_add_epi16(sum_lq, _mm_srli_si128::<8>(work));
+        let mut flat_pq2 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p2, flat_q2));
+        flat_pq2 = _mm_packus_epi16(flat_pq2, flat_pq2);
+
+        // flat2 mask
+        let mut flat2 = _mm_max_epu8(
+            lpf_abs_diff_v3(token, qp[4], qp[0]),
+            lpf_abs_diff_v3(token, qp[5], qp[0]),
+        );
+        work = lpf_abs_diff_v3(token, qp[6], qp[0]);
+        flat2 = _mm_max_epu8(work, flat2);
+        flat2 = _mm_max_epu8(flat2, _mm_srli_si128::<4>(flat2));
+        flat2 = _mm_subs_epu8(flat2, one);
+        flat2 = _mm_cmpeq_epi8(flat2, zero);
+        flat2 = _mm_and_si128(flat2, flat); // flat2 & flat & mask
+        flat2 = _mm_unpacklo_epi32(flat2, flat2);
+
+        // apply flat
+        qs0ps0 = _mm_andnot_si128(flat, qs0ps0);
+        flat_pq0 = _mm_and_si128(flat, flat_pq0);
+        qp[0] = _mm_or_si128(qs0ps0, flat_pq0);
+
+        qs1ps1 = _mm_andnot_si128(flat, qs1ps1);
+        flat_pq1 = _mm_and_si128(flat, flat_pq1);
+        qp[1] = _mm_or_si128(qs1ps1, flat_pq1);
+
+        qp[2] = _mm_andnot_si128(flat, qp[2]);
+        flat_pq2 = _mm_and_si128(flat, flat_pq2);
+        qp[2] = _mm_or_si128(qp[2], flat_pq2);
+
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(flat2, zero)) != 0xffff {
+            let mut flat2_pq = [zero; 6];
+
+            let flat2_p0 = _mm_add_epi16(sum_p_0, _mm_add_epi16(work0_0, q0_16));
+            let flat2_q0 = _mm_add_epi16(
+                sum_p_0,
+                _mm_add_epi16(_mm_srli_si128::<8>(work0_0), pq_16[0]),
+            );
+
+            let flat2_p1 = _mm_add_epi16(sum_p, work0_1);
+            let flat2_q1 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0_1));
+
+            flat2_pq[0] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p0, flat2_q0));
+            flat2_pq[1] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p1, flat2_q1));
+            flat2_pq[0] = _mm_packus_epi16(flat2_pq[0], flat2_pq[0]);
+            flat2_pq[1] = _mm_packus_epi16(flat2_pq[1], flat2_pq[1]);
+
+            sum_p = _mm_sub_epi16(sum_p, q4_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[4]);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            work = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[2], _mm_add_epi16(pq_16[3], pq_16[1])),
+            );
+            let flat2_p2 = _mm_add_epi16(sum_p, work);
+            let flat2_q2 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work));
+            flat2_pq[2] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p2, flat2_q2));
+            flat2_pq[2] = _mm_packus_epi16(flat2_pq[2], flat2_pq[2]);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q3_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[3]);
+
+            work = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[3], _mm_add_epi16(pq_16[4], pq_16[2])),
+            );
+            let flat2_p3 = _mm_add_epi16(sum_p, work);
+            let flat2_q3 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work));
+            flat2_pq[3] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p3, flat2_q3));
+            flat2_pq[3] = _mm_packus_epi16(flat2_pq[3], flat2_pq[3]);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q2_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[2]);
+
+            work = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[4], _mm_add_epi16(pq_16[5], pq_16[3])),
+            );
+            let flat2_p4 = _mm_add_epi16(sum_p, work);
+            let flat2_q4 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work));
+            flat2_pq[4] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p4, flat2_q4));
+            flat2_pq[4] = _mm_packus_epi16(flat2_pq[4], flat2_pq[4]);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q1_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[1]);
+
+            work = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[5], _mm_add_epi16(pq_16[6], pq_16[4])),
+            );
+            let flat2_p5 = _mm_add_epi16(sum_p, work);
+            let flat2_q5 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work));
+            flat2_pq[5] = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p5, flat2_q5));
+            flat2_pq[5] = _mm_packus_epi16(flat2_pq[5], flat2_pq[5]);
+
+            // wide flat apply
+            for i in 0..6 {
+                qp[i] = _mm_or_si128(
+                    _mm_andnot_si128(flat2, qp[i]),
+                    _mm_and_si128(flat2, flat2_pq[i]),
+                );
+            }
+        }
+    } else {
+        qp[0] = qs0ps0;
+        qp[1] = qs1ps1;
+    }
+}
+
+/// C `svt_aom_lpf_horizontal_14_sse2` — 4 columns. Loads the 4-byte rows
+/// p6..q6 pairwise into the merged `q{i}p{i}` vectors, filters, and stores
+/// the 12 modified rows (p5..q5) back through `store_buffer_horz_8`.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn lpf_horizontal_14_impl_v3(
+    token: Desktop64,
+    buf: &mut [u8],
+    off: usize,
+    pitch: usize,
+    t: LfThresh,
+) {
+    let blimit16 = _mm_set1_epi16(t.mblim as i16);
+    let limit = _mm_set1_epi8(t.lim as i8);
+    let thresh = _mm_set1_epi8(t.hev_thr as i8);
+
+    let row = |k: isize| -> __m128i {
+        let i = (off as isize + k * pitch as isize) as usize;
+        let r: &[u8; 4] = buf[i..i + 4].try_into().unwrap();
+        _mm_loadu_si32(r)
+    };
+    let mut qp = [
+        _mm_unpacklo_epi32(row(-1), row(0)),
+        _mm_unpacklo_epi32(row(-2), row(1)),
+        _mm_unpacklo_epi32(row(-3), row(2)),
+        _mm_unpacklo_epi32(row(-4), row(3)),
+        _mm_unpacklo_epi32(row(-5), row(4)),
+        _mm_unpacklo_epi32(row(-6), row(5)),
+        _mm_unpacklo_epi32(row(-7), row(6)),
+    ];
+    lpf_internal_14_v3(token, &mut qp, blimit16, limit, thresh);
+    // C `store_buffer_horz_8(q{num}p{num}, p, num, s)`, num = 0..=5:
+    // stores 4 bytes at s-(num+1)*p and s+num*p.
+    for num in 0..6isize {
+        let v = qp[num as usize];
+        let lo = (off as isize - (num + 1) * pitch as isize) as usize;
+        let d_lo: &mut [u8; 4] = (&mut buf[lo..lo + 4]).try_into().unwrap();
+        _mm_storeu_si32(d_lo, v);
+        let hi = (off as isize + num * pitch as isize) as usize;
+        let d_hi: &mut [u8; 4] = (&mut buf[hi..hi + 4]).try_into().unwrap();
+        _mm_storeu_si32(d_hi, _mm_srli_si128::<4>(v));
+    }
+}
+
+/// C `transpose_pq_14_sse2` (dlf_intrin_sse2.c:1029): four 16-byte rows in
+/// (x[0..4] = file rows 0..3), eight merged `q{i}p{i}` pairs out.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn transpose_pq_14_v3(_t: Desktop64, x: &[__m128i; 4]) -> [__m128i; 8] {
+    let w0 = _mm_unpacklo_epi8(x[0], x[1]);
+    let w1 = _mm_unpacklo_epi8(x[2], x[3]);
+    let w2 = _mm_unpackhi_epi8(x[0], x[1]);
+    let w3 = _mm_unpackhi_epi8(x[2], x[3]);
+
+    let ww0 = _mm_unpacklo_epi16(w0, w1);
+    let ww1 = _mm_unpackhi_epi16(w0, w1);
+    let ww2 = _mm_unpacklo_epi16(w2, w3);
+    let ww3 = _mm_unpackhi_epi16(w2, w3);
+
+    [
+        _mm_unpacklo_epi32(_mm_srli_si128::<12>(ww1), ww2), // q0p0
+        _mm_unpackhi_epi32(ww1, _mm_slli_si128::<4>(ww2)),  // q1p1
+        _mm_unpackhi_epi32(_mm_slli_si128::<4>(ww1), ww2),  // q2p2
+        _mm_unpacklo_epi32(ww1, _mm_srli_si128::<12>(ww2)), // q3p3
+        _mm_unpacklo_epi32(_mm_srli_si128::<12>(ww0), ww3), // q4p4
+        _mm_unpackhi_epi32(ww0, _mm_slli_si128::<4>(ww3)),  // q5p5
+        _mm_unpackhi_epi32(_mm_slli_si128::<4>(ww0), ww3),  // q6p6
+        _mm_unpacklo_epi32(ww0, _mm_srli_si128::<12>(ww3)), // q7p7
+    ]
+}
+
+/// C `transpose_pq_14_inv_sse2` (dlf_intrin_sse2.c:1062): eight merged
+/// pairs in (x[0..8] = q7p7..q0p0, C's argument order), four 16-byte
+/// rows out.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn transpose_pq_14_inv_v3(_t: Desktop64, x: &[__m128i; 8]) -> [__m128i; 4] {
+    let w0 = _mm_unpacklo_epi8(x[0], x[1]);
+    let w1 = _mm_unpacklo_epi8(x[2], x[3]);
+    let w2 = _mm_unpacklo_epi8(x[4], x[5]);
+    let w3 = _mm_unpacklo_epi8(x[6], x[7]);
+
+    let w4 = _mm_unpacklo_epi16(w0, w1);
+    let w5 = _mm_unpacklo_epi16(w2, w3);
+
+    let d0 = _mm_unpacklo_epi32(w4, w5);
+    let d2 = _mm_unpackhi_epi32(w4, w5);
+
+    let w10 = _mm_unpacklo_epi8(x[7], x[6]);
+    let w11 = _mm_unpacklo_epi8(x[5], x[4]);
+    let w12 = _mm_unpacklo_epi8(x[3], x[2]);
+    let w13 = _mm_unpacklo_epi8(x[1], x[0]);
+
+    let w4b = _mm_unpackhi_epi16(w10, w11);
+    let w5b = _mm_unpackhi_epi16(w12, w13);
+
+    let d1 = _mm_unpacklo_epi32(w4b, w5b);
+    let d3 = _mm_unpackhi_epi32(w4b, w5b);
+
+    [
+        _mm_unpacklo_epi64(d0, d1),
+        _mm_unpackhi_epi64(d0, d1),
+        _mm_unpacklo_epi64(d2, d3),
+        _mm_unpackhi_epi64(d2, d3),
+    ]
+}
+
+/// C `svt_aom_lpf_vertical_14_sse2` — 4 rows. Loads a 16-byte p7..q7
+/// window per row (the outermost pair round-trips unchanged), transposes
+/// to merged pairs, filters, transposes back, stores all 16 bytes.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn lpf_vertical_14_impl_v3(
+    token: Desktop64,
+    buf: &mut [u8],
+    off: usize,
+    pitch: usize,
+    t: LfThresh,
+) {
+    let blimit16 = _mm_set1_epi16(t.mblim as i16);
+    let limit = _mm_set1_epi8(t.lim as i8);
+    let thresh = _mm_set1_epi8(t.hev_thr as i8);
+
+    let mut x = [_mm_setzero_si128(); 4];
+    for (i, v) in x.iter_mut().enumerate() {
+        let b = off - 8 + i * pitch;
+        let r: &[u8; 16] = buf[b..b + 16].try_into().unwrap();
+        *v = _mm_loadu_si128(r);
+    }
+    let qp8 = transpose_pq_14_v3(token, &x);
+    let mut qp: [__m128i; 7] = qp8[..7].try_into().unwrap();
+    lpf_internal_14_v3(token, &mut qp, blimit16, limit, thresh);
+    // C passes q7p7..q0p0 to the inverse transpose.
+    let inv_in = [qp8[7], qp[6], qp[5], qp[4], qp[3], qp[2], qp[1], qp[0]];
+    let pq = transpose_pq_14_inv_v3(token, &inv_in);
+    for (i, v) in pq.iter().enumerate() {
+        let b = off - 8 + i * pitch;
+        let d: &mut [u8; 16] = (&mut buf[b..b + 16]).try_into().unwrap();
+        _mm_storeu_si128(d, *v);
     }
 }

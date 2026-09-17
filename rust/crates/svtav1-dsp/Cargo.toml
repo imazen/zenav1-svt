@@ -308,3 +308,7 @@ path = "tests/variance_neon_parity.rs"
 [[test]]
 name = "tier_residual"
 path = "tests/tier_residual.rs"
+
+[[test]]
+name = "tier_lpf14"
+path = "tests/tier_lpf14.rs"
