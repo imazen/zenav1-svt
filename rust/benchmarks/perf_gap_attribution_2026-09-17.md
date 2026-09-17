@@ -88,7 +88,15 @@ Facts that ruled out easy answers:
    level/sharpness space) pass; ident=Y.
    A/B (cumulative with the two arms above): **1.035x / 1.052x** at
    256/512 p4, tight bands. LANDED.
-4. Last stub of the audit: `predict_smooth_impl_neon` (plus
+4. **`aom_hadamard_16x16`/`32x32` NEON arms** — 596 samples at 512p4,
+   the largest remaining kernel gap (aarch64 fell to a `cfg(not(x86))`
+   scalar with no dispatch at all). Composes the existing NEON 8x8 +
+   the AVX2-semantics cross-combine: wrapping `vaddq_s16`/`vsubq_s16` +
+   `vshrq_n_s16` (the `_mm256_srai_epi16` `>> 1`), and for 32x32 the
+   i32 `>> 2` + `vqmovn_s32` (`packs_epi32`) + wrapping-i16 tail.
+   `hadamard_{16,32}x32_matches_c` FFI tests pass (8-bit + bd10 wrap
+   ranges). ident=Y. LANDED.
+5. Last stub of the audit: `predict_smooth_impl_neon` (plus
    `predict_smooth_v`/`predict_smooth_h`, which have no dispatch at
    all). The scalar core is branch-free and likely already
    LLVM-vectorized — LOW expected value, untried.

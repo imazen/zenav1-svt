@@ -957,21 +957,21 @@ fn aom_hadamard_8x8_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32])
 /// carried in WRAPPING 16-bit lanes (`_mm256_{add,sub}_epi16`,
 /// `_mm256_srai_epi16`), widened to `int32` on store (`store_tran_low`).
 pub fn aom_hadamard_16x16(src: &[i16], stride: usize, coeff: &mut [i32]) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        incant!(aom_hadamard_16x16_impl(src, stride, coeff), [v3, scalar]);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        aom_hadamard_16x16_core(src, stride, coeff);
-    }
+    incant!(
+        aom_hadamard_16x16_impl(src, stride, coeff),
+        [v3, neon, scalar]
+    );
 }
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn aom_hadamard_16x16_impl_v3(token: X64V3Token, src: &[i16], stride: usize, coeff: &mut [i32]) {
     hadamard_compose16_v3(token, src, stride, coeff);
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn aom_hadamard_16x16_impl_neon(token: NeonToken, src: &[i16], stride: usize, coeff: &mut [i32]) {
+    hadamard_compose16_neon(token, src, stride, coeff);
+}
 fn aom_hadamard_16x16_impl_scalar(
     _token: ScalarToken,
     src: &[i16],
@@ -985,21 +985,21 @@ fn aom_hadamard_16x16_impl_scalar(
 /// sum/difference and `>> 2`, SATURATED back to 16-bit (`_mm256_packs_epi32`)
 /// and combined with wrapping 16-bit add/sub before the 32-bit store.
 pub fn aom_hadamard_32x32(src: &[i16], stride: usize, coeff: &mut [i32]) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        incant!(aom_hadamard_32x32_impl(src, stride, coeff), [v3, scalar]);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        aom_hadamard_32x32_core(src, stride, coeff);
-    }
+    incant!(
+        aom_hadamard_32x32_impl(src, stride, coeff),
+        [v3, neon, scalar]
+    );
 }
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn aom_hadamard_32x32_impl_v3(token: X64V3Token, src: &[i16], stride: usize, coeff: &mut [i32]) {
     hadamard_compose32_v3(token, src, stride, coeff);
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn aom_hadamard_32x32_impl_neon(token: NeonToken, src: &[i16], stride: usize, coeff: &mut [i32]) {
+    hadamard_compose32_neon(token, src, stride, coeff);
+}
 fn aom_hadamard_32x32_impl_scalar(
     _token: ScalarToken,
     src: &[i16],
@@ -1125,6 +1125,95 @@ fn hadamard_compose32_v3(
         coeff[i + 256] = b1.wrapping_add(b3) as i32;
         coeff[i + 512] = b0.wrapping_sub(b2) as i32;
         coeff[i + 768] = b1.wrapping_sub(b3) as i32;
+    }
+}
+
+/// AArch64 twin of [`hadamard_compose16_v3`]: four 8x8 sub-transforms via
+/// [`aom_hadamard_8x8_impl_neon`], then the AVX2-semantics cross-combine —
+/// `coeff` is read back through 16-bit lanes (exact: the 8x8 stage writes
+/// int16-valued i32s) and combined in WRAPPING `vaddq_s16`/`vsubq_s16` with
+/// `vshrq_n_s16` (arithmetic `>> 1`, identical to `_mm256_srai_epi16`).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn hadamard_compose16_neon(
+    token: NeonToken,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+        aom_hadamard_8x8_impl_neon(token, &src_diff[off..], src_stride, &mut coeff[idx * 64..]);
+    }
+    // i32 coeff -> i16 lanes: values are int16-valued so `vmovn_s32` is exact.
+    let ld16 = |v: &[i32]| -> int16x8_t {
+        let lo = vld1q_s32((&v[0..4]).try_into().unwrap());
+        let hi = vld1q_s32((&v[4..8]).try_into().unwrap());
+        vcombine_s16(vmovn_s32(lo), vmovn_s32(hi))
+    };
+    let st32 = |v: &mut [i32], x: int16x8_t| {
+        vst1q_s32(
+            (&mut v[0..4]).try_into().unwrap(),
+            vmovl_s16(vget_low_s16(x)),
+        );
+        vst1q_s32((&mut v[4..8]).try_into().unwrap(), vmovl_high_s16(x));
+    };
+    for i in (0..64usize).step_by(8) {
+        let a0 = ld16(&coeff[i..]);
+        let a1 = ld16(&coeff[i + 64..]);
+        let a2 = ld16(&coeff[i + 128..]);
+        let a3 = ld16(&coeff[i + 192..]);
+        let b0 = vshrq_n_s16::<1>(vaddq_s16(a0, a1));
+        let b1 = vshrq_n_s16::<1>(vsubq_s16(a0, a1));
+        let b2 = vshrq_n_s16::<1>(vaddq_s16(a2, a3));
+        let b3 = vshrq_n_s16::<1>(vsubq_s16(a2, a3));
+        st32(&mut coeff[i..], vaddq_s16(b0, b2));
+        st32(&mut coeff[i + 64..], vaddq_s16(b1, b3));
+        st32(&mut coeff[i + 128..], vsubq_s16(b0, b2));
+        st32(&mut coeff[i + 192..], vsubq_s16(b1, b3));
+    }
+}
+
+/// AArch64 twin of [`hadamard_compose32_v3`]: four 16x16 sub-transforms,
+/// then the AVX2 combine — sign-extend the int16 sub-results to i32
+/// (`vmovl_s16(vmovn_s32)`), `vaddq_s32`/`vsubq_s32` + `vshrq_n_s32` (the
+/// `_mm256_srai_epi32` `>> 2`), saturating i32 -> i16 (`vqmovn_s32`, the
+/// `_mm256_packs_epi32` step), wrapping i16 add/sub, sign-extended store.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn hadamard_compose32_neon(
+    token: NeonToken,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        hadamard_compose16_neon(token, &src_diff[off..], src_stride, &mut coeff[idx * 256..]);
+    }
+    // `coeff[i] as i16 as i32`: truncate to i16 and sign-extend back.
+    let ld32s = |v: &[i32]| -> int32x4_t {
+        let x = vld1q_s32((&v[0..4]).try_into().unwrap());
+        vmovl_s16(vmovn_s32(x))
+    };
+    let st32 = |v: &mut [i32], x: int16x4_t| {
+        vst1q_s32((&mut v[0..4]).try_into().unwrap(), vmovl_s16(x));
+    };
+    for i in (0..256usize).step_by(4) {
+        let a0 = ld32s(&coeff[i..]);
+        let a1 = ld32s(&coeff[i + 256..]);
+        let a2 = ld32s(&coeff[i + 512..]);
+        let a3 = ld32s(&coeff[i + 768..]);
+        // i32 add/sub then arithmetic >> 2, then `_mm256_packs_epi32`.
+        let b0 = vqmovn_s32(vshrq_n_s32::<2>(vaddq_s32(a0, a1)));
+        let b1 = vqmovn_s32(vshrq_n_s32::<2>(vsubq_s32(a0, a1)));
+        let b2 = vqmovn_s32(vshrq_n_s32::<2>(vaddq_s32(a2, a3)));
+        let b3 = vqmovn_s32(vshrq_n_s32::<2>(vsubq_s32(a2, a3)));
+        // `_mm256_{add,sub}_epi16` — wrapping i16, sign-extended store.
+        st32(&mut coeff[i..], vadd_s16(b0, b2));
+        st32(&mut coeff[i + 256..], vadd_s16(b1, b3));
+        st32(&mut coeff[i + 512..], vsub_s16(b0, b2));
+        st32(&mut coeff[i + 768..], vsub_s16(b1, b3));
     }
 }
 
