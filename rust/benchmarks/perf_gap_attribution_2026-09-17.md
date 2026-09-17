@@ -196,3 +196,20 @@ Facts that ruled out easy answers:
 "Faster than C" needs most of these; it is a campaign, not a patch.
 Every attempt above is documented so the next session doesn't re-pay
 the measurement cost.
+
+## bd10 cell (PERF_BD=10 harness arm, `diag` content)
+
+- `predict_dc_hbd` NEON arm (`fa44a90a`): u16 edge sums via
+  `vaddlvq_u16`/`vaddlv_u16` widening reductions (exact u32 for any
+  input — no ≤12-bit tree-sum assumption like C). A/B bd10 p10:
+  **1.052x @256², 1.021x @512²**, byte-identical.
+- `dr_z1_edged_hbd` + `dr_z3_edged_hbd` flat NEON arms: u32 widening
+  `a1*2s + a0*(64-2s)` + `vrshrn::<6>` + `vmin(bd_max)` (exact
+  `clip_pixel_highbd` for any input). Gates `bw>=8`/`bh>=8`
+  non-upsampled — C's shape coverage. A/B bd10 p2 diag:
+  **1.008x @256², 1.005x @512²**, p10 wash (arms cold there),
+  byte-identical (`ab_dr_hbd_neon_2026-09-17.tsv`).
+- Deferred: `dr_z2_edged_hbd` NEON (needs per-lane u16 gathers — C uses
+  vqtbl tables; port's contiguous-table approach needs 96 bytes of u16
+  lanes = 6 regs — tractable but larger), `predict_{paeth,smooth*}_hbd`
+  (cold in both bd10 profiles: ≤36 samples).

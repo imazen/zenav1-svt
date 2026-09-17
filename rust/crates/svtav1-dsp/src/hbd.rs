@@ -599,6 +599,138 @@ fn dr_z1_edged_hbd(
     dx: i32,
     bd: u8,
 ) {
+    // The vector arm reads `above[origin + base + c .. c + 9]` with
+    // `base + c < max_base_x = bw + bh - 1`, so the highest index it can
+    // touch is `origin + max_base_x` — one past the scalar core's own
+    // `above[origin + max_base_x]` fill read. `bw >= 8` is the u8
+    // sibling's `bw >= 16` halved: 8-lane u16 chunks instead of 16-lane
+    // u8. Upsampled rows take the scalar core (production upsample only
+    // fires for `bw + bh <= 16` anyway).
+    if bw >= 8 && !upsample_above && above.len() > origin + bw + bh {
+        incant!(
+            dr_z1_edged_hbd_flat(dst, dst_stride, bw, bh, above, origin, dx, bd),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z1_edged_hbd_core(
+        dst,
+        dst_stride,
+        bw,
+        bh,
+        above,
+        origin,
+        upsample_above,
+        dx,
+        bd,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z1_edged_hbd_flat_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    origin: usize,
+    dx: i32,
+    bd: u8,
+) {
+    dr_z1_edged_hbd_core(dst, dst_stride, bw, bh, above, origin, false, dx, bd);
+}
+
+/// aarch64 arm of [`dr_z1_edged_hbd`], non-upsampled rows: C's
+/// `highbd_dr_prediction_z1_upsample0_neon` shape
+/// (`highbd_intra_prediction_neon.c:1402`) — u32 widening accumulate
+/// `a1*2s + a0*(64-2s)` then `vrshrn_n_u32::<6>`, which equals the scalar
+/// `(a0*(32-s) + a1*s + 16) >> 5` exactly (`(2X+32)>>6 == (X+16)>>5`),
+/// plus a `vmin` against `bd_max` replicating `clip_pixel_highbd`'s upper
+/// clamp (the lower clamp can never fire: every term is non-negative).
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z1_edged_hbd_flat_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    origin: usize,
+    dx: i32,
+    bd: u8,
+) {
+    let max_base_x = (bw + bh) as i32 - 1;
+    let fill = above[origin + max_base_x as usize];
+    // Same max as `clip_pixel_highbd`: non-{10,12} bd groups to 255.
+    let bd_max: u16 = match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255,
+    };
+    let bd_max_v = vdupq_n_u16(bd_max);
+    let mut x = dx;
+    for r in 0..bh {
+        let base = x >> 6;
+        if base >= max_base_x {
+            for row in dst.chunks_mut(dst_stride).skip(r).take(bh - r) {
+                row[..bw].fill(fill);
+            }
+            return;
+        }
+        let shift = ((x & 0x3f) >> 1) as u32;
+        // u16 lane factors: s2 = 2*shift in [0,62], w0 = 64-2s in [2,64].
+        let s2 = (shift * 2) as u16;
+        let w0 = 64 - s2;
+        let bi = origin + base as usize;
+        let valid = core::cmp::min(bw, (max_base_x - base) as usize);
+        let drow = &mut dst[r * dst_stride..r * dst_stride + bw];
+        let mut c = 0;
+        while c + 8 <= valid {
+            let a0 = vld1q_u16(above[bi + c..bi + c + 8].try_into().unwrap());
+            let a1 = vld1q_u16(above[bi + c + 1..bi + c + 9].try_into().unwrap());
+            let lo = vmlal_n_u16(vmull_n_u16(vget_low_u16(a1), s2), vget_low_u16(a0), w0);
+            let hi = vmlal_n_u16(vmull_n_u16(vget_high_u16(a1), s2), vget_high_u16(a0), w0);
+            let out = vminq_u16(
+                vcombine_u16(vrshrn_n_u32::<6>(lo), vrshrn_n_u32::<6>(hi)),
+                bd_max_v,
+            );
+            vst1q_u16((&mut drow[c..c + 8]).try_into().unwrap(), out);
+            c += 8;
+        }
+        if c + 4 <= valid {
+            let a0 = vld1_u16(above[bi + c..bi + c + 4].try_into().unwrap());
+            let a1 = vld1_u16(above[bi + c + 1..bi + c + 5].try_into().unwrap());
+            let res = vmlal_n_u16(vmull_n_u16(a1, s2), a0, w0);
+            let out = vmin_u16(vrshrn_n_u32::<6>(res), vget_low_u16(bd_max_v));
+            vst1_u16((&mut drow[c..c + 4]).try_into().unwrap(), out);
+            c += 4;
+        }
+        let sh = shift as i32;
+        while c < valid {
+            let v = (above[bi + c] as i32 * (32 - sh) + above[bi + c + 1] as i32 * sh + 16) >> 5;
+            drow[c] = (v as u16).min(bd_max);
+            c += 1;
+        }
+        drow[c..].fill(fill);
+        x += dx;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z1_edged_hbd_core(
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    origin: usize,
+    upsample_above: bool,
+    dx: i32,
+    bd: u8,
+) {
     let up = upsample_above as i32;
     let max_base_x = ((bw + bh) as i32 - 1) << up;
     let frac_bits = 6 - up;
@@ -688,6 +820,117 @@ fn dr_z2_edged_hbd(
 /// 64-93). Shares `intra_pred::dr_z3_edged`'s incremental-accumulator
 /// structure exactly (verified line-for-line against the C).
 fn dr_z3_edged_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u16],
+    origin: usize,
+    upsample_left: bool,
+    dy: i32,
+    bd: u8,
+) {
+    // Column-wise mirror of [`dr_z1_edged_hbd`]'s flat gate: the arm reads
+    // `left[origin + base + r .. r + 9]` with `base + r < max_base_y`, and
+    // `bh >= 8` covers one full 8-lane u16 chunk.
+    if bh >= 8 && !upsample_left && left.len() > origin + bw + bh {
+        incant!(
+            dr_z3_edged_hbd_flat(dst, dst_stride, bw, bh, left, origin, dy, bd),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z3_edged_hbd_core(dst, dst_stride, bw, bh, left, origin, upsample_left, dy, bd);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z3_edged_hbd_flat_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u16],
+    origin: usize,
+    dy: i32,
+    bd: u8,
+) {
+    dr_z3_edged_hbd_core(dst, dst_stride, bw, bh, left, origin, false, dy, bd);
+}
+
+/// aarch64 arm of [`dr_z3_edged_hbd`], non-upsampled columns: the same
+/// u32 widening `a1*2s + a0*(64-2s)` + `vrshrn_n_u32::<6>` + `vmin(bd_max)`
+/// interpolation as [`dr_z1_edged_hbd_flat_neon`], computed vertically then
+/// scattered — strided column stores cannot vectorize, the same shape
+/// [`crate::intra_pred::dr_z3_edged_flat_neon`] uses.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z3_edged_hbd_flat_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u16],
+    origin: usize,
+    dy: i32,
+    bd: u8,
+) {
+    let max_base_y = (bw + bh) as i32 - 1;
+    let fill = left[origin + max_base_y as usize];
+    // Same max as `clip_pixel_highbd`: non-{10,12} bd groups to 255.
+    let bd_max: u16 = match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255,
+    };
+    let bd_max_v = vdupq_n_u16(bd_max);
+    let mut y = dy;
+    for c in 0..bw {
+        let base = y >> 6;
+        let shift = ((y & 0x3f) >> 1) as u32;
+        let s2 = (shift * 2) as u16;
+        let w0 = 64 - s2;
+        let bi = origin + base as usize;
+        let valid = if base >= max_base_y {
+            0
+        } else {
+            core::cmp::min(bh, (max_base_y - base) as usize)
+        };
+        let mut r = 0usize;
+        let mut tmp = [0u16; 8];
+        while r + 8 <= valid {
+            let a0 = vld1q_u16(left[bi + r..bi + r + 8].try_into().unwrap());
+            let a1 = vld1q_u16(left[bi + r + 1..bi + r + 9].try_into().unwrap());
+            let lo = vmlal_n_u16(vmull_n_u16(vget_low_u16(a1), s2), vget_low_u16(a0), w0);
+            let hi = vmlal_n_u16(vmull_n_u16(vget_high_u16(a1), s2), vget_high_u16(a0), w0);
+            let out = vminq_u16(
+                vcombine_u16(vrshrn_n_u32::<6>(lo), vrshrn_n_u32::<6>(hi)),
+                bd_max_v,
+            );
+            vst1q_u16(&mut tmp, out);
+            for (k, &v) in tmp.iter().enumerate() {
+                dst[(r + k) * dst_stride + c] = v;
+            }
+            r += 8;
+        }
+        let sh = shift as i32;
+        while r < valid {
+            let v = (left[bi + r] as i32 * (32 - sh) + left[bi + r + 1] as i32 * sh + 16) >> 5;
+            dst[r * dst_stride + c] = (v as u16).min(bd_max);
+            r += 1;
+        }
+        while r < bh {
+            dst[r * dst_stride + c] = fill;
+            r += 1;
+        }
+        y += dy;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z3_edged_hbd_core(
     dst: &mut [u16],
     dst_stride: usize,
     bw: usize,
@@ -2086,3 +2329,212 @@ pub fn ac_qlookup_12(_qindex: u8) -> i16 {
 // (scope is the new `hbd.rs` module only) — see project CLAUDE.md's
 // UNWIRED index entry for `bd10.rs` for the tracking note.
 // -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Scalar reference routing for [`dr_predictor_edged_hbd`]: the private
+    /// cores directly, so every tier of the dispatched entry is compared
+    /// against the C-translated scalar bodies (z1/z3 flat NEON arms vs the
+    /// same core the non-gated shapes still take).
+    #[allow(clippy::too_many_arguments)]
+    fn dr_edged_ref(
+        dst: &mut [u16],
+        dst_stride: usize,
+        above: &[u16],
+        left: &[u16],
+        origin: usize,
+        upsample_above: bool,
+        upsample_left: bool,
+        width: usize,
+        height: usize,
+        angle: i32,
+        bd: u8,
+    ) {
+        let dx = get_dx_hbd(angle);
+        let dy = get_dy_hbd(angle);
+        if angle > 0 && angle < 90 {
+            dr_z1_edged_hbd_core(
+                dst,
+                dst_stride,
+                width,
+                height,
+                above,
+                origin,
+                upsample_above,
+                dx,
+                bd,
+            );
+        } else if angle > 180 && angle < 270 {
+            dr_z3_edged_hbd_core(
+                dst,
+                dst_stride,
+                width,
+                height,
+                left,
+                origin,
+                upsample_left,
+                dy,
+                bd,
+            );
+        } else {
+            panic!("test only sweeps z1/z3");
+        }
+    }
+
+    /// Every dispatched tier of `dr_predictor_edged_hbd` must produce the
+    /// scalar core's output on every size/angle/upsample/bd combination —
+    /// including the gated flat arms (bw/bh >= 8, non-upsampled) and the
+    /// shapes that still fall through to scalar. Consumes the
+    /// `PermutationReport` (empty warnings, >= 2 permutations).
+    #[test]
+    fn dr_edged_hbd_z1_z3_all_tiers_match_core() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let mut st = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u16
+        };
+        // Edge buffers are 512-deep: upsampled reads can reach past
+        // EDGE_BUF_LEN on oversized shapes (the same harmless over-read the
+        // u8 sibling and C perform), so the test buffers carry headroom.
+        const BUF: usize = 512;
+        const ORIGIN: usize = 16;
+        // z1 angles with nonzero DR_INTRA_DERIVATIVE_HBD entries, plus the
+        // z3 mirrors (270 - a). Real AV1 mode angles, not synthetic extremes.
+        let z1_angles = [3i32, 9, 26, 45, 57, 72, 84, 87];
+        let z3_angles = [183i32, 189, 201, 219, 237, 255, 264, 267];
+        let sizes = [
+            (4usize, 4usize),
+            (8, 4),
+            (4, 8),
+            (8, 8),
+            (8, 16),
+            (16, 8),
+            (16, 16),
+            (32, 8),
+            (8, 32),
+            (32, 32),
+            (64, 16),
+            (16, 64),
+            (64, 64),
+        ];
+        for &bd in &[8u8, 10, 12] {
+            let max_sample = (1u16 << bd.min(12)) - 1;
+            for &(w, h) in &sizes {
+                for &up in &[(false, false), (true, false), (false, true), (true, true)] {
+                    let above: Vec<u16> = (0..BUF).map(|_| next() & max_sample).collect();
+                    let left: Vec<u16> = (0..BUF).map(|_| next() & max_sample).collect();
+                    for &angle in z1_angles.iter().chain(z3_angles.iter()) {
+                        for pad in [0usize, 3] {
+                            let stride = w + pad;
+                            let rep =
+                                for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                                    let mut got = vec![0xAAAAu16; stride * h];
+                                    let mut want = vec![0xBBBBu16; stride * h];
+                                    dr_predictor_edged_hbd(
+                                        &mut got, stride, &above, &left, ORIGIN, up.0, up.1, w, h,
+                                        angle, bd,
+                                    );
+                                    dr_edged_ref(
+                                        &mut want, stride, &above, &left, ORIGIN, up.0, up.1, w, h,
+                                        angle, bd,
+                                    );
+                                    for r in 0..h {
+                                        assert_eq!(
+                                            &got[r * stride..r * stride + w],
+                                            &want[r * stride..r * stride + w],
+                                            "dr hbd {w}x{h} angle {angle} up {up:?} bd {bd} \
+                                             stride {stride} row {r} tier {perm}"
+                                        );
+                                    }
+                                });
+                            assert!(
+                                rep.warnings.is_empty(),
+                                "tokens excluded at compile time: {:?}",
+                                rep.warnings
+                            );
+                            assert!(
+                                rep.permutations_run >= 2,
+                                "only {} permutation(s) ran",
+                                rep.permutations_run
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The dispatched `predict_dc_hbd` must equal `predict_dc_hbd_core` on
+    /// every size, flag combination and stride — the u8 sibling's
+    /// `predict_dc_dispatch_matches_core_all_sizes_flags` for the u16 arm.
+    #[test]
+    fn predict_dc_hbd_dispatch_matches_core_all_sizes_flags() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let mut st = 0xDEAD_BEEF_CAFE_F00Du64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u16
+        };
+        for &bd in &[8u8, 10, 12] {
+            let max_sample = (1u16 << bd.min(12)) - 1;
+            for &(w, h) in &[
+                (4usize, 4usize),
+                (8, 8),
+                (16, 16),
+                (32, 32),
+                (64, 64),
+                (4, 8),
+                (8, 4),
+                (16, 8),
+                (8, 16),
+                (32, 8),
+                (64, 16),
+                (16, 64),
+            ] {
+                for &(ha, hl) in &[(true, true), (true, false), (false, true), (false, false)] {
+                    let above: Vec<u16> = (0..w).map(|_| next() & max_sample).collect();
+                    let left: Vec<u16> = (0..h).map(|_| next() & max_sample).collect();
+                    for pad in [0usize, 5] {
+                        let stride = w + pad;
+                        let rep =
+                            for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                                let mut got = vec![0xAAAAu16; stride * h];
+                                let mut want = vec![0xBBBBu16; stride * h];
+                                predict_dc_hbd(&mut got, stride, &above, &left, w, h, ha, hl, bd);
+                                predict_dc_hbd_core(
+                                    &mut want, stride, &above, &left, w, h, ha, hl, bd,
+                                );
+                                for r in 0..h {
+                                    assert_eq!(
+                                        &got[r * stride..r * stride + w],
+                                        &want[r * stride..r * stride + w],
+                                        "dc hbd {w}x{h} flags ({ha},{hl}) bd {bd} stride {stride} \
+                                         row {r} tier {perm}"
+                                    );
+                                }
+                            });
+                        assert!(
+                            rep.warnings.is_empty(),
+                            "tokens excluded at compile time: {:?}",
+                            rep.warnings
+                        );
+                        assert!(
+                            rep.permutations_run >= 2,
+                            "only {} permutation(s) ran",
+                            rep.permutations_run
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
