@@ -38,8 +38,8 @@ pub fn count_colors_with_threshold(
     let mut has_color = [false; 256];
     let mut num_colors: i32 = 0;
     for r in 0..rows {
-        for c in 0..cols {
-            let v = src[r * stride + c] as usize;
+        for &px in &src[r * stride..r * stride + cols] {
+            let v = px as usize;
             if !has_color[v] {
                 has_color[v] = true;
                 num_colors += 1;
@@ -59,8 +59,7 @@ pub fn find_dominant_value(src: &[u8], stride: usize, rows: usize, cols: usize) 
     let mut dominant_value_count = 0u32;
     let mut dominant_value = 0u8;
     for r in 0..rows {
-        for c in 0..cols {
-            let value = src[r * stride + c];
+        for &value in &src[r * stride..r * stride + cols] {
             let cnt = &mut value_count[value as usize];
             *cnt += 1;
             if *cnt > dominant_value_count {
@@ -101,9 +100,8 @@ pub fn dilate_block(
         }
     }
     for r in 0..rows {
-        for c in 0..cols {
-            dilated[r * dilated_stride + c] = src[r * src_stride + c];
-        }
+        dilated[r * dilated_stride..r * dilated_stride + cols]
+            .copy_from_slice(&src[r * src_stride..r * src_stride + cols]);
     }
     for r in 0..rows {
         for c in 0..cols {
