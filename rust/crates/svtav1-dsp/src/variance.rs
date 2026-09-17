@@ -152,7 +152,7 @@ fn variance_impl_v3(
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn variance_diff_parts_impl_v3(
-    _token: Desktop64,
+    token: Desktop64,
     a: &[u8],
     a_stride: usize,
     b: &[u8],
@@ -160,18 +160,140 @@ fn variance_diff_parts_impl_v3(
     width: usize,
     height: usize,
 ) -> (u64, i64) {
-    // Auto-vectorizes well with AVX2 enabled; the shape is identical to the
-    // scalar reference so the two cannot drift.
+    // Same signed-difference math as the scalar arm — the diff is widened to
+    // i16 BEFORE subtracting so `d` keeps its sign (variance's `sum` needs
+    // it), then `madd_adjacent` folds two products per i32 lane: `d*d` for
+    // sse, `d*1` for sum.
+    //
+    // Overflow: each i32x4 lane gathers `width*height/8` squares at most
+    // (two `madd` per 16-byte chunk, four lanes each), i.e. `px/4 * 65025`.
+    // The largest callers are <= 128x128 (16,384 px -> ~266M per lane) and
+    // `sum` per lane is `px/4 * 255` (~1.04M) — both inside i32. The guard
+    // keeps any larger hypothetical block on the scalar arm.
+    if width * height > 32_768 {
+        return variance_diff_parts_impl_scalar(
+            ScalarToken,
+            a,
+            a_stride,
+            b,
+            b_stride,
+            width,
+            height,
+        );
+    }
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let ones = i16x8::splat(token, 1);
+    let zero = (i32x4::splat(token, 0), i32x4::splat(token, 0));
+    let fold = |acc: (i32x4<Desktop64>, i32x4<Desktop64>), av: &[u8; 16], bv: &[u8; 16]| {
+        let a = u8x16::load(token, av);
+        let b = u8x16::load(token, bv);
+        let d_lo = a.widen_low().bitcast_i16x8() - b.widen_low().bitcast_i16x8();
+        let d_hi = a.widen_high().bitcast_i16x8() - b.widen_high().bitcast_i16x8();
+        (
+            acc.0 + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi),
+            acc.1 + d_lo.madd_adjacent(ones) + d_hi.madd_adjacent(ones),
+        )
+    };
+    let scalar_row = |a_off: usize, b_off: usize, from: usize| -> (u64, i64) {
+        let mut s: u64 = 0;
+        let mut t: i64 = 0;
+        for col in from..width {
+            let d = a[a_off + col] as i32 - b[b_off + col] as i32;
+            t += d as i64;
+            s += (d * d) as u64;
+        }
+        (s, t)
+    };
+    let mut acc = zero;
     let mut sse: u64 = 0;
     let mut sum: i64 = 0;
-    for row in 0..height {
+    if width >= 16 {
+        for row in 0..height {
+            let a_off = row * a_stride;
+            let b_off = row * b_stride;
+            let mut col = 0;
+            while col + 16 <= width {
+                let av: &[u8; 16] = a[a_off + col..a_off + col + 16].try_into().unwrap();
+                let bv: &[u8; 16] = b[b_off + col..b_off + col + 16].try_into().unwrap();
+                acc = fold(acc, av, bv);
+                col += 16;
+            }
+            let (s, t) = scalar_row(a_off, b_off, col);
+            sse += s;
+            sum += t;
+        }
+    } else if width == 8 || width == 4 {
+        // Pack `16 / width` rows into one 16-byte fold — the same trick
+        // `sse_rows` uses for C's leftover arms. `W` const-generic keeps the
+        // staging copies fixed-size stores instead of memcpy calls.
+        let (s, t) = match width {
+            4 => vdiff_packed_rows_v3::<4>(token, a, a_stride, b, b_stride, height),
+            _ => vdiff_packed_rows_v3::<8>(token, a, a_stride, b, b_stride, height),
+        };
+        sse += s;
+        sum += t;
+    } else {
+        for row in 0..height {
+            let (s, t) = scalar_row(row * a_stride, row * b_stride, 0);
+            sse += s;
+            sum += t;
+        }
+    }
+    // The sse lanes are all non-negative and under i32::MAX; the sum lanes are
+    // signed but within i32 — `reduce_add` is exact both ways.
+    (
+        sse + u64::from(acc.0.reduce_add() as u32),
+        sum + i64::from(acc.1.reduce_add()),
+    )
+}
+
+/// The `width in {4, 8}` arm of [`variance_diff_parts_impl_v3`]: packs `16 / W`
+/// rows into one 16-byte fold (C's `leftover == 8`/`4` `setr_m128i` arms,
+/// `pic_operators_intrin_avx2.c:815-847`). `W` const-generic keeps the staging
+/// copies fixed-size stores rather than runtime `memcpy`s.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn vdiff_packed_rows_v3<const W: usize>(
+    token: Desktop64,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    height: usize,
+) -> (u64, i64) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let ones = i16x8::splat(token, 1);
+    let mut acc = (i32x4::splat(token, 0), i32x4::splat(token, 0));
+    let g = 16 / W;
+    let mut row = 0usize;
+    while row + g <= height {
+        let mut sa = [0u8; 16];
+        let mut rb = [0u8; 16];
+        for k in 0..g {
+            let a_off = (row + k) * a_stride;
+            let b_off = (row + k) * b_stride;
+            sa[k * W..(k + 1) * W].copy_from_slice(&a[a_off..a_off + W]);
+            rb[k * W..(k + 1) * W].copy_from_slice(&b[b_off..b_off + W]);
+        }
+        let av = u8x16::load(token, &sa);
+        let bv = u8x16::load(token, &rb);
+        let d_lo = av.widen_low().bitcast_i16x8() - bv.widen_low().bitcast_i16x8();
+        let d_hi = av.widen_high().bitcast_i16x8() - bv.widen_high().bitcast_i16x8();
+        acc.0 += d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+        acc.1 += d_lo.madd_adjacent(ones) + d_hi.madd_adjacent(ones);
+        row += g;
+    }
+    let mut sse = u64::from(acc.0.reduce_add() as u32);
+    let mut sum = i64::from(acc.1.reduce_add());
+    while row < height {
         let a_off = row * a_stride;
         let b_off = row * b_stride;
-        for col in 0..width {
-            let diff = a[a_off + col] as i32 - b[b_off + col] as i32;
-            sum += diff as i64;
-            sse += (diff * diff) as u64;
+        for col in 0..W {
+            let d = a[a_off + col] as i32 - b[b_off + col] as i32;
+            sum += d as i64;
+            sse += (d * d) as u64;
         }
+        row += 1;
     }
     (sse, sum)
 }
