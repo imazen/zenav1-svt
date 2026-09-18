@@ -89,7 +89,7 @@ pub(crate) fn compute_b64_variance(
     let mut msq8 = [0u64; 64];
     incant!(
         b64_stats_impl(src, stride, org_x, org_y, &mut mean8, &mut msq8),
-        [v3, scalar]
+        [v3, neon, scalar]
     );
     let mut mean16 = [0u64; 16];
     let mut msq16 = [0u64; 16];
@@ -200,6 +200,50 @@ fn b64_stats_impl_v3(
             msq8[by * 8 + bx] = u64::from(sq_lo.reduce_add() as u32) << 11;
             mean8[by * 8 + bx + 1] = u64::from(sum_hi.reduce_add() as u32) << 3;
             msq8[by * 8 + bx + 1] = u64::from(sq_hi.reduce_add() as u32) << 11;
+        }
+    }
+}
+
+/// NEON twin of [`b64_stats_impl_v3`]: same 16-pixel row-pair shape.
+/// `vpadalq_u16` is the pairwise `madd_adjacent(ones)`; for the squares,
+/// `vmull_u16` gives per-lane products (not pairwise) so each `u32` lane
+/// accumulates `4 rows * 2 halves * 65025 = 520_200` — inside `u32`.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn b64_stats_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    stride: usize,
+    org_x: usize,
+    org_y: usize,
+    mean8: &mut [u64; 64],
+    msq8: &mut [u64; 64],
+) {
+    for by in 0..8 {
+        for bxp in 0..4 {
+            let bx = bxp * 2;
+            let mut sum_lo = vdupq_n_u32(0);
+            let mut sum_hi = vdupq_n_u32(0);
+            let mut sq_lo = vdupq_n_u32(0);
+            let mut sq_hi = vdupq_n_u32(0);
+            for r in [0usize, 2, 4, 6] {
+                let row = (org_y + by * 8 + r) * stride + org_x + bx * 8;
+                let v = vld1q_u8(src[row..row + 16].try_into().unwrap());
+                let lo = vmovl_u8(vget_low_u8(v));
+                let hi = vmovl_u8(vget_high_u8(v));
+                sum_lo = vpadalq_u16(sum_lo, lo);
+                sum_hi = vpadalq_u16(sum_hi, hi);
+                let llo = vget_low_u16(lo);
+                let lhi = vget_high_u16(lo);
+                sq_lo = vaddq_u32(sq_lo, vaddq_u32(vmull_u16(llo, llo), vmull_u16(lhi, lhi)));
+                let hlo = vget_low_u16(hi);
+                let hhi = vget_high_u16(hi);
+                sq_hi = vaddq_u32(sq_hi, vaddq_u32(vmull_u16(hlo, hlo), vmull_u16(hhi, hhi)));
+            }
+            mean8[by * 8 + bx] = u64::from(vaddvq_u32(sum_lo)) << 3;
+            msq8[by * 8 + bx] = u64::from(vaddvq_u32(sq_lo)) << 11;
+            mean8[by * 8 + bx + 1] = u64::from(vaddvq_u32(sum_hi)) << 3;
+            msq8[by * 8 + bx + 1] = u64::from(vaddvq_u32(sq_hi)) << 11;
         }
     }
 }
@@ -5390,6 +5434,38 @@ mod tests {
         let y = gradient64();
         let v = compute_b64_variance(&y, 64, 0, 0);
         assert_eq!(v.0, C_GRADIENT64_VARS);
+    }
+
+    /// The dispatched stats kernel must equal the scalar reference under every
+    /// token permutation, over varied content and SB origins/strides.
+    #[test]
+    fn b64_stats_all_tiers_match_scalar() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let st = ScalarToken::summon().unwrap();
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+            for (w, h, stride, ox, oy) in [
+                (64usize, 64usize, 64usize, 0usize, 0usize),
+                (128, 64, 128, 64, 0),
+                (64, 128, 72, 0, 64),
+                (128, 128, 136, 32, 24),
+            ] {
+                let src: Vec<u8> = (0..stride * (h + 8))
+                    .map(|i| (i as u32 * 61 + (i / stride) as u32 * 17 + 3) as u8)
+                    .collect();
+                let mut m_ref = [0u64; 64];
+                let mut s_ref = [0u64; 64];
+                b64_stats_impl_scalar(st, &src, stride, ox, oy, &mut m_ref, &mut s_ref);
+                let mut m_got = [0u64; 64];
+                let mut s_got = [0u64; 64];
+                incant!(
+                    b64_stats_impl(&src, stride, ox, oy, &mut m_got, &mut s_got),
+                    [v3, neon, scalar]
+                );
+                assert_eq!(m_got, m_ref, "mean8 {w}x{h}s{stride}@({ox},{oy})");
+                assert_eq!(s_got, s_ref, "msq8 {w}x{h}s{stride}@({ox},{oy})");
+            }
+        });
+        assert!(report.warnings.is_empty());
     }
 
     #[test]
