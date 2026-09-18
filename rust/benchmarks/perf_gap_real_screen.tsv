@@ -1,0 +1,7 @@
+# perf_gap summary — port vs C per-frame encode wall time, aarch64, NEITHER SIDE NICED
+# commit=17139e131  host=mac  cores=12  date=2026-09-18T00:40:52Z
+# content=raw:/tmp/realframes/screen_term.yuv sizes=[512] presets=[4 10] qp=40 rounds=7 warmup=1
+# ratio = port/C (median of per-round paired ratios). ident=Y means byte-identical output.
+size	preset	ident	n	port_ms	c_ms	ratio	ratio_p25	ratio_p75
+512	4	Y	7	93.2338	63.7650	1.468	1.454	1.479
+512	10	Y	7	4.4060	2.4560	1.797	1.779	1.820

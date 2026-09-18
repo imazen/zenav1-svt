@@ -432,8 +432,7 @@ pub fn block_sad(
 }
 
 /// Four independent SADs with a shared source, in caller-supplied order.
-/// Mirrors C's `sdx4df` contract used by IntraBC mesh search. Other architectures
-/// retain their existing SIMD SAD dispatch until a batched arm is available.
+/// Mirrors C's `sdx4df` contract used by IntraBC mesh search.
 pub fn block_sad_x4(
     src: &[u8],
     src_stride: usize,
@@ -444,7 +443,7 @@ pub fn block_sad_x4(
 ) -> [u32; 4] {
     incant!(
         block_sad_x4(src, src_stride, refs, ref_stride, w, h),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -458,6 +457,124 @@ pub fn block_sad_x4_scalar(
     h: usize,
 ) -> [u32; 4] {
     core::array::from_fn(|i| block_sad(src, src_stride, refs[i], ref_stride, w, h))
+}
+
+/// C `sadwxhx4d_neon` (ASM_NEON/sad_x4d_neon.c:27): each source row is loaded
+/// once and differenced against all four references, keeping four independent
+/// lane accumulators. SAD is an exact integer sum, so lane/fold order cannot
+/// change the result.
+///
+/// Wide path (`w >= 16`): `vabdq_u8` + `vpadalq_u8` accumulate into u16 lanes
+/// (<=510 per lane per 16-chunk), folded into u32 every `2048/w` rows —
+/// C's bound: `floor(w/16) * 510 * fold_rows <= 510 * 128 = 65280 < 65536`
+/// for every `w >= 16`. Sub-16 column tails accumulate scalarly into u32, so
+/// they add nothing to the u16 lane bound.
+///
+/// Narrow path (`w < 16`): per-row `vabd_u8` + `vaddw_u8`/`vmovl_u8` into u16
+/// lanes (<=255 per lane per row), folded every 128 rows — safe for any `h`,
+/// unlike C's kernel which relies on `h <= 32` for w<16.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+pub fn block_sad_x4_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> [u32; 4] {
+    if w >= 16 {
+        let fold_rows = (2048 / w).max(1);
+        let mut a = [vdupq_n_u32(0); 4];
+        let mut b = [vdupq_n_u16(0); 4];
+        let mut tail = [0u32; 4];
+        let mut since = 0usize;
+        for y in 0..h {
+            let so = y * src_stride;
+            let ro = y * ref_stride;
+            let mut x = 0usize;
+            while x + 16 <= w {
+                let s = vld1q_u8(src[so + x..so + x + 16].try_into().unwrap());
+                for i in 0..4 {
+                    let r = vld1q_u8(refs[i][ro + x..ro + x + 16].try_into().unwrap());
+                    b[i] = vpadalq_u8(b[i], vabdq_u8(s, r));
+                }
+                x += 16;
+            }
+            while x < w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+                x += 1;
+            }
+            since += 1;
+            if since == fold_rows {
+                for i in 0..4 {
+                    a[i] = vaddq_u32(a[i], vpaddlq_u16(b[i]));
+                }
+                b = [vdupq_n_u16(0); 4];
+                since = 0;
+            }
+        }
+        let mut out = tail;
+        for i in 0..4 {
+            a[i] = vaddq_u32(a[i], vpaddlq_u16(b[i]));
+            out[i] += vaddvq_u32(a[i]);
+        }
+        out
+    } else {
+        // Narrow path: u16 lanes hold <=255 per row, fold every 128 rows.
+        let mut a = [vdupq_n_u32(0); 4];
+        let mut b = [vdupq_n_u16(0); 4];
+        let mut tail = [0u32; 4];
+        let mut since = 0usize;
+        for y in 0..h {
+            let so = y * src_stride;
+            let ro = y * ref_stride;
+            let mut x = 0usize;
+            if x + 8 <= w {
+                let s = vld1_u8(src[so..so + 8].try_into().unwrap());
+                for i in 0..4 {
+                    let r = vld1_u8(refs[i][ro..ro + 8].try_into().unwrap());
+                    b[i] = vaddw_u8(b[i], vabd_u8(s, r));
+                }
+                x += 8;
+            }
+            if x + 4 <= w {
+                let s = vcreate_u8(u64::from(u32::from_le_bytes(
+                    src[so + x..so + x + 4].try_into().unwrap(),
+                )));
+                for i in 0..4 {
+                    let r = vcreate_u8(u64::from(u32::from_le_bytes(
+                        refs[i][ro + x..ro + x + 4].try_into().unwrap(),
+                    )));
+                    b[i] = vaddw_u8(b[i], vabd_u8(s, r));
+                }
+                x += 4;
+            }
+            while x < w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+                x += 1;
+            }
+            since += 1;
+            if since == 128 {
+                for i in 0..4 {
+                    a[i] = vaddq_u32(a[i], vpaddlq_u16(b[i]));
+                }
+                b = [vdupq_n_u16(0); 4];
+                since = 0;
+            }
+        }
+        let mut out = tail;
+        for i in 0..4 {
+            a[i] = vaddq_u32(a[i], vpaddlq_u16(b[i]));
+            out[i] += vaddvq_u32(a[i]);
+        }
+        out
+    }
 }
 
 /// C's four-candidate SAD: reuse each source load across four references and

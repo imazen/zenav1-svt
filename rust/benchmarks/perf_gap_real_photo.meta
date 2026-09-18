@@ -1,0 +1,7 @@
+# perf_gap fit
+date: 2026-09-18T00:40:57Z
+commit: 17139e131
+host: mac (12 logical cores)
+grid: content=raw:/tmp/realframes/photo_clic.yuv sizes=[512] presets=[4 10] qp=40 rounds=7 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):

@@ -246,3 +246,41 @@ the measurement cost.
   hbd directional predictors (z1/z2/z3) now have NEON arms matching C's
   dispatch coverage. Byte-identical everywhere; all-tiers sweep covers
   sizes x angles x upsample x bd (`ab_z2hbd_2026-09-17.tsv`).
+
+## Real-content check (2026-09-18) — screen + photo vs synthetic gradient
+
+All prior numbers in this doc were on synthetic `gradient`/`diag` fixtures.
+First real-content measurement, `perf_encode raw:` (I420 from
+`identity_run crop:` — gb82-sc terminal.png and clic2025 photo at 512²,
+byte-identical both):
+
+| content | p4 ratio (port/C) | p10 ratio |
+|---|---|---|
+| screen (terminal.png) | **1.47x** | 1.80x |
+| photo (clic2025) | **1.72x** | 1.76x |
+| gradient (same harness) | 1.70x | ~1.8x |
+
+The gap HOLDS on real content — screen content is actually *better*
+(1.47x vs 1.70x) because the port's palette/IntraBC paths are relatively
+cheaper than C's. Artifacts: `perf_gap_real_{screen,photo}*.tsv`.
+
+Real screen content also surfaces a different hot mix the gradient never
+exercised (512² p4, self-samples /11394): `inject_candidates` 755,
+`palette::calc_indices_dim1` 381, `intrabc_hash::generate_block_hash_value`
+353 (CRC-32C), `me_sad::block_sad` 302, `palette::k_means_dim1` 216,
+`intrabc::diamond_search_sad` 93. Palette clustering and the CRC hash
+are encoder-side scalar loops — the remaining uncovered kernel surface.
+
+## block_sad_x4 NEON arm (measured null on this fixture, kept for coverage)
+
+- `block_sad_x4` gained a `[v3, neon, scalar]` arm mirroring C's
+  `sadwxhx4d_neon`: shared source load across 4 refs, `vabdq_u8` +
+  `vpadalq_u8` into u16 lanes, C's `2048/w` fold cadence (wide path);
+  narrow path folds every 128 rows so arbitrary `h` is safe (C relies on
+  `h <= 32`). SAD is an exact integer sum — order-independent.
+  All-tiers sweep (incl. odd widths 12x6, 20x3, 5x7, 1x1, 31x9) passes.
+- A/B on real screen content @512p4: 11 rounds 0.999x (band 0.997-1.007),
+  byte-identical — the x4 path is ~0.8% of encode at p4 (mesh-refinement
+  only fires at `step==1`). Kept as coverage alignment: aarch64 no longer
+  drops to scalar where C ships `svt_aom_sad*x4d_neon`.
+  Evidence: `ab_sadx4_screen_2026-09-18*.tsv`.

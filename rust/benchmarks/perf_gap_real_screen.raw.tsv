@@ -1,0 +1,18 @@
+# perf_gap raw samples — one row per interleaved paired round (NEITHER SIDE NICED)
+# commit=17139e131 host=mac cores=12 date=2026-09-18T00:40:49Z
+# content=raw:/tmp/realframes/screen_term.yuv sizes=[512] presets=[4 10] qp=40 rounds=7 warmup=1
+content	size	preset	qp	round	port_ns	c_ns	ident
+raw:/tmp/realframes/screen_term.yuv	512	4	40	1	93233834	62869000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	2	92141584	63864000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	3	92977458	63765000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	4	93469959	63183000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	5	93529292	62978000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	6	93772958	63891000	Y
+raw:/tmp/realframes/screen_term.yuv	512	4	40	7	93146084	64072000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	1	4492959	2456000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	2	4389250	2490000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	3	4384833	2462000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	4	4496834	2442000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	5	4405958	2452000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	6	4389917	2467000	Y
+raw:/tmp/realframes/screen_term.yuv	512	10	40	7	4430500	2434000	Y

@@ -1,0 +1,18 @@
+# perf_gap raw samples — one row per interleaved paired round (NEITHER SIDE NICED)
+# commit=17139e131 host=mac cores=12 date=2026-09-18T00:40:55Z
+# content=raw:/tmp/realframes/photo_clic.yuv sizes=[512] presets=[4 10] qp=40 rounds=7 warmup=1
+content	size	preset	qp	round	port_ns	c_ns	ident
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	1	57483500	37107000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	2	57714375	33444000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	3	58194875	33797000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	4	57366334	33615000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	5	58179916	33651000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	6	57959625	33412000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	4	40	7	58130583	33739000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	1	2365084	1362000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	2	2367333	1360000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	3	2447750	1368000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	4	2480125	1361000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	5	2407958	1367000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	6	2380833	1439000	Y
+raw:/tmp/realframes/photo_clic.yuv	512	10	40	7	2382250	1349000	Y
