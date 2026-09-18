@@ -264,7 +264,9 @@ fn encode_still_bd10(
     warmup: usize,
 ) {
     let widen = |p: &[u8]| -> Vec<u16> {
-        p.iter().map(|&s| ((s as u16) << 2) | ((s as u16) >> 6)).collect()
+        p.iter()
+            .map(|&s| ((s as u16) << 2) | ((s as u16) >> 6))
+            .collect()
     };
     let (y10, u10, v10) = (widen(y), widen(u), widen(v));
 
