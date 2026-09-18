@@ -785,6 +785,69 @@ fn dr_z2_edged_hbd(
     dy: i32,
     bd: u8,
 ) {
+    let up_a = upsample_above as usize;
+    let up_l = upsample_left as usize;
+    // Worst-case vector reads (see `dr_z2_edged_hbd_simd_neon`): the above
+    // pass touches `above[origin + base]` for `base <= base0 + step*(bw-1)`
+    // with `base0 <= -1`, plus <=15 elements of chunk/tail padding; the left
+    // pass touches `left[origin + base2]` for `base2 <= (bh-1)*step - 1`
+    // plus the same padding. Both bounds always hold for the real
+    // EDGE_BUF_LEN=160 buffers; the gates exist so synthetic callers with
+    // tight slices fall back to the scalar core rather than over-read.
+    if origin >= (1 << up_a).max(1 << up_l)
+        && above.len() > origin + (bw - 1) * (1 << up_a) + 15
+        && left.len() > origin + (bh - 1) * (1 << up_l) + 15
+    {
+        incant!(
+            dr_z2_edged_hbd_simd(
+                dst,
+                dst_stride,
+                bw,
+                bh,
+                above,
+                left,
+                origin,
+                upsample_above,
+                upsample_left,
+                dx,
+                dy,
+                bd,
+            ),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z2_edged_hbd_core(
+        dst,
+        dst_stride,
+        bw,
+        bh,
+        above,
+        left,
+        origin,
+        upsample_above,
+        upsample_left,
+        dx,
+        dy,
+        bd,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_hbd_core(
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    left: &[u16],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+    bd: u8,
+) {
     debug_assert!(dx > 0 && dy > 0);
     let up_a = upsample_above as i32;
     let up_l = upsample_left as i32;
@@ -812,6 +875,228 @@ fn dr_z2_edged_hbd(
                 (v + 16) >> 5
             };
             dst[r * dst_stride + c] = clip_pixel_highbd(val, bd);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_hbd_simd_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    left: &[u16],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+    bd: u8,
+) {
+    dr_z2_edged_hbd_core(
+        dst,
+        dst_stride,
+        bw,
+        bh,
+        above,
+        left,
+        origin,
+        upsample_above,
+        upsample_left,
+        dx,
+        dy,
+        bd,
+    );
+}
+
+/// Load 8 interpolation pairs starting at element `idx`: `a0[j] =
+/// buf[idx + j*step]`, `a1[j] = buf[idx + j*step + 1]`. `step` is the
+/// upsample stride — 1 contiguous (two overlapping loads), 2 = `vuzp`
+/// deinterleave of a 16-element load.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dr_z2_hbd_load_pairs_neon(
+    _token: NeonToken,
+    buf: &[u16],
+    idx: usize,
+    step2: bool,
+) -> (uint16x8_t, uint16x8_t) {
+    if step2 {
+        let v0: &[u16; 8] = buf[idx..idx + 8].try_into().unwrap();
+        let v1: &[u16; 8] = buf[idx + 8..idx + 16].try_into().unwrap();
+        let e = vld1q_u16(v0);
+        let o = vld1q_u16(v1);
+        (vuzp1q_u16(e, o), vuzp2q_u16(e, o))
+    } else {
+        let a0: &[u16; 8] = buf[idx..idx + 8].try_into().unwrap();
+        let a1: &[u16; 8] = buf[idx + 1..idx + 9].try_into().unwrap();
+        (vld1q_u16(a0), vld1q_u16(a1))
+    }
+}
+
+/// The shared z1/z2 hbd interpolation: `(a0*(32-s) + a1*s + 16) >> 5`
+/// computed as `vrshrn::<6>(a1*2s + a0*(64-2s))` (exact, see
+/// `dr_z1_edged_hbd_flat_neon`), then `vmin` replicating the only reachable
+/// half of `clip_pixel_highbd` (every term is non-negative).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dr_z2_hbd_interp_neon(
+    _token: NeonToken,
+    a0: uint16x8_t,
+    a1: uint16x8_t,
+    s2: u16,
+    w0: u16,
+    bd_max_v: uint16x8_t,
+) -> uint16x8_t {
+    let lo = vmlal_n_u16(vmull_n_u16(vget_low_u16(a1), s2), vget_low_u16(a0), w0);
+    let hi = vmlal_n_u16(vmull_n_u16(vget_high_u16(a1), s2), vget_high_u16(a0), w0);
+    vminq_u16(
+        vcombine_u16(vrshrn_n_u32::<6>(lo), vrshrn_n_u32::<6>(hi)),
+        bd_max_v,
+    )
+}
+
+/// aarch64 arm of [`dr_z2_edged_hbd`]. C ships this as tbl-gather kernels
+/// (`highbd_dr_prediction_z2_*_neon`), but the index arithmetic is AFFINE,
+/// not a real gather:
+///
+/// - Row `r` (above side): `x = 64c - (r+1)*dx` increases by exactly 64 per
+///   column, so `base(c) = base0 + c*step` (`step = 1 << up_a`) and the
+///   per-lane shift `((x << up_a) & 0x3F) >> 1` is CONSTANT across the row
+///   (`64*step ≡ 0 mod 64`). Above-region lanes are the row SUFFIX
+///   `[c*, bw)` where `c*` is the first column with `base >= min_base_x`.
+/// - Column `c` (left side): `y2 = 64r - (c+1)*dy` is affine in `r` the same
+///   way, so `base2(r) = base2_0 + r*step_y` — contiguous or stride-2
+///   loads down the column — and the shift is constant per column. The
+///   left-region lanes are the column TAIL `[r*, bh)`.
+///
+/// The two regions are exact complements of the same predicate, so pass A
+/// stores full row suffixes and pass B overwrites the left lanes — no
+/// blend needed. Byte-exactness is per-lane: every element computes the
+/// scalar core's interpolation on the scalar core's indices.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_hbd_simd_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u16],
+    left: &[u16],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+    bd: u8,
+) {
+    let up_a = upsample_above as i32;
+    let up_l = upsample_left as i32;
+    let min_base_x = -(1i32 << up_a);
+    let frac_x = 6 - up_a;
+    let frac_y = 6 - up_l;
+    let step_x = 1usize << up_a;
+    let step_y = 1usize << up_l;
+    // Same max as `clip_pixel_highbd`: non-{10,12} bd groups to 255.
+    let bd_max: u16 = match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255,
+    };
+    let bd_max_v = vdupq_n_u16(bd_max);
+
+    // Pass A — above region: row suffix [c*, bw).
+    for r in 0..bh {
+        let x0 = -((r as i32 + 1) * dx); // x at c=0
+        let base0 = x0 >> frac_x;
+        let need = min_base_x - base0;
+        let c_star = if need <= 0 {
+            0
+        } else {
+            (need as usize).div_ceil(step_x).min(bw)
+        };
+        let n = bw - c_star;
+        if n == 0 {
+            continue;
+        }
+        let shift = ((x0 << up_a) & 0x3f) >> 1;
+        let s2 = (shift * 2) as u16;
+        let w0 = 64 - s2;
+        // `base0` alone can be far below the window (only the suffix
+        // `[c*, bw)` is an above lane) — keep the index arithmetic signed
+        // until the first REAL lane's index.
+        let bi = (origin as i32 + base0 + (c_star * step_x) as i32) as usize;
+        let drow = r * dst_stride + c_star;
+        if n >= 8 {
+            let mut j = 0usize;
+            while j + 8 <= n {
+                let (a0, a1) = dr_z2_hbd_load_pairs_neon(_token, above, bi + j * step_x, up_a == 1);
+                let out = dr_z2_hbd_interp_neon(_token, a0, a1, s2, w0, bd_max_v);
+                vst1q_u16((&mut dst[drow + j..drow + j + 8]).try_into().unwrap(), out);
+                j += 8;
+            }
+            if j < n {
+                // Overlap the tail into the last full chunk — the
+                // recomputed lanes hold identical values.
+                let j = n - 8;
+                let (a0, a1) = dr_z2_hbd_load_pairs_neon(_token, above, bi + j * step_x, up_a == 1);
+                let out = dr_z2_hbd_interp_neon(_token, a0, a1, s2, w0, bd_max_v);
+                vst1q_u16((&mut dst[drow + j..drow + j + 8]).try_into().unwrap(), out);
+            }
+        } else {
+            // n < 8: one vector computes 8 lanes from bounded indices
+            // (`base(c* + j)` stays within min_base..min_base+8*step);
+            // only the first n lanes store.
+            let (a0, a1) = dr_z2_hbd_load_pairs_neon(_token, above, bi, up_a == 1);
+            let out = dr_z2_hbd_interp_neon(_token, a0, a1, s2, w0, bd_max_v);
+            let mut tmp = [0u16; 8];
+            vst1q_u16(&mut tmp, out);
+            dst[drow..drow + n].copy_from_slice(&tmp[..n]);
+        }
+    }
+
+    // Pass B — left region: column tail [r*, bh). For column c the
+    // above-side base is `(64c - (r+1)*dx) >> frac_x`, decreasing in r, so
+    // the left lanes are exactly the rows with
+    // `(r+1)*dx > 64c - (min_base_x << frac_x)`, i.e. `r >= floor(t/dx)`.
+    for c in 0..bw {
+        let t = 64 * c as i32 - (min_base_x << frac_x);
+        let r_star = if t < 0 { 0 } else { (t / dx) as usize }.min(bh);
+        let n = bh - r_star;
+        if n == 0 {
+            continue;
+        }
+        let y20 = -((c as i32 + 1) * dy); // y2 at r=0
+        let shift = ((y20 << up_l) & 0x3f) >> 1;
+        let s2 = (shift * 2) as u16;
+        let w0 = 64 - s2;
+        // Same signed-until-real-lane rule as pass A: `y20 >> frac_y` is the
+        // r=0 index, which can be far below the window while the first left
+        // lane at `r*` is inside it.
+        let bi = (origin as i32 + (y20 >> frac_y) + (r_star * step_y) as i32) as usize;
+        let mut k = 0usize;
+        while k + 8 <= n {
+            let (a0, a1) = dr_z2_hbd_load_pairs_neon(_token, left, bi + k * step_y, up_l == 1);
+            let out = dr_z2_hbd_interp_neon(_token, a0, a1, s2, w0, bd_max_v);
+            let mut tmp = [0u16; 8];
+            vst1q_u16(&mut tmp, out);
+            for j in 0..8 {
+                dst[(r_star + k + j) * dst_stride + c] = tmp[j];
+            }
+            k += 8;
+        }
+        if k < n {
+            let (a0, a1) = dr_z2_hbd_load_pairs_neon(_token, left, bi + k * step_y, up_l == 1);
+            let out = dr_z2_hbd_interp_neon(_token, a0, a1, s2, w0, bd_max_v);
+            let mut tmp = [0u16; 8];
+            vst1q_u16(&mut tmp, out);
+            for j in 0..n - k {
+                dst[(r_star + k + j) * dst_stride + c] = tmp[j];
+            }
         }
     }
 }
@@ -2368,6 +2653,21 @@ mod dispatch_tests {
                 dx,
                 bd,
             );
+        } else if angle > 90 && angle < 180 {
+            dr_z2_edged_hbd_core(
+                dst,
+                dst_stride,
+                width,
+                height,
+                above,
+                left,
+                origin,
+                upsample_above,
+                upsample_left,
+                dx,
+                dy,
+                bd,
+            );
         } else if angle > 180 && angle < 270 {
             dr_z3_edged_hbd_core(
                 dst,
@@ -2381,7 +2681,7 @@ mod dispatch_tests {
                 bd,
             );
         } else {
-            panic!("test only sweeps z1/z3");
+            panic!("test only sweeps z1/z2/z3");
         }
     }
 
@@ -2406,8 +2706,12 @@ mod dispatch_tests {
         const BUF: usize = 512;
         const ORIGIN: usize = 16;
         // z1 angles with nonzero DR_INTRA_DERIVATIVE_HBD entries, plus the
-        // z3 mirrors (270 - a). Real AV1 mode angles, not synthetic extremes.
+        // z3 mirrors (270 - a) and z2 angles spanning shallow to steep
+        // slopes. Real AV1 mode angles, not synthetic extremes.
         let z1_angles = [3i32, 9, 26, 45, 57, 72, 84, 87];
+        // Only angles where BOTH 180-a and a-90 have nonzero derivative
+        // entries are legal z2 modes (dx=0/dy=0 is contract-invalid).
+        let z2_angles = [93i32, 99, 126, 132, 135, 141, 144, 174, 177];
         let z3_angles = [183i32, 189, 201, 219, 237, 255, 264, 267];
         let sizes = [
             (4usize, 4usize),
@@ -2430,7 +2734,11 @@ mod dispatch_tests {
                 for &up in &[(false, false), (true, false), (false, true), (true, true)] {
                     let above: Vec<u16> = (0..BUF).map(|_| next() & max_sample).collect();
                     let left: Vec<u16> = (0..BUF).map(|_| next() & max_sample).collect();
-                    for &angle in z1_angles.iter().chain(z3_angles.iter()) {
+                    for &angle in z1_angles
+                        .iter()
+                        .chain(z2_angles.iter())
+                        .chain(z3_angles.iter())
+                    {
                         for pad in [0usize, 3] {
                             let stride = w + pad;
                             let rep =

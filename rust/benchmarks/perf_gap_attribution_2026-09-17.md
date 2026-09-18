@@ -233,3 +233,16 @@ the measurement cost.
   1.001 p25-p75 0.996-1.002; 512p4 0.999 0.998-1.007) — the row cost is
   the 12 tap loads + constrain chain, not the multiplies. Reverted;
   evidence in `ab_cdefgrp_2026-09-17*.tsv`.
+
+- `dr_z2_edged_hbd` NEON (`dr_z2_edged_hbd_simd_neon`): two-pass affine
+  decomposition — the index math is affine, not a gather: per row
+  `base(c) = base0 + c*step` (contiguous/stride-2 loads, constant shift),
+  per column `base2(r) = base2_0 + r*step_y` (same loads vertically,
+  scatter-stored tail). No vqtbl machinery needed — simpler than C's
+  `highbd_dr_prediction_z2_*_neon` shape. Kernel self-time
+  `dr_predictor_edged_hbd` 175 -> 117 samples (-33%) at bd10 256^2 p2
+  diag; encode-level A/B is a wash (0.997-1.000, bands straddle 1.0 —
+  the bucket is ~0.4% of encode). Retained as coverage alignment: all
+  hbd directional predictors (z1/z2/z3) now have NEON arms matching C's
+  dispatch coverage. Byte-identical everywhere; all-tiers sweep covers
+  sizes x angles x upsample x bd (`ab_z2hbd_2026-09-17.tsv`).
