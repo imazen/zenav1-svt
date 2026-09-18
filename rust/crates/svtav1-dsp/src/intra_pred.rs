@@ -1108,8 +1108,15 @@ pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
     const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
     let filt = (strength - 1) as usize;
     debug_assert!(sz <= 129);
-    let mut edge = [0u8; 129];
+    // 16 bytes of zero pad past the live edge so the v3 arm can make
+    // unconditional 16-byte loads (only the low 8 lanes are consumed).
+    let mut edge = [0u8; 129 + 16];
     edge[..sz].copy_from_slice(&p[start..start + sz]);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = X64V3Token::summon() {
+        filter_intra_edge_v3(token, p, start, sz, &KERNEL[filt], &edge);
+        return;
+    }
     for i in 1..sz {
         let mut s = 0i32;
         for (j, &k_w) in KERNEL[filt].iter().enumerate() {
@@ -1117,6 +1124,55 @@ pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
             s += edge[k] as i32 * k_w;
         }
         p[start + i] = ((s + 8) >> 4) as u8;
+    }
+}
+
+/// x86-64 v3 arm of [`filter_intra_edge`]. Rebuilding the taps' clamped
+/// indexing as REPLICATE padding — `edge2[i] = edge[(i-2).clamp(0, sz-1)]`
+/// — removes every clamp: `out[i] = Σ_j k_j · edge2[i + j]` for all
+/// `i in 1..sz`, scalar tail included. `s <= 255 * 16` so the i16
+/// accumulation and `as u8` store are exact.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn filter_intra_edge_v3(
+    token: X64V3Token,
+    p: &mut [u8],
+    start: usize,
+    sz: usize,
+    kernel: &[i32; 5],
+    edge: &[u8; 145],
+) {
+    use magetypes::simd::generic::{i16x8, u8x16};
+    // Largest tap window: `edge2[i + 4 .. i + 20)` for `i <= sz - 1`,
+    // i.e. index `sz + 22`.
+    let mut edge2 = [0u8; 160];
+    edge2[..2].fill(edge[0]);
+    edge2[2..2 + sz].copy_from_slice(&edge[..sz]);
+    edge2[2 + sz..2 + sz + 22].fill(edge[sz - 1]);
+    let cv: [i16x8<_>; 5] = core::array::from_fn(|j| i16x8::splat(token, kernel[j] as i16));
+    let rnd = i16x8::splat(token, 8);
+    let mut i = 1usize;
+    while i + 8 <= sz {
+        let mut acc = i16x8::splat(token, 0);
+        for (j, cf) in cv.iter().enumerate() {
+            let v = u8x16::load(token, edge2[i + j..i + j + 16].try_into().unwrap())
+                .widen_low()
+                .bitcast_i16x8();
+            acc += v * *cf;
+        }
+        let r = (acc + rnd).shr_arithmetic_uniform(4).to_array();
+        for (j, rv) in r.iter().enumerate() {
+            p[start + i + j] = *rv as u8;
+        }
+        i += 8;
+    }
+    while i < sz {
+        let mut s = 0i32;
+        for (j, &k_w) in kernel.iter().enumerate() {
+            s += edge2[i + j] as i32 * k_w;
+        }
+        p[start + i] = ((s + 8) >> 4) as u8;
+        i += 1;
     }
 }
 
