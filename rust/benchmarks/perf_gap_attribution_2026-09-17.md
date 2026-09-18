@@ -284,3 +284,31 @@ are encoder-side scalar loops — the remaining uncovered kernel surface.
   only fires at `step==1`). Kept as coverage alignment: aarch64 no longer
   drops to scalar where C ships `svt_aom_sad*x4d_neon`.
   Evidence: `ab_sadx4_screen_2026-09-18*.tsv`.
+
+## hbd predictor/CfL NEON arms (byte-identical; small p2 gain)
+
+- `predict_paeth_hbd`, `predict_smooth{,_v,_h}_hbd`,
+  `predict_filter_intra_hbd`, `cfl_luma_subsampling_420_hbd`,
+  `cfl_predict_hbd` all gained `[neon, scalar]` dispatch — the last
+  undispatched hbd intra-predictor surface where C ships NEON twins
+  (`highbd_intrapred_neon.c`, `cfl_neon.c`).
+- Paeth arm uses i32 lanes (u16 inputs can exceed i16 range) and preserves
+  C's LEFT-first tie-break — deliberately NOT the u8 arm's top-first order.
+  Smooth arms use the same algebraic factorizations as the u8 arms
+  (per-row constant collapse, `vmlaq` + exact shift, `vmovn_u32` truncates
+  like the scalar `as u16`). filter_intra is an i32x4 matvec across the 8
+  outputs (transposed taps hoisted per call; serial p5/p6 reads of
+  already-written cells stay scalar). CfL predict reuses the lbd arm's
+  `vqrdmulhq_s16` rounding then widens to i32 for the +pred/clamp (pred is
+  u16, sum spans [-8192, 73727] — i16 is NOT enough, unlike lbd).
+- All-tiers sweep `hbd_predictors_all_tiers_match_core`: every arm vs the
+  scalar core across sizes (incl. non-mult-4 tails), strides, bd {8,10,12},
+  filter-intra modes 0-4, alphas -16..16. PermutationReport consumed.
+  `c_parity_intra_pred_hbd` FFI suite (19 sizes x bd{10,12} vs real C)
+  green — covers paeth + smooth arms end-to-end vs C.
+- A/B on real screen content, bd10: 512² p10 0.992x (band 0.995-1.015,
+  noise — predictors are thin at p10); 256² p2 **1.009x** (band
+  0.982-0.992, all rounds faster), byte-identical both. CfL +
+  filter_intra hbd have no direct FFI oracle (encoder-internal); the bd10
+  byte-identity is their end-to-end coverage.
+  Evidence: `ab_hbdpred_screen_bd10{,_p2}.tsv`.

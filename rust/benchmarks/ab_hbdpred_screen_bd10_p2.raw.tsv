@@ -1,0 +1,13 @@
+# perf_ab raw — one row per interleaved paired round (NEITHER SIDE NICED)
+# base=/tmp/perf_encode_hbdpred_base
+# cand=/tmp/perf_encode_hbdpred_cand
+# commit=524548bdc host=mac date=2026-09-18T02:19:19Z
+# content=raw:/tmp/realframes/screen_term.yuv sizes=[256] presets=[2] qp=40 rounds=7
+size	preset	round	base_ns	cand_ns	ident
+256	2	1	424372375	422695250	Y
+256	2	2	429038459	424661083	Y
+256	2	3	428301667	424880833	Y
+256	2	4	438540792	426474792	Y
+256	2	5	435755667	427934666	Y
+256	2	6	427227542	425466375	Y
+256	2	7	427811875	423803500	Y

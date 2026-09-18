@@ -216,10 +216,78 @@ pub fn predict_paeth_hbd(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        predict_paeth_hbd_impl(dst, dst_stride, above, left, top_left, width, height),
+        [neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_paeth_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    top_left: u16,
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         for col in 0..width {
             dst[row * dst_stride + col] =
                 paeth_predictor_single_hbd(left[row], above[col], top_left);
+        }
+    }
+}
+
+/// aarch64 arm of [`predict_paeth_hbd`]. Same row-constant collapse as the
+/// u8 arm (`p_top = |lft - tl|` is per-row scalar), but in i32 lanes so the
+/// math is exact for ANY u16 sample range — `top + lft - 2*tl` spans
+/// [-131070, 131070] for full-range inputs, past i16. CRITICAL: the hbd
+/// scalar checks LEFT first (C `paeth_predictor_single` left-then-top
+/// tie-break) — the select order below is NOT the u8 arm's top-first.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_paeth_hbd_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    top_left: u16,
+    width: usize,
+    height: usize,
+) {
+    let tl = top_left as i32;
+    let tl_v = vdupq_n_s32(tl);
+    let two_tl_v = vdupq_n_s32(tl * 2);
+    for row in 0..height {
+        let lft = left[row] as i32;
+        let lft_v = vdupq_n_s32(lft);
+        let p_top_v = vdupq_n_s32((lft - tl).abs());
+        let base_row = row * dst_stride;
+        let mut col = 0;
+        while col + 4 <= width {
+            let a: &[u16; 4] = above[col..col + 4].try_into().unwrap();
+            let top_v = vreinterpretq_s32_u32(vmovl_u16(vld1_u16(a)));
+            let p_left_v = vabsq_s32(vsubq_s32(top_v, tl_v));
+            let p_tl_v = vabsq_s32(vsubq_s32(vaddq_s32(top_v, lft_v), two_tl_v));
+            // if p_left <= p_top && p_left <= p_tl { lft }
+            // else if p_top <= p_tl { top } else { tl }
+            let take_left = vandq_u32(vcleq_s32(p_left_v, p_top_v), vcleq_s32(p_left_v, p_tl_v));
+            let take_top = vcleq_s32(p_top_v, p_tl_v);
+            let pred = vbslq_s32(take_top, top_v, tl_v);
+            let pred = vbslq_s32(take_left, lft_v, pred);
+            let out: &mut [u16; 4] = (&mut dst[base_row + col..base_row + col + 4])
+                .try_into()
+                .unwrap();
+            vst1_u16(out, vmovn_u32(vreinterpretq_u32_s32(pred)));
+            col += 4;
+        }
+        while col < width {
+            dst[base_row + col] = paeth_predictor_single_hbd(left[row], above[col], top_left);
+            col += 1;
         }
     }
 }
@@ -415,6 +483,32 @@ pub fn predict_smooth_hbd(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        predict_smooth_hbd_impl(dst, dst_stride, above, left, width, height),
+        [neon, scalar]
+    )
+}
+
+fn predict_smooth_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_hbd_core(dst, dst_stride, above, left, width, height);
+}
+
+fn predict_smooth_hbd_core(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
     let below_pred = left[height - 1] as u32;
     let right_pred = above[width - 1] as u32;
     let sm_weights_h = smooth_weights_hbd(height);
@@ -433,9 +527,89 @@ pub fn predict_smooth_hbd(
     }
 }
 
+/// aarch64 arm of [`predict_smooth_hbd`] — the u8 arm's factored form in
+/// i32 lanes (u16 samples; `top <= 65535` keeps `wh*top <= 16.7M`):
+///   pred[c] = (wh * top[c] + ww[c] * d + K) >> 9
+///   d = left[row] - right,  K = 256*right + (256 - wh)*below + 256
+/// The total equals the all-nonneg scalar numerator (<= 2,096,896), so the
+/// arithmetic `>> 9` is the scalar floor-div and `vmovn_u32` is exact.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_hbd_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    if width % 4 != 0 || width > 64 {
+        predict_smooth_hbd_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    let below = left[height - 1] as i32;
+    let right = above[width - 1] as i32;
+    let sm_h = smooth_weights_hbd(height);
+    let sm_w = smooth_weights_hbd(width);
+    let mut tops = [vdupq_n_s32(0); 16];
+    let mut wws = [vdupq_n_s32(0); 16];
+    for j in 0..width / 4 {
+        let a: &[u16; 4] = above[j * 4..j * 4 + 4].try_into().unwrap();
+        tops[j] = vreinterpretq_s32_u32(vmovl_u16(vld1_u16(a)));
+        let w4 = [
+            sm_w[j * 4] as i32,
+            sm_w[j * 4 + 1] as i32,
+            sm_w[j * 4 + 2] as i32,
+            sm_w[j * 4 + 3] as i32,
+        ];
+        wws[j] = vld1q_s32(&w4);
+    }
+    for row in 0..height {
+        let wh = sm_h[row] as i32;
+        let dv = vdupq_n_s32(left[row] as i32 - right);
+        let kv = vdupq_n_s32(256 * right + (256 - wh) * below + 256);
+        let whv = vdupq_n_s32(wh);
+        let base = row * dst_stride;
+        for j in 0..width / 4 {
+            let pred = vshrq_n_s32::<9>(vmlaq_s32(vmlaq_s32(kv, tops[j], whv), wws[j], dv));
+            let out: &mut [u16; 4] = (&mut dst[base + j * 4..base + j * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1_u16(out, vmovn_u32(vreinterpretq_u32_s32(pred)));
+        }
+    }
+}
+
 /// C `highbd_smooth_v_predictor` (intra_prediction.c:1288-1310). `bd`
 /// unused; `divide_round(_, 8)` = `(x + 128) >> 8`.
 pub fn predict_smooth_v_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    incant!(
+        predict_smooth_v_hbd_impl(dst, dst_stride, above, left, width, height),
+        [neon, scalar]
+    )
+}
+
+fn predict_smooth_v_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_v_hbd_core(dst, dst_stride, above, left, width, height);
+}
+
+fn predict_smooth_v_hbd_core(
     dst: &mut [u16],
     dst_stride: usize,
     above: &[u16],
@@ -455,8 +629,74 @@ pub fn predict_smooth_v_hbd(
     }
 }
 
+/// aarch64 arm of [`predict_smooth_v_hbd`]: per row only `w` varies, so
+/// `pred[c] = (w * top[c] + K) >> 8` with `K = (256 - w)*below + 128` — one
+/// `vmlaq` + arithmetic shift per 4 lanes; `vmovn_u32` is exact (the scalar
+/// `as u16` truncates the same way for any value < 2^16).
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_v_hbd_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    let below = left[height - 1] as i32;
+    let sm_weights = smooth_weights_hbd(height);
+    for row in 0..height {
+        let w = sm_weights[row] as i32;
+        let wv = vdupq_n_s32(w);
+        let kv = vdupq_n_s32((256 - w) * below + 128);
+        let base = row * dst_stride;
+        let mut col = 0;
+        while col + 4 <= width {
+            let a: &[u16; 4] = above[col..col + 4].try_into().unwrap();
+            let top_v = vreinterpretq_s32_u32(vmovl_u16(vld1_u16(a)));
+            let pred = vshrq_n_s32::<8>(vmlaq_s32(kv, top_v, wv));
+            let out: &mut [u16; 4] = (&mut dst[base + col..base + col + 4]).try_into().unwrap();
+            vst1_u16(out, vmovn_u32(vreinterpretq_u32_s32(pred)));
+            col += 4;
+        }
+        while col < width {
+            let top = above[col] as u32;
+            let pred = (w as u32 * top + (256 - w as u32) * (below as u32) + 128) / 256;
+            dst[base + col] = pred as u16;
+            col += 1;
+        }
+    }
+}
+
 /// C `highbd_smooth_h_predictor` (intra_prediction.c:1312-1334). `bd` unused.
 pub fn predict_smooth_h_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    incant!(
+        predict_smooth_h_hbd_impl(dst, dst_stride, above, left, width, height),
+        [neon, scalar]
+    )
+}
+
+fn predict_smooth_h_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    predict_smooth_h_hbd_core(dst, dst_stride, above, left, width, height);
+}
+
+fn predict_smooth_h_hbd_core(
     dst: &mut [u16],
     dst_stride: usize,
     above: &[u16],
@@ -472,6 +712,58 @@ pub fn predict_smooth_h_hbd(
             let w = sm_weights[col] as u32;
             let pred = (w * lft + (256 - w) * right_pred + 128) / 256;
             dst[row * dst_stride + col] = pred as u16;
+        }
+    }
+}
+
+/// aarch64 arm of [`predict_smooth_h_hbd`]: per row only `lft` varies, so
+/// `pred[c] = (w[c] * d + K) >> 8` with `d = lft - right`,
+/// `K = 256*right + 128` — the intermediate `w*d` can be negative in i32
+/// but the total equals the all-nonneg scalar numerator, so `>> 8` is the
+/// scalar floor-div and `vmovn_u32` truncates exactly like `as u16`.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn predict_smooth_h_hbd_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
+    if width > 64 {
+        predict_smooth_h_hbd_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    let right = above[width - 1] as i32;
+    let sm_weights = smooth_weights_hbd(width);
+    let mut wws = [vdupq_n_s32(0); 17];
+    for j in 0..(width + 3) / 4 {
+        let mut w4 = [0i32; 4];
+        for k in 0..4 {
+            if j * 4 + k < width {
+                w4[k] = sm_weights[j * 4 + k] as i32;
+            }
+        }
+        wws[j] = vld1q_s32(&w4);
+    }
+    let kv = vdupq_n_s32(256 * right + 128);
+    for row in 0..height {
+        let dv = vdupq_n_s32(left[row] as i32 - right);
+        let base = row * dst_stride;
+        let mut col = 0;
+        while col + 4 <= width {
+            let pred = vshrq_n_s32::<8>(vmlaq_s32(kv, wws[col / 4], dv));
+            let out: &mut [u16; 4] = (&mut dst[base + col..base + col + 4]).try_into().unwrap();
+            vst1_u16(out, vmovn_u32(vreinterpretq_u32_s32(pred)));
+            col += 4;
+        }
+        while col < width {
+            let w = sm_weights[col] as u32;
+            let pred = (w * left[row] as u32 + (256 - w) * (right as u32) + 128) / 256;
+            dst[base + col] = pred as u16;
+            col += 1;
         }
     }
 }
@@ -1419,16 +1711,47 @@ pub fn predict_filter_intra_hbd(
 ) {
     assert!(width <= 32 && height <= 32);
     assert!((mode as usize) < 5);
+    assert!(dst.len() >= (height - 1) * dst_stride + width);
+    assert!(left.len() >= height);
+    assert!(above.len() >= width + 1);
+    incant!(
+        predict_filter_intra_hbd_impl(dst, dst_stride, above, left, width, height, mode, bd),
+        [neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_filter_intra_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    mode: u8,
+    bd: u8,
+) {
+    predict_filter_intra_hbd_core(dst, dst_stride, above, left, width, height, mode, bd);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_filter_intra_hbd_core(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    mode: u8,
+    bd: u8,
+) {
     // Same in-place rewrite as `predict_filter_intra`: every tap reads
     // `above`/`left` or a dst cell an earlier sub-block already wrote, so the
     // `buffer[33][33]` staging — and its per-call zero — is unnecessary.
     // `up[j]` == `buf[r-1][j+1]` (above[1..] on the first row pair, dst row
     // `r - 2` after); the `c == 1` sub-block, whose p0/p5/p6 are border
     // cells, is peeled so the interior loop is branch-free.
-    assert!(dst.len() >= (height - 1) * dst_stride + width);
-    assert!(left.len() >= height);
-    assert!(above.len() >= width + 1);
-
     let taps = &FILTER_INTRA_TAPS_HBD[mode as usize];
     for r in (1..height + 1).step_by(2) {
         // Split at row `r - 1`: dst rows `r - 1`,`r` are written while row
@@ -1489,6 +1812,125 @@ pub fn predict_filter_intra_hbd(
     }
 }
 
+/// One 4x2 sub-block of [`predict_filter_intra_hbd`]: the eight outputs are
+/// `taps[k][t] * p[t]` summed over t — an i32x4 matvec across k. Output
+/// k=0..3 lands contiguously at `cur[c-1..c+3]`, k=4..7 at the next row's
+/// same span, so the rounded+clipped i32x4s narrow straight into two u16x4
+/// stores. The rounding is the sign-symmetric `ROUND_POWER_OF_TWO_SIGNED`
+/// (`s = v>>31; (((|v|+8)>>4)^s)-s` — exact, `|v|` cannot be i32::MIN:
+/// taps are i8 and p are u16, so `|v| <= 7*127*65535`). The serial
+/// p5/p6 reads of already-written `cur` cells stay scalar.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn filter_intra_4x2_neon(
+    _token: NeonToken,
+    p: &[i32; 7],
+    tt: &[[int32x4_t; 2]; 7],
+    maxv: int32x4_t,
+) -> (uint16x4_t, uint16x4_t) {
+    let mut lo = vdupq_n_s32(0);
+    let mut hi = vdupq_n_s32(0);
+    for t in 0..7 {
+        let pv = vdupq_n_s32(p[t]);
+        lo = vmlaq_s32(lo, tt[t][0], pv);
+        hi = vmlaq_s32(hi, tt[t][1], pv);
+    }
+    let eight = vdupq_n_s32(8);
+    let zero = vdupq_n_s32(0);
+    let s_lo = vshrq_n_s32::<31>(lo);
+    let s_hi = vshrq_n_s32::<31>(hi);
+    let m_lo = vshrq_n_s32::<4>(vaddq_s32(vabsq_s32(lo), eight));
+    let m_hi = vshrq_n_s32::<4>(vaddq_s32(vabsq_s32(hi), eight));
+    let lo = vsubq_s32(veorq_s32(m_lo, s_lo), s_lo);
+    let hi = vsubq_s32(veorq_s32(m_hi, s_hi), s_hi);
+    let lo = vminq_s32(vmaxq_s32(lo, zero), maxv);
+    let hi = vminq_s32(vmaxq_s32(hi, zero), maxv);
+    (
+        vmovn_u32(vreinterpretq_u32_s32(lo)),
+        vmovn_u32(vreinterpretq_u32_s32(hi)),
+    )
+}
+
+/// aarch64 arm of [`predict_filter_intra_hbd`]: taps are transposed once
+/// per call into `tt[t][k]` i32x4 pairs, then every sub-block is one
+/// [`filter_intra_4x2_neon`] matvec + two u16x4 stores.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn predict_filter_intra_hbd_impl_neon(
+    token: NeonToken,
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+    mode: u8,
+    bd: u8,
+) {
+    let taps = &FILTER_INTRA_TAPS_HBD[mode as usize];
+    let mut tt_arr = [[0i32; 8]; 7];
+    for t in 0..7 {
+        for k in 0..8 {
+            tt_arr[t][k] = taps[k][t] as i32;
+        }
+    }
+    let mut tt = [[vdupq_n_s32(0); 2]; 7];
+    for t in 0..7 {
+        tt[t][0] = vld1q_s32((&tt_arr[t][..4]).try_into().unwrap());
+        tt[t][1] = vld1q_s32((&tt_arr[t][4..]).try_into().unwrap());
+    }
+    let maxv = vdupq_n_s32(match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255,
+    });
+    for r in (1..height + 1).step_by(2) {
+        let (above_rows, cur) = dst.split_at_mut((r - 1) * dst_stride);
+        let up: &[u16] = if r == 1 {
+            &above[1..]
+        } else {
+            &above_rows[(r - 2) * dst_stride..]
+        };
+        {
+            let p = [
+                (if r == 1 { above[0] } else { left[r - 2] }) as i32,
+                up[0] as i32,
+                up[1] as i32,
+                up[2] as i32,
+                up[3] as i32,
+                left[r - 1] as i32,
+                left[r] as i32,
+            ];
+            let (lo, hi) = filter_intra_4x2_neon(token, &p, &tt, maxv);
+            vst1_u16((&mut cur[0..4]).try_into().unwrap(), lo);
+            vst1_u16(
+                (&mut cur[dst_stride..dst_stride + 4]).try_into().unwrap(),
+                hi,
+            );
+        }
+        for c in (5..width + 1).step_by(4) {
+            let p = [
+                up[c - 2] as i32,
+                up[c - 1] as i32,
+                up[c] as i32,
+                up[c + 1] as i32,
+                up[c + 2] as i32,
+                cur[c - 2] as i32,
+                cur[dst_stride + c - 2] as i32,
+            ];
+            let (lo, hi) = filter_intra_4x2_neon(token, &p, &tt, maxv);
+            vst1_u16((&mut cur[c - 1..c + 3]).try_into().unwrap(), lo);
+            vst1_u16(
+                (&mut cur[dst_stride + c - 1..dst_stride + c + 3])
+                    .try_into()
+                    .unwrap(),
+                hi,
+            );
+        }
+    }
+}
+
 // =============================================================================
 // 5. Chroma-from-Luma (CfL), highbd.
 // C: intra_prediction.c:437-445 (`svt_cfl_luma_subsampling_420_hbd_c`),
@@ -1514,6 +1956,30 @@ pub fn cfl_luma_subsampling_420_hbd(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        cfl_luma_subsampling_420_hbd_impl(luma, luma_stride, output_q3, width, height),
+        [neon, scalar]
+    )
+}
+
+fn cfl_luma_subsampling_420_hbd_impl_scalar(
+    _token: ScalarToken,
+    luma: &[u16],
+    luma_stride: usize,
+    output_q3: &mut [i16],
+    width: usize,
+    height: usize,
+) {
+    cfl_luma_subsampling_420_hbd_core(luma, luma_stride, output_q3, width, height);
+}
+
+fn cfl_luma_subsampling_420_hbd_core(
+    luma: &[u16],
+    luma_stride: usize,
+    output_q3: &mut [i16],
+    width: usize,
+    height: usize,
+) {
     for j in (0..height).step_by(2) {
         let out_row = (j / 2) * crate::intra_pred::CFL_BUF_LINE;
         for i in (0..width).step_by(2) {
@@ -1522,6 +1988,60 @@ pub fn cfl_luma_subsampling_420_hbd(
                 + luma[(j + 1) * luma_stride + i] as i32
                 + luma[(j + 1) * luma_stride + i + 1] as i32;
             output_q3[out_row + i / 2] = (sum * 2) as i16;
+        }
+    }
+}
+
+/// aarch64 arm of [`cfl_luma_subsampling_420_hbd`]: `vpaddlq_u16` gives the
+/// horizontal pair sums of each row in u32 lanes, the row add completes the
+/// 2x2 sum, `<<1` is the `*2`, and `vmovn_u32` truncates mod 2^16 exactly
+/// like the scalar `as i16` (reachable inputs keep `sum*2 <= 32760`, but the
+/// wrap is preserved regardless). Two u16x8 loads cover 16 luma columns ->
+/// 8 Q3 outputs per iteration.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn cfl_luma_subsampling_420_hbd_impl_neon(
+    _token: NeonToken,
+    luma: &[u16],
+    luma_stride: usize,
+    output_q3: &mut [i16],
+    width: usize,
+    height: usize,
+) {
+    for j in (0..height).step_by(2) {
+        let out_row = (j / 2) * crate::intra_pred::CFL_BUF_LINE;
+        let r0 = &luma[j * luma_stride..j * luma_stride + width];
+        let r1 = &luma[(j + 1) * luma_stride..(j + 1) * luma_stride + width];
+        let mut i = 0;
+        while i + 16 <= width {
+            let a: &[u16; 8] = r0[i..i + 8].try_into().unwrap();
+            let b: &[u16; 8] = r0[i + 8..i + 16].try_into().unwrap();
+            let c: &[u16; 8] = r1[i..i + 8].try_into().unwrap();
+            let d: &[u16; 8] = r1[i + 8..i + 16].try_into().unwrap();
+            let lo = vshlq_n_u32::<1>(vaddq_u32(
+                vpaddlq_u16(vld1q_u16(a)),
+                vpaddlq_u16(vld1q_u16(c)),
+            ));
+            let hi = vshlq_n_u32::<1>(vaddq_u32(
+                vpaddlq_u16(vld1q_u16(b)),
+                vpaddlq_u16(vld1q_u16(d)),
+            ));
+            let out: &mut [i16; 8] = (&mut output_q3[out_row + i / 2..out_row + i / 2 + 8])
+                .try_into()
+                .unwrap();
+            vst1q_s16(
+                out,
+                vcombine_s16(
+                    vreinterpret_s16_u16(vmovn_u32(lo)),
+                    vreinterpret_s16_u16(vmovn_u32(hi)),
+                ),
+            );
+            i += 16;
+        }
+        while i < width {
+            let sum = r0[i] as i32 + r0[i + 1] as i32 + r1[i] as i32 + r1[i + 1] as i32;
+            output_q3[out_row + i / 2] = (sum * 2) as i16;
+            i += 2;
         }
     }
 }
@@ -1552,6 +2072,60 @@ pub fn cfl_predict_hbd(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        cfl_predict_hbd_impl(
+            pred_buf_q3,
+            pred,
+            pred_stride,
+            dst,
+            dst_stride,
+            alpha_q3,
+            bd,
+            width,
+            height
+        ),
+        [neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cfl_predict_hbd_impl_scalar(
+    _token: ScalarToken,
+    pred_buf_q3: &[i16],
+    pred: &[u16],
+    pred_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    alpha_q3: i32,
+    bd: u8,
+    width: usize,
+    height: usize,
+) {
+    cfl_predict_hbd_core(
+        pred_buf_q3,
+        pred,
+        pred_stride,
+        dst,
+        dst_stride,
+        alpha_q3,
+        bd,
+        width,
+        height,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cfl_predict_hbd_core(
+    pred_buf_q3: &[i16],
+    pred: &[u16],
+    pred_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    alpha_q3: i32,
+    bd: u8,
+    width: usize,
+    height: usize,
+) {
     for j in 0..height {
         for i in 0..width {
             let scaled = get_scaled_luma_q0_hbd(
@@ -1560,6 +2134,72 @@ pub fn cfl_predict_hbd(
             );
             let val = scaled + pred[j * pred_stride + i] as i32;
             dst[j * dst_stride + i] = clip_pixel_highbd(val, bd);
+        }
+    }
+}
+
+/// aarch64 arm of [`cfl_predict_hbd`]. The scaled-luma term reuses the
+/// lbd arm's `vqrdmulhq_s16` rounding (ac_q3 stays i16 at every bd), then
+/// widens to i32 for the `+ pred` and the `[0, (1<<bd)-1]` clamp — the lbd
+/// arm could stay in i16 (`pred <= 255`), this one cannot (`pred <= 65535`,
+/// `sum` spans [-8192, 73727]).
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn cfl_predict_hbd_impl_neon(
+    _token: NeonToken,
+    pred_buf_q3: &[i16],
+    pred: &[u16],
+    pred_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    alpha_q3: i32,
+    bd: u8,
+    width: usize,
+    height: usize,
+) {
+    let q12 = vshlq_n_s16::<9>(vabsq_s16(vdupq_n_s16(alpha_q3 as i16)));
+    let aneg = vdupq_n_s16(if alpha_q3 < 0 { -1 } else { 0 });
+    let maxv = vdupq_n_s32(match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255, // C: `case 8: default:` grouped together
+    });
+    let zero = vdupq_n_s32(0);
+    for j in 0..height {
+        let acr = &pred_buf_q3
+            [j * crate::intra_pred::CFL_BUF_LINE..j * crate::intra_pred::CFL_BUF_LINE + width];
+        let pr = &pred[j * pred_stride..j * pred_stride + width];
+        let or = &mut dst[j * dst_stride..j * dst_stride + width];
+        let mut i = 0;
+        while i + 8 <= width {
+            let acb: &[i16; 8] = acr[i..i + 8].try_into().unwrap();
+            let pb: &[u16; 8] = pr[i..i + 8].try_into().unwrap();
+            let ac = vld1q_s16(acb);
+            let m = veorq_s16(vshrq_n_s16::<15>(ac), aneg);
+            let mag = vqrdmulhq_s16(vabsq_s16(ac), q12);
+            let signed = vsubq_s16(veorq_s16(mag, m), m);
+            let slo = vmovl_s16(vget_low_s16(signed));
+            let shi = vmovl_s16(vget_high_s16(signed));
+            let p = vld1q_u16(pb);
+            let plo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(p)));
+            let phi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(p)));
+            let lo = vminq_s32(vmaxq_s32(vaddq_s32(slo, plo), zero), maxv);
+            let hi = vminq_s32(vmaxq_s32(vaddq_s32(shi, phi), zero), maxv);
+            let out: &mut [u16; 8] = (&mut or[i..i + 8]).try_into().unwrap();
+            vst1q_u16(
+                out,
+                vcombine_u16(
+                    vmovn_u32(vreinterpretq_u32_s32(lo)),
+                    vmovn_u32(vreinterpretq_u32_s32(hi)),
+                ),
+            );
+            i += 8;
+        }
+        while i < width {
+            let scaled = get_scaled_luma_q0_hbd(alpha_q3, acr[i]);
+            or[i] = clip_pixel_highbd(scaled + pr[i] as i32, bd);
+            i += 1;
         }
     }
 }
@@ -2827,6 +3467,261 @@ mod dispatch_tests {
                                         &want[r * stride..r * stride + w],
                                         "dc hbd {w}x{h} flags ({ha},{hl}) bd {bd} stride {stride} \
                                          row {r} tier {perm}"
+                                    );
+                                }
+                            });
+                        assert!(
+                            rep.warnings.is_empty(),
+                            "tokens excluded at compile time: {:?}",
+                            rep.warnings
+                        );
+                        assert!(
+                            rep.permutations_run >= 2,
+                            "only {} permutation(s) ran",
+                            rep.permutations_run
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every dispatched tier of the hbd paeth/smooth/filter-intra/CfL arms
+    /// must produce the scalar core's output — including the non-multiple-of-4
+    /// paeth widths that exercise the scalar tails (6, 10, 18 are not real
+    /// AV1 sizes but the paeth kernel is generic and the tail is load-bearing).
+    /// Consumes the `PermutationReport` (empty warnings, >= 2 permutations).
+    #[test]
+    fn hbd_predictors_all_tiers_match_core() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let scalar = ScalarToken::summon().unwrap();
+        let mut st = 0x243F_6A88_85A3_08D3u64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u16
+        };
+        // Paeth has no weight tables — generic widths (6/10/18) exercise the
+        // NEON tails. The smooth predictors index `smooth_weights_hbd(n)`
+        // which only exists for real AV1 sizes {4,8,16,32,64}.
+        for &bd in &[10u8, 12, 8] {
+            let max_sample = (1u16 << bd.min(12)) - 1;
+            for &(w, h) in &[
+                (4usize, 4usize),
+                (6, 4),
+                (8, 8),
+                (10, 8),
+                (16, 16),
+                (18, 8),
+                (32, 16),
+                (4, 32),
+            ] {
+                let above: Vec<u16> = (0..w + 1).map(|_| next() & max_sample).collect();
+                let left: Vec<u16> = (0..h.max(2)).map(|_| next() & max_sample).collect();
+                for pad in [0usize, 3] {
+                    let stride = w + pad;
+                    let rep = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                        let mut got = vec![0xAAAAu16; stride * h];
+                        let mut want = vec![0xBBBBu16; stride * h];
+                        let tl = next() & max_sample;
+                        predict_paeth_hbd(&mut got, stride, &above[1..], &left, tl, w, h);
+                        predict_paeth_hbd_impl_scalar(
+                            scalar,
+                            &mut want,
+                            stride,
+                            &above[1..],
+                            &left,
+                            tl,
+                            w,
+                            h,
+                        );
+                        for r in 0..h {
+                            assert_eq!(
+                                &got[r * stride..r * stride + w],
+                                &want[r * stride..r * stride + w],
+                                "paeth {w}x{h} bd {bd} stride {stride} row {r} tier {perm}"
+                            );
+                        }
+                    });
+                    assert!(
+                        rep.warnings.is_empty(),
+                        "tokens excluded at compile time: {:?}",
+                        rep.warnings
+                    );
+                    assert!(
+                        rep.permutations_run >= 2,
+                        "only {} permutation(s) ran",
+                        rep.permutations_run
+                    );
+                }
+            }
+            for &(w, h) in &[
+                (4usize, 4usize),
+                (8, 8),
+                (16, 16),
+                (32, 16),
+                (4, 32),
+                (64, 8),
+            ] {
+                let above: Vec<u16> = (0..w).map(|_| next() & max_sample).collect();
+                let left: Vec<u16> = (0..h).map(|_| next() & max_sample).collect();
+                for pad in [0usize, 3] {
+                    let stride = w + pad;
+                    let rep = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                        let mut got = vec![0xAAAAu16; stride * h];
+                        let mut want = vec![0xBBBBu16; stride * h];
+
+                        predict_smooth_hbd(&mut got, stride, &above, &left, w, h);
+                        predict_smooth_hbd_core(&mut want, stride, &above, &left, w, h);
+                        for r in 0..h {
+                            assert_eq!(
+                                &got[r * stride..r * stride + w],
+                                &want[r * stride..r * stride + w],
+                                "smooth {w}x{h} bd {bd} stride {stride} row {r} tier {perm}"
+                            );
+                        }
+
+                        got.fill(0xAAAA);
+                        want.fill(0xBBBB);
+                        predict_smooth_v_hbd(&mut got, stride, &above, &left, w, h);
+                        predict_smooth_v_hbd_core(&mut want, stride, &above, &left, w, h);
+                        for r in 0..h {
+                            assert_eq!(
+                                &got[r * stride..r * stride + w],
+                                &want[r * stride..r * stride + w],
+                                "smooth_v {w}x{h} bd {bd} stride {stride} row {r} tier {perm}"
+                            );
+                        }
+
+                        got.fill(0xAAAA);
+                        want.fill(0xBBBB);
+                        predict_smooth_h_hbd(&mut got, stride, &above, &left, w, h);
+                        predict_smooth_h_hbd_core(&mut want, stride, &above, &left, w, h);
+                        for r in 0..h {
+                            assert_eq!(
+                                &got[r * stride..r * stride + w],
+                                &want[r * stride..r * stride + w],
+                                "smooth_h {w}x{h} bd {bd} stride {stride} row {r} tier {perm}"
+                            );
+                        }
+                    });
+                    assert!(
+                        rep.warnings.is_empty(),
+                        "tokens excluded at compile time: {:?}",
+                        rep.warnings
+                    );
+                    assert!(
+                        rep.permutations_run >= 2,
+                        "only {} permutation(s) ran",
+                        rep.permutations_run
+                    );
+                }
+            }
+        }
+
+        // filter_intra: 4x2 sub-blocks, w/h <= 32 and multiples of 4, mode < 5.
+        for &bd in &[10u8, 12] {
+            let max_sample = (1u16 << bd.min(12)) - 1;
+            for &(w, h) in &[
+                (4usize, 4usize),
+                (8, 8),
+                (16, 16),
+                (32, 32),
+                (4, 16),
+                (20, 8),
+            ] {
+                for mode in 0u8..5 {
+                    let above: Vec<u16> = (0..w + 1).map(|_| next() & max_sample).collect();
+                    let left: Vec<u16> = (0..h).map(|_| next() & max_sample).collect();
+                    for pad in [0usize, 3] {
+                        let stride = w + pad;
+                        let rep =
+                            for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                                let mut got = vec![0xAAAAu16; stride * h];
+                                let mut want = vec![0xBBBBu16; stride * h];
+                                predict_filter_intra_hbd(
+                                    &mut got, stride, &above, &left, w, h, mode, bd,
+                                );
+                                predict_filter_intra_hbd_core(
+                                    &mut want, stride, &above, &left, w, h, mode, bd,
+                                );
+                                for r in 0..h {
+                                    assert_eq!(
+                                        &got[r * stride..r * stride + w],
+                                        &want[r * stride..r * stride + w],
+                                        "filter_intra {w}x{h} mode {mode} bd {bd} stride \
+                                         {stride} row {r} tier {perm}"
+                                    );
+                                }
+                            });
+                        assert!(
+                            rep.warnings.is_empty(),
+                            "tokens excluded at compile time: {:?}",
+                            rep.warnings
+                        );
+                        assert!(
+                            rep.permutations_run >= 2,
+                            "only {} permutation(s) ran",
+                            rep.permutations_run
+                        );
+                    }
+                }
+            }
+        }
+
+        // CfL hbd pair: subsampling (w,h even) and predict (alpha over the
+        // signed q3 domain, incl. the bd=8 default-clip arm).
+        for &(w, h) in &[
+            (4usize, 4usize),
+            (8, 8),
+            (16, 16),
+            (32, 32),
+            (6, 4),
+            (18, 8),
+        ] {
+            let luma: Vec<u16> = (0..h * w).map(|_| next() & 4095).collect();
+            let rep = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                let mut got = vec![0i16; (h / 2 + 1) * crate::intra_pred::CFL_BUF_LINE + w];
+                let mut want = vec![0i16; (h / 2 + 1) * crate::intra_pred::CFL_BUF_LINE + w];
+                cfl_luma_subsampling_420_hbd(&luma, w, &mut got, w, h);
+                cfl_luma_subsampling_420_hbd_core(&luma, w, &mut want, w, h);
+                assert_eq!(got, want, "cfl_subsample {w}x{h} tier {perm}");
+            });
+            assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+            assert!(rep.permutations_run >= 2);
+        }
+        for &bd in &[10u8, 12, 8] {
+            let max_sample = (1u16 << bd.min(12)) - 1;
+            for &(w, h) in &[
+                (4usize, 4usize),
+                (8, 8),
+                (16, 16),
+                (32, 16),
+                (6, 4),
+                (10, 8),
+            ] {
+                let buf: Vec<i16> = (0..h * crate::intra_pred::CFL_BUF_LINE + w)
+                    .map(|_| (next() & 1023) as i16 - 512)
+                    .collect();
+                let pred: Vec<u16> = (0..h * w).map(|_| next() & max_sample).collect();
+                for &alpha in &[-16i32, -3, 0, 5, 16] {
+                    for pad in [0usize, 3] {
+                        let stride = w + pad;
+                        let rep =
+                            for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                                let mut got = vec![0xAAAAu16; stride * h];
+                                let mut want = vec![0xBBBBu16; stride * h];
+                                cfl_predict_hbd(&buf, &pred, w, &mut got, stride, alpha, bd, w, h);
+                                cfl_predict_hbd_core(
+                                    &buf, &pred, w, &mut want, stride, alpha, bd, w, h,
+                                );
+                                for r in 0..h {
+                                    assert_eq!(
+                                        &got[r * stride..r * stride + w],
+                                        &want[r * stride..r * stride + w],
+                                        "cfl_predict {w}x{h} alpha {alpha} bd {bd} stride \
+                                         {stride} row {r} tier {perm}"
                                     );
                                 }
                             });
