@@ -22,7 +22,7 @@
 //! - `find_dominant_value` keeps the FIRST scan-order value to reach the
 //!   max count (strict `>` compare) — ties do not replace.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use archmage::prelude::*;
 
 /// C `svt_av1_count_colors_with_threshold` (pic_analysis_process.c:911).
@@ -87,6 +87,22 @@ pub fn dilate_block(
     if rows <= 16 && (cols == 8 || cols == 16) && dilated_stride >= cols {
         if let Some(token) = X64V3Token::summon() {
             dilate_block_v3(
+                token,
+                src,
+                src_stride,
+                dilated,
+                dilated_stride,
+                rows,
+                cols,
+                dominant_value,
+            );
+            return;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    if rows <= 16 && (cols == 8 || cols == 16) && dilated_stride >= cols {
+        if let Some(token) = NeonToken::summon() {
+            dilate_block_neon(
                 token,
                 src,
                 src_stride,
@@ -190,6 +206,63 @@ fn dilate_block_v3(
             _mm_storeu_si128(dilated[start..].first_chunk_mut::<16>().unwrap(), pixels);
         } else {
             dilated[start..start + 8].copy_from_slice(&_mm_cvtsi128_si64(pixels).to_le_bytes());
+        }
+    }
+}
+
+/// The same three-adjacent-row-mask dilation as [`dilate_block_v3`].
+/// `vextq_u8(zero, m, 15)` is `_mm_slli_si128::<1>` (lane i takes i−1) and
+/// `vextq_u8(m, zero, 1)` is `_mm_srli_si128::<1>`; `vbslq_u8` is the blendv.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn dilate_block_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dilated: &mut [u8],
+    dilated_stride: usize,
+    rows: usize,
+    cols: usize,
+    dominant_value: u8,
+) {
+    let zero = vdupq_n_u8(0);
+    let dominant = vdupq_n_u8(dominant_value);
+    let mut masks = [zero; 18];
+    let mut original = [zero; 16];
+    for r in 0..rows {
+        let start = r * src_stride;
+        let pixels = if cols == 16 {
+            vld1q_u8(src[start..start + 16].try_into().unwrap())
+        } else {
+            vcombine_u8(
+                vld1_u8(src[start..start + 8].try_into().unwrap()),
+                vget_low_u8(zero),
+            )
+        };
+        original[r] = pixels;
+        let mut mask = vceqq_u8(pixels, dominant);
+        if cols == 8 {
+            mask = vcombine_u8(vget_low_u8(mask), vget_low_u8(zero));
+        }
+        masks[r + 1] = vorrq_u8(
+            mask,
+            vorrq_u8(vextq_u8(zero, mask, 15), vextq_u8(mask, zero, 1)),
+        );
+    }
+    for r in 0..rows {
+        let mask = vorrq_u8(masks[r], vorrq_u8(masks[r + 1], masks[r + 2]));
+        let pixels = vbslq_u8(mask, dominant, original[r]);
+        let start = r * dilated_stride;
+        if cols == 16 {
+            vst1q_u8(
+                (&mut dilated[start..start + 16]).try_into().unwrap(),
+                pixels,
+            );
+        } else {
+            vst1_u8(
+                (&mut dilated[start..start + 8]).try_into().unwrap(),
+                vget_low_u8(pixels),
+            );
         }
     }
 }

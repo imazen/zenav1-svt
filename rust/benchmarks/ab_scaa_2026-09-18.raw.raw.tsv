@@ -1,0 +1,15 @@
+# perf_ab raw — one row per interleaved paired round (NEITHER SIDE NICED)
+# base=/tmp/perf_encode_crc_cand
+# cand=/tmp/perf_encode_scaa_cand
+# commit=8f576ff78 host=mac date=2026-09-18T01:09:36Z
+# content=raw:/tmp/realframes/screen_term.yuv sizes=[512] presets=[4] qp=40 rounds=9
+size	preset	round	base_ns	cand_ns	ident
+512	4	1	91166958	92406292	Y
+512	4	2	92313417	91596708	Y
+512	4	3	92226834	92164667	Y
+512	4	4	92073125	92091041	Y
+512	4	5	92548166	92568208	Y
+512	4	6	92448791	92654958	Y
+512	4	7	92047958	91774708	Y
+512	4	8	91874500	92879125	Y
+512	4	9	92307542	92835417	Y

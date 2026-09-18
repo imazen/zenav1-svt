@@ -61,6 +61,7 @@
 //!    them; nothing can, since the maximum is 255^2.
 
 use crate::md_subpel::NUM_PELS_LOG2_LOOKUP;
+use archmage::prelude::*;
 use svtav1_types::block::BlockSize;
 use svtav1_types::tables::block::{
     BLOCK_SIZE_HIGH, BLOCK_SIZE_HIGH_LOG2, BLOCK_SIZE_WIDE, BLOCK_SIZE_WIDE_LOG2,
@@ -112,6 +113,16 @@ pub fn get_perpixel_variance(buf: &[u8], stride: usize, bsize: BlockSize) -> u32
 /// subtraction is exact — the true variance is non-negative — but the
 /// narrowing is C's, so it is spelled the same way.
 pub(crate) fn variance_about_128(buf: &[u8], stride: usize, bw: usize, bh: usize) -> u32 {
+    incant!(variance_about_128_impl(buf, stride, bw, bh), [neon, scalar])
+}
+
+fn variance_about_128_impl_scalar(
+    _t: ScalarToken,
+    buf: &[u8],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+) -> u32 {
     let mut sum: i64 = 0;
     let mut sse: u64 = 0;
     for r in 0..bh {
@@ -121,6 +132,47 @@ pub(crate) fn variance_about_128(buf: &[u8], stride: usize, bw: usize, bh: usize
             sse += (diff * diff) as u64;
         }
     }
+    (sse as u32).wrapping_sub((sum * sum / (bw as i64 * bh as i64)) as u32)
+}
+
+/// Eight `i16` difference lanes per row-chunk, pairwise-folded into `i32`
+/// (`vpadalq_s16` for the sum, `vmlal_s16(d, d)` for the squares — `diff²`
+/// maxes at 16384 so the signed lanes cannot wrap for any `bw*bh` this is
+/// called with). Rows narrower than 8 and per-row tails stay scalar.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn variance_about_128_impl_neon(
+    _t: NeonToken,
+    buf: &[u8],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+) -> u32 {
+    let k128 = vdup_n_u8(128);
+    let mut sum_v = vdupq_n_s32(0);
+    let mut sse_v = vdupq_n_s32(0);
+    let mut sum: i64 = 0;
+    let mut sse: u64 = 0;
+    for r in 0..bh {
+        let row = &buf[r * stride..r * stride + bw];
+        let mut c = 0;
+        while c + 8 <= bw {
+            let chunk: &[u8; 8] = row[c..c + 8].try_into().unwrap();
+            let diff = vreinterpretq_s16_u16(vsubl_u8(vld1_u8(chunk), k128));
+            sum_v = vpadalq_s16(sum_v, diff);
+            let lo = vget_low_s16(diff);
+            let hi = vget_high_s16(diff);
+            sse_v = vmlal_s16(vmlal_s16(sse_v, lo, lo), hi, hi);
+            c += 8;
+        }
+        for &px in &row[c..] {
+            let diff = i32::from(px) - 128;
+            sum += i64::from(diff);
+            sse += (diff * diff) as u64;
+        }
+    }
+    sum += i64::from(vaddvq_s32(sum_v));
+    sse += vaddvq_s32(sse_v) as u32 as u64;
     (sse as u32).wrapping_sub((sum * sum / (bw as i64 * bh as i64)) as u32)
 }
 
@@ -344,4 +396,59 @@ pub fn delta_rate_cost(
     let den = num * beta + (1.0 - beta) * beta;
     let rate_cost = ((f64::from(pix_num) * (num / den).ln()) / 2.0f64.ln() / 2.0) as i64;
     Some(rate_cost << shift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    /// The dispatched wrapper must equal the scalar reference over every tier
+    /// permutation and every reachable shape: `side`/`norm_side` split means
+    /// the WINDOW can be any AV1 block extent, not only 8/16.
+    #[test]
+    fn variance_about_128_all_tiers_match_scalar() {
+        let st = ScalarToken::summon().unwrap();
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+            for (bw, bh) in [
+                (4, 4),
+                (8, 8),
+                (16, 16),
+                (8, 4),
+                (4, 16),
+                (16, 8),
+                (32, 16),
+                (64, 64),
+            ] {
+                for stride_pad in [0usize, 5] {
+                    let stride = bw + stride_pad;
+                    let buf: alloc::vec::Vec<u8> = (0..stride * bh)
+                        .map(|i| (i as u32 * 37 + (i / stride) as u32 * 91) as u8)
+                        .collect();
+                    assert_eq!(
+                        variance_about_128(&buf, stride, bw, bh),
+                        variance_about_128_impl_scalar(st, &buf, stride, bw, bh),
+                        "{bw}x{bh} stride {stride}"
+                    );
+                }
+            }
+        });
+        assert!(report.warnings.is_empty());
+    }
+
+    /// Flat/zeros/checkerboard pins against the literal formula: the mean is
+    /// taken over the diffs-vs-128, so any constant plane yields 0, and a ±d
+    /// checkerboard yields `n*d²` before normalisation.
+    #[test]
+    fn variance_about_128_pins() {
+        let flat = vec![128u8; 16 * 16];
+        assert_eq!(variance_about_128(&flat, 16, 16, 16), 0);
+        let zeros = vec![0u8; 8 * 8];
+        assert_eq!(variance_about_128(&zeros, 8, 8, 8), 0);
+        let checker: alloc::vec::Vec<u8> = (0..64)
+            .map(|i| if i % 2 == 0 { 129 } else { 127 })
+            .collect();
+        assert_eq!(variance_about_128(&checker, 8, 8, 8), 64);
+    }
 }
