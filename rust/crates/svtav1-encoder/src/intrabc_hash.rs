@@ -39,6 +39,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use archmage::prelude::*;
 
 // =============================================================================
 // CRC-32C (hash.c:15-76)
@@ -194,6 +195,23 @@ pub fn generate_block_hash_value(
         return;
     };
     let src_size = block_size >> 1;
+    incant!(
+        generate_block_hash_value(x_end, y_end, w, src_size, src, dst),
+        [neon_crc, scalar]
+    )
+}
+
+/// Scalar core of [`generate_block_hash_value`]. `x_end`/`y_end`/`src_size`
+/// are the already-bounds-checked loop geometry.
+fn generate_block_hash_value_scalar(
+    _token: ScalarToken,
+    x_end: usize,
+    y_end: usize,
+    w: usize,
+    src_size: usize,
+    src: &[u32],
+    dst: &mut [u32],
+) {
     for y in 0..y_end {
         for x in 0..x_end {
             let pos = y * w + x;
@@ -208,6 +226,35 @@ pub fn generate_block_hash_value(
                 bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
             dst[pos] = crc32c(&bytes);
+        }
+    }
+}
+
+/// Hardware CRC arm of [`generate_block_hash_value`] (`crc` extension,
+/// bundled in `NeonCrcToken`). `__crc32cw` consumes one u32 as four
+/// little-endian bytes — the same byte stream the scalar core serializes —
+/// so four chained calls reproduce the 16-byte table walk exactly. The
+/// complement convention is identical (`0xffff_ffff` in, XOR-out), and the
+/// running value is a plain u32: result is bit-identical to `crc32c`.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn generate_block_hash_value_neon_crc(
+    _token: NeonCrcToken,
+    x_end: usize,
+    y_end: usize,
+    w: usize,
+    src_size: usize,
+    src: &[u32],
+    dst: &mut [u32],
+) {
+    for y in 0..y_end {
+        for x in 0..x_end {
+            let pos = y * w + x;
+            let c = __crc32cw(0xffff_ffff, src[pos]);
+            let c = __crc32cw(c, src[pos + src_size]);
+            let c = __crc32cw(c, src[pos + src_size * w]);
+            let c = __crc32cw(c, src[pos + src_size * w + src_size]);
+            dst[pos] = c ^ 0xffff_ffff;
         }
     }
 }

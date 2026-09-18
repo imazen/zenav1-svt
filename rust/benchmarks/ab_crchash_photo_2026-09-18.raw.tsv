@@ -1,0 +1,13 @@
+# perf_ab raw — one row per interleaved paired round (NEITHER SIDE NICED)
+# base=/tmp/perf_encode_pal_cand
+# cand=/tmp/perf_encode_crc_cand
+# commit=e1b87a3e7 host=mac date=2026-09-18T01:00:49Z
+# content=raw:/tmp/realframes/photo_clic.yuv sizes=[512] presets=[4] qp=40 rounds=7
+size	preset	round	base_ns	cand_ns	ident
+512	4	1	61056334	62376542	Y
+512	4	2	61053791	61295792	Y
+512	4	3	61338375	61466125	Y
+512	4	4	61676708	61988917	Y
+512	4	5	61947667	61677042	Y
+512	4	6	61540833	62070417	Y
+512	4	7	61503792	62241000	Y
