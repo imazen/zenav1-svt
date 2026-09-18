@@ -44,7 +44,6 @@ use crate::port_inter_predictor::{
 };
 use crate::port_scale_factors::{SCALE_SUBPEL_SHIFTS, ScaleFactors, SubpelParams, has_scale};
 use crate::port_subpel_params::{MbEdges, Mv, RefGeometry, compute_subpel_params};
-use alloc::vec;
 
 /// `PICTURE_BUFFER_DESC_LUMA_MASK`.
 pub const LUMA_MASK: u32 = 1;

@@ -36,6 +36,7 @@
 //!   (note: `fo_vert`, from the *vertical* filter) and runs for
 //!   `im_h = h + taps - 1` rows.
 
+use archmage::prelude::*;
 use svtav1_types::tables::interp::{
     BILINEAR_FILTERS, InterpKernel, SUB_PEL_FILTERS_8, SUB_PEL_FILTERS_8SHARP,
     SUB_PEL_FILTERS_8SMOOTH,
@@ -333,6 +334,11 @@ pub fn convolve_y_sr(
 ) {
     let fo_vert = (SUBPEL_TAPS / 2 - 1) as i32;
     let y_filter = filter_y.subpel_kernel(subpel_y_q4);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = X64V3Token::summon() {
+        convolve_y_sr_v3(token, src, dst, dst_stride, w, h, y_filter);
+        return;
+    }
     for y in 0..h {
         for x in 0..w {
             let mut res = 0i32;
@@ -340,6 +346,83 @@ pub fn convolve_y_sr(
                 res += y_filter[k] as i32 * src.at(y as i32 - fo_vert + k as i32, x as i32);
             }
             dst[y * dst_stride + x] = clip_pixel_8(round_power_of_two(res, FILTER_BITS));
+        }
+    }
+}
+
+/// x86-64 v3 arm of [`convolve_y_sr`]: 8 columns at a time. The tap rows are
+/// contiguous in `x`, so each of the 8 taps is one `u8x16` load widened to
+/// `i16x8` — the `i16` product `src * coeff` is exact (|coeff| <= 128 and
+/// src <= 255 keep |product| <= 32640), and the two `i32x4` widened halves
+/// accumulate the tap sum. Round-shift, then the saturating narrows ARE
+/// `clip_pixel_8`.
+///
+/// Each tap load reads 16 bytes where 8 are needed, so columns whose window
+/// would leave `data` (and the last partial chunk) take the scalar pixel.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_y_sr_v3(
+    token: X64V3Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    y_filter: &InterpKernel,
+) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let cfs: [i16x8<_>; SUBPEL_TAPS] =
+        core::array::from_fn(|i| i16x8::splat(token, y_filter[i]));
+    for y in 0..h {
+        // First tap row y - fo, last y - fo + 7.
+        let row0 = origin + (y as isize - fo) * stride;
+        let row7 = row0 + 7 * stride;
+        // Column window: every tap row's `x .. x + 16` load must stay inside
+        // `data`.
+        let x0 = (-row0).max(0).min(w as isize) as usize;
+        let x1 = ((len - 16 - row7).min(w as isize)).max(x0 as isize) as usize;
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        for x in 0..x0 {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            drow[x] = clip_pixel_8(round_power_of_two(res, FILTER_BITS));
+        }
+        let mut x = x0;
+        while x + 8 <= x1 {
+            let mut lo = i32x4::splat(token, 0);
+            let mut hi = i32x4::splat(token, 0);
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row0 + k as isize * stride + x as isize) as usize;
+                let v = u8x16::load(token, src.data[i..i + 16].try_into().unwrap())
+                    .widen_low()
+                    .bitcast_i16x8();
+                let p = v * *cf;
+                lo += p.widen_low();
+                hi += p.widen_high();
+            }
+            let res_lo = (lo + i32x4::splat(token, 64)).shr_arithmetic_uniform(7);
+            let res_hi = (hi + i32x4::splat(token, 64)).shr_arithmetic_uniform(7);
+            let packed = res_lo
+                .narrow_saturating_i16(res_hi)
+                .narrow_saturating_u8(i16x8::splat(token, 0));
+            let mut tmp = [0u8; 16];
+            packed.store(&mut tmp);
+            drow[x..x + 8].copy_from_slice(&tmp[..8]);
+            x += 8;
+        }
+        for x in x..w {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            drow[x] = clip_pixel_8(round_power_of_two(res, FILTER_BITS));
         }
     }
 }
@@ -362,14 +445,144 @@ pub fn convolve_x_sr(
     let fo_horiz = (SUBPEL_TAPS / 2 - 1) as i32;
     let bits = FILTER_BITS - conv_params.round_0;
     let x_filter = filter_x.subpel_kernel(subpel_x_q4);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = X64V3Token::summon() {
+        convolve_x_sr_v3(
+            token,
+            src,
+            dst,
+            dst_stride,
+            w,
+            h,
+            x_filter,
+            conv_params.round_0,
+            bits,
+        );
+        return;
+    }
+    convolve_x_sr_scalar(
+        src,
+        dst,
+        dst_stride,
+        w,
+        h,
+        x_filter,
+        fo_horiz,
+        conv_params.round_0,
+        bits,
+    );
+}
+
+/// One output pixel of [`convolve_x_sr`]: the 8-tap horizontal dot and the
+/// `round_0` then `bits` two-step rounding.
+#[inline(always)]
+fn convolve_x_sr_px(
+    src: SrcView<'_>,
+    y: usize,
+    x: usize,
+    x_filter: &InterpKernel,
+    fo_horiz: i32,
+    round_0: i32,
+    bits: i32,
+) -> u8 {
+    let mut res = 0i32;
+    for k in 0..SUBPEL_TAPS {
+        res += x_filter[k] as i32 * src.at(y as i32, x as i32 - fo_horiz + k as i32);
+    }
+    res = round_power_of_two(res, round_0);
+    clip_pixel_8(round_power_of_two(res, bits))
+}
+
+/// Scalar body of [`convolve_x_sr`], verbatim C.
+#[allow(clippy::too_many_arguments)]
+fn convolve_x_sr_scalar(
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    fo_horiz: i32,
+    round_0: i32,
+    bits: i32,
+) {
     for y in 0..h {
         for x in 0..w {
-            let mut res = 0i32;
-            for k in 0..SUBPEL_TAPS {
-                res += x_filter[k] as i32 * src.at(y as i32, x as i32 - fo_horiz + k as i32);
+            dst[y * dst_stride + x] =
+                convolve_x_sr_px(src, y, x, x_filter, fo_horiz, round_0, bits);
+        }
+    }
+}
+
+/// x86-64 v3 arm of [`convolve_x_sr`]: 8 output pixels at a time. For tap
+/// `k`, output `x + i` reads `src[x - fo + k + i]` — contiguous in `i` — so
+/// one shifted `u8x16` load per tap covers the whole group. Each `i16`
+/// product `src * coeff` is exact (|coeff| <= 128, src <= 255), the two
+/// `i32x4` widened halves accumulate the 8-tap sum, and the saturating
+/// narrows ARE `clip_pixel_8` after the `round_0`/`bits` two-step rounding.
+///
+/// The loads reach `x - fo + 7 + 15`, so column groups whose window would
+/// leave `data` take the scalar pixel.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_x_sr_v3(
+    token: X64V3Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    round_0: i32,
+    bits: i32,
+) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let cfs: [i16x8<_>; SUBPEL_TAPS] =
+        core::array::from_fn(|i| i16x8::splat(token, x_filter[i]));
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let r0_off = i32x4::splat(token, 1 << (round_0 - 1));
+    let b_off = i32x4::splat(token, 1 << (bits - 1));
+    for y in 0..h {
+        let row = origin + y as isize * stride;
+        // Vector range: every tap load `row + x - fo + k .. + 16`, k <= 7,
+        // must stay inside `data`.
+        let x0 = (fo - row).max(0).min(w as isize) as usize;
+        let x1 = ((len - 16 - 7 + fo - row).min(w as isize)).max(x0 as isize) as usize;
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        for x in 0..x0 {
+            drow[x] = convolve_x_sr_px(src, y, x, x_filter, fo as i32, round_0, bits);
+        }
+        let mut x = x0;
+        while x + 8 <= x1 {
+            let mut lo = i32x4::splat(token, 0);
+            let mut hi = i32x4::splat(token, 0);
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row + x as isize - fo + k as isize) as usize;
+                let v = u8x16::load(token, src.data[i..i + 16].try_into().unwrap())
+                    .widen_low()
+                    .bitcast_i16x8();
+                let p = v * *cf;
+                lo += p.widen_low();
+                hi += p.widen_high();
             }
-            res = round_power_of_two(res, conv_params.round_0);
-            dst[y * dst_stride + x] = clip_pixel_8(round_power_of_two(res, bits));
+            let res_lo = ((lo + r0_off).shr_arithmetic_uniform(round_0 as u32) + b_off)
+                .shr_arithmetic_uniform(bits as u32);
+            let res_hi = ((hi + r0_off).shr_arithmetic_uniform(round_0 as u32) + b_off)
+                .shr_arithmetic_uniform(bits as u32);
+            let packed = res_lo
+                .narrow_saturating_i16(res_hi)
+                .narrow_saturating_u8(i16x8::splat(token, 0));
+            let mut tmp = [0u8; 16];
+            packed.store(&mut tmp);
+            drow[x..x + 8].copy_from_slice(&tmp[..8]);
+            x += 8;
+        }
+        for x in x..w {
+            drow[x] = convolve_x_sr_px(src, y, x, x_filter, fo as i32, round_0, bits);
         }
     }
 }
@@ -384,9 +597,8 @@ pub fn convolve_2d_copy_sr(
     h: usize,
 ) {
     for y in 0..h {
-        for x in 0..w {
-            dst[y * dst_stride + x] = src.at(y as i32, x as i32) as u8;
-        }
+        let i = (src.origin as isize + y as isize * src.stride as isize) as usize;
+        dst[y * dst_stride..y * dst_stride + w].copy_from_slice(&src.data[i..i + w]);
     }
 }
 
