@@ -484,10 +484,18 @@ pub(crate) fn evaluate_leaf(
     // (C's `!is_inter && tx_depth` arm) is already correct.
     let blk_crop = crate::frame_geom::cropped_tx_dims(&aligned_dims, abs_x, abs_y, w, h);
 
+    // C's bypass-encdec MDS3 `hbd_md = 2` bump (product_coding_loop.c:9649):
+    // on a bd10 video frame with `bypass_encdec` the THIRD stage alone —
+    // `md_stage_3` + `svt_aom_product_full_mode_decision` + the
+    // `blk_skip_decision` inside it — runs at true 10 bits, while MDS0's
+    // fast costs and MDS1's full loop stay 8-bit. `fx.mds3_hbd()` reports
+    // that arm; under it `bd10_rd` is built (the MDS3 inputs) but handed to
+    // `run_mds3` ONLY.
+    let mds3_hbd = fx.mds3_hbd();
     // bd10 FULL-RD (task #94, MODE axis): the MDS1/MDS3 inputs at true depth.
     // Built once per leaf; `None` on every u8 path AND on bd10 leaves where
     // only the MDS0 funnel is enabled, so both stay byte-identical.
-    let bd10_rd: Option<Bd10Rd> = if bd10_funnel && fx.full_rd10 {
+    let bd10_rd: Option<Bd10Rd> = if bd10_funnel && (fx.full_rd10 || mds3_hbd) {
         let shift = shift10;
         // Task #6 chunk 1: the shared block-local 10-bit luma source (real u16
         // when the caller supplied a native HBD source, else the same
@@ -535,7 +543,15 @@ pub(crate) fn evaluate_leaf(
             qt: qt10,
             qt_u: qt_u10,
             qt_v: qt_v10,
-            lambda: lambda_bd10_full,
+            // Under the bypass bump C quantizes MDS3 with
+            // `full_lambda_md[EB_10_BIT_MD]` — the per-SB inter value,
+            // stamped on `frame.lambda10` (md_process.c:796). The still
+            // full-RD arm keeps the kf-chain lambda.
+            lambda: if mds3_hbd {
+                frame.lambda10
+            } else {
+                lambda_bd10_full
+            },
             bd: frame.bit_depth,
         })
     } else {
@@ -660,11 +676,17 @@ pub(crate) fn evaluate_leaf(
         blk_crop,
         aligned_dims,
     };
+    // The pre-bump stages: `bd.rd` stays Some (MDS3 reads it through `bd10`),
+    // but every DECISION inside `inject` — the MDS0 fast-cost domains and the
+    // inject-time ind-uv table — runs at 8 bits under the bump, so they read
+    // `no_rd` there. `mds3_hbd` on the carrier is what flips them.
+    let no_rd: Option<Bd10Rd> = None;
     let bd10 = LeafBd10 {
         active: bd10_funnel,
         blk_y_src10: &blk_y_src10,
         lambda_fast: lambda_bd10_fast,
         rd: &bd10_rd,
+        mds3_hbd,
     };
     // -- Candidate injection + MDS0 -- see [`inject`].
     // C `generate_md_stage_0_cand`: regular intra, filter-intra, palette, then
@@ -742,11 +764,14 @@ pub(crate) fn evaluate_leaf(
     let perform_mds1 = !(cfg.enable_skipping_mds1 && n1 == 1);
 
     // -- MDS1: luma-only full loop -- see [`mds1`].
+    // Under the bypass bump C's MDS1 still runs at `hbd_md = 0` — the bump
+    // fires inside the MDS3 preamble (product_coding_loop.c:9649), AFTER
+    // md_stage_1 — so MDS1 reads `no_rd` and stays in the 8-bit domain.
     if perform_mds1 {
         mds1::run_mds1(
             fx,
             &geom,
-            &bd10_rd,
+            if mds3_hbd { &no_rd } else { &bd10_rd },
             &qt,
             lambda,
             y_src,
@@ -799,11 +824,17 @@ pub(crate) fn evaluate_leaf(
                 * u64::from(frame.base_qindex);
 
     // -- MDS3 + the independent-chroma search -- see [`mds3`].
+    // C runs `search_best_mds3_uv_mode` BEFORE the `hbd_md = 2` bump
+    // (product_coding_loop.c:9637 precedes :9649), so under the bump the
+    // independent-uv search stays 8-bit (`no_rd`) while `md_stage_3` itself
+    // — `eval_candidate`, its `blk_skip_decision`, and the winner costs —
+    // runs at true 10 bits (`bd10_rd`).
     mds3::run_mds3(
         fx,
         &geom,
         &cx,
         &bd10_rd,
+        if mds3_hbd { &no_rd } else { &bd10_rd },
         pal,
         &qt,
         lambda,

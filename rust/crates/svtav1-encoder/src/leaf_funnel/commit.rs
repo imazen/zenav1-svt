@@ -122,9 +122,27 @@ pub(crate) fn commit_leaf(
     // write to the row boundary matches C's readable recon exactly and is
     // byte-neutral where nothing straddles (`abs_x + w <= y_stride`).
     let wr = w.min(y_stride.saturating_sub(abs_x));
-    for r in 0..h {
-        let dst = (abs_y + r) * y_stride + abs_x;
-        y_recon[dst..dst + wr].copy_from_slice(&cand.y_recon[r * w..r * w + wr]);
+    // C `convert_md_recon_16bit_to_8bit` (product_coding_loop.c:9696): under
+    // the bypass-encdec `hbd_md = 2` bump the 8-bit MD recon canvas
+    // (`recon_pic(0)` — what the u8-domain MDS0/MDS1 stages and inter
+    // prediction keep reading) is filled from the winner's 16-bit recon
+    // shifted down, NOT from a parallel u8 quantize. The funnel's u8
+    // `cand.y_recon` is the 8-bit-domain tx_unit output — a different
+    // rounding than `recon16 >> 2` — so under the bump the >>2 write wins.
+    let mds3_hbd = fx.mds3_hbd() && !ev.win_recon10.is_empty();
+    if mds3_hbd {
+        let shift = u32::from(fx.frame.bit_depth - 8);
+        for r in 0..h {
+            let dst = (abs_y + r) * y_stride + abs_x;
+            for c in 0..wr {
+                y_recon[dst + c] = (ev.win_recon10[r * w + c] >> shift) as u8;
+            }
+        }
+    } else {
+        for r in 0..h {
+            let dst = (abs_y + r) * y_stride + abs_x;
+            y_recon[dst..dst + wr].copy_from_slice(&cand.y_recon[r * w..r * w + wr]);
+        }
     }
     // bd10 mode funnel (task #94): write the winner's 10-bit recon into the
     // bd10 canvas for the next block's neighbour prediction (same straddle clip
@@ -137,11 +155,27 @@ pub(crate) fn commit_leaf(
     }
     if ev.has_uv {
         // Same straddle clip on chroma (c_stride = the aligned chroma width).
+        // Under the MDS3 bump the u8 chroma canvases get the same
+        // `recon16 >> 2` fill as luma (`convert_md_recon_16bit_to_8bit`
+        // covers all three planes).
         let cwr = cw.min(fx.c_stride.saturating_sub(ccx));
-        for r in 0..chh {
-            let dst = (ccy + r) * fx.c_stride + ccx;
-            fx.u_recon[dst..dst + cwr].copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
-            fx.v_recon[dst..dst + cwr].copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
+        if mds3_hbd && !ev.win_u_recon10.is_empty() {
+            let shift = u32::from(fx.frame.bit_depth - 8);
+            for r in 0..chh {
+                let dst = (ccy + r) * fx.c_stride + ccx;
+                for c in 0..cwr {
+                    fx.u_recon[dst + c] = (ev.win_u_recon10[r * cw + c] >> shift) as u8;
+                    fx.v_recon[dst + c] = (ev.win_v_recon10[r * cw + c] >> shift) as u8;
+                }
+            }
+        } else {
+            for r in 0..chh {
+                let dst = (ccy + r) * fx.c_stride + ccx;
+                fx.u_recon[dst..dst + cwr]
+                    .copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
+                fx.v_recon[dst..dst + cwr]
+                    .copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
+            }
         }
         // bd10 FULL-RD chroma canvases — the chroma twin of the luma write
         // above, closing the same sequential coupling for chroma prediction.

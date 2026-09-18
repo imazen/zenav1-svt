@@ -20,12 +20,20 @@
 # luma AND chroma prediction in one call, and `chroma::eval_uv_inter_hbd`
 # scores it. Every cell below now ENCODES and DECODES.
 #
-# WHAT IT DOES NOT CLAIM. It is NOT byte-identical to C. The table pins the
-# measurement exactly as `real_video_inter_gate.sh` does, so neither a
-# regression nor a silent improvement passes unnoticed, and the honest state is
-# in the repo rather than in a commit message:
+# WHAT IT ASSERTS. The table pins the per-cell measurement exactly as
+# `real_video_inter_gate.sh` does, so neither a regression nor a silent
+# improvement passes unnoticed:
 #
-#     39 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-19)
+#     48 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-18)
+#
+# Byte-identity came from modelling C's `hbd_md = 2` bump
+# (product_coding_loop.c — at `bd10 && bypass_encdec && perform_md_recon`,
+# C re-runs all of MDS3 in the 10-bit domain: prediction, quantization,
+# `full_lambda_md[EB_10_BIT_MD]`, `blk_skip_decision` arbitration and the
+# interpolation-filter search, then converts the winner's recon back to
+# 8-bit for MD). The port mirrors that as `mds3_hbd`: the funnel keeps
+# MDS0/MDS1 in the 8-bit domain while `run_mds3`/`ifs_at_mds3` evaluate and
+# arbitrate on the 10-bit sources, and commit converts the winner recon.
 #
 # WHAT "DECODES" MEANS HERE, AND WHAT IT DOES NOT. The decode leg runs
 # `dav1d -o /dev/null` and asserts only that the stream PARSES. It does NOT
@@ -49,14 +57,13 @@
 # canvas whatever the depth. It now refuses that substitution. A tool that can
 # report a confidently wrong number is a defect like any other.)
 #
-# WHERE THE DIVERGENCE IS NOT. bd10 STILLS on this same content and geometry
-# are 16/16 byte-identical to C (johnny + vidyo3 x {128,256} x presets
-# {6,8,9,10}, measured the same day), and the 8-bit VIDEO key frame of this
-# very cell is identical (1176 B on both sides at johnny 128x128 q40 p6). So
-# frame 0 diverging here is neither a still defect nor a video-plumbing defect:
-# it is bd10 mode decision under the VIDEO configuration. It does not track
-# `bd10_full_rd` either -- presets 9 and 10, where that gate is off, diverge
-# MORE than 6 and 8, not less.
+# WHERE THE DIVERGENCE WAS NOT (historical, kept because the reasoning still
+# holds). While frame 0 still diverged, bd10 STILLS on this same content and
+# geometry were 16/16 byte-identical to C (johnny + vidyo3 x {128,256} x
+# presets {6,8,9,10}), and the 8-bit VIDEO key frame of this very cell was
+# identical (1176 B on both sides at johnny 128x128 q40 p6) — which is what
+# pinned the residual on bd10 mode decision under the VIDEO configuration
+# rather than on stills plumbing or video plumbing.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -173,7 +180,7 @@ CELLS=(
     "fourpeople     256x256 6 1/1"
     "fourpeople     256x256 8 1/1"
     "johnny         128x128 6 1/1"
-    "johnny         128x128 8 1/0"
+    "johnny         128x128 8 1/1"
     "johnny         256x256 6 1/1"
     "johnny         256x256 8 1/1"
     "kristenandsara 128x128 6 1/1"
@@ -183,15 +190,15 @@ CELLS=(
     "vidyo1         128x128 6 1/1"
     "vidyo1         128x128 8 1/1"
     "vidyo1         256x256 6 1/1"
-    "vidyo1         256x256 8 1/0"
+    "vidyo1         256x256 8 1/1"
     "vidyo3         128x128 6 1/1"
     "vidyo3         128x128 8 1/1"
     "vidyo3         256x256 6 1/1"
-    "vidyo3         256x256 8 1/0"
+    "vidyo3         256x256 8 1/1"
     "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/1"
     "vidyo4         256x256 6 1/1"
-    "vidyo4         256x256 8 1/0"
+    "vidyo4         256x256 8 1/1"
 )
 
 QP="${BVG_QP:-40}"

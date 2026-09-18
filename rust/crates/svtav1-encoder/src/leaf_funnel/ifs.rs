@@ -46,6 +46,7 @@ use alloc::vec::Vec;
 use svtav1_dsp::port_ifs::{self, IfsCandidateCost, IfsCtrls};
 use svtav1_types::block::BlockSize;
 
+use super::tx_pipeline::Bd10Rd;
 use super::types::{Cand, FunnelCtx, LeafGeom};
 use crate::port_enc_mode_config::ctrls::IfsLevel;
 use crate::port_rd_cost::inter_cost::{SWITCHABLE, get_switchable_rate, is_interp_needed_md};
@@ -55,8 +56,12 @@ use crate::port_rd_cost::inter_cost::{SWITCHABLE, get_switchable_rate, is_interp
 /// rebuild the prediction when the pair changed, add the switchable rate.
 ///
 /// `full_lambda` is C's `full_lambda_md[EB_8_BIT_MD]` (`:2081`, the 8-bit
-/// arm — the port's inter path is 8-bit); `quantizer` is
-/// `y_dequant_qtx[base_q_idx][1]` (`:2027-2029`).
+/// arm); `quantizer` is `y_dequant_qtx[base_q_idx][1]` (`:2027-2029`). When
+/// `bd10_rd` is `Some` — the bypass-encdec `hbd_md = 2` bump
+/// (product_coding_loop.c:9649) — the search runs at `EB_TEN_BIT` instead:
+/// `full_lambda_md[EB_10_BIT_MD] >> (2 * (bd - 8))`, 10-bit trial
+/// predictions into a u16 scratch, and `model_rd_for_sb` at bit depth 10
+/// (:2081, :2130-2152, :2146).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ifs_at_mds3(
     fx: &mut FunnelCtx<'_>,
@@ -67,6 +72,7 @@ pub(super) fn ifs_at_mds3(
     y_src_off: usize,
     quantizer: i16,
     cand: &mut Cand,
+    bd10_rd: &Option<Bd10Rd>,
 ) {
     #[cfg(feature = "std")]
     let skip = |why: &str| {
@@ -156,12 +162,22 @@ pub(super) fn ifs_at_mds3(
         (ic.ref_frame[1] > 0).then(|| (i32::from(ic.mv[1].x), i32::from(ic.mv[1].y))),
         true,
     );
+    // enc_inter_prediction.c:2081 — under `hbd_md` (the bypass-encdec MDS3
+    // bump, `bd10_rd` = `Some` here) the search divides the 10-bit lambda by
+    // `2 * (bd - 8)` and scores 10-bit trials with the 10-bit dequant.
+    let (ifs_lambda, ifs_quantizer) = match bd10_rd.as_ref() {
+        Some(b) => (
+            b.lambda >> (2 * u64::from(b.bd - 8)),
+            i16::try_from(b.qt.dequant[1]).expect("y_dequant_qtx is int16_t in C"),
+        ),
+        None => (full_lambda, quantizer),
+    };
     let ctrls = IfsCtrls {
         enable_dual_filter: im.enable_dual_filter,
         smooth_bias: im.ifs.smooth_bias,
         picture_qp: usize::from(im.ifs.picture_qp),
         tx_bias: im.ifs.tx_bias,
-        full_lambda: u32::try_from(full_lambda).expect("full_lambda_md is a uint32_t in C"),
+        full_lambda: u32::try_from(ifs_lambda).expect("full_lambda_md is a uint32_t in C"),
     };
     let org = ic.interp_filters;
     let flr0 = *flr;
@@ -181,10 +197,31 @@ pub(super) fn ifs_at_mds3(
             )
         })
     });
+    // The OBMC blend tail — needed by BOTH the 10-bit trial below (C's
+    // `use_precomputed_obmc` arm of the :2130 predict) and the winner
+    // rebuild after the search. `av1_is_interp_needed_md` excludes warped
+    // and non-translational global motion but NOT OBMC, so an OBMC
+    // candidate does reach the search.
+    let obmc = ic.motion_mode == crate::port_entropy_inter::modes::MotionMode::ObmcCausal;
+    let obmc_spans = obmc.then(|| {
+        crate::inter_md_arm::obmc_nb_spans(
+            grid, im.mi_cols, im.mi_rows, im.mi_cols, abs_x, abs_y, w, h,
+        )
+    });
     // C predicts each non-full-pel trial into `ctx->scratch_prediction_ptr`
     // (:2130-2152) and models it from there; the candidate's own prediction
-    // is left alone until the winner is known.
-    let mut scratch: Vec<u8> = if is_fp { Vec::new() } else { vec![0u8; w * h] };
+    // is left alone until the winner is known. Under `hbd_md` that scratch
+    // is the 16-bit pipeline's plane — the u16 twin here.
+    let mut scratch: Vec<u8> = if is_fp || bd10_rd.is_some() {
+        Vec::new()
+    } else {
+        vec![0u8; w * h]
+    };
+    let mut scratch10: Vec<u16> = if is_fp || bd10_rd.is_none() {
+        Vec::new()
+    } else {
+        vec![0u16; w * h]
+    };
     let res = port_ifs::interpolation_filter_search(&ctrls, org, is_fp, |_, filters| {
         // :2107 `svt_aom_get_switchable_rate`.
         let switchable_rate = get_switchable_rate(
@@ -201,6 +238,175 @@ pub(super) fn ifs_at_mds3(
                 switchable_rate,
                 rate: 0,
                 dist: 0,
+            };
+        }
+        if let Some(b) = bd10_rd.as_ref() {
+            // :2130-2152 under `hbd_md = 2`: `svt_aom_inter_prediction` at
+            // `EB_TEN_BIT` (luma only) into the 16-bit scratch, then
+            // `model_rd_for_sb` at `EB_TEN_BIT` (:2146). The ac-bias psy
+            // term has no 16-bit port; `ac_bias` is 0 on every path that
+            // arms this bump (video defaults), so the term is identically 0.
+            debug_assert_eq!(
+                im.ifs.ac_bias_eff, 0.0,
+                "bd10 MDS3 IFS has no 16-bit psy kernel — arm refuses when ac_bias is set"
+            );
+            let hbd = padded
+                .hbd
+                .as_ref()
+                .expect("the MDS3 bump needs the 10-bit DPB twin");
+            if let Some(p1) = padded1 {
+                let h1 = p1
+                    .hbd
+                    .as_ref()
+                    .expect("the MDS3 bump needs the 10-bit DPB twin");
+                let iw10 = [
+                    crate::inter_pred_arm::inter_pred_uses_warp(
+                        ic.motion_mode,
+                        ic.mode as u8,
+                        w,
+                        h,
+                        &ic.wm_params,
+                    ),
+                    crate::inter_pred_arm::inter_pred_uses_warp(
+                        ic.motion_mode,
+                        ic.mode as u8,
+                        w,
+                        h,
+                        &ic.wm_params_l1,
+                    ),
+                ];
+                if iw10[0] || iw10[1] {
+                    let mut wm0 = ic.wm_params;
+                    let mut wm1 = ic.wm_params_l1;
+                    crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd(
+                        [(&hbd.y, None), (&h1.y, None)],
+                        &mut wm0,
+                        &mut wm1,
+                        iw10,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        ic.mv,
+                        filters,
+                        im.sb_size,
+                        im.frame_w,
+                        im.frame_h,
+                        im.bit_depth,
+                        &mut scratch10,
+                        w,
+                        &mut [],
+                        &mut [],
+                        0,
+                    );
+                } else {
+                    crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
+                        [(&hbd.y, None), (&h1.y, None)],
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        ic.mv,
+                        filters,
+                        im.sb_size,
+                        im.frame_w,
+                        im.frame_h,
+                        im.bit_depth,
+                        &mut scratch10,
+                        w,
+                        &mut [],
+                        &mut [],
+                        0,
+                    );
+                }
+            } else {
+                let mm_base = if obmc {
+                    crate::port_entropy_inter::modes::MotionMode::SimpleTranslation
+                } else {
+                    ic.motion_mode
+                };
+                let is_wm10 = crate::inter_pred_arm::inter_pred_uses_warp(
+                    ic.motion_mode,
+                    ic.mode as u8,
+                    w,
+                    h,
+                    &ic.wm_params,
+                );
+                crate::inter_pred_arm::predict_inter_leaf_hbd(
+                    &hbd.y,
+                    None,
+                    mm_base,
+                    is_wm10,
+                    ic.wm_params,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv[0],
+                    filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    im.bit_depth,
+                    &mut scratch10,
+                    w,
+                    &mut [],
+                    &mut [],
+                    0,
+                );
+                if let Some(spans) = &obmc_spans {
+                    crate::obmc_pred_arm::predict_obmc_in_place_hbd(
+                        &crate::obmc_pred_arm::ObmcCtx {
+                            padded_by_ref: &im.padded_by_ref,
+                            above_row: &spans.above[..spans.n_above],
+                            left_col: &spans.left[..spans.n_left],
+                            up_available: abs_y > 0,
+                            left_available: abs_x > 0,
+                            mi_cols: im.mi_cols.max(0) as usize,
+                            mi_rows: im.mi_rows.max(0) as usize,
+                            sb_size: im.sb_size,
+                            frame_w: im.frame_w,
+                            frame_h: im.frame_h,
+                            edges: crate::inter_pred_arm::block_mb_edges(
+                                abs_x, abs_y, w, h, im.frame_w, im.frame_h,
+                            ),
+                        },
+                        bsize,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        im.bit_depth,
+                        &mut scratch10,
+                        w,
+                        &mut [],
+                        &mut [],
+                        0,
+                    );
+                }
+            }
+            let sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                &b.y_src10,
+                0,
+                w,
+                &scratch10,
+                0,
+                w,
+                w,
+                h,
+            );
+            let (rate, dist) = svtav1_dsp::port_model_rd::model_rd_for_sb(
+                &[bsize],
+                &[sse],
+                0,
+                0,
+                ifs_quantizer,
+                im.bit_depth,
+            );
+            return IfsCandidateCost {
+                switchable_rate,
+                rate,
+                dist: i64::try_from(dist).expect("model_rd distortion fits int64_t, as in C"),
             };
         }
         // :2130 `svt_aom_inter_prediction` (luma only, PICTURE_BUFFER_DESC_LUMA_MASK).
@@ -485,7 +691,6 @@ pub(super) fn ifs_at_mds3(
         // into the winner's recon. `av1_is_interp_needed_md` (rd_cost.h:71)
         // excludes WARPED_CAUSAL and non-translational global motion but NOT
         // OBMC, so this arm is reachable.
-        let obmc = ic.motion_mode == crate::port_entropy_inter::modes::MotionMode::ObmcCausal;
         if g.has_uv && sub8 {
             crate::inter_md_arm::predict_inter_chroma_sub8(
                 &im.padded_by_ref,
@@ -506,13 +711,8 @@ pub(super) fn ifs_at_mds3(
                 cw,
             );
         }
-        // Hoisted so the 10-bit twin below blends the SAME neighbours the
-        // 8-bit arm does (same split as `inter_md_arm::predict_and_price`).
-        let obmc_spans = obmc.then(|| {
-            crate::inter_md_arm::obmc_nb_spans(
-                grid, im.mi_cols, im.mi_rows, im.mi_cols, abs_x, abs_y, w, h,
-            )
-        });
+        // `obmc_spans` is computed before the search — the 10-bit trial
+        // blends the SAME neighbours the 8-bit arm does.
         if let Some(spans) = &obmc_spans {
             crate::obmc_pred_arm::predict_obmc_in_place(
                 &crate::obmc_pred_arm::ObmcCtx {

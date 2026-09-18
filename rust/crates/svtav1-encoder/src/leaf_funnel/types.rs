@@ -383,6 +383,30 @@ pub(crate) struct FunnelCtx<'a> {
     pub lpd1: Option<crate::leaf_funnel::light::Lpd1Leaf>,
 }
 
+impl FunnelCtx<'_> {
+    /// C's bypass-encdec `hbd_md = 2` bump (product_coding_loop.c:9649): on a
+    /// 10-bit video frame with `bypass_encdec`, `md_stage_3` AND the winner
+    /// selection (`svt_aom_product_full_mode_decision` + `blk_skip_decision`)
+    /// run at true 10 bits while MDS0/MDS1 stay in the 8-bit domain (the bump
+    /// fires inside the MDS3 preamble, after every earlier stage). The funnel
+    /// models it by keeping the 10-bit canvases live (`y_recon10` allocated by
+    /// the caller exactly when this is true) but engaging `Bd10Rd` for MDS3
+    /// only. `None`/`false` terms in order: no 10-bit canvas (bd8 or no plumb),
+    /// `full_rd10` (stills already run every stage at 10 bits), no bypass, a
+    /// key frame (no inter arm — C's `hbd_md` for I-slices is the `is_islice`
+    /// derivation, not this bump), coded-lossless (C clears bypass_encdec).
+    /// `svt_aom_do_md_recon`'s `perform_md_recon` term is always true here —
+    /// the funnel always runs the intra search (`need_md_rec_for_intra_pred`,
+    /// full_loop.c:2763).
+    pub(crate) fn mds3_hbd(&self) -> bool {
+        self.y_recon10.is_some()
+            && !self.full_rd10
+            && self.frame.cfg.bypass_encdec
+            && self.inter.is_some()
+            && !self.frame.coded_lossless
+    }
+}
+
 /// C `BlockSize` enum index from pixel dims (definitions.h block order) —
 /// the MVP block-ctx derivation consumes the C index.
 pub(crate) fn c_bsize_index(w: usize, h: usize) -> usize {
@@ -865,6 +889,12 @@ pub(super) struct LeafBd10<'a> {
     /// The MDS1/MDS3 inputs at true depth. `None` on every u8 path AND on a
     /// bd10 leaf where only the MDS0 funnel is enabled.
     pub(super) rd: &'a Option<Bd10Rd>,
+    /// The bypass-encdec MDS3 `hbd_md = 2` bump ([`FunnelCtx::mds3_hbd`]):
+    /// `active` (plumbing — canvases, `pred10` buffers) is on, but MDS0's
+    /// fast-cost metrics and MDS1 stay in the 8-bit domain; only MDS3 sees
+    /// `rd`. Inject sites that DECIDE at `active` must consult this and stay
+    /// u8 when it is set.
+    pub(super) mds3_hbd: bool,
 }
 
 /// The palette-flag rates for this leaf.

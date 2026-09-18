@@ -732,6 +732,8 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         inter_fast_lambda: 0,
         sb_mi_size: 16,
         lambda: 100_000,
+        // Key-frame fixture: the MDS3 hbd_md=2 bump is an inter-frame arm.
+        lambda10: 0,
         // These fixtures are the still/allintra funnel, i.e. an I-slice.
         non_i_slice: false,
         // A key frame is temporal layer 0 and never the highest layer

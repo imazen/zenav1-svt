@@ -13367,6 +13367,10 @@ fn encode_tile_rows(
                 tune_ssim: hdr_alt_ssim,
                 tune_ssim_threshold: if w * h > 1_665 * 1_120 { 1.02 } else { 1.03 },
                 lambda: cq.lambda as u64,
+                // `full_lambda_md[EB_10_BIT_MD]` — overwritten per superblock
+                // below on the inter arm (the MDS3 hbd_md=2 bump reads it);
+                // zero elsewhere.
+                lambda10: 0,
                 // Overwritten per superblock below on the inter arm; zero on
                 // a key frame, where no inter search reads it.
                 inter_fast_lambda: sb_inter_lambda
@@ -13653,6 +13657,25 @@ fn encode_tile_rows(
         // builds.
         let bd10_luma_funnel =
             bd10_canvas_ok && (bd10_full_rd || (speed_config.preset >= 9 && inter_md.is_none()));
+        // C's bypass-encdec MDS3 `hbd_md = 2` bump (product_coding_loop.c:9649):
+        // `encoder_bit_depth > 8 && bypass_encdec && !hbd_md &&
+        // pd_pass == PD_PASS_1 && perform_md_recon`. On a bd10 video frame the
+        // leaf funnel IS the PD1 pass and always runs the intra search, so
+        // `perform_md_recon` (`need_md_rec_for_intra_pred`, full_loop.c:2763)
+        // is true; `!hbd_md` is `!bd10_full_rd` (video `hbd_md` derives 0).
+        // The canvases must be LIVE so MDS3 can predict/quantize/reconstruct at
+        // 10 bits — while MDS0/MDS1 keep the u8 domain (see
+        // `FunnelCtx::mds3_hbd`). Coded-lossless is out: C clears
+        // `bypass_encdec` there (md_config_process.c:1046).
+        let bd10_mds3_bump = bd10_canvas_ok
+            && !bd10_full_rd
+            && inter_md.is_some()
+            && funnel_cfg.bypass_encdec
+            && !coded_lossless;
+        // "Plumbing" — the 10-bit canvases/sources/pred buffers exist — is a
+        // superset of the MDS0 decision funnel: the still arms decide at
+        // 10 bits, the bump arm only hands MDS3 the same buffers.
+        let bd10_plumb = bd10_luma_funnel || bd10_mds3_bump;
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
         // caller supplied one AND a bd10 stage is armed to read it. The planes
         // arrive already SB-extent-padded when the frame has a partial SB
@@ -13660,7 +13683,7 @@ fn encode_tile_rows(
         // the u8 `sb_input` gather uses — and a block's `(abs_x, abs_y)` indexes
         // them identically. Chroma was repadded above to the SB-wide `cwid`
         // stride, matching the mode-decision reconstruction canvases.
-        let funnel_src10 = hbd_src.filter(|_| bd10_luma_funnel).map(|(y10, u10, v10)| {
+        let funnel_src10 = hbd_src.filter(|_| bd10_plumb).map(|(y10, u10, v10)| {
             debug_assert!(
                 y10.len() >= in_stride * h,
                 "hbd luma plane must cover the frame"
@@ -13676,17 +13699,19 @@ fn encode_tile_rows(
         if funnel_src10.is_some() {
             hbd_used.store(true, core::sync::atomic::Ordering::Relaxed);
         }
-        let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_luma_funnel {
+        let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_plumb {
             svtav1_types::try_vec![512u16; ext_w * ext_h]?
         } else {
             alloc::vec::Vec::new()
         };
         // bd10 chroma decision canvases (the chroma twins of the luma one).
         // 4:2:0 -> half dims; seeded with the 10-bit DC default like the luma.
+        // The bump arm needs them too: C's `md_stage_3` chroma full loop at
+        // `hbd_md = 2` predicts from `recon_pic(1)`'s u16 chroma planes.
         let (mut tile_frame_u_recon10, mut tile_frame_v_recon10): (
             alloc::vec::Vec<u16>,
             alloc::vec::Vec<u16>,
-        ) = if bd10_full_rd {
+        ) = if bd10_full_rd || bd10_mds3_bump {
             let n = (ext_w / 2) * (ext_h / 2);
             (
                 svtav1_types::try_vec![512u16; n]?,
@@ -13761,6 +13786,7 @@ fn encode_tile_rows(
                     fun_frame.as_mut(),
                 ) {
                     f.lambda = u64::from(sl.full_8bit);
+                    f.lambda10 = u64::from(sl.full_10bit);
                     f.inter_fast_lambda = sl.fast_8bit;
                 }
                 // The SAME value, for the two partition-side costs C also
@@ -14718,18 +14744,21 @@ fn encode_tile_rows(
                                     // bd10 luma mode funnel (task #94): true 10-bit
                                     // recon canvas for the per-block mode decision;
                                     // None (bd8 / other presets / partial-SB) is
-                                    // byte-identical.
-                                    y_recon10: if bd10_luma_funnel {
+                                    // byte-identical. `bd10_plumb` also covers the
+                                    // bypass-encdec MDS3 bump (C `hbd_md = 2`,
+                                    // product_coding_loop.c:9649) — the canvas is
+                                    // C's recon_pic(1) under that bump too.
+                                    y_recon10: if bd10_plumb {
                                         Some(&mut tile_frame_recon10)
                                     } else {
                                         None
                                     },
-                                    u_recon10: if bd10_full_rd {
+                                    u_recon10: if bd10_full_rd || bd10_mds3_bump {
                                         Some(&mut tile_frame_u_recon10)
                                     } else {
                                         None
                                     },
-                                    v_recon10: if bd10_full_rd {
+                                    v_recon10: if bd10_full_rd || bd10_mds3_bump {
                                         Some(&mut tile_frame_v_recon10)
                                     } else {
                                         None
@@ -15366,17 +15395,17 @@ fn encode_tile_rows(
                                     // (MODE axis) now feeds this walk. bd8 and
                                     // every out-of-envelope bd10 frame keep `None`
                                     // / `false` → byte-IDENTICAL.
-                                    y_recon10: if bd10_luma_funnel {
+                                    y_recon10: if bd10_plumb {
                                         Some(&mut tile_frame_recon10)
                                     } else {
                                         None
                                     },
-                                    u_recon10: if bd10_full_rd {
+                                    u_recon10: if bd10_full_rd || bd10_mds3_bump {
                                         Some(&mut tile_frame_u_recon10)
                                     } else {
                                         None
                                     },
-                                    v_recon10: if bd10_full_rd {
+                                    v_recon10: if bd10_full_rd || bd10_mds3_bump {
                                         Some(&mut tile_frame_v_recon10)
                                     } else {
                                         None
@@ -15724,17 +15753,17 @@ fn encode_tile_rows(
                                         ectx: fun_ectx.as_mut().unwrap(),
                                         rates: fun_rates.as_deref().unwrap(),
                                         frame: fun_frame.as_ref().unwrap(),
-                                        y_recon10: if bd10_luma_funnel {
+                                        y_recon10: if bd10_plumb {
                                             Some(&mut tile_frame_recon10)
                                         } else {
                                             None
                                         },
-                                        u_recon10: if bd10_full_rd {
+                                        u_recon10: if bd10_full_rd || bd10_mds3_bump {
                                             Some(&mut tile_frame_u_recon10)
                                         } else {
                                             None
                                         },
-                                        v_recon10: if bd10_full_rd {
+                                        v_recon10: if bd10_full_rd || bd10_mds3_bump {
                                             Some(&mut tile_frame_v_recon10)
                                         } else {
                                             None

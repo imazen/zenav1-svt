@@ -33,6 +33,12 @@ pub(super) fn run_mds3(
     g: &LeafGeom,
     cx: &chroma::ChromaCtx,
     bd10_rd: &Option<Bd10Rd>,
+    // The bd10 state for `search_best_uv_mode` ONLY. It differs from
+    // `bd10_rd` under the bypass-encdec `hbd_md = 2` bump
+    // (product_coding_loop.c:9649): C's `search_best_mds3_uv_mode` runs
+    // BEFORE the bump (:9637), so the independent-chroma search stays in
+    // the 8-bit domain while `eval_candidate` runs at 10 bits.
+    ind_uv_rd: &Option<Bd10Rd>,
     pal: PalFlagRates,
     qt: &QuantTable,
     lambda: u64,
@@ -98,7 +104,7 @@ pub(super) fn run_mds3(
 
     // -- Independent chroma search before MDS3 -- see [`search_best_uv_mode`].
     search_best_uv_mode(
-        fx, g, cx, bd10_rd, pal.uv_no, lambda, cands, order1, n3, ind_uv,
+        fx, g, cx, ind_uv_rd, pal.uv_no, lambda, cands, order1, n3, ind_uv,
     );
 
     let lambda3 = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
@@ -609,6 +615,7 @@ fn eval_candidate(
             y_src_off,
             quantizer,
             &mut cands[ci],
+            bd10_rd,
         );
     }
     // ---- Luma: TX depth loop ----
@@ -3160,34 +3167,65 @@ fn eval_candidate(
         // `sse << 4` domain the spatial arm of `tx_unit` produces.
         let (crop_w, crop_h) =
             crate::frame_geom::cropped_tx_dims(&aligned_dims, abs_x, abs_y, w, h);
-        let skip_y = (svtav1_dsp::variance::sse(
-            &y_src[y_src_off..],
-            y_src_stride,
-            &cand.pred,
-            w,
-            crop_w,
-            crop_h,
-        ) << 4) as u64;
         let ic = cand.inter.as_deref().expect("checked above");
         let (ucw, uch) = uv_crop;
-        let skip_uv = if has_uv {
-            ((svtav1_dsp::variance::sse(
-                &fx.u_src[ccy * fx.c_stride + ccx..],
-                fx.c_stride,
-                &ic.u_pred,
-                cw,
-                ucw,
-                uch,
-            ) + svtav1_dsp::variance::sse(
-                &fx.v_src[ccy * fx.c_stride + ccx..],
-                fx.c_stride,
-                &ic.v_pred,
-                cw,
-                ucw,
-                uch,
-            )) << 4) as u64
-        } else {
-            0
+        let (skip_y, skip_uv) = match bd10_rd.as_ref() {
+            // `hbd_md = 2` arm (the still full-RD and the bypass-encdec bump
+            // both land here): C's `svt_full_distortion_kernel16_bits` on the
+            // 10-bit source vs the 10-bit prediction — `input_pic` and
+            // `cand_bf->pred` are u16 under the bump (product_coding_loop.c
+            // :9649-9663). The `<< 4` matches `tx_unit_hbd`'s spatial-dist
+            // convention, so the arbitration below stays in one domain.
+            Some(b) => {
+                debug_assert!(
+                    !cand.pred10.is_empty()
+                        && (!has_uv || (!ic.u_pred10.is_empty() && !ic.v_pred10.is_empty())),
+                    "bd10 MDS3 needs the 10-bit inter predictions"
+                );
+                let sy = (svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                    &b.y_src10, 0, w, &cand.pred10, 0, w, crop_w, crop_h,
+                ) << 4) as u64;
+                let suv = if has_uv {
+                    ((svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                        &b.u_src10, 0, cw, &ic.u_pred10, 0, cw, ucw, uch,
+                    ) + svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                        &b.v_src10, 0, cw, &ic.v_pred10, 0, cw, ucw, uch,
+                    )) << 4) as u64
+                } else {
+                    0
+                };
+                (sy, suv)
+            }
+            None => {
+                let sy = (svtav1_dsp::variance::sse(
+                    &y_src[y_src_off..],
+                    y_src_stride,
+                    &cand.pred,
+                    w,
+                    crop_w,
+                    crop_h,
+                ) << 4) as u64;
+                let suv = if has_uv {
+                    ((svtav1_dsp::variance::sse(
+                        &fx.u_src[ccy * fx.c_stride + ccx..],
+                        fx.c_stride,
+                        &ic.u_pred,
+                        cw,
+                        ucw,
+                        uch,
+                    ) + svtav1_dsp::variance::sse(
+                        &fx.v_src[ccy * fx.c_stride + ccx..],
+                        fx.c_stride,
+                        &ic.v_pred,
+                        cw,
+                        ucw,
+                        uch,
+                    )) << 4) as u64
+                } else {
+                    0
+                };
+                (sy, suv)
+            }
         };
         pred_dists = Some((skip_y, skip_uv));
     }

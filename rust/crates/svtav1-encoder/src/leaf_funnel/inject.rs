@@ -189,7 +189,16 @@ pub(super) fn inject_candidates(
     } = pal;
     let bd10_funnel = bd.active;
     let blk_y_src10 = bd.blk_y_src10;
-    let bd10_rd = bd.rd;
+    // Under the bypass-encdec MDS3 bump (`bd.mds3_hbd`, C
+    // product_coding_loop.c:9649) every decision in this injector — the MDS0
+    // fast-cost domains below and the inject-time ind-uv table — still runs
+    // at `hbd_md = 0`: the bump fires inside the MDS3 preamble. `bd10_decide`
+    // selects the 10-bit scoring arms; `bd10_rd` sees `no_rd` so the chroma
+    // table's fast/full-loop evals stay u8. The 10-bit PLUMBING (`pred10`
+    // buffers, palette colours ×4) keys on `bd10_funnel` unchanged.
+    let no_rd: Option<Bd10Rd> = None;
+    let bd10_decide = bd10_funnel && !bd.mds3_hbd;
+    let bd10_rd = if bd.mds3_hbd { &no_rd } else { bd.rd };
     let lambda_bd10_fast = bd.lambda_fast;
 
     // C: at ind_uv_last_mds == 0 (the M0/M1 chroma config) the independent
@@ -979,76 +988,79 @@ pub(super) fn inject_candidates(
             // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
             // It used to be dropped here because only MDS0 ran at bd10.
             let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
-            let (fast_cost, distortion_cost, fast_dist_metric) = match fx.y_recon10.as_deref() {
-                Some(canvas10) => {
-                    pred10 = zeroed_pool::<u16>(w * h);
-                    predict_unit_hbd(
-                        canvas10,
-                        y_stride,
-                        abs_x,
-                        abs_y,
+            // The 10-bit prediction is PLUMBING — MDS1/MDS3 residual inputs —
+            // so it is built whenever the canvas exists, including under the
+            // bypass-encdec MDS3 bump where the MDS0 DECISION below must stay
+            // in the 8-bit domain (`bd.mds3_hbd` → `bd10_decide` is false).
+            if let Some(canvas10) = fx.y_recon10.as_deref() {
+                pred10 = zeroed_pool::<u16>(w * h);
+                predict_unit_hbd(
+                    canvas10,
+                    y_stride,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    mode,
+                    delta,
+                    fi,
+                    &y_geom,
+                    cfg.edge_filter,
+                    filt_type_y,
+                    &mut pred10,
+                    frame.bit_depth,
+                );
+            }
+            let (fast_cost, distortion_cost, fast_dist_metric) = if bd10_decide {
+                // C `fast_loop_core`'s distortion switch at `hbd_md`
+                // (product_coding_loop.c:1272-1307): SSD /
+                // `mds0_use_hadamard_blk` / the `vf_hbd_10` VARIANCE arm —
+                // the SAME three-way the u8 arm above takes. The VIDEO
+                // arm's `mds0_use_hadamard_sb = false`
+                // (enc_mode_config.c:7916, vs the allintra `true` at
+                // :8148) sends a video key frame down the variance arm:
+                // `svt_aom_highbd_10_variance` normalizes the u16
+                // accumulators to the 8-bit scale, a different metric
+                // than the hadamard SATD (variance is DC-invariant where
+                // SATD is not), so scoring bd10 video frames with
+                // `hadamard_satd_hbd` re-ordered C's MDS0 survivor
+                // ranking at near-ties. `cand_bf->luma_fast_dist` carries
+                // the PRE-shift metric; the <<4 lands in the fast-cost
+                // dist term for the SATD/variance arms only.
+                let metric10 = if frame.mds0_ssd {
+                    svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                        blk_y_src10,
+                        0,
+                        w,
+                        &pred10,
+                        0,
+                        w,
                         w,
                         h,
-                        mode,
-                        delta,
-                        fi,
-                        &y_geom,
-                        cfg.edge_filter,
-                        filt_type_y,
-                        &mut pred10,
-                        frame.bit_depth,
-                    );
-                    // C `fast_loop_core`'s distortion switch at `hbd_md`
-                    // (product_coding_loop.c:1272-1307): SSD /
-                    // `mds0_use_hadamard_blk` / the `vf_hbd_10` VARIANCE arm —
-                    // the SAME three-way the u8 arm above takes. The VIDEO
-                    // arm's `mds0_use_hadamard_sb = false`
-                    // (enc_mode_config.c:7916, vs the allintra `true` at
-                    // :8148) sends a video key frame down the variance arm:
-                    // `svt_aom_highbd_10_variance` normalizes the u16
-                    // accumulators to the 8-bit scale, a different metric
-                    // than the hadamard SATD (variance is DC-invariant where
-                    // SATD is not), so scoring bd10 video frames with
-                    // `hadamard_satd_hbd` re-ordered C's MDS0 survivor
-                    // ranking at near-ties. `cand_bf->luma_fast_dist` carries
-                    // the PRE-shift metric; the <<4 lands in the fast-cost
-                    // dist term for the SATD/variance arms only.
-                    let metric10 = if frame.mds0_ssd {
-                        svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                            blk_y_src10,
-                            0,
-                            w,
-                            &pred10,
-                            0,
-                            w,
-                            w,
-                            h,
-                        )
-                    } else if mds0_use_hadamard {
-                        hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
-                    } else {
-                        residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
-                    };
-                    let dist10 = if frame.mds0_ssd {
-                        metric10
-                    } else {
-                        metric10 << 4
-                    };
-                    #[cfg(feature = "std")]
-                    {
-                        dbg_satd10 = metric10;
-                        dbg_pred0 = pred10[0];
-                    }
-                    (
-                        rdcost(lambda_bd10_fast, flr + fcr, dist10),
-                        rdcost(lambda_bd10_fast, 0, dist10),
-                        metric10,
                     )
+                } else if mds0_use_hadamard {
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                } else {
+                    residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
+                };
+                let dist10 = if frame.mds0_ssd {
+                    metric10
+                } else {
+                    metric10 << 4
+                };
+                #[cfg(feature = "std")]
+                {
+                    dbg_satd10 = metric10;
+                    dbg_pred0 = pred10[0];
                 }
-                None => {
-                    let d = if frame.mds0_ssd { satd } else { satd << 4 };
-                    (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d), satd)
-                }
+                (
+                    rdcost(lambda_bd10_fast, flr + fcr, dist10),
+                    rdcost(lambda_bd10_fast, 0, dist10),
+                    metric10,
+                )
+            } else {
+                let d = if frame.mds0_ssd { satd } else { satd << 4 };
+                (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d), satd)
             };
             // C `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334),
             // PD1 only. `ctx->mds0_ctrls.pruning_method_th` selects the arm; level 2
@@ -1275,7 +1287,7 @@ pub(super) fn inject_candidates(
         // unaligned real-content scan crossed the two axes.
         let pal_rows = h.min(frame.frame_h_px.saturating_sub(abs_y));
         let pal_cols = w.min(frame.frame_w_px.saturating_sub(abs_x));
-        let pal_cands = if bd10_funnel {
+        let pal_cands = if bd10_decide {
             crate::palette::search_palette_luma_hbd(
                 blk_y_src10,
                 w,
@@ -1289,6 +1301,11 @@ pub(super) fn inject_candidates(
                 u32::from(frame.bit_depth),
             )
         } else {
+            // Under the MDS3 bump (`bd.mds3_hbd`) the palette SEARCH is
+            // pre-bump (`hbd_md = 0`) and stays 8-bit; C widens the chosen
+            // colours ×4 in the MDS3 preamble (`scale_palette`,
+            // product_coding_loop.c:7164-7170) — mirrored in the `pred10`
+            // fill below.
             crate::palette::search_palette_luma(
                 y_src,
                 y_src_stride,
@@ -1319,9 +1336,16 @@ pub(super) fn inject_candidates(
             let shift = u32::from(frame.bit_depth - 8);
             for (o, &idx) in pc.idx_map.iter().enumerate().take(w * h) {
                 let c = pc.colors[idx as usize];
-                if bd10_funnel {
+                if bd10_decide {
+                    // 10-bit search: `c` is already a 10-bit colour.
                     pred10[o] = c;
                     pred[o] = (c >> shift) as u8;
+                } else if bd10_funnel {
+                    // MDS3 bump: the search ran at 8 bits; C scales the
+                    // palette colours ×4 in the MDS3 preamble
+                    // (`scale_palette`, product_coding_loop.c:7164).
+                    pred10[o] = c << shift;
+                    pred[o] = c as u8;
                 } else {
                     pred[o] = c as u8;
                 }
@@ -1331,7 +1355,7 @@ pub(super) fn inject_candidates(
             // `mds0_ssd` split (`fast_loop_core`, product_coding_loop.c
             // :1272-1307): the video arm prices `vf_hbd_10` variance, not
             // SATD.
-            let satd = if bd10_funnel {
+            let satd = if bd10_decide {
                 if frame.mds0_ssd {
                     svtav1_dsp::hbd::full_distortion_kernel16_bits(
                         blk_y_src10,
@@ -1489,7 +1513,7 @@ pub(super) fn inject_candidates(
             // candidates as well as regular intra. Using the u8 lambda here
             // changes NIC admission even when palette predictions match C.
             let fast_cost = rdcost(
-                if bd10_funnel {
+                if bd10_decide {
                     lambda_bd10_fast
                 } else {
                     lambda
@@ -1696,7 +1720,9 @@ pub(super) fn inject_candidates(
                 // 8-bit, but derives errorperbit from full_lambda_md[hbd_md].
                 // Using the 8-bit frame lambda here changes hash/mesh vector
                 // ranking before the native-depth mode/transform decisions.
-                if bd10_funnel {
+                // Under the MDS3 bump `hbd_md` is still 0 here (pre-bump) —
+                // `bd10_decide`, not `bd10_funnel`.
+                if bd10_decide {
                     (u64::from(crate::pd0::kf_full_lambda_bd10(
                         frame.base_qindex,
                         frame.cli_qp,
@@ -1756,7 +1782,7 @@ pub(super) fn inject_candidates(
                         &mut pred10,
                     );
                 }
-                let satd = if bd10_funnel {
+                let satd = if bd10_decide {
                     // Score MDS0 at the real depth, like every other
                     // candidate's bd10 arm above — same
                     // `mds0_use_hadamard`/`mds0_ssd` split (the video arm's
@@ -1800,7 +1826,7 @@ pub(super) fn inject_candidates(
                     &rates.intrabc_fac_bits,
                 );
                 let flr = u64::from(flr32);
-                let fast_cost = if bd10_funnel {
+                let fast_cost = if bd10_decide {
                     rdcost(
                         lambda_bd10_fast,
                         flr,
@@ -1937,7 +1963,7 @@ pub(super) fn inject_candidates(
             // near-ties (MEASURED johnny 128x128 p6 bd10 frame 1
             // mi=(16,8): C's compound NEW_NEWMV dist 234912 beats
             // NEARMV's 278496; the u8 canvas flipped it).
-            let (satd, d, lam) = if bd10_funnel {
+            let (satd, d, lam) = if bd10_decide {
                 let metric10 = if frame.mds0_ssd {
                     svtav1_dsp::hbd::full_distortion_kernel16_bits(
                         blk_y_src10,

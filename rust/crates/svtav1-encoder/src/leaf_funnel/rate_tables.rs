@@ -373,6 +373,12 @@ pub struct FunnelFrame {
     /// key frame, and this SUPERBLOCK's inter MD lambda on a video frame
     /// (C `svt_aom_mode_decision_configure_sb`, md_process.c:796).
     pub lambda: u64,
+    /// `full_lambda_md[EB_10_BIT_MD]` — this superblock's 10-bit MD lambda,
+    /// read by the bypass-encdec MDS3 `hbd_md = 2` bump
+    /// (product_coding_loop.c:9649) on bd10 video frames. Zero on a key
+    /// frame / still (`sb_inter_lambda` is `None` there) and on every bd8
+    /// frame; only read when [`FunnelCtx::mds3_hbd`] is true.
+    pub lambda10: u64,
     /// C `fast_lambda_md[EB_8_BIT_MD]` for this superblock — the MD motion
     /// searches' SAD-domain lambda (`svt_init_mv_cost_params`,
     /// md_subpel.c:1920-1922). ZERO on a key frame, where no inter search
