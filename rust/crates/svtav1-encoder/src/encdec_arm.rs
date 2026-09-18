@@ -91,6 +91,7 @@
 use crate::leaf_funnel::FunnelCfg;
 use crate::port_enc_mode_config::enc_mode::{M1, M2, M7, M10};
 use crate::port_enc_mode_config::encdec::{self, SkipSubDepthCtrls, TxShortcutCtrls};
+use crate::port_enc_mode_config::leaf;
 use crate::sc_detect::ScArm;
 
 /// C `ctx->mds0_use_hadamard_sb` for this arm.
@@ -162,6 +163,41 @@ pub(crate) fn tx_shortcut(
     encdec::set_tx_shortcut_ctrls(level, is_not_leaf, enc_mode).expect("levels 0..=3 are in-domain")
 }
 
+/// C `ctx->bypass_encdec` (`= pcs->pic_bypass_encdec`, md_process.c:789) for
+/// this arm — `pcs->pic_bypass_encdec` itself is the picture-level
+/// `sig_deriv_mode_decision_config_*` signal (`enc_mode_config.c:9262` on the
+/// video `_default` arm, `:9795` rtc, `:10054` allintra), but the funnel reads
+/// it through the EncDec ctx like the signals above, so it is stamped here.
+///
+/// | arm | ladder | C |
+/// |---|---|---|
+/// | allintra | `enc_mode <= ENC_M3 -> 0 else 1` | `get_bypass_encdec_allintra`, :8458 |
+/// | video | bd8: `enc_mode <= ENC_M2 -> 0 else 1`; bd10: `enc_mode <= ENC_M7 -> 0 else 1` | `get_bypass_encdec_default`, :8418 / `_rtc`, :8438 |
+///
+/// The bit depth is load-bearing: at bd10 a video frame keeps bypass OFF
+/// through M7, so `svt_aom_do_md_recon` writes the winner's real recon — at
+/// the winner's tx_depth — into `cand_bf->recon`, and
+/// `calc_scr_to_recon_dist_per_quadrant` (the skip-sub-depth quad-dist gate)
+/// measures THAT buffer. The bypass=1 model (last MDS3 candidate's depth-0
+/// recon) only holds when the bypass redirect to `recon_tmp` actually ran.
+/// Measured on kristenandsara_256x256 q40 p6 bd10 frame 0, node mi=(16,56):
+/// C's gate recon is the winning depth-1 8x8 V_DCT txb's output
+/// (`SVT_ITX_OUT` shows `txs=1 txt=10` landing in `cand_bf->recon`), and the
+/// gate fires — std 213 < 250, cnz 19% < 25 — where the port's depth-0 recon
+/// measured std ~1540 and the split ran.
+///
+/// C's `segmentation_enabled -> 0` override (enc_mode_config.c:9260) is not
+/// reachable here: the video arm hardwires `segmentation_enabled: false`
+/// (`inter_hdr_arm.rs` `md_config_inputs`). If video segmentation lands, this
+/// stamp must take it.
+#[must_use]
+pub(crate) fn bypass_encdec(arm: ScArm, enc_mode: i8, encoder_bit_depth: u8) -> bool {
+    match arm {
+        ScArm::Allintra => leaf::get_bypass_encdec_allintra(enc_mode) != 0,
+        ScArm::Video { .. } => leaf::get_bypass_encdec_default(enc_mode, encoder_bit_depth) != 0,
+    }
+}
+
 /// Stamp this arm's `sig_deriv_enc_dec_*` signals onto a [`FunnelCfg`].
 /// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
 pub(crate) fn apply(
@@ -170,10 +206,12 @@ pub(crate) fn apply(
     enc_mode: i8,
     is_base: bool,
     is_not_leaf: bool,
+    encoder_bit_depth: u8,
 ) {
     cfg.mds0_use_hadamard_sb = mds0_use_hadamard_sb(arm);
     cfg.skip_sub_depth = skip_sub_depth(arm, enc_mode);
     cfg.tx_shortcut = tx_shortcut(arm, enc_mode, is_base, is_not_leaf);
+    cfg.bypass_encdec = bypass_encdec(arm, enc_mode, encoder_bit_depth);
 }
 
 #[cfg(test)]
@@ -194,6 +232,7 @@ mod tests {
                 crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset),
                 true,
                 false,
+                8,
             );
             assert_eq!(
                 baked.mds0_use_hadamard_sb, walked.mds0_use_hadamard_sb,
@@ -207,6 +246,55 @@ mod tests {
                 baked.skip_sub_depth, walked.skip_sub_depth,
                 "allintra skip_sub_depth at M{preset}"
             );
+            // `get_bypass_encdec_allintra(min(preset, 9))` must equal the
+            // `preset >= 4` bake for every reachable preset, at both depths —
+            // the allintra ladder reads no bit depth.
+            for bd in [8u8, 10] {
+                let mut walked = baked;
+                apply(
+                    &mut walked,
+                    ScArm::Allintra,
+                    crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset),
+                    true,
+                    false,
+                    bd,
+                );
+                assert_eq!(
+                    baked.bypass_encdec, walked.bypass_encdec,
+                    "allintra bypass_encdec at M{preset} bd{bd}"
+                );
+            }
+        }
+    }
+
+    /// C's video `get_bypass_encdec_default` is bit-depth-dependent — bd8
+    /// bypasses above M2, bd10 only above M7 — and the funnel MUST see the
+    /// video ladder, not the allintra bake (`preset >= 4`). At bd10 p6 the
+    /// bake says 1 where C derives 0; that is the kristenandsara mi=(16,56)
+    /// defect — the quad-dist gate measured the depth-0 eval recon instead of
+    /// the winner's real recon.
+    #[test]
+    fn video_bypass_encdec_forks_on_bit_depth() {
+        let video = |is_islice: bool| ScArm::Video { is_islice };
+        for arm in [video(true), video(false)] {
+            // bd8: bypass above M2.
+            assert!(!bypass_encdec(arm, 2, 8));
+            assert!(bypass_encdec(arm, 3, 8));
+            // bd10: bypass above M7 — M3..M7 is the band where the
+            // bit_depth-free bake was wrong.
+            assert!(!bypass_encdec(arm, 7, 10));
+            assert!(bypass_encdec(arm, 8, 10));
+            assert!(!bypass_encdec(arm, 6, 10));
+            // And the ladders agree with the ported leaf model outright.
+            for m in -1..=13 {
+                for bd in [8u8, 10] {
+                    assert_eq!(
+                        leaf::get_bypass_encdec_default(m, bd) != 0,
+                        bypass_encdec(arm, m, bd),
+                        "video bypass_encdec at M{m} bd{bd}"
+                    );
+                }
+            }
         }
     }
 

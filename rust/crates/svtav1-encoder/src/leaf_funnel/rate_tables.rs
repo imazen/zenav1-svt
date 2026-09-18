@@ -514,11 +514,15 @@ pub struct FunnelFrame {
 /// `enc_mode`; the M6 values reproduce the original hardcoded funnel exactly.
 #[derive(Clone, Copy, Debug)]
 pub struct FunnelCfg {
-    /// C `pcs->pic_bypass_encdec` (svt_aom_get_bypass_encdec_allintra:
-    /// `enc_mode <= ENC_M3` -> 0, else 1). Decides whether the MDS3 winner
-    /// rebuild (av1_perform_inverse_transform_recon) lands in the shared
+    /// C `ctx->bypass_encdec` (`= pcs->pic_bypass_encdec`, md_process.c:789).
+    /// Decides whether the MDS3 winner rebuild
+    /// (av1_perform_inverse_transform_recon) lands in the shared
     /// `cand_bf->recon` (bypass=0) or is redirected away (bypass=1) — which
     /// switches WHAT the quad-dist gates measure (see `evaluate_leaf`).
+    /// `for_preset` bakes the ALLINTRA ladder (`enc_mode <= ENC_M3` -> 0);
+    /// `encdec_arm::apply` re-stamps it with the bit-depth-aware
+    /// `get_bypass_encdec_default` on the video arm — bd10 video keeps
+    /// bypass OFF through M7, where the bake reads 1 from M4.
     pub bypass_encdec: bool,
     /// filter-intra candidate + `use_filter_intra` syntax (M6: on level 2;
     /// M7/M8: `get_filter_intra_level_allintra` == 0 -> off).
@@ -1385,6 +1389,9 @@ impl FunnelCfg {
                 ..m6_tail
             },
         };
+        // `svt_aom_get_bypass_encdec_allintra(min(preset, M9)) > 0` — the
+        // allintra bake. `encdec_arm::apply` overwrites it with the
+        // bit-depth-aware video ladder on the video arm.
         cfg.bypass_encdec = preset >= 4;
         // `merge_inter_cands_mult = 4` at nic levels 6..=11 — the allintra
         // ladder reaches level 6 at M5 (`enc_mode <= M6 -> 6`,

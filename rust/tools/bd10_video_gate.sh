@@ -102,10 +102,20 @@ fi
 #      port now mirrors the same SSD/hadamard/variance three-way at bd10
 #      that the u8 lane already had.
 #
-# Remaining: `kristenandsara 256x256 p6` frame 0 still diverges (the one
-# non-identical I-slice), and the P-slice where frame 0's recon did NOT
-# already match — the inter-mode surface itself, not the pd0/funnel fixes
-# above.
+# 2026-09-19: `kristenandsara 256x256 p6` converged too — 24 of 24 I-slices
+# byte-identical. The missing piece was `ctx->bypass_encdec`: the funnel
+# carried the allintra bake (`preset >= 4`) on the video arm, but C's video
+# ladder is bit-depth-aware (`get_bypass_encdec_default`, enc_mode_config.c
+# :8418) — bd10 keeps bypass OFF through M7. At bypass=0 C's winner rebuild
+# lands in `cand_bf->recon` at the winner's tx_depth, which is what the
+# skip-sub-depth quad-dist gate measures; the port's gate had already modeled
+# both arms (`win_recon10` vs `gate_y10`) and was reading the wrong one. On
+# node mi=(16,56) C measured quadrant SSE std ~213 (< 250) and kept the
+# 16x16; the port measured ~1540 on the depth-0 eval recon and split.
+# `encdec_arm::apply` now stamps the arm+bit-depth ladder.
+#
+# Remaining: the P-slice where frame 0's recon did NOT already match — the
+# inter-mode surface itself, not the pd0/funnel fixes above.
 CELLS=(
     "fourpeople     128x128 6 1/1"
     "fourpeople     128x128 8 1/1"
@@ -117,7 +127,7 @@ CELLS=(
     "johnny         256x256 8 1/0"
     "kristenandsara 128x128 6 1/1"
     "kristenandsara 128x128 8 1/1"
-    "kristenandsara 256x256 6 0/0"
+    "kristenandsara 256x256 6 1/1"
     "kristenandsara 256x256 8 1/1"
     "vidyo1         128x128 6 1/1"
     "vidyo1         128x128 8 1/1"

@@ -55,6 +55,10 @@ fi
 # `gm_ctrls.enabled` gating GLOBALMV injection, the video MDS0 variance
 # arm (`mds0_use_hadamard_sb = 0` outside all-intra), and the level-2
 # `dist_to_cost_th = 0` prune applied to the inter lane.
+# 2026-09-19: three more frame-1s promoted (johnny 256x256 p8, vidyo3
+# 128x128/256x256 p8), measured under the arm+bit-depth `bypass_encdec`
+# stamp — though the promotions themselves predate it, since bd8 p6/p8
+# derive bypass=1 under both ladders. Only vidyo1 256x256 frame 1 remains.
 #
 # The frame-0 column is the interesting one: it is a KEY frame, so the two
 # remaining zeros (vidyo3/vidyo4 256x256 p8) are a STILL divergence on real
@@ -75,7 +79,7 @@ CELLS=(
     "johnny         128x128 6 1/1"
     "johnny         128x128 8 1/1"
     "johnny         256x256 6 1/1"
-    "johnny         256x256 8 1/0"
+    "johnny         256x256 8 1/1"
     "kristenandsara 128x128 6 1/1"
     "kristenandsara 128x128 8 1/1"
     "kristenandsara 256x256 6 1/1"
@@ -85,9 +89,9 @@ CELLS=(
     "vidyo1         256x256 6 1/0"
     "vidyo1         256x256 8 1/0"
     "vidyo3         128x128 6 1/1"
-    "vidyo3         128x128 8 1/0"
+    "vidyo3         128x128 8 1/1"
     "vidyo3         256x256 6 1/1"
-    "vidyo3         256x256 8 1/0"
+    "vidyo3         256x256 8 1/1"
     "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/1"
     "vidyo4         256x256 6 1/1"
