@@ -223,7 +223,7 @@ pub(super) fn eval_uv_hbd(
         b.bd,
     );
     let tt = uv_tx_type(uv, cw, chh);
-    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate)
+    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate, false)
 }
 
 /// The IntraBC twin of [`eval_uv_hbd`]: an IBC candidate's chroma is the DV
@@ -269,7 +269,9 @@ pub(super) fn eval_uv_ibc_hbd(
         dv,
         &mut v_pred,
     );
-    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate)
+    // IntraBC is intra on the PLANE_RD_MULT axis (C's `pred_mode >=
+    // NEARESTMV` sees the IBC block's DC_PRED mode).
+    tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt, gate, false)
 }
 
 /// The bd10 chroma full loop's INTER arm.
@@ -292,7 +294,7 @@ pub(super) fn eval_uv_inter_hbd(
     tt: usize,
     gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
-    tx_pair_hbd(cx, fx, b, u_pred10, v_pred10, tt, gate)
+    tx_pair_hbd(cx, fx, b, u_pred10, v_pred10, tt, gate, true)
 }
 
 /// The shared 10-bit tail of both hbd arms: given a Cb/Cr prediction pair and
@@ -306,6 +308,9 @@ fn tx_pair_hbd(
     v_pred: &[u16],
     tt: usize,
     gate: TxGate,
+    // C `pred_mode >= NEARESTMV` on the owning luma block — true only for
+    // `eval_uv_inter_hbd`.
+    is_inter: bool,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
     let (frame, rates) = (fx.frame, fx.rates);
     let (cw, chh) = (cx.cw, cx.chh);
@@ -328,6 +333,7 @@ fn tx_pair_hbd(
         b.lambda,
         frame.sharpness,
         frame.rdoq_allintra_rd_mult,
+        is_inter,
         rates,
         cx.rdoq.enabled,
         b.bd,
@@ -354,6 +360,7 @@ fn tx_pair_hbd(
         b.lambda,
         frame.sharpness,
         frame.rdoq_allintra_rd_mult,
+        is_inter,
         rates,
         cx.rdoq.enabled,
         b.bd,

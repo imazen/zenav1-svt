@@ -235,6 +235,7 @@ pub(super) fn run_mds1(
                 b.lambda,
                 frame.sharpness,
                 frame.rdoq_allintra_rd_mult,
+                intra_dir == INTER_TXT_DIR,
                 rates,
                 false, // no RDOQ at MDS1 (mirrors the u8 call)
                 b.bd,
@@ -641,6 +642,7 @@ fn lossless_mds1_txbs_hbd(
             b.lambda,
             frame.sharpness,
             frame.rdoq_allintra_rd_mult,
+            intra_dir == INTER_TXT_DIR,
             rates,
             false,
             b.bd,

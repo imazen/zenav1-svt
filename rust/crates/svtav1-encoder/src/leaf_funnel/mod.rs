@@ -1021,6 +1021,7 @@ pub(crate) fn evaluate_leaf(
                 lambda_bd10_full,
                 0,
                 frame.rdoq_allintra_rd_mult,
+                wc.inter.is_some(),
                 rates,
                 frame.rdoq_level != 0,
                 frame.bit_depth,

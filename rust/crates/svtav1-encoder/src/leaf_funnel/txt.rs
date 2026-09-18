@@ -400,6 +400,7 @@ pub(super) fn txt_search(
                             b.lambda,
                             frame.sharpness,
                             frame.rdoq_allintra_rd_mult,
+                            intra_dir == INTER_TXT_DIR,
                             rates,
                             rdoq.enabled,
                             b.bd,

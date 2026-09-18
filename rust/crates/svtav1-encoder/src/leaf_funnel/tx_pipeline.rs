@@ -1795,6 +1795,12 @@ pub(crate) fn tx_unit_hbd(
     lambda: u64,
     sharpness: i8,
     allintra_rd_mult: bool,
+    // C `is_inter = (pred_mode >= NEARESTMV)` — the second PLANE_RD_MULT
+    // axis (video luma 17 -> 16). The funnel's MDS callers carry it in
+    // `TxRdArgs::intra_dir`; the level-only re-encode post-pass passes
+    // rd=None, so it supplies the flag explicitly here. IntraBC's mode is
+    // DC_PRED — intra on this axis, matching C.
+    is_inter: bool,
     rates: &MdRates,
     do_rdoq: bool,
     bd: u8,
@@ -1820,6 +1826,7 @@ pub(crate) fn tx_unit_hbd(
         lambda,
         sharpness,
         allintra_rd_mult,
+        is_inter,
         rates,
         do_rdoq,
         bd,
@@ -1853,6 +1860,10 @@ pub(crate) fn tx_unit_hbd_gated(
     lambda: u64,
     sharpness: i8,
     allintra_rd_mult: bool,
+    // See [`tx_unit_hbd`]'s `is_inter` — chroma follows the LUMA mode's
+    // `pred_mode >= NEARESTMV` answer (C uses the block's own mode, and
+    // an inter block's chroma quantize sees the same `is_inter`).
+    is_inter: bool,
     rates: &MdRates,
     do_rdoq: bool,
     bd: u8,
@@ -1879,6 +1890,7 @@ pub(crate) fn tx_unit_hbd_gated(
         lambda,
         sharpness,
         allintra_rd_mult,
+        is_inter,
         rates,
         do_rdoq,
         bd,
@@ -1921,6 +1933,10 @@ pub(super) fn tx_unit_hbd_screened(
     // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
+    // C `is_inter = (pred_mode >= NEARESTMV)` (full_loop.c:1742) — the
+    // second PLANE_RD_MULT axis. Callers supply it explicitly; IntraBC
+    // (mode DC_PRED) is intra on this axis.
+    is_inter: bool,
     rates: &MdRates,
     do_rdoq: bool,
     bd: u8,
@@ -2086,10 +2102,7 @@ pub(super) fn tx_unit_hbd_screened(
                     false,
                     false,
                     allintra_rd_mult,
-                    // C `pred_mode >= NEARESTMV` — same axis as the u8
-                    // twin; `rd == None` is the level-only re-encode
-                    // post-pass (stills, always intra).
-                    rd.is_some_and(|a| a.intra_dir == INTER_TXT_DIR),
+                    is_inter,
                 ),
                 sharpness_flag: false,
                 // The trellis dequant must use the SAME matrix as the quantize
