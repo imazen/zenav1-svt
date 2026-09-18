@@ -89,8 +89,10 @@ pub(super) fn refine_at_mds1(
     let filters = ic.interp_filters;
     // C `ctx->scratch_prediction_ptr` — one luma-only buffer the search
     // predicts into; the candidate's own prediction is untouched until the
-    // winner is known.
-    let mut scratch = alloc::vec![0u8; w * h];
+    // winner is known. `dirty_pool`: the warp writes every position of the
+    // w*h block extent before anything reads it, so the zero fill was dead
+    // work on every trial MV.
+    let mut scratch = crate::vecpool::dirty_pool::<u8>(w * h);
     let stack = &blk.stacks[ic.ref_frame[0].max(0) as usize];
     let drl_ctx = crate::port_md::drl::ChooseDrlCtx {
         shut_fast_rate: false,
@@ -249,9 +251,16 @@ pub(super) fn refine_at_mds1(
     let (cw, chh) = (g.w / 2, g.h / 2);
     let want_uv = g.has_uv && padded.uv.is_some();
     let mut wm = ic.wm_params;
-    let mut y_pred = alloc::vec![0u8; g.w * g.h];
+    // `dirty_pool().into_vec()`: the prediction write covers the full block
+    // extent (warp or convolve — both are write-only destinations), so the
+    // calloc zero fill was dead work. `into_vec` because `ic.{u,v}_pred` are
+    // plain `Vec` fields.
+    let mut y_pred = crate::vecpool::dirty_pool::<u8>(g.w * g.h).into_vec();
     let (mut u_pred, mut v_pred) = if want_uv {
-        (alloc::vec![0u8; cw * chh], alloc::vec![0u8; cw * chh])
+        (
+            crate::vecpool::dirty_pool::<u8>(cw * chh).into_vec(),
+            crate::vecpool::dirty_pool::<u8>(cw * chh).into_vec(),
+        )
     } else {
         (alloc::vec::Vec::new(), alloc::vec::Vec::new())
     };

@@ -701,9 +701,11 @@ pub fn predict_inter_yuv_warped(
     };
     // C `get_conv_params_no_round(0, tmp_dst_y, 128, is_compound, bit_depth)`
     // for luma and stride 64 for chroma. This is the UNI-predicted arm —
-    // `is_compound` is false, so the conv buffer is sized but never read;
-    // the compound form is [`predict_inter_yuv_warped_compound`].
-    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    // `is_compound` is false and `sf` is the identity, so no convolve arm
+    // (jnt or 2d-scale) ever reads the conv buffer; an empty Vec carries the
+    // stride-only `ConvolveParams` and skips a 32 KiB calloc+memset per call.
+    // The compound form is [`predict_inter_yuv_warped_compound`].
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
     let cp_y = ConvolveParams::no_round(false, 128, false, 8);
     let cp_uv = ConvolveParams::no_round(false, 64, false, 8);
 
@@ -977,7 +979,10 @@ pub fn predict_inter_yuv_warped_hbd(
         frame_height: frame_h as i32,
     };
     let bd = i32::from(bit_depth);
-    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    // Same lazy `conv_buf` as the 8-bit arm: `is_compound` is false and `sf`
+    // is the identity, so no convolve arm reads the buffer — an empty Vec
+    // skips a 32 KiB calloc+memset per call.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
     let cp_y = ConvolveParams::no_round(false, 128, false, bd);
     let cp_uv = ConvolveParams::no_round(false, 64, false, bd);
 
@@ -1360,7 +1365,10 @@ pub fn predict_inter_chroma_sub8x8_hbd(
         frame_width: frame_w as i32,
         frame_height: frame_h as i32,
     };
-    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    // `is_compound` is false and `sf` is the identity on this path, so no
+    // convolve arm (jnt or 2d-scale) ever reads the conv buffer — an empty
+    // Vec skips an 8 KiB calloc+memset per call.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
 
     let mut row = row_start;
     let mut y = 0;
@@ -1437,7 +1445,10 @@ pub fn predict_inter_chroma_whole_hbd(
         frame_width: frame_w as i32,
         frame_height: frame_h as i32,
     };
-    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    // `is_compound` is false and `sf` is the identity on this path, so no
+    // convolve arm (jnt or 2d-scale) ever reads the conv buffer — an empty
+    // Vec skips an 8 KiB calloc+memset per call.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
     for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
         chroma_unit_hbd(
             r,
@@ -1528,7 +1539,10 @@ pub fn predict_inter_chroma_sub8x8(
         frame_width: frame_w as i32,
         frame_height: frame_h as i32,
     };
-    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    // `is_compound` is false and `sf` is the identity on this path, so no
+    // convolve arm (jnt or 2d-scale) ever reads the conv buffer — an empty
+    // Vec skips an 8 KiB calloc+memset per call.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
 
     let mut row = row_start;
     let mut y = 0;
@@ -1609,7 +1623,10 @@ pub fn predict_inter_chroma_whole(
         frame_width: frame_w as i32,
         frame_height: frame_h as i32,
     };
-    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    // `is_compound` is false and `sf` is the identity on this path, so no
+    // convolve arm (jnt or 2d-scale) ever reads the conv buffer — an empty
+    // Vec skips an 8 KiB calloc+memset per call.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
     for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
         chroma_unit(
             r,

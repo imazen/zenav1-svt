@@ -42,7 +42,7 @@ use crate::port_convolve::ConvolveParams;
 use crate::port_inter_predictor::{
     InterpFilters, inter_predictor_light_pd1_8bit, inter_predictor_pd0,
 };
-use crate::port_scale_factors::{SCALE_SUBPEL_SHIFTS, ScaleFactors, SubpelParams};
+use crate::port_scale_factors::{SCALE_SUBPEL_SHIFTS, ScaleFactors, SubpelParams, has_scale};
 use crate::port_subpel_params::{MbEdges, Mv, RefGeometry, compute_subpel_params};
 use alloc::vec;
 
@@ -166,7 +166,10 @@ pub fn av1_inter_prediction_pd0(
     } else {
         64
     };
-    let mut conv_buf = vec![0u16; conv_buf_stride * conv_buf_stride];
+    // `conv_buf` is read only by the jnt-compound and 2d-scale convolve
+    // arms; a single unscaled reference never touches it. Grow it lazily so
+    // the common single-ref case pays no alloc and no memset.
+    let mut conv_buf = alloc::vec::Vec::<u16>::new();
     let mut conv_params = ConvolveParams::no_round(false, conv_buf_stride, is_compound, 8);
 
     for (ref_itr, mv) in mvs.iter().enumerate() {
@@ -209,6 +212,9 @@ pub fn av1_inter_prediction_pd0(
             conv_params.use_jnt_comp_avg = false;
         }
 
+        if is_compound || has_scale(subpel_params.xs, subpel_params.ys) {
+            conv_buf.resize(conv_buf_stride * conv_buf_stride, 0);
+        }
         let src_origin =
             (rp.origin as isize + pos_x as isize + pos_y as isize * rp.stride as isize) as usize;
         enc_make_inter_predictor_pd0(
@@ -266,7 +272,10 @@ pub fn av1_inter_prediction_light_pd1(
     let is_compound = mvs.len() > 1;
 
     if component_mask & LUMA_MASK != 0 {
-        let mut conv_buf = vec![0u16; 64 * 64];
+        // `conv_buf` is read only by the jnt-compound and 2d-scale convolve
+        // arms; a single unscaled reference never touches it. Grow it lazily
+        // so the common single-ref case pays no alloc and no memset.
+        let mut conv_buf = alloc::vec::Vec::<u16>::new();
         let mut cp = ConvolveParams::no_round(false, 64, is_compound, 8);
         for (i, mv) in mvs.iter().enumerate() {
             let rp = &y_refs[i];
@@ -290,6 +299,9 @@ pub fn av1_inter_prediction_light_pd1(
                 cp.do_average = true;
                 cp.use_jnt_comp_avg = false;
             }
+            if is_compound || has_scale(sp.xs, sp.ys) {
+                conv_buf.resize(64 * 64, 0);
+            }
             let origin = (rp.origin as isize + pos_x as isize + pos_y as isize * rp.stride as isize)
                 as usize;
             inter_predictor_light_pd1_8bit(
@@ -308,8 +320,9 @@ pub fn av1_inter_prediction_light_pd1(
 
     if component_mask & CHROMA_MASK != 0 {
         // One 64x64 scratch shared by both chroma planes: Cb at 0, Cr at 32*32.
-        let mut conv_buf_cb = vec![0u16; 32 * 32];
-        let mut conv_buf_cr = vec![0u16; 32 * 32];
+        // Lazy as for luma: only the jnt-compound and 2d-scale arms read it.
+        let mut conv_buf_cb = alloc::vec::Vec::<u16>::new();
+        let mut conv_buf_cr = alloc::vec::Vec::<u16>::new();
         let mut cp_cb = ConvolveParams::no_round(false, 32, is_compound, 8);
         let mut cp_cr = ConvolveParams::no_round(false, 32, is_compound, 8);
         let org_y_c = geom.org_y / 2;
@@ -342,6 +355,10 @@ pub fn av1_inter_prediction_light_pd1(
                 1,
                 1,
             );
+            if is_compound || has_scale(sp.xs, sp.ys) {
+                conv_buf_cb.resize(32 * 32, 0);
+                conv_buf_cr.resize(32 * 32, 0);
+            }
             #[cfg(feature = "std")]
             if zz_chroma_row() && geom.org_x == 16 && geom.org_y == 160 && mv.x == -8 && mv.y == 0 {
                 // Predict first, then show the row this call produced.
@@ -497,7 +514,10 @@ pub fn av1_inter_prediction_light_pd1_hbd(
     let is_compound = mvs.len() > 1;
 
     if component_mask & LUMA_MASK != 0 {
-        let mut conv_buf = vec![0u16; 64 * 64];
+        // `conv_buf` is read only by the jnt-compound and 2d-scale convolve
+        // arms; a single unscaled reference never touches it. Grow it lazily
+        // so the common single-ref case pays no alloc and no memset.
+        let mut conv_buf = alloc::vec::Vec::<u16>::new();
         let mut cp = ConvolveParams::no_round(false, 64, is_compound, bd);
         for (i, mv) in mvs.iter().enumerate() {
             let rp = &y_refs[i];
@@ -521,6 +541,9 @@ pub fn av1_inter_prediction_light_pd1_hbd(
                 cp.do_average = true;
                 cp.use_jnt_comp_avg = false;
             }
+            if is_compound || has_scale(sp.xs, sp.ys) {
+                conv_buf.resize(64 * 64, 0);
+            }
             let origin = (rp.origin as isize + pos_x as isize + pos_y as isize * rp.stride as isize)
                 as usize;
             highbd_inter_predictor(
@@ -540,8 +563,9 @@ pub fn av1_inter_prediction_light_pd1_hbd(
     }
 
     if component_mask & CHROMA_MASK != 0 {
-        let mut conv_buf_cb = vec![0u16; 32 * 32];
-        let mut conv_buf_cr = vec![0u16; 32 * 32];
+        // Lazy as for luma: only the jnt-compound and 2d-scale arms read it.
+        let mut conv_buf_cb = alloc::vec::Vec::<u16>::new();
+        let mut conv_buf_cr = alloc::vec::Vec::<u16>::new();
         let mut cp_cb = ConvolveParams::no_round(false, 32, is_compound, bd);
         let mut cp_cr = ConvolveParams::no_round(false, 32, is_compound, bd);
         let org_y_c = geom.org_y / 2;
@@ -574,6 +598,10 @@ pub fn av1_inter_prediction_light_pd1_hbd(
                 1,
                 1,
             );
+            if is_compound || has_scale(sp.xs, sp.ys) {
+                conv_buf_cb.resize(32 * 32, 0);
+                conv_buf_cr.resize(32 * 32, 0);
+            }
             if component_mask & CB_FLAG != 0 {
                 let rp = &u_refs[i];
                 let origin = (rp.origin as isize
