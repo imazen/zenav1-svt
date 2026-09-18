@@ -560,10 +560,11 @@ impl RefScan {
     }
 
     /// C `set_child_to_be_tested` (enc_dec_process.c:1522): mark the
-    /// child depth for evaluation (`disallow_4x4` blocks 8x8 -> 4x4).
-    fn set_children_tested(&mut self, e_depth: i32, disallow_4x4: bool) {
-        // disallow_4x4 blocks 8x8 -> 4x4; 4x4 never has children.
-        if self.sq <= 4 || (disallow_4x4 && self.sq <= 8) {
+    /// child depth for evaluation (`disallow_4x4` blocks 8x8 -> 4x4,
+    /// `disallow_8x8` blocks 16x16 -> 8x8).
+    fn set_children_tested(&mut self, e_depth: i32, disallow_4x4: bool, disallow_8x8: bool) {
+        // 4x4 never has children.
+        if self.sq <= 4 || (self.sq == 8 && disallow_4x4) || (self.sq == 16 && disallow_8x8) {
             return;
         }
         self.split_flag = true;
@@ -577,7 +578,7 @@ impl RefScan {
         for c in ch.iter_mut() {
             c.test_this = true;
             if e_depth > 1 {
-                c.set_children_tested(e_depth - 1, disallow_4x4);
+                c.set_children_tested(e_depth - 1, disallow_4x4, disallow_8x8);
             }
         }
         self.children = Some(Box::new(ch));
@@ -590,6 +591,17 @@ impl RefScan {
 /// :1613 / :1764).
 struct RefineEnv<'a> {
     ctrls: &'a DrCtrls,
+    /// C `ctx->disallow_4x4` for THIS superblock — `pic_disallow_4x4` as
+    /// `set_depth_removal_level_controls` left it (it can only be SET,
+    /// never cleared; enc_mode_config.c:3270-3278).
+    disallow_4x4: bool,
+    /// C `ctx->disallow_8x8` — `get_disallow_8x8_{default,allintra}` are
+    /// false on every reachable arm; carried for the clamp's shape.
+    disallow_8x8: bool,
+    /// C `ctx->depth_removal_ctrls` for THIS superblock. Zeroed
+    /// (`enabled = 0`) on an I-slice — `set_depth_removal_level_controls`
+    /// returns early there (enc_mode_config.c:2973).
+    depth_removal: crate::port_enc_mode_config::common::DepthRemovalCtrls,
     lambda: u64,
     tables: &'a M6Pd0Tables,
     max_pd0: usize,
@@ -646,22 +658,65 @@ fn set_start_end_depth(
     let sq = node.sq;
     let mut s: i32 = -2;
     let mut e: i32 = 2;
-    // 4x4 has no children; disallow_4x4 caps the sub-depths
-    // (set_start_end_depth, enc_dec_process.c:1799-1813). With 4x4
-    // allowed (M0-M3) only the 4x4-has-no-children cap applies.
-    e = if ctrls.disallow_4x4 {
-        match sq {
-            4 | 8 => 0,
+    // 4x4 has no children (set_start_end_depth, enc_dec_process.c:1784).
+    if sq == 4 {
+        e = 0;
+    }
+    // The disallow_8x8 arm REPLACES disallow_4x4's (:1788-1797); the
+    // per-SB depth-removal flags then clamp on top of either (:1799-1813).
+    if env.disallow_8x8 {
+        e = if sq <= 16 {
+            0
+        } else if sq == 32 {
+            e.min(1)
+        } else if sq == 64 {
+            e.min(2)
+        } else if sq == 128 {
+            e.min(3)
+        } else {
+            e
+        };
+    } else if env.disallow_4x4 {
+        e = match sq {
+            8 => 0,
             16 => e.min(1),
             32 => e.min(2),
             _ => e,
+        };
+    }
+    if env.depth_removal.enabled != 0 {
+        if env.depth_removal.disallow_below_64x64 != 0 {
+            e = if sq <= 64 {
+                0
+            } else if sq == 128 {
+                e.min(1)
+            } else {
+                e
+            };
+        } else if env.depth_removal.disallow_below_32x32 != 0 {
+            e = if sq <= 32 {
+                0
+            } else if sq == 64 {
+                e.min(1)
+            } else if sq == 128 {
+                e.min(2)
+            } else {
+                e
+            };
+        } else if env.depth_removal.disallow_below_16x16 != 0 {
+            e = if sq <= 16 {
+                0
+            } else if sq == 32 {
+                e.min(1)
+            } else if sq == 64 {
+                e.min(2)
+            } else if sq == 128 {
+                e.min(3)
+            } else {
+                e
+            };
         }
-    } else {
-        match sq {
-            4 => 0,
-            _ => e,
-        }
-    };
+    }
     // C :1819-1823, against the real `max_sq_size` (see `RefineEnv::max_sq`).
     if sq == env.max_sq {
         s = 0;
@@ -912,7 +967,7 @@ fn refine_depth(
         scan.test_this = true;
         let (s, e) = set_start_end_depth(env, node, parent, abs_x, abs_y);
         if e > 0 {
-            scan.set_children_tested(e, env.ctrls.disallow_4x4);
+            scan.set_children_tested(e, env.disallow_4x4, env.disallow_8x8);
         }
         (scan, s)
     } else {
@@ -975,6 +1030,13 @@ pub(crate) fn build_refined_scan(
         None,
         true,
         crate::quant::CoeffLvl::Normal,
+        // Test-side env: `ctrls.disallow_4x4` stands in for the resolved
+        // `ctx->disallow_4x4` and the depth-removal controls stay disabled —
+        // the key-frame arm, where `set_depth_removal_level_controls`
+        // returns early.
+        ctrls.disallow_4x4,
+        false,
+        crate::port_enc_mode_config::common::DepthRemovalCtrls::default(),
     )
 }
 
@@ -1019,6 +1081,16 @@ pub(crate) fn build_refined_scan_at(
     // for the same gate — NORMAL/HIGH engage the clamp. Inert when
     // `is_islice`.
     coeff_lvl: crate::quant::CoeffLvl,
+    // C `ctx->disallow_4x4` for THIS superblock — `pic_disallow_4x4` after
+    // `set_depth_removal_level_controls` may have set it (enc_mode_config.c:
+    // 3270-3278).
+    disallow_4x4: bool,
+    // C `ctx->disallow_8x8` (`get_disallow_8x8_{default,allintra}`) — false
+    // on every reachable arm.
+    disallow_8x8: bool,
+    // C `ctx->depth_removal_ctrls` for THIS superblock — zeroed on a key
+    // frame, which is also what every pre-existing test wants.
+    depth_removal: crate::port_enc_mode_config::common::DepthRemovalCtrls,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
@@ -1036,6 +1108,9 @@ pub(crate) fn build_refined_scan_at(
     }
     let env = RefineEnv {
         ctrls,
+        disallow_4x4,
+        disallow_8x8,
+        depth_removal,
         lambda,
         tables,
         max_pd0,
@@ -3504,6 +3579,9 @@ mod tests {
             None,
             true,
             crate::quant::CoeffLvl::Normal,
+            ctrls.disallow_4x4,
+            false,
+            crate::port_enc_mode_config::common::DepthRemovalCtrls::default(),
         );
         let scan32 = build_refined_scan_at(
             &eval,
@@ -3518,6 +3596,9 @@ mod tests {
             None,
             true,
             crate::quant::CoeffLvl::Normal,
+            ctrls.disallow_4x4,
+            false,
+            crate::port_enc_mode_config::common::DepthRemovalCtrls::default(),
         );
 
         // At max_tx_size 32 the 32x32 nodes ARE the max square, so C forces
@@ -3533,6 +3614,93 @@ mod tests {
         assert!(
             !parent_tested(&scan32),
             "at max_tx_size 32 a 32x32 node is the max square: C forces s_depth = 0"
+        );
+    }
+
+    /// C `set_start_end_depth`'s per-SB depth-removal clamp
+    /// (enc_dec_process.c:1799-1813): `disallow_below_*` caps `e_depth` at
+    /// the granularity it names, BEFORE adaptive narrowing. This is the gate
+    /// that was missing: `DepthRemovalResult` was computed per SB for the
+    /// PD0 entries but never reached `RefineEnv`, so a 16x16 leaf under
+    /// `disallow_below_16x16` still tested its 8x8 children (vidyo1 256x256
+    /// p6 frame 1, SB at org (128,0)).
+    #[test]
+    fn depth_removal_clamps_e_depth() {
+        let ctrls = DrCtrls::for_level(5, false);
+        let tables = crate::pd0::build_m6_pd0_tables(160);
+        // Cost in the range the real cell had (~75M): low enough that
+        // `band_mod`/`split_rate_th` stay quiet, so the e_depth answer
+        // reflects the clamp under test.
+        let leaf = |sq: usize| Pd0Eval {
+            root_det: None,
+            sq,
+            tested: true,
+            sq_tested: true,
+            cost: 75_000_000,
+            split: false,
+            off: false,
+            children: None,
+        };
+        let env = |dr: crate::port_enc_mode_config::common::DepthRemovalCtrls| RefineEnv {
+            ctrls: &ctrls,
+            disallow_4x4: false,
+            disallow_8x8: false,
+            depth_removal: dr,
+            lambda: 248207,
+            tables: &tables,
+            max_pd0: 32,
+            min_pd0: 16,
+            max_sq: 64,
+            sb_sq: 64,
+            ref_min_max_sq: None,
+            is_islice: false,
+            coeff_lvl: crate::quant::CoeffLvl::Normal,
+        };
+        let dr =
+            |b64: u8, b32: u8, b16: u8| crate::port_enc_mode_config::common::DepthRemovalCtrls {
+                enabled: 1,
+                disallow_below_64x64: b64,
+                disallow_below_32x32: b32,
+                disallow_below_16x16: b16,
+                disallow_4x4: 0,
+            };
+
+        // Disabled: the leaf's e_depth survives the unavail-mode fallback.
+        let e = set_start_end_depth(&env(dr(0, 0, 0)), &leaf(16), None, 0, 0).1;
+        assert!(
+            e > 0,
+            "sanity: without depth removal the children stay live"
+        );
+
+        // disallow_below_16x16: sq<=16 -> 0; 32 -> <=1; 64 -> <=2.
+        assert_eq!(
+            set_start_end_depth(&env(dr(0, 0, 1)), &leaf(16), None, 0, 0).1,
+            0
+        );
+        assert_eq!(
+            set_start_end_depth(&env(dr(0, 0, 1)), &leaf(32), None, 0, 0).1,
+            1
+        );
+        // disallow_below_32x32: sq<=32 -> 0.
+        assert_eq!(
+            set_start_end_depth(&env(dr(0, 1, 0)), &leaf(32), None, 0, 0).1,
+            0
+        );
+        assert_eq!(
+            set_start_end_depth(&env(dr(0, 1, 1)), &leaf(32), None, 0, 0).1,
+            0
+        );
+        // disallow_below_64x64 takes precedence over the 32/16 flags
+        // (C's if/else-if chain) and zeroes a 64x64 node.
+        assert_eq!(
+            set_start_end_depth(&env(dr(1, 1, 1)), &leaf(64), None, 0, 0).1,
+            0
+        );
+        // Below-16 alone still lets the 64x64 node admit a sub-depth
+        // (coeff_lvl_mod caps at 1 on this ctrls row).
+        assert_eq!(
+            set_start_end_depth(&env(dr(0, 0, 1)), &leaf(64), None, 0, 0).1,
+            1
         );
     }
 }

@@ -15035,6 +15035,12 @@ fn encode_tile_rows(
                                 } else {
                                     None
                                 };
+                                // This superblock's `DepthRemovalResult` —
+                                // the same per-SB record `sb_pd0_det` reads
+                                // for `Pd0SigDerivInput`. `None` on a key
+                                // frame, where `set_depth_removal_level_controls`
+                                // leaves `enabled = 0`.
+                                let sb_dr_res = pd0_dr_res.and_then(|v| v.get(sb_index).copied());
                                 let scan = crate::depth_refine::build_refined_scan_at(
                                     &eval,
                                     &dr,
@@ -15068,6 +15074,29 @@ fn encode_tile_rows(
                                         .map_or(crate::quant::CoeffLvl::Normal, |q| {
                                             q.input_coeff_level
                                         }),
+                                    // C `ctx->disallow_4x4` as
+                                    // `set_depth_removal_level_controls`
+                                    // left it — pic value possibly SET per
+                                    // SB. Same resolution `Pd0SigDerivInput`
+                                    // uses above.
+                                    sb_dr_res.map_or_else(
+                                        || {
+                                            crate::part_arm::disallow_4x4(
+                                                sc_arm,
+                                                speed_config.preset,
+                                            )
+                                        },
+                                        |r| r.disallow_4x4,
+                                    ),
+                                    // C `ctx->disallow_8x8`
+                                    // (`get_disallow_8x8_default`) — false on
+                                    // every reachable arm.
+                                    crate::port_enc_mode_config::leaf::get_disallow_8x8_default(),
+                                    // C `ctx->depth_removal_ctrls` — the
+                                    // per-SB `disallow_below_*` ladder
+                                    // `set_start_end_depth` clamps against
+                                    // (:1799-1813). Zeroed on a key frame.
+                                    sb_dr_res.map_or_else(Default::default, |r| r.ctrls),
                                 );
                                 // Partition rates at the real contexts, from
                                 // the same (possibly chained) frame context as
