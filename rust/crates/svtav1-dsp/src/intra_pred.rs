@@ -1438,31 +1438,74 @@ fn dr_z1_edged_core(
     upsample_above: bool,
     dx: i32,
 ) {
-    let up = upsample_above as i32;
+    if upsample_above {
+        dr_z1_edged_core_impl::<true>(dst, dst_stride, bw, bh, above, origin, dx);
+    } else {
+        dr_z1_edged_core_impl::<false>(dst, dst_stride, bw, bh, above, origin, dx);
+    }
+}
+
+/// [`dr_z1_edged_core`] with the upsample flag as a const generic: `base_inc`
+/// folds to 1 or 2, so the non-upsampled tap walk is a plain contiguous
+/// zip LLVM can vectorize.
+#[allow(clippy::too_many_arguments)]
+fn dr_z1_edged_core_impl<const UA: bool>(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    dx: i32,
+) {
+    let up = UA as i32;
     let max_base_x = ((bw + bh) as i32 - 1) << up;
     let frac_bits = 6 - up;
     let base_inc = 1i32 << up;
     let mut x = dx;
     for r in 0..bh {
-        let mut base = x >> frac_bits;
+        let base0 = x >> frac_bits;
         let shift = ((x << up) & 0x3F) >> 1;
-        if base >= max_base_x {
+        if base0 >= max_base_x {
             let fill = above[origin + max_base_x as usize];
             for row in dst.chunks_mut(dst_stride).skip(r).take(bh - r) {
                 row[..bw].fill(fill);
             }
             return;
         }
-        for c in 0..bw {
-            let v = if base < max_base_x {
-                let val = above[origin + base as usize] as i32 * (32 - shift)
-                    + above[origin + base as usize + 1] as i32 * shift;
-                ((val + 16) >> 5).clamp(0, 255) as u8
+        // `base` climbs by `base_inc` per column, so the `base < max_base_x`
+        // test is decided once per row: interpolate the first `interp`
+        // columns, fill the rest with the edge sample.
+        let row = &mut dst[r * dst_stride..r * dst_stride + bw];
+        let interp =
+            ((max_base_x - base0 + base_inc - 1) / base_inc).min(bw as i32) as usize;
+        if interp > 0 {
+            let begin = origin + base0 as usize;
+            let end = begin + (interp - 1) * base_inc as usize + 2;
+            let keep = 32 - shift;
+            let a = &above[begin..end - 1];
+            let b = &above[begin + 1..end];
+            if UA {
+                for (out, (&p, &q)) in row[..interp]
+                    .iter_mut()
+                    .zip(a.iter().step_by(2).zip(b.iter().step_by(2)))
+                {
+                    *out =
+                        ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255) as u8;
+                }
             } else {
-                above[origin + max_base_x as usize]
-            };
-            dst[r * dst_stride + c] = v;
-            base += base_inc;
+                // `base_inc == 1`: contiguous taps, a plain zip LLVM can
+                // vectorize.
+                for (out, (&p, &q)) in
+                    row[..interp].iter_mut().zip(a.iter().zip(b.iter()))
+                {
+                    *out =
+                        ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255) as u8;
+                }
+            }
+        }
+        if interp < bw {
+            row[interp..].fill(above[origin + max_base_x as usize]);
         }
         x += dx;
     }
@@ -1642,21 +1685,42 @@ fn dr_z2_edged_split_core<const UA: bool, const UL: bool>(
         let first =
             ((-(step as i32) - base + step as i32 - 1) >> (UA as u32)).clamp(0, w as i32) as usize;
         let row = &mut dst[r * stride..r * stride + w];
-        for (c, out) in row[..first].iter_mut().enumerate() {
-            let y = ((r as i32) << 6) - (c as i32 + 1) * dy;
+        // `y` steps by `-dy` per column; track it incrementally instead of a
+        // `(c + 1) * dy` multiply per pixel.
+        let mut y = ((r as i32) << 6) - dy;
+        for out in row[..first].iter_mut() {
             let i = (origin as i32 + (y >> (6 - UL as u32))) as usize;
             let shift = ((y << (UL as u32)) & 63) >> 1;
             *out = ((i32::from(left[i]) * (32 - shift) + i32::from(left[i + 1]) * shift + 16) >> 5)
                 as u8;
+            y -= dy;
         }
         if first < w {
             let begin = (origin as i32 + base + (first * step) as i32) as usize;
             let len = w - first;
-            let source = &above[begin..begin + (len - 1) * step + 2];
+            let end = begin + (len - 1) * step + 2;
+            // Constant shift down the whole row. `a`/`b` are the two taps —
+            // `above[begin + j*step]` and `above[begin + j*step + 1]` — as
+            // paired slices rather than `windows(2).step_by`, so the
+            // `step == 1` case can vectorize.
+            let a = &above[begin..end - 1];
+            let b = &above[begin + 1..end];
             let shift = ((x << (UA as u32)) & 63) >> 1;
-            for (out, pair) in row[first..].iter_mut().zip(source.windows(2).step_by(step)) {
-                *out = ((i32::from(pair[0]) * (32 - shift) + i32::from(pair[1]) * shift + 16) >> 5)
-                    as u8;
+            let keep = 32 - shift;
+            if UA {
+                for (out, (&p, &q)) in row[first..]
+                    .iter_mut()
+                    .zip(a.iter().step_by(2).zip(b.iter().step_by(2)))
+                {
+                    *out = ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5) as u8;
+                }
+            } else {
+                // `step == 1`: contiguous taps, a plain zip LLVM can vectorize.
+                for (out, (&p, &q)) in
+                    row[first..].iter_mut().zip(a.iter().zip(b.iter()))
+                {
+                    *out = ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5) as u8;
+                }
             }
         }
     }
@@ -2569,30 +2633,51 @@ fn dr_z3_edged_core(
     upsample_left: bool,
     dy: i32,
 ) {
-    let up = upsample_left as i32;
+    if upsample_left {
+        dr_z3_edged_core_impl::<true>(dst, dst_stride, bw, bh, left, origin, dy);
+    } else {
+        dr_z3_edged_core_impl::<false>(dst, dst_stride, bw, bh, left, origin, dy);
+    }
+}
+
+/// [`dr_z3_edged_core`] with the upsample flag const-generic, matching
+/// [`dr_z1_edged_core_impl`].
+#[allow(clippy::too_many_arguments)]
+fn dr_z3_edged_core_impl<const UL: bool>(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    dy: i32,
+) {
+    let up = UL as i32;
     let max_base_y = ((bw + bh - 1) as i32) << up;
     let frac_bits = 6 - up;
     let base_inc = 1i32 << up;
     let mut y = dy;
     for c in 0..bw {
-        let mut base = y >> frac_bits;
+        let base0 = y >> frac_bits;
         let shift = ((y << up) & 0x3F) >> 1;
-        let mut r = 0usize;
-        while r < bh {
-            if base < max_base_y {
-                let val = left[origin + base as usize] as i32 * (32 - shift)
-                    + left[origin + base as usize + 1] as i32 * shift;
-                dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
-            } else {
-                let fill = left[origin + max_base_y as usize];
-                while r < bh {
-                    dst[r * dst_stride + c] = fill;
-                    r += 1;
-                }
-                break;
-            }
-            r += 1;
+        // `base` climbs by `base_inc` per row, so the `base < max_base_y`
+        // test is decided once per column: interpolate the first `interp`
+        // rows, fill the rest with the edge sample.
+        let interp =
+            ((max_base_y - base0 + base_inc - 1) / base_inc).clamp(0, bh as i32) as usize;
+        let keep = 32 - shift;
+        let mut base = base0;
+        for r in 0..interp {
+            let val = left[origin + base as usize] as i32 * keep
+                + left[origin + base as usize + 1] as i32 * shift;
+            dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
             base += base_inc;
+        }
+        if interp < bh {
+            let fill = left[origin + max_base_y as usize];
+            for r in interp..bh {
+                dst[r * dst_stride + c] = fill;
+            }
         }
         y += dy;
     }
