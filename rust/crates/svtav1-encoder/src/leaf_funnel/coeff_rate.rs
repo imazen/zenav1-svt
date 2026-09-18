@@ -116,6 +116,7 @@ fn cost_coeffs_txb_inner(
     let cc::TxbScratch {
         levels: levels_buf,
         ctx: ctx_buf,
+        ..
     } = sc;
     // The body-anchored sub-slice every reader indexes by `padded_idx` —
     // `eob > 1` fills it; at `eob <= 1` only `br_ctx(pos = 0)` reads it (the

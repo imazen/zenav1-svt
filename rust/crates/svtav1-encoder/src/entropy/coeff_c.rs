@@ -393,6 +393,11 @@ pub struct TxbScratch {
     pub levels: [u8; LEVELS_SCRATCH_LEN],
     /// `get_nz_map_contexts`' output, `width * height` of which is used.
     pub ctx: [i8; MAX_TXB_COEFF_AREA],
+    /// `av1_write_coeffs_txb_1d`'s `cached_level` — C keeps it in `ec_ctx`
+    /// (persistent, not a stack VLA) for the same reason it lives here.
+    pub cached_level: [i16; MAX_TXB_COEFF_AREA],
+    /// `av1_write_coeffs_txb_1d`'s `cached_sign`.
+    pub cached_sign: [u8; MAX_TXB_COEFF_AREA],
 }
 
 impl TxbScratch {
@@ -400,6 +405,8 @@ impl TxbScratch {
         TxbScratch {
             levels: [0u8; LEVELS_SCRATCH_LEN],
             ctx: [0i8; MAX_TXB_COEFF_AREA],
+            cached_level: [0i16; MAX_TXB_COEFF_AREA],
+            cached_sign: [0u8; MAX_TXB_COEFF_AREA],
         }
     }
 }
@@ -1012,22 +1019,6 @@ impl CoeffFc {
         &mut self.eob_extra_cdf[(txs_ctx * 2 + plane) * 9 + ctx]
     }
     #[inline]
-    fn dc_sign(&mut self, plane: usize, ctx: usize) -> &mut [AomCdfProb; 3] {
-        &mut self.dc_sign_cdf[plane * 3 + ctx]
-    }
-    #[inline]
-    fn coeff_base_eob(&mut self, txs_ctx: usize, plane: usize, ctx: usize) -> &mut [AomCdfProb; 4] {
-        &mut self.coeff_base_eob_cdf[(txs_ctx * 2 + plane) * 4 + ctx]
-    }
-    #[inline]
-    fn coeff_base(&mut self, txs_ctx: usize, plane: usize, ctx: usize) -> &mut [AomCdfProb; 5] {
-        &mut self.coeff_base_cdf[(txs_ctx * 2 + plane) * 42 + ctx]
-    }
-    #[inline]
-    fn coeff_br(&mut self, txs_ctx: usize, plane: usize, ctx: usize) -> &mut [AomCdfProb; 5] {
-        &mut self.coeff_br_cdf[(txs_ctx * 2 + plane) * 21 + ctx]
-    }
-    #[inline]
     fn intra_ext_tx(
         &mut self,
         eset: usize,
@@ -1352,9 +1343,6 @@ fn write_coeffs_txb_1d_inner(
         return 0;
     }
 
-    let TxbScratch { levels, ctx } = sc;
-    let levels = txb_init_levels(coeffs, width, height, levels);
-
     if plane_type == 0 {
         if is_inter {
             if fc.md_side_ibc_txt_update {
@@ -1428,6 +1416,57 @@ fn write_coeffs_txb_1d_inner(
         }
     }
 
+    // Hoisted CDF rows — C keeps `base_cdf`/`br_cdf` row pointers
+    // loop-invariant (entropy_coding.c:447-448); the per-coefficient accessor
+    // form recomputed the same `(txs_ctx, plane_type)` outer index every call.
+    let br_txs_ctx = txs_ctx.min(TX_32X32);
+    let plane2 = txs_ctx * 2 + plane_type;
+    let base_eob_row = &mut fc.coeff_base_eob_cdf[plane2 * 4..plane2 * 4 + 4];
+    let base_row = &mut fc.coeff_base_cdf[plane2 * 42..plane2 * 42 + 42];
+    let br_row = &mut fc.coeff_br_cdf
+        [(br_txs_ctx * 2 + plane_type) * 21..(br_txs_ctx * 2 + plane_type) * 21 + 21];
+    let dc_sign_row = &mut fc.dc_sign_cdf[plane_type * 3..plane_type * 3 + 3];
+
+    // C's `eob == 1` fast path (entropy_coding.c:396-423): a lone DC has
+    // statically known contexts (coeff_ctx = 0, br_ctx = 0), so
+    // `txb_init_levels` and `get_nz_map_contexts` are skipped entirely.
+    if eob == 1 {
+        let v = coeffs[0];
+        let level = v.abs();
+        w.write_symbol((level.min(3) - 1) as usize, &mut base_eob_row[0], 3);
+        if level > NUM_BASE_LEVELS {
+            let base_range = level - 1 - NUM_BASE_LEVELS;
+            let mut idx = 0i32;
+            while idx < COEFF_BASE_RANGE {
+                let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);
+                w.write_symbol(k as usize, &mut br_row[0], BR_CDF_SIZE);
+                if k < BR_CDF_SIZE as i32 - 1 {
+                    break;
+                }
+                idx += BR_CDF_SIZE as i32 - 1;
+            }
+        }
+        w.write_symbol(usize::from(v < 0), &mut dc_sign_row[dc_sign_ctx], 2);
+        if level > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
+            write_golomb(w, level - COEFF_BASE_RANGE - 1 - NUM_BASE_LEVELS);
+        }
+        let mut cul_level = level.min(COEFF_CONTEXT_MASK);
+        if v < 0 {
+            cul_level |= 1 << COEFF_CONTEXT_BITS;
+        } else {
+            cul_level |= 2 << COEFF_CONTEXT_BITS;
+        }
+        return cul_level;
+    }
+
+    let TxbScratch {
+        levels: levels_buf,
+        ctx,
+        cached_level,
+        cached_sign,
+    } = sc;
+    let levels = txb_init_levels(coeffs, width, height, levels_buf);
+
     // `get_nz_map_contexts` writes every position a caller can read (the whole
     // raster on the SIMD arm, `scan[0..eob]` on the scan-order arm) — the
     // scratch needs no per-call zero.
@@ -1445,7 +1484,6 @@ fn write_coeffs_txb_1d_inner(
     // The base-range escape, shared by the peeled `c == eob - 1` iteration and
     // the loop below (C writes it out twice; one macro keeps it in one place
     // and compiles to the same thing).
-    let br_txs_ctx = txs_ctx.min(TX_32X32);
     macro_rules! write_br {
         ($level:expr, $pos:expr) => {
             if $level > NUM_BASE_LEVELS {
@@ -1454,8 +1492,7 @@ fn write_coeffs_txb_1d_inner(
                 let mut idx = 0i32;
                 while idx < COEFF_BASE_RANGE {
                     let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);
-                    let cdf = fc.coeff_br(br_txs_ctx, plane_type, ctx);
-                    w.write_symbol(k as usize, cdf, BR_CDF_SIZE);
+                    w.write_symbol(k as usize, &mut br_row[ctx], BR_CDF_SIZE);
                     if k < BR_CDF_SIZE as i32 - 1 {
                         break;
                     }
@@ -1465,46 +1502,44 @@ fn write_coeffs_txb_1d_inner(
         };
     }
 
-    // PEELED first iteration, `c == eob - 1`, exactly as C peels it
-    // (entropy_coding.c:477-497). The port ran one loop that re-tested
-    // `c == eob - 1` on every coefficient to pick between `coeff_base_eob_cdf`
-    // (3 symbols) and `coeff_base_cdf` (4) — a loop-invariant predicate paid
-    // per coefficient. `eob >= 1` holds here (`eob == 0` returned above).
-    // Byte-inert: same symbols, same order.
+    // C's merged pass (entropy_coding.c:451-516): the backward walk caches
+    // level/sign per coefficient and accumulates `cul_level`, so the forward
+    // walk emits signs/golomb from the cache instead of re-gathering
+    // `coeffs[scan[c]]` a second time.
+    let eob_us = eob as usize;
+    let mut cul_level: i32 = 0;
     {
-        let c = eob as usize - 1;
+        let c = eob_us - 1;
         let pos = scan[c] as usize;
         let v = coeffs[pos];
-        let coeff_ctx = coeff_contexts[pos] as usize;
         let level = v.abs();
-        let cdf = fc.coeff_base_eob(txs_ctx, plane_type, coeff_ctx);
-        w.write_symbol((level.min(3) - 1) as usize, cdf, 3);
+        cached_level[c] = level as i16;
+        cached_sign[c] = u8::from(v < 0);
+        cul_level += level;
+        let coeff_ctx = coeff_contexts[pos] as usize;
+        w.write_symbol((level.min(3) - 1) as usize, &mut base_eob_row[coeff_ctx], 3);
         write_br!(level, pos);
     }
-    for c in (0..eob as usize - 1).rev() {
+    for c in (0..eob_us - 1).rev() {
         let pos = scan[c] as usize;
         let v = coeffs[pos];
-        let coeff_ctx = coeff_contexts[pos] as usize;
         let level = v.abs();
-        let cdf = fc.coeff_base(txs_ctx, plane_type, coeff_ctx);
-        w.write_symbol(level.min(3) as usize, cdf, 4);
+        cached_level[c] = level as i16;
+        cached_sign[c] = u8::from(v < 0);
+        cul_level += level;
+        let coeff_ctx = coeff_contexts[pos] as usize;
+        w.write_symbol(level.min(3) as usize, &mut base_row[coeff_ctx], 4);
         write_br!(level, pos);
     }
 
-    // Signs and golomb residuals, forward scan order, DC sign first.
-    let mut cul_level: i32 = 0;
-    for c in 0..eob as usize {
-        let pos = scan[c] as usize;
-        let v = coeffs[pos];
-        let level = v.abs();
-        cul_level += level;
-        let sign = usize::from(v < 0);
+    // Forward pass: signs + golomb from the cached data (no coeff re-read).
+    for c in 0..eob_us {
+        let level = i32::from(cached_level[c]);
         if level != 0 {
             if c == 0 {
-                let cdf = fc.dc_sign(plane_type, dc_sign_ctx);
-                w.write_symbol(sign, cdf, 2);
+                w.write_symbol(cached_sign[c] as usize, &mut dc_sign_row[dc_sign_ctx], 2);
             } else {
-                w.write_bit(sign != 0);
+                w.write_bit(cached_sign[c] != 0);
             }
             if level > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
                 write_golomb(w, level - COEFF_BASE_RANGE - 1 - NUM_BASE_LEVELS);

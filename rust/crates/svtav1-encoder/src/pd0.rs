@@ -1999,6 +1999,7 @@ fn cost_coeffs_txb_pd0_inner(
     let cc::TxbScratch {
         levels: levels_buf,
         ctx: ctx_buf,
+        ..
     } = sc;
     // Body-anchored sub-slice — `eob > 1` fills it; at `eob <= 1`
     // `loop_cost_eob_pd0` reads only `lps_cost[0]`/position-derived contexts
