@@ -2495,3 +2495,64 @@ ALIGNED-sized buffer rejected (rejection = "extend the last sample", admission =
 `128 << (bd - 8)` changed **0 of 198** cells. The seed is kept regardless — it
 makes the bd10 canvases agree with their u8 twins by construction rather than by
 luck — but it is not the root, and the note in the source says so.
+
+## 2026-09-18 — VIDEO `hbd_md` TRACED: P-slices run u8-domain at p6+; landed
+
+### What C actually does (instrumented build, `johnny_128x128_8f` bd10 p6 q40)
+
+`md_ctx->hbd_md` derivation (enc_mode_config.c:2148-2166) is frame-type
+conditional, not a preset constant:
+
+| config | `hbd_md` |
+|---|---|
+| bd8 | 0 |
+| `preset <= MR` | 1 (true 10-bit MD) |
+| M0..M5 | `is_base ? 2 : 0` (base-layer frames only) |
+| **M6+** | **`is_islice ? 2 : 0` — I-slices only** |
+
+Trace on the p6 low-delay clip: `frame 0 (I-slice) saved=2`, `frame 1
+(P-slice) saved=0`. `set_pd0_ctrls` additionally forces `hbd_md=0` for the
+PD0 duration and restores it — and forces `pd0_level = LVL_0` whenever
+`ctx->hbd_md` is nonzero, so on the video keyframe PD0 is OFF entirely and
+the partition comes from the PD1/MDS stages at `hbd_md=2` (u16 domain).
+
+### What `hbd_md=0` means for a bd10 P-slice (all verified against C source)
+
+- `svt_aom_estimate_transform` and `svt_aom_quantize_inv_quantize` receive
+  `EB_EIGHT_BIT` (full_loop.c:5064-5093) — coded levels are the u8-domain
+  quantizer's output, PERIOD. There is no 10-bit level re-encode.
+- `svt_convert_8bit_to_16bit` is a **plain copy, no `<<2`**
+  (pack_unpack_c.c) — C's 16-bit pipeline carries unshifted 0-255 values at
+  `hbd_md=0`, so the port's u8 fallback filter chain is the correct domain,
+  not an approximation.
+- The u16 recon picture gets the u8-domain recon via
+  `update_recon_neighbor_array16bit` (product_coding_loop.c:245).
+
+### Port change (landed)
+
+`pipeline.rs`: `bd10_postpass_runs` now gates on `is_key || coded_lossless`
+(was: any non-full-RD bd10 frame) — P-slices ship u8-domain levels like C.
+`bd10_luma_funnel`'s `preset >= 9` arm now requires `inter_md.is_none()`
+with the same `coded_lossless` carve-out — p9+ P-slices no longer run the
+u16 funnel. `hbd_used` is marked on non-key non-full-RD native-source frames:
+the MSB truncation IS C's consumption at `hbd_md=0`, so the safety guard's
+semantics are preserved (it still fires if a path would need the u16 source
+and skipped it).
+
+### Measured
+
+`bd10_video_gate.sh` before: 24 cells, all `0/0`. After: `kristenandsara
+128x128 p6` is `0/1` — **frame 1 byte-identical to C** (frame 0's recon
+matched, so the corrected P-slice path is exact). All 24 streams
+dav1d-decode; no regressions. bd10 stills unchanged (191/191 band +
+`CID22-512 1484678` true-10-bit cell both still byte-identical).
+
+### Remaining blocker — the video keyframe (`hbd_md=2`, u16 domain)
+
+Every cell's frame 0 still diverges. This is NOT a header or lambda-scale
+issue: `SVT_PICKPART_OUT` (C) vs `SVTAV1_NSQDBG` (port) on `johnny` SB(0,0)
+shows the port evaluating a ~15%-higher unsplit candidate cost AND picking a
+different mode (5 vs C's 11), then choosing a different partition tree
+(bsize 7 vs 9). The u16-domain partition/MD machinery for the video key
+frame does not yet reproduce C's `hbd_md=2` decisions. That is defect B —
+the bd10-video gate's `expected` entries remain `0/0`/`0/1` accordingly.

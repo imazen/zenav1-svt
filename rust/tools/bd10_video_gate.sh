@@ -74,9 +74,14 @@ fi
 # kristenandsara 128x128 p6 frame 1 was 0/1 and dropped to 0/0 on
 # 2026-09-13 when the inter MDS0 lane switched to C's video variance arm
 # (`mds0_use_hadamard_sb = 0` has no bit-depth branch). The prior match was
-# coincidence: frame 0 on this cell already diverges at header byte 17
-# while reconstructing identically, which is how frame 1 could match at
-# all. The C-faithful arm now exposes the underlying bd10 MD divergence.
+# coincidence: frame 0 on this cell diverges in the coded payload (first
+# tile bytes), which is how frame 1 could match at all. The C-faithful arm
+# now exposes the underlying bd10 MD divergence.
+# 2026-09-18: kristenandsara p6 frame 1 is 0/1 again — this time NOT
+# coincidence. The P-slice now ships the u8-domain coefficients C emits at
+# pcs->hbd_md == 0 (enc_mode_config.c:2163 `is_islice ? 2 : 0`, traced on
+# this clip: frame 0 saved=2, frame 1 saved=0) instead of running the bd10
+# level re-encode. Frame 0 still carries its byte-17 divergence.
 CELLS=(
     "fourpeople     128x128 6 0/0"
     "fourpeople     128x128 8 0/0"
@@ -86,7 +91,7 @@ CELLS=(
     "johnny         128x128 8 0/0"
     "johnny         256x256 6 0/0"
     "johnny         256x256 8 0/0"
-    "kristenandsara 128x128 6 0/0"
+    "kristenandsara 128x128 6 0/1"
     "kristenandsara 128x128 8 0/0"
     "kristenandsara 256x256 6 0/0"
     "kristenandsara 256x256 8 0/0"

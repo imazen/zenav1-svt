@@ -5333,7 +5333,17 @@ impl EncodePipeline {
                 w,
                 h,
             );
+            // `is_key` is the frame-type term C encodes in `pcs->hbd_md`
+            // (`is_islice ? 2 : 0` at M6+, `is_base ? 2 : 0` at M0..M5 —
+            // TRACED 2026-09-18: the johnny p6 cell's P-frame derives 0): at
+            // hbd_md == 0 C ships the u8-domain coefficients as mode decision
+            // produced them and never re-encodes at 10 bits
+            // (full_loop.c:2047 — `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT`
+            // feeds `svt_aom_quantize_inv_quantize`). `coded_lossless` keeps
+            // the post-pass on every frame — a lossless 10-bit stream must
+            // code the low 2 bits, which an 8-bit-domain level cannot carry.
             let bd10_postpass_runs = !bd10_full_rd
+                && (is_key || coded_lossless)
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter, coded_lossless));
@@ -5496,6 +5506,17 @@ impl EncodePipeline {
                     self.last_recon10_uv = Some((uv10.0[..cn].to_vec(), uv10.1[..cn].to_vec()));
                 }
                 self.last_recon10_y = Some(recon10[..w * h].to_vec());
+            }
+            // At hbd_md == 0 (non-I-slice, enc_mode > M5 — the `is_key`/`is_base`
+            // terms C encodes in `pcs->hbd_md`, TRACED 2026-09-18) C's mode
+            // decision runs entirely on the MSB-truncated u8 picture — the u16
+            // source's consumption IS that truncation
+            // (`svt_convert_8bit_to_16bit` is a plain copy, pack_unpack_c.c:198;
+            // the 16-bit pipeline then carries 0..255 values). Mark it consumed
+            // so the no-silent-truncation guard does not fire on exactly the
+            // frames where truncation is the C-faithful behavior.
+            if hbd_source.is_some() && !is_key && !bd10_full_rd {
+                hbd_used = true;
             }
         }
 
@@ -13436,7 +13457,15 @@ fn encode_tile_rows(
             w,
             h,
         );
-        let bd10_luma_funnel = bd10_canvas_ok && (speed_config.preset >= 9 || bd10_full_rd);
+        // The `preset >= 9` arm needs the same frame-type term as
+        // `bd10_full_rd`: C derives `pcs->hbd_md = is_islice ? 2 : 0` at
+        // M6+ (enc_mode_config.c:2163 — TRACED 2026-09-18 on bd10 p6 video:
+        // the I-frame runs DUAL, every P-frame is 0), so a non-I frame at
+        // preset >= 9 keeps the whole MD — canvas included — in the u8 domain.
+        // Running the u16 funnel there computed a 10-bit canvas C never
+        // builds.
+        let bd10_luma_funnel =
+            bd10_canvas_ok && (bd10_full_rd || (speed_config.preset >= 9 && inter_md.is_none()));
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
         // caller supplied one AND a bd10 stage is armed to read it. The planes
         // arrive already SB-extent-padded when the frame has a partial SB
