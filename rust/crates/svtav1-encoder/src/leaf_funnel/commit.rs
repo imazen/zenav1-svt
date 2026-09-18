@@ -148,9 +148,24 @@ pub(crate) fn commit_leaf(
     // bd10 canvas for the next block's neighbour prediction (same straddle clip
     // as the u8 recon above). `None` on the u8 path — byte-neutral for bd8.
     if let Some(canvas10) = fx.y_recon10.as_deref_mut() {
-        for r in 0..h {
-            let dst = (abs_y + r) * y_stride + abs_x;
-            canvas10[dst..dst + wr].copy_from_slice(&ev.win_recon10[r * w..r * w + wr]);
+        if ev.win_recon10.is_empty() {
+            // A leaf the bump can't serve — `lpd1` (the light funnel has no
+            // 10-bit lane) — still has to keep C's `recon_pic(1)` coherent:
+            // a later MDS3-hbd leaf's intra candidates predict from this
+            // canvas. C's light leaf writes its 10-bit winner recon here;
+            // `win.y_recon << shift` is the closest the u8 lane has.
+            let shift = u32::from(fx.frame.bit_depth - 8);
+            for r in 0..h {
+                let dst = (abs_y + r) * y_stride + abs_x;
+                for c in 0..wr {
+                    canvas10[dst + c] = u16::from(ev.win.y_recon[r * w + c]) << shift;
+                }
+            }
+        } else {
+            for r in 0..h {
+                let dst = (abs_y + r) * y_stride + abs_x;
+                canvas10[dst..dst + wr].copy_from_slice(&ev.win_recon10[r * w..r * w + wr]);
+            }
         }
     }
     if ev.has_uv {
@@ -171,24 +186,42 @@ pub(crate) fn commit_leaf(
         } else {
             for r in 0..chh {
                 let dst = (ccy + r) * fx.c_stride + ccx;
-                fx.u_recon[dst..dst + cwr]
-                    .copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
-                fx.v_recon[dst..dst + cwr]
-                    .copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
+                fx.u_recon[dst..dst + cwr].copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
+                fx.v_recon[dst..dst + cwr].copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
             }
         }
         // bd10 FULL-RD chroma canvases — the chroma twin of the luma write
         // above, closing the same sequential coupling for chroma prediction.
-        if !ev.win_u_recon10.is_empty() {
-            let c_stride = fx.c_stride;
-            for (canvas, src) in [
-                (fx.u_recon10.as_deref_mut(), &ev.win_u_recon10),
-                (fx.v_recon10.as_deref_mut(), &ev.win_v_recon10),
-            ] {
-                let canvas = canvas.expect("bd10 full-RD requires both chroma canvases");
+        // When the canvases are live under the MDS3 bump but this leaf has
+        // no 10-bit recon (an `lpd1` leaf — the light funnel has no u16
+        // lane), keep them coherent from the u8 winner recon, as the luma
+        // canvas does above.
+        let c_stride = fx.c_stride;
+        for (canvas, src10, src8) in [
+            (
+                fx.u_recon10.as_deref_mut(),
+                &ev.win_u_recon10,
+                &cand.u_recon,
+            ),
+            (
+                fx.v_recon10.as_deref_mut(),
+                &ev.win_v_recon10,
+                &cand.v_recon,
+            ),
+        ] {
+            let Some(canvas) = canvas else { continue };
+            if src10.is_empty() {
+                let shift = u32::from(fx.frame.bit_depth - 8);
                 for r in 0..chh {
                     let dst = (ccy + r) * c_stride + ccx;
-                    canvas[dst..dst + cwr].copy_from_slice(&src[r * cw..r * cw + cwr]);
+                    for c in 0..cwr {
+                        canvas[dst + c] = u16::from(src8[r * cw + c]) << shift;
+                    }
+                }
+            } else {
+                for r in 0..chh {
+                    let dst = (ccy + r) * c_stride + ccx;
+                    canvas[dst..dst + cwr].copy_from_slice(&src10[r * cw..r * cw + cwr]);
                 }
             }
         }

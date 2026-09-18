@@ -2235,21 +2235,14 @@ impl EncodePipeline {
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
         // key frame keeps working: that stream is a valid still.
-        // THE BIT-DEPTH FLOOR. Every checked 8-bit preset (-1..13) is inside
-        // the measured envelope — see `crate::dbgenv::inter_experimental` for
-        // the sweep; above 8 bits the port still emits streams a decoder
-        // disagrees with, which is the one outcome this port never ships.
-        if !is_key && self.bit_depth > 8 && !crate::dbgenv::inter_experimental() {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames are shipped for 8-BIT 4:2:0, and this frame is above that. \
-                 Measured against a DECODER, because that is what a wrong stream actually \
-                 violates, 2026-09-11 on three public-domain derf clips x qp {20,40} x \
-                 presets {6,8,10} x 4 frames at bit depth 10: only 8 of 18 cells \
-                 reconstruct as aomdec does, the rest drifting from frame 1, 2 or 3. \
-                 Encode video as 8-bit 4:2:0, or a single key frame at any depth and \
-                 preset [C: accepts]",
-            )));
-        }
+        // The 10-bit inter floor lifted 2026-09-18: the `hbd_md = 2` MDS3
+        // bump mirror (product_coding_loop.c:9649 — `LeafBd10::mds3_hbd`)
+        // closed the recon drift the refusal here used to cite, and
+        // `bd10_video_selfcheck_gate.sh` pins the replacement measurement:
+        // 396/396 cells x 8 frames reconstruct identically to `aomdec`
+        // (presets -1..13 at 256x256, -1..5 at 128x128, qp {20,40,55}, six
+        // derf clips). The monochrome arm keeps its own refusal below —
+        // every inter gate is 4:2:0.
         if !is_key && chroma.is_none() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage.                  Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh,                  video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh,                  global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously                  produced a stream aomdec and dav1d both rejected. Encode monochrome as                  still/key frames, or use the 4:2:0 entry points for video [C: accepts]",
@@ -10887,9 +10880,11 @@ fn encode_block_syntax(
         // palette + filter_intra are ALL suppressed for an IntraBC block
         // (each writer is nested under `use_intrabc == 0`).
     } else if decision.is_inter {
-        // THE PRE-CAMPAIGN HOMEGROWN INTER ARM. It is reachable ONLY under
-        // `SVTAV1_INTER_EXPERIMENTAL` (the public entry point refuses inter
-        // frames above), and it is NOT a bitstream: measured 2026-09-01 on
+        // THE PRE-CAMPAIGN HOMEGROWN INTER ARM. It is reachable on the
+        // shipped path (the `SVTAV1_INTER_EXPERIMENTAL` floor lift of
+        // 2026-09-15, and the bit-depth lift of 2026-09-18, removed the
+        // inter refusals above), and it is NOT a bitstream: measured
+        // 2026-09-01 on
         // `gradient 64x64 q40 p6 frames=2`, it commits 24 inter leaves and
         // for each one writes an MV and NOTHING ELSE. Four defects, named so
         // the chunk that replaces this line with

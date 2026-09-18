@@ -41,6 +41,10 @@ produce end up in commit messages and `benchmarks/*.meta`.
 - `tools/bd10_video_gate.sh` — 10-bit two-frame differential on real
   public-domain clips. Asserts ENCODES and DECODES hard, and pins the
   byte-identity table exactly as `real_video_inter_gate.sh` does.
+- `tools/bd10_video_selfcheck_gate.sh` — 10-bit multi-frame reconstruction
+  parity: the port's final recon must equal `aomdec`'s decode of its own
+  stream, per frame, on a pinned cell grid. The 10-bit twin of
+  `video_selfcheck_gate.sh`, on the shipped path (no env flags).
 - `tools/identity_diff_inter.sh` grew an `IDI_BD` axis (8 or 10) that drives
   BOTH sides: the port writes the widened 16-bit samples it actually encoded to
   `rs.yuv` and the C driver reads that same file at the matching depth, so a

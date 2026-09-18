@@ -523,6 +523,21 @@ jobs:
         # already fetched.
         run: ./tools/video_selfcheck_gate.sh
 
+      - name: 10-bit video self-consistency — port recon == aomdec, 8 frames
+        if: matrix.shard == 3
+        working-directory: rust
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
+        # The 10-bit twin of the gate above, added 2026-09-18 when the
+        # `hbd_md = 2` MDS3 bump mirror closed the recon drift that kept
+        # 10-bit inter refused. Same grid (all presets -1..13 at 256x256)
+        # plus the 128x128 low-preset leg the bd8 gate covers; the pins are
+        # the gate's own anti-vacuity counts.
+        run: |
+          ./tools/bd10_video_selfcheck_gate.sh
+          VSG_SIZE=128x128 VSG_PRESETS="-1 0 1 2 3 4 5" \
+            ./tools/bd10_video_selfcheck_gate.sh
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5
         working-directory: rust

@@ -43,14 +43,15 @@
 # rebuilds, and the error then compounds down the GOP invisibly to this gate.
 # Read the pass line as "24 streams parsed", never as "24 streams reconstruct".
 #
-# THAT GAP IS MEASURED AND IT IS REAL. 2026-09-11, `SVTAV1_FINAL_RECON` against
+# THE GAP THAT STOOD HERE IS CLOSED. 2026-09-11, `SVTAV1_FINAL_RECON` against
 # `aomdec` over three of these clips x qp {20,40} x presets {6,8,10} x 4
-# frames: only 8 of 18 cells reconstruct identically, the rest drifting from
-# frame 1, 2 or 3. That is why `encode_frame_impl` REFUSES a 10-bit inter frame
-# for callers and why `AvifEncoder` codes a 10-bit animation all-intra; this
-# gate reaches the surface only through `SVTAV1_INTER_EXPERIMENTAL`. Closing it
-# means adding a recon leg here with a pinned per-cell table, exactly as
-# `video_selfcheck_gate.sh` does for 8 bits.
+# frames measured only 8 of 18 cells reconstructing identically — the reason
+# `encode_frame_impl` used to REFUSE a 10-bit inter frame. The `hbd_md = 2`
+# mirror (above) closed it: re-measured 2026-09-18 at 396/396 cells x 8
+# frames across the whole preset ladder, and `bd10_video_selfcheck_gate.sh`
+# now pins the recon leg exactly as `video_selfcheck_gate.sh` does for
+# 8 bits. `AvifEncoder` still codes 10-bit animation all-intra — a deliberate
+# policy in `animation_keyframes`, not a correctness fallback.
 #
 # (The first attempt at that measurement read 0 of 18, from frame 0 onward,
 # because `identity_run`'s MULTI-frame `SVTAV1_FINAL_RECON` wrote the 8-BIT
@@ -221,7 +222,7 @@ for spec in "${CELLS[@]}"; do
     out="$work/${clip}_${size}_p${preset}"
     mkdir -p "$out"
     env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        SVTAV1_INTER_EXPERIMENTAL=1 IDI_BD=10 \
+        IDI_BD=10 \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$QP" "$preset" 2 \
         "rawseq:$asset" "$out" >"$out/diff.txt" 2>&1
     st=$?

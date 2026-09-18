@@ -25,8 +25,9 @@ why the 697-line version that used to live there was removed.
   re-measuring it in the same change.
 - **Read what a gate ASSERTS, not what its name suggests.** `bd10_video_gate.sh`
   says "decodes", and its decode leg only checks that the stream PARSES — it
-  does not compare reconstructions, and 10-bit inter recon is in fact 8 of 18.
-  Every gate header states its own limit; that is the contract.
+  does not compare reconstructions (the recon leg lives in
+  `bd10_video_selfcheck_gate.sh`). Every gate header states its own limit;
+  that is the contract.
 - **A tool that can report a confidently wrong number is a defect.** The
   multi-frame `SVTAV1_FINAL_RECON` dump wrote the 8-bit canvas whatever the bit
   depth, which made a 10-bit comparison read as a total mismatch from frame 0.
@@ -41,19 +42,20 @@ detail, and they are regenerated or gated rather than narrated.
 - **Stills are the byte-identical surface** — 8-bit `identity_full_8bit.sh`
   1100/1100, 10-bit `bd10_photo_gate.sh` 191/191 and `bd10_nonflat_gate.sh`
   309/309.
-- **Video ships in a measured envelope: 8-bit 4:2:0, presets -1..13**, verified
-  against a DECODER rather than against C's bytes
-  (`tools/video_selfcheck_gate.sh`, 270/270 cells). Above 8 bits and monochrome
-  are REFUSED, each with its measurement in the refusal text. Do not report
-  video as either "working" or "missing".
-- **`hbd_md` is resolved for the 2-frame low-delay-P surface.** C derives
-  `hbd_md = 2` at `bd10 && bypass_encdec && perform_md_recon`
+- **Video ships in a measured envelope: 4:2:0, presets -1..13, at 8 AND 10
+  bits**, verified against a DECODER rather than against C's bytes
+  (`tools/video_selfcheck_gate.sh`, 270/270 cells at bd8;
+  `tools/bd10_video_selfcheck_gate.sh`, 396/396 cells at bd10 — 2026-09-18).
+  Monochrome inter is still REFUSED, with its measurement in the refusal
+  text. Do not report video as either "working" or "missing".
+- **10-bit inter video is supported** (the `hbd_md` question is resolved).
+  C derives `hbd_md = 2` at `bd10 && bypass_encdec && perform_md_recon`
   (product_coding_loop.c:9649 area — wraps all of MDS3 + winner select +
   recon, then converts recon back to 8-bit for MD). The port mirrors it as
   `LeafBd10::mds3_hbd`/`FunnelCtx::mds3_hbd()`: canvases plumbed, MDS0/MDS1
   stay 8-bit, MDS3 evaluates and arbitrates at 10 bits. `bd10_video_gate.sh`
-  is 24/24 byte-identical; decoder-recon parity remains unproven (see the
-  gate header).
+  is 24/24 byte-identical to C and `bd10_video_selfcheck_gate.sh` pins
+  396/396 cells of encoder-recon == `aomdec` (2026-09-18).
 - **Allocation work goes through `crate::vecpool`.** Do not "simplify" the size
   classes or the byte-budgeted depth away — both were measured and the meta
   records what each was worth. `intrabc_hash`'s bucket growth is AT PARITY with
@@ -61,8 +63,8 @@ detail, and they are regenerated or gated rather than narrated.
 - Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
   scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
 - Open work: hierarchical (random-access) GOPs, masked compound and
-  inter-intra search, temporal filtering, VBR/CBR rate control, and 10-bit
-  inter video. The MSRV floor is 1.98, matching what the aarch64 dotprod
+  inter-intra search, temporal filtering, and VBR/CBR rate control. The
+  MSRV floor is 1.98, matching what the aarch64 dotprod
   intrinsics (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 
 ## Correctness and porting

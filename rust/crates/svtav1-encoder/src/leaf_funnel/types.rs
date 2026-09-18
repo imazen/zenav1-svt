@@ -397,13 +397,18 @@ impl FunnelCtx<'_> {
     /// derivation, not this bump), coded-lossless (C clears bypass_encdec).
     /// `svt_aom_do_md_recon`'s `perform_md_recon` term is always true here —
     /// the funnel always runs the intra search (`need_md_rec_for_intra_pred`,
-    /// full_loop.c:2763).
+    /// full_loop.c:2763). An `lpd1` leaf is out: C bumps `hbd_md` in the
+    /// light-pd1 driver too (product_coding_loop.c:9150), but the port's
+    /// light funnel (`leaf_funnel::light`) has no 10-bit lane — its
+    /// `win_recon10` is empty by construction — so arming the bump there
+    /// would leave the u16 canvas without a producer.
     pub(crate) fn mds3_hbd(&self) -> bool {
         self.y_recon10.is_some()
             && !self.full_rd10
             && self.frame.cfg.bypass_encdec
             && self.inter.is_some()
             && !self.frame.coded_lossless
+            && self.lpd1.is_none()
     }
 }
 

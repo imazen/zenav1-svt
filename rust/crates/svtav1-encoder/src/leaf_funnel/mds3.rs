@@ -3183,13 +3183,34 @@ fn eval_candidate(
                     "bd10 MDS3 needs the 10-bit inter predictions"
                 );
                 let sy = (svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                    &b.y_src10, 0, w, &cand.pred10, 0, w, crop_w, crop_h,
+                    &b.y_src10,
+                    0,
+                    w,
+                    &cand.pred10,
+                    0,
+                    w,
+                    crop_w,
+                    crop_h,
                 ) << 4) as u64;
                 let suv = if has_uv {
                     ((svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                        &b.u_src10, 0, cw, &ic.u_pred10, 0, cw, ucw, uch,
+                        &b.u_src10,
+                        0,
+                        cw,
+                        &ic.u_pred10,
+                        0,
+                        cw,
+                        ucw,
+                        uch,
                     ) + svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                        &b.v_src10, 0, cw, &ic.v_pred10, 0, cw, ucw, uch,
+                        &b.v_src10,
+                        0,
+                        cw,
+                        &ic.v_pred10,
+                        0,
+                        cw,
+                        ucw,
+                        uch,
                     )) << 4) as u64
                 } else {
                     0

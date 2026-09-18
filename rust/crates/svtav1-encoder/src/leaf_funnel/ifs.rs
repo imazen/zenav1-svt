@@ -386,14 +386,7 @@ pub(super) fn ifs_at_mds3(
                 }
             }
             let sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                &b.y_src10,
-                0,
-                w,
-                &scratch10,
-                0,
-                w,
-                w,
-                h,
+                &b.y_src10, 0, w, &scratch10, 0, w, w, h,
             );
             let (rate, dist) = svtav1_dsp::port_model_rd::model_rd_for_sb(
                 &[bsize],

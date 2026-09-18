@@ -468,13 +468,14 @@ impl AvifEncoder {
         // them as key frames is the right answer here rather than an error --
         // the default `keyframes` is not something the caller chose.
         let keyframes = self.animation_keyframes(chroma_420, options);
-        // ABOVE 8 BITS the colour track is all-intra too, for the same
-        // reason: `encode_frame_impl` refuses an inter frame there, because
-        // the port's reconstruction still disagrees with a decoder on some
-        // 10-bit content (see `dbgenv::inter_experimental` for the
-        // measurement). Coding key frames instead is the honest
-        // fallback -- a larger file, never a wrong one -- and it is the same
-        // shape `bd10_tree_supported` uses for 10-bit OBMC.
+        // ABOVE 8 BITS the colour track is all-intra too — now a DELIBERATE
+        // policy, not a correctness fallback: `encode_frame_impl` accepts a
+        // 10-bit inter frame since 2026-09-18 (the `hbd_md = 2` MDS3 bump
+        // mirror; `bd10_video_selfcheck_gate.sh` pins 396/396 cells of
+        // encoder-recon == aomdec). Animations stay all-intra at bd10 because
+        // the AVIF animation pacing/keyframe cadence for inter content is a
+        // separate product decision that has not been measured; revisit
+        // `animation_keyframes`' `bit_depth <= 8` term when it is.
         let mut color = self
             .build_pipeline_gop(width, height, keyframes.intra_period())
             .with_chroma_420(chroma_420)

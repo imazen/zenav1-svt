@@ -5,9 +5,9 @@ product library path — with explicit C-reference selection and opt-in
 HDR-fork/Zen extensions.
 
 It encodes 8/10-bit 4:2:0 stills and animated AVIF, and **video in a measured
-envelope: 8-bit 4:2:0, presets 6..13**. Outside that envelope an inter frame is
-refused rather than approximated. Monochrome and alpha are Rust extensions
-beyond C's envelope.
+envelope: 8/10-bit 4:2:0, presets -1..13, flat low-delay-P**. Outside that
+envelope an inter frame is refused rather than approximated. Monochrome and
+alpha are Rust extensions beyond C's envelope.
 
 **The support tables below are the answer to "does it do X?"** — every row
 names the gate that backs it, and every gate runs in CI. Remaining work is
@@ -101,12 +101,14 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 | All-intra animated AVIF | **Validated** | CI `animation` job with a PINNED decoder (libavif 1.3.0): 9 in-module tests plus `tests/animation_e2e.rs`, which re-parses the written file with an independent container parser and checks frame count, per-frame durations, the alpha-track decision and that frames differ |
 | Monochrome / alpha | **Supported** | Rust extension beyond C's envelope |
 
-### Inter / video — experimental, and gated behind `SvtParity`
+### Inter / video — validated in a measured envelope
 
-**Inter frames ship, in a measured envelope: 8-bit 4:2:0, presets -1..13.**
-`EncodePipeline`'s 4:2:0 entry points encode video for every caller inside it.
-Outside it — bit depth above 8 or monochrome — an inter frame is
-REFUSED, and each refusal carries the measurement that drew the line.
+**Inter frames ship, in a measured envelope: 4:2:0 at 8 and 10 bits.**
+8-bit covers presets -1..13; 10-bit covers -1..13 at 256x256 and -1..5 at
+128x128 (the measured grid — wider cells are untested, not refused).
+`EncodePipeline`'s 4:2:0 entry points encode video for every caller inside
+it. Outside it — monochrome — an inter frame is REFUSED, and the refusal
+carries the measurement that drew the line.
 
 **The guarantee is different from the still one, and the difference is the
 point.** Still images are byte-identical to C. Video is verified against a
@@ -118,7 +120,7 @@ content. Both claims are measured below; neither is inferred from the other.
 | Feature | Status | Evidence / limit |
 |---|---|---|
 | Inter frame coding, low-delay P, 8-bit, presets -1..13 | **Validated** | `video_selfcheck_gate.sh` — 270/270 cells (six derf clips x qp {20,40,55} x presets -1..13), all 8 frames of each byte-identical to `aomdec`'s reconstruction; presets -1..5 also clean at 128x128. The preset-6 floor came off on 2026-09-15 when the OBMC neighbour-prediction stale-cache fix swept the ladder — the drift the 2026-09-11 measurement recorded below preset 6 was that cache serving one frame's neighbour predictions to the next |
-| 10-bit inter video | **Not supported** | Refused. Bitstream now byte-identical to C on the 2-frame gate (`bd10_video_gate.sh` 24/24, 48/48 frames, 2026-09-18) via the `hbd_md = 2` MDS3 mirror — but MEASURED 2026-09-11: only 8 of 18 cells reconstruct as `aomdec` does, drifting from frame 1–3. The gate's decode leg asserts parsing only — see its header |
+| 10-bit inter video | **Validated** | `bd10_video_selfcheck_gate.sh` — 396/396 cells (six derf clips x qp {20,40,55} x presets -1..13 at 256x256 + -1..5 at 128x128), all 8 frames byte-identical to `aomdec`'s reconstruction, 2026-09-18. Bitstream byte-identical to C on the 2-frame gate (`bd10_video_gate.sh` 24/24) via the `hbd_md = 2` MDS3 mirror. AVIF animation still codes 10-bit all-intra — a `animation_keyframes` policy, not a correctness fallback |
 | Byte-identity to C on inter frames | **Partial** | `inter_byte_gate.sh` 108/108 on its curated grid. On the 96-cell frontier grid at frames=4 (MEASURED 2026-09-11): f0 95, f1 95, f2 60, f3 58 identical. The chain gap concentrates in 72x72 (a partial superblock — 17 of 24 differ at f2) and `gradient` content (19 of 24); `uniform` is 24/24 on every frame |
 | Real-video inter (derf clips) | **Validated** | `real_video_inter_gate.sh` 24/24 against a pinned per-cell table |
 | Decoder conformance of inter streams | **Validated** | `inter_decode_gate.sh`; the warped/global-motion/OBMC gates below each compare RECON against dav1d, which is stronger than parsing |

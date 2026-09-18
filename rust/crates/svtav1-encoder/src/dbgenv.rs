@@ -110,18 +110,21 @@ presence_flags! {
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
     lambda_dbg_set => "SVTAV1_LAMBDA_DBG",
-    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the BIT-DEPTH floor on inter frames
-    /// (`pipeline.rs`), so the harness can measure a 10-bit inter frame that
-    /// the shipped path refuses.
+    /// `SVTAV1_INTER_EXPERIMENTAL`: RETIRED. It last lifted the bit-depth
+    /// floor on inter frames; that refusal is gone since 2026-09-18, when
+    /// the `hbd_md = 2` MDS3 bump mirror closed the 10-bit recon drift and
+    /// `bd10_video_selfcheck_gate.sh` measured 396/396 cells byte-identical
+    /// to `aomdec` across the whole preset ladder. Nothing reads this
+    /// variable now; harness scripts that still set it are harmless.
     ///
-    /// ITS MEANING CHANGED TWICE. It used to lift a blanket refusal of EVERY
-    /// inter frame; on 2026-09-11 that became a preset floor while presets
-    /// below 6 still drifted, and on 2026-09-15 the preset arm came off —
-    /// the OBMC neighbour-prediction cache was serving one frame's
-    /// predictions to the next (no frame identity in `NeighbourKey`), and
-    /// once `obmc_pred_arm::begin_leaf` reset it per `evaluate_leaf`, the
-    /// whole ladder decoded clean. What remains behind this variable is the
-    /// 10-bit inter measurement.
+    /// HISTORY. It used to lift a blanket refusal of EVERY inter frame; on
+    /// 2026-09-11 that became a preset floor while presets below 6 still
+    /// drifted, and on 2026-09-15 the preset arm came off — the OBMC
+    /// neighbour-prediction cache was serving one frame's predictions to
+    /// the next (no frame identity in `NeighbourKey`), and once
+    /// `obmc_pred_arm::begin_leaf` reset it per `evaluate_leaf`, the whole
+    /// ladder decoded clean. What remained behind it until 2026-09-18 was
+    /// the 10-bit inter measurement.
     ///
     /// MEASURED 2026-09-15, encoder recon vs `aomdec`, six public-domain derf
     /// clips x qp {20,40,55} x 8 frames: presets -1..6 and 13 are 162 of 162
@@ -133,9 +136,9 @@ presence_flags! {
     /// spatial-stack defect was wrong about the second arm: the
     /// `SVTAV1_MFMV_OFF` failures were the same stale OBMC cache.
     ///
-    /// **Not a feature flag.** A 10-bit stream produced with it lifted may be
-    /// one a decoder reconstructs differently — the bd10 measurement in the
-    /// refusal text stands.
+    /// Kept declared (dead code) so the retired variable stays greppable
+    /// from this registry rather than only from history.
+    #[allow(dead_code)]
     inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
     /// `SVTAV1_MFMV_OFF`: build the ref-MV stack from SPATIAL candidates only,
     /// and signal `use_ref_frame_mvs = 0` to match, so encoder and decoder
