@@ -5333,17 +5333,22 @@ impl EncodePipeline {
                 w,
                 h,
             );
-            // `is_key` is the frame-type term C encodes in `pcs->hbd_md`
+            // `pcs->hbd_md` gates only the MD quantization depth
             // (`is_islice ? 2 : 0` at M6+, `is_base ? 2 : 0` at M0..M5 —
-            // TRACED 2026-09-18: the johnny p6 cell's P-frame derives 0): at
-            // hbd_md == 0 C ships the u8-domain coefficients as mode decision
-            // produced them and never re-encodes at 10 bits
-            // (full_loop.c:2047 — `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT`
-            // feeds `svt_aom_quantize_inv_quantize`). `coded_lossless` keeps
-            // the post-pass on every frame — a lossless 10-bit stream must
-            // code the low 2 bits, which an 8-bit-domain level cannot carry.
+            // TRACED 2026-09-18: the johnny p6 cell's P-frame derives 0). The
+            // ENCODE pass is different: `md_config_process.c:1046` forces
+            // `pic_bypass_encdec = 0` at any bit depth > 8, so on EVERY bd10
+            // frame — I or P — C runs coding_loop's true 10-bit re-quantize
+            // (`ed_ctx->bit_depth = encoder_bit_depth`, `is_encode_pass =
+            // true`). The earlier "C ships the u8-domain coefficients at
+            // hbd_md == 0" reading conflated the MD quantizer
+            // (full_loop.c:2047, `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT`)
+            // with the encode pass; the QLEV wrap shows `enc=1 bd=10` on
+            // P-frames, and the u8 levels the port shipped diverge on
+            // near-threshold coefficients. `coded_lossless` still needs the
+            // post-pass on every frame — a lossless 10-bit stream must code
+            // the low 2 bits, which an 8-bit-domain level cannot carry.
             let bd10_postpass_runs = !bd10_full_rd
-                && (is_key || coded_lossless)
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter, coded_lossless));
@@ -5400,15 +5405,55 @@ impl EncodePipeline {
                     }
                     None => sb_input.iter().map(|&s| (s as u16) << shift).collect(),
                 };
-                // bd10 full MD lambda (C full_lambda_md[1], md_process.c:725-759):
-                // computed from the bd10 rdmult base (dc_qlookup_10 + ROUND_
-                // POWER_OF_TWO(,4) + frame-type-factor 128 + the *16), NOT a
-                // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
-                let lambda_bd10 = u64::from(crate::pd0::kf_full_lambda_bd10(
-                    base_qindex,
-                    picture_qp as u32,
-                    self.speed_config.preset,
-                ));
+                // bd10 ENCODE-PASS lambda (C `pic_full_lambda[EB_10_BIT_MD]`,
+                // assigned in `reset_enc_dec` via `svt_aom_lambda_assign(..,
+                // EB_TEN_BIT, base_q_idx, multiply_lambda = true)`,
+                // enc_dec_process.c:184-188). That is `compute_rd_mult` at
+                // 10 bits — the update-type base multiplier + the
+                // `rd_frame_type_factor[1]` row + scale — then `*= 16`. It
+                // does NOT take `av1_lambda_assign_md`'s `lambda_weight` or
+                // `lambda_mod_intra` (md_process.c:730-753): those are the MD
+                // ladders, and this post-pass models EncDec.
+                //
+                // On a key frame `kf_full_lambda_bd10` computes the same
+                // chain with the KF base multiplier (3.3) — equal to
+                // `lambda_assign` here once `pcs->lambda_weight` is 0, which
+                // is every measured key-frame cell; keep the proven call.
+                let lambda_bd10 = u64::from(if is_key || coded_lossless {
+                    crate::pd0::kf_full_lambda_bd10(
+                        base_qindex,
+                        picture_qp as u32,
+                        self.speed_config.preset,
+                    )
+                } else {
+                    // `ed_ctx->md_ctx->full_lambda_md[EB_10_BIT_MD]` — the
+                    // `av1_lambda_assign_md` chain, NOT `pic_full_lambda`:
+                    // coding_loop.c:436 hands the encode-pass quantizer the
+                    // MD lambda, so `lambda_weight`/`lambda_mod_intra` DO
+                    // apply (at q40 the weight is 150 → λ ×1.17).
+                    crate::pd0::inter_full_lambda_bd10(
+                        base_qindex,
+                        md_lambda_base_update_type
+                            .expect("an inter frame always has a picture decision"),
+                        md_lambda_factor_update_type,
+                        md_alt_lambda_factors,
+                        0,
+                        lambda_mod_intra,
+                        crate::pd0::frame_lambda_weight_for_preset(
+                            self.speed_config.preset,
+                            picture_qp as u32,
+                            self.hdr.tune == crate::tune::TUNE_IQ,
+                            lw_bump,
+                        ),
+                    )
+                });
+                // `ed_ctx->md_skip_blk` (coding_loop.c:387/464): C's encode
+                // pass force-zeroes every TU — luma AND chroma — when MD
+                // committed the block as skip. The chroma pass runs after the
+                // luma walk overwrites the leaf eobs, so the funnel's
+                // commitment is collected into this set on the way through.
+                let mut committed_skip: alloc::collections::BTreeSet<(u32, u32)> =
+                    alloc::collections::BTreeSet::new();
                 let recon10 = bd10_reencode_luma(
                     &mut all_trees,
                     sb_cols,
@@ -5432,6 +5477,12 @@ impl EncodePipeline {
                     // arm predicts from. `None` on a key frame, where no leaf
                     // can be inter.
                     inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
+                    // The encode-pass RDOQ rate table is estimated from
+                    // `pcs->md_frame_context`, seeded from the primary ref's
+                    // saved CDFs (enc_dec_process.c:2817 +
+                    // md_config_process.c:292) — same source as `fun_rates`.
+                    primary_ref_cdfs.as_deref(),
+                    &mut committed_skip,
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -5496,6 +5547,8 @@ impl EncodePipeline {
                         [qm_levels[1], qm_levels[2]],
                         self.hdr.sharpness,
                         inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
+                        primary_ref_cdfs.as_deref(),
+                        &committed_skip,
                     )?;
                     // Crop the SB-extent canvases to the in-frame planes every
                     // downstream consumer expects (the bd10 deblock-level /
@@ -7990,6 +8043,38 @@ impl EncodePipeline {
             crate::picture::PaddedRefHbd { y, uv }
         });
 
+        // The 8-bit reference canvas at `bit_depth > 8`. C does not keep a
+        // separately-reconstructed 8-bit recon: the packed 10-bit picture's
+        // `y_buffer` holds `recon10 >> 2`, and every 8-bit reader — ME's
+        // `enhanced_pic` references, `svt_inter_predictor_light_pd1`'s u8
+        // prediction at `hbd_md = 0` — MCs against those MSBs
+        // (resource_coordination_process.c:512-560 "10bit packed"). The port
+        // instead stored the u8-domain funnel recon (u8 pred + u8-domain
+        // dequant), which differs from `recon10 >> 2` by a few LSBs per
+        // sample; the resulting inter predictions landed ~2% off C's
+        // distortion and flipped near-tie candidate rankings (MEASURED
+        // johnny 128x128 p6 bd10 frame 1, mi=(16,8): C ranked compound
+        // NEW_NEWMV 36223238 ahead of NEARMV 36574531; the port's canvas
+        // scored them 35619078 vs 35276099 and chose the unipred).
+        // Downconverting the SAME post-filter 10-bit canvas C packs makes
+        // the u8 reference identical by construction.
+        let recon_msb8: Option<(
+            alloc::vec::Vec<u8>,
+            alloc::vec::Vec<u8>,
+            alloc::vec::Vec<u8>,
+        )> = recon10.as_ref().map(|(y10, u10, v10)| {
+            // Monochrome carries empty chroma planes — keep them empty.
+            let down = |p: &[u16], n: usize| -> alloc::vec::Vec<u8> {
+                if p.is_empty() {
+                    alloc::vec::Vec::new()
+                } else {
+                    p[..n].iter().map(|&s| (s >> 2) as u8).collect()
+                }
+            };
+            let cn = (w / 2) * (h / 2);
+            (down(y10, w * h), down(u10, cn), down(v10, cn))
+        });
+
         if self.recon_output {
             // Output-only replay must not alter the DPB or later frame decisions.
             self.last_recon = Some(
@@ -8051,12 +8136,19 @@ impl EncodePipeline {
             // (enc_handle.c:1212-1217), NOT `scs->border` — see
             // [`crate::picture::ref_pic_border`].
             let rb = crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
-            let y = crate::picture::PaddedPlane::from_plane(&recon, rw, rh, rb);
+            // The u8 planes the reference exposes are the 10-bit recon's
+            // MSBs when a 10-bit canvas exists (`recon_msb8` above); the
+            // u8-domain `recon` is only ever the reference on a bd8 encode.
+            let (y8, u8r, v8r) = match recon_msb8.as_ref() {
+                Some((my, mu, mv)) => (my.as_slice(), mu.as_slice(), mv.as_slice()),
+                None => (recon.as_slice(), u_recon.as_slice(), v_recon.as_slice()),
+            };
+            let y = crate::picture::PaddedPlane::from_plane(y8, rw, rh, rb);
             let uv = if chroma.is_some() {
                 // C `(border + ss_x) >> ss_x` at 4:2:0 (:1102-1112).
                 let cb = (rb + 1) >> 1;
-                let mut cv = crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb);
-                let mut cu = crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb);
+                let mut cv = crate::picture::PaddedPlane::from_plane(v8r, rw / 2, rh / 2, cb);
+                let mut cu = crate::picture::PaddedPlane::from_plane(u8r, rw / 2, rh / 2, cb);
                 // C's recon `buffer_alloc` is `[y][u][v]` contiguous: a
                 // maximally UMV-clamped chroma read past `u`'s region
                 // answers with `v`'s margin bytes. `v` is the last
@@ -8150,16 +8242,25 @@ impl EncodePipeline {
             } else {
                 gm_field
             },
-            y_plane: recon,
+            // The stored planes are the same canvas `padded` pads — the
+            // 10-bit recon's MSBs at bd10 (`recon_msb8`), the u8-domain
+            // recon otherwise.
+            y_plane: recon_msb8
+                .as_ref()
+                .map_or_else(|| recon.clone(), |(my, _, _)| my.clone()),
             // 4:2:0 chroma recon, empty on the monochrome path. Inter
             // prediction needs all three planes; see `ReferenceFrame::u_plane`.
             u_plane: if chroma.is_some() {
-                u_recon.clone()
+                recon_msb8
+                    .as_ref()
+                    .map_or_else(|| u_recon.clone(), |(_, mu, _)| mu.clone())
             } else {
                 alloc::vec::Vec::new()
             },
             v_plane: if chroma.is_some() {
-                v_recon.clone()
+                recon_msb8
+                    .as_ref()
+                    .map_or_else(|| v_recon.clone(), |(_, _, mv)| mv.clone())
             } else {
                 alloc::vec::Vec::new()
             },
@@ -12257,13 +12358,26 @@ impl Bd10CoeffNeighbors {
         }
     }
 
-    fn contexts(&self, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
+    /// `(txb_skip_ctx, dc_sign_ctx)` for the TU at (x,y,w,h) inside a leaf of
+    /// `leaf_w`x`leaf_h` pixels. `leaf == tu` is C's `plane_bsize ==
+    /// txsize_to_bsize[tx_size]` (entropy_coding.c:284): a tx-split leaf's TU
+    /// does NOT span the block, so `txb_skip_ctx` comes from the
+    /// `skip_contexts` table, not the 0 shortcut.
+    fn contexts(
+        &self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        leaf_w: usize,
+        leaf_h: usize,
+    ) -> (usize, usize) {
         let (mx, my) = (x / 4, y / 4);
         crate::entropy::coeff_c::get_txb_ctx(
             0,
             &self.above[mx..(mx + w / 4).min(self.above.len())],
             &self.left[my..(my + h / 4).min(self.left.len())],
-            true, // one transform spans the whole luma block
+            w == leaf_w && h == leaf_h,
             false,
         )
     }
@@ -15853,35 +15967,35 @@ mod tests {
         let mut neighbors = Bd10CoeffNeighbors::new(136, 136).unwrap();
         let tile = TileMi::whole_frame(136, 136);
         neighbors.enter_sb(0, 0, 64, tile);
-        assert_eq!(neighbors.contexts(0, 0, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(0, 0, 8, 8, 8, 8), (0, 0));
         neighbors.record(0, 0, 8, 16, 64 | 7); // negative DC
-        assert_eq!(neighbors.contexts(8, 0, 8, 16), (0, 1));
+        assert_eq!(neighbors.contexts(8, 0, 8, 16, 8, 16), (0, 1));
         neighbors.record(8, 0, 8, 16, 128 | 2); // positive DC
-        assert_eq!(neighbors.contexts(16, 0, 8, 16), (0, 2));
+        assert_eq!(neighbors.contexts(16, 0, 8, 16, 8, 16), (0, 2));
         neighbors.record(0, 0, 64, 64, 64 | 3);
         neighbors.enter_sb(64, 0, 64, tile);
-        assert_eq!(neighbors.contexts(64, 0, 8, 8), (0, 1));
+        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8), (0, 1));
         neighbors.enter_sb(0, 64, 64, tile);
-        assert_eq!(neighbors.contexts(0, 64, 8, 8), (0, 1));
+        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8), (0, 1));
 
         let right_tile = TileMi {
             mi_col_start: 16,
             ..tile
         };
         neighbors.enter_sb(64, 0, 64, right_tile);
-        assert_eq!(neighbors.contexts(64, 0, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8), (0, 0));
         let bottom_tile = TileMi {
             mi_row_start: 16,
             ..tile
         };
         neighbors.enter_sb(0, 64, 64, bottom_tile);
-        assert_eq!(neighbors.contexts(0, 64, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8), (0, 0));
 
         // A legal straddling leaf records only the visible frame spans.
         neighbors.record(128, 128, 16, 16, 128 | 1);
-        assert_eq!(neighbors.contexts(128, 128, 16, 16), (0, 2));
+        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16), (0, 2));
         neighbors.record(128, 128, 16, 16, 0);
-        assert_eq!(neighbors.contexts(128, 128, 16, 16), (0, 0));
+        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16), (0, 0));
     }
 
     use super::*;

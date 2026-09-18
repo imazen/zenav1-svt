@@ -25,7 +25,7 @@
 # regression nor a silent improvement passes unnoticed, and the honest state is
 # in the repo rather than in a commit message:
 #
-#     31 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-18)
+#     39 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-19)
 #
 # WHAT "DECODES" MEANS HERE, AND WHAT IT DOES NOT. The decode leg runs
 # `dav1d -o /dev/null` and asserts only that the stream PARSES. It does NOT
@@ -114,6 +114,22 @@ fi
 # 16x16; the port measured ~1540 on the depth-0 eval recon and split.
 # `encdec_arm::apply` now stamps the arm+bit-depth ladder.
 #
+# 2026-09-19 (later): the P-slice encode pass itself was missing. C forces
+# `pic_bypass_encdec` OFF whenever `encoder_bit_depth > 8`
+# (md_config_process.c:1046), so EVERY bd10 frame — P included — re-quantizes
+# in the encode pass at 10 bits under `full_lambda_md[EB_10_BIT_MD]` (the
+# av1_lambda_assign_md chain, lambda_weight included, NOT `pic_full_lambda`)
+# with rate tables derived from the live `md_frame_context` (primary-ref CDFs
+# on inter frames). The port's post-pass now runs on every non-full-RD bd10
+# frame with `inter_full_lambda_bd10` + `primary_ref_cdfs`-seeded rates, and
+# honors C's `md_skip_blk` semantics: skip_mode and committed-all-zero inter
+# leaves stay zero (coding_loop.c:387), luma records the set for chroma.
+# The last TU-level divergence was `txb_skip_ctx`: the post-pass passed
+# `plane_bsize == tx_bsize` unconditionally, but a tx-split leaf's TU does
+# not span the block — `contexts()` now takes the leaf dims so the
+# `skip_contexts` table applies (entropy_coding.c:284). Three more cells
+# promoted: johnny/vidyo1/vidyo4 256x256 p6.
+#
 # Remaining: the P-slice where frame 0's recon did NOT already match — the
 # inter-mode surface itself, not the pd0/funnel fixes above.
 CELLS=(
@@ -121,9 +137,9 @@ CELLS=(
     "fourpeople     128x128 8 1/1"
     "fourpeople     256x256 6 1/1"
     "fourpeople     256x256 8 1/1"
-    "johnny         128x128 6 1/0"
+    "johnny         128x128 6 1/1"
     "johnny         128x128 8 1/0"
-    "johnny         256x256 6 1/0"
+    "johnny         256x256 6 1/1"
     "johnny         256x256 8 1/0"
     "kristenandsara 128x128 6 1/1"
     "kristenandsara 128x128 8 1/1"
@@ -131,15 +147,15 @@ CELLS=(
     "kristenandsara 256x256 8 1/1"
     "vidyo1         128x128 6 1/1"
     "vidyo1         128x128 8 1/1"
-    "vidyo1         256x256 6 1/0"
+    "vidyo1         256x256 6 1/1"
     "vidyo1         256x256 8 1/0"
     "vidyo3         128x128 6 1/0"
     "vidyo3         128x128 8 1/0"
     "vidyo3         256x256 6 1/0"
     "vidyo3         256x256 8 1/0"
-    "vidyo4         128x128 6 1/0"
+    "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/0"
-    "vidyo4         256x256 6 1/0"
+    "vidyo4         256x256 6 1/1"
     "vidyo4         256x256 8 1/0"
 )
 

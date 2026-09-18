@@ -611,6 +611,66 @@ pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32, preset: i8) -> u3
     lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16 (2^(2*(10-8)))
 }
 
+/// INTER full MD lambda at bd10 (C `full_lambda_md[EB_10_BIT_MD]` from
+/// `av1_lambda_assign_md`, md_process.c:725-759) — the chain
+/// `coding_loop.c:436` feeds `svt_aom_quantize_inv_quantize` on the encode
+/// pass, which ALWAYS runs at the real bit depth (`pic_bypass_encdec` is
+/// forced off at bd > 8, md_config_process.c:1046).
+///
+/// Same chain as [`inter_full_lambda_8bit`] with three 10-bit differences:
+/// `q` is `dc_qlookup_10`, the rdmult base gets `ROUND_POWER_OF_TWO(_, 4)`
+/// (rc_process.c:382), the frame-type factor reads `rd_frame_type_factor[1]`
+/// (the {128,144,128,128,144,144,128} row — a no-op for every update type a
+/// flat low-delay GOP produces), and the result gets `*= 16`
+/// (md_process.c:753). `lambda_mod_intra` and `lambda_weight` are the
+/// caller-resolved MD values — they DO apply here, unlike
+/// [`crate::port_rc_process::lambda_assign`], which is the `pic_full_lambda`
+/// chain (no weight).
+pub(crate) fn inter_full_lambda_bd10(
+    qindex: u8,
+    base_update_type: crate::port_rc_process::FrameUpdateType,
+    factor_update_type: crate::port_rc_process::FrameUpdateType,
+    alt_lambda_factors: bool,
+    qdiff_vs_base: i32,
+    lambda_mod_intra: i64,
+    lambda_weight: u32,
+) -> u32 {
+    use crate::port_rc_process::FrameUpdateType as U;
+    let q = crate::bd10::dc_qlookup_10(qindex) as f64;
+    let base = match base_update_type {
+        U::KfUpdate => 3.3,
+        U::GfUpdate | U::ArfUpdate => 3.25,
+        _ => 3.2,
+    };
+    let mut rdmult = ((base + 0.0015 * q) * q * q) as i64;
+    rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — bd10
+    let ut = factor_update_type as usize;
+    rdmult = (rdmult
+        * if alt_lambda_factors {
+            RD_FRAME_TYPE_FACTOR_ALT[ut]
+        } else {
+            // `rd_frame_type_factor[bit_depth != EB_EIGHT_BIT][..]` —
+            // rc_process.c:395-396 row 1.
+            crate::port_rc_process::RD_FRAME_TYPE_FACTOR[1][ut] as i64
+        })
+        >> 7;
+    let stats_factor: i64 = if qdiff_vs_base < 0 {
+        if qdiff_vs_base <= -4 { 100 } else { 115 }
+    } else if qdiff_vs_base > 0 {
+        if qdiff_vs_base <= 4 { 135 } else { 150 }
+    } else {
+        128
+    };
+    rdmult = (rdmult * stats_factor) >> 7;
+    // md_process.c:739-742 — LAMBDA_MOD_INTRA before lambda_weight.
+    rdmult = (rdmult * lambda_mod_intra) >> 7;
+    let mut lambda = rdmult as u32;
+    if lambda_weight != 0 {
+        lambda = ((u64::from(lambda) * u64::from(lambda_weight)) >> 7) as u32;
+    }
+    lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16
+}
+
 /// bd10 twin of [`kf_full_lambda_8bit_unweighted`]: C
 /// `svt_aom_compute_rd_mult(pcs, q, q, EB_TEN_BIT)` -> `update_lambda`
 /// (rc_process.c:365-449) with NO `lambda_weight` ladder and NO `*= 16`.

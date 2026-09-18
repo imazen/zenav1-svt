@@ -227,10 +227,32 @@ pub(super) fn bd10_reencode_luma(
     // The DPB's reference pictures, whose `hbd` twin the INTER arm predicts
     // from. `None` on a key frame.
     inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The frame's MD-rate context: C's encode-pass RDOQ reads
+    // `md_ctx->rate_est_table`, estimated from `pcs->md_frame_context`
+    // (enc_dec_process.c:2817) — which `init_frame_rate_tables` seeded from
+    // the primary reference's SAVED end-of-frame CDFs on inter frames
+    // (md_config_process.c:292). `None` → frame-0 defaults, matching C when
+    // no primary ref CDFs exist yet.
+    frame_cdfs: Option<&crate::port_frame_cdf::FrameCdfs>,
+    // OUT: pixel orgs of inter leaves whose FUNNEL commitment was all-zero —
+    // C's `md_skip_blk` (`blk_skip_decision` propagated into the encode pass,
+    // coding_loop.c:387/1796). Collected here because the chroma pass runs
+    // after this walk overwrites the leaf's eob fields.
+    committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
-    let fc = crate::entropy::context::FrameContext::new_default();
-    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
-    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
+    let default_fc;
+    let default_cfc;
+    let (fc, cfc): (
+        &crate::entropy::context::FrameContext,
+        &crate::entropy::coeff_c::CoeffFc,
+    ) = if let Some(prev) = frame_cdfs {
+        (&prev.fc, &prev.coeff)
+    } else {
+        default_fc = crate::entropy::context::FrameContext::new_default();
+        default_cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+        (&default_fc, &default_cfc)
+    };
+    let rates = crate::leaf_funnel::build_md_rates(fc, cfc);
     let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
     let ext_w = w.div_ceil(sb_size) * sb_size;
     let ext_h = h.div_ceil(sb_size) * sb_size;
@@ -312,6 +334,7 @@ pub(super) fn bd10_reencode_luma(
             &mi_grid,
             mi_stride,
             &mut mode_neighbors,
+            committed_skip,
         );
     }
     Ok(recon10)
@@ -357,6 +380,8 @@ fn bd10_reencode_node(
     mi_stride: usize,
     // The neighbour MODE grid `get_filt_type` reads. See [`Bd10ModeNeighbors`].
     mode_neighbors: &mut Bd10ModeNeighbors,
+    // OUT — see `bd10_reencode_luma`'s `committed_skip`.
+    committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -409,7 +434,7 @@ fn bd10_reencode_node(
                         bd,
                     );
                     let (tsc, dsc) = if real_coeff_ctx {
-                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4)
+                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4, bw, bh)
                     } else {
                         (0, 0)
                     };
@@ -482,6 +507,7 @@ fn bd10_reencode_node(
                     mi_grid,
                     mi_stride,
                     mode_neighbors,
+                    committed_skip,
                 );
                 mode_neighbors.record(
                     x,
@@ -634,7 +660,23 @@ fn bd10_reencode_node(
             // skip_mode compound leaf with a nonzero 10-bit luma eob. Keep the
             // committed zero residual: code nothing, reconstruct as the
             // prediction.
-            if d.inter.as_deref().is_some_and(|ic| ic.skip_mode) {
+            //
+            // `ed_ctx->md_skip_blk` (coding_loop.c:387) is the same shape
+            // without `skip_mode`: when MD committed the block as skip
+            // (funnel decision carried no coefficients — `blk_skip_decision`
+            // already zeroed them), the encode pass forces every TU's eob to
+            // 0 WITHOUT quantizing. Without this arm the 10-bit re-quantize
+            // resurrects coefficients C never emits.
+            let committed_no_coeffs = d.eob == 0
+                && d.txb_eobs.iter().all(|&e| e == 0)
+                && d.qcoeffs.iter().all(|&v| v == 0)
+                && d.chroma_dec
+                    .as_ref()
+                    .is_none_or(|(_, _, u_eob, v_eob, _, _)| *u_eob == 0 && *v_eob == 0);
+            if d.inter.is_some()
+                && (d.inter.as_deref().is_some_and(|ic| ic.skip_mode) || committed_no_coeffs)
+            {
+                committed_skip.insert((x as u32, y as u32));
                 d.qcoeffs = alloc::vec![0i32; bw * bh];
                 d.eob = 0;
                 coeff_neighbors.record(x, y, bw, bh, 0);
@@ -649,7 +691,7 @@ fn bd10_reencode_node(
             // C disables context updates at the faster presets. Otherwise
             // derive contexts from the native levels committed in decode order.
             let (txb_skip_ctx, dc_sign_ctx) = if real_coeff_ctx {
-                coeff_neighbors.contexts(x, y, bw, bh)
+                coeff_neighbors.contexts(x, y, bw, bh, bw, bh)
             } else {
                 (0, 0)
             };
@@ -678,6 +720,74 @@ fn bd10_reencode_node(
                 qm_level,
                 None, // level-only re-encode: no RD terms
             );
+            // SVTAV1_QLEV_XY="x,y" (pixel org): post-pass dump joining C's
+            // QLEV `co=` — the pre-quant coefficients recomputed from the same
+            // (src10, pred, tx_type) triple tx_unit_hbd consumed.
+            #[cfg(feature = "std")]
+            {
+                static XY: std::sync::OnceLock<Option<Option<(usize, usize)>>> =
+                    std::sync::OnceLock::new();
+                let pin = *XY.get_or_init(|| {
+                    let s = std::env::var("SVTAV1_QLEV_XY").ok()?;
+                    if s.trim() == "all" {
+                        return Some(None);
+                    }
+                    let (a, b) = s.split_once(',')?;
+                    Some(Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
+                });
+                let fire = match pin {
+                    Some(None) => true,
+                    Some(Some(p)) => p == (x, y),
+                    None => false,
+                };
+                if fire {
+                    let co = if std::env::var("SVTAV1_QLEV_CO").is_ok() {
+                        let n = bw * bh;
+                        let mut res = alloc::vec::Vec::with_capacity(n);
+                        for r in 0..bh {
+                            let srow = src_off + r * src_stride;
+                            for c in 0..bw {
+                                res.push((src10[srow + c] as i32 - pred[r * bw + c] as i32) as i16);
+                            }
+                        }
+                        let mut cf = alloc::vec![0i32; n];
+                        let c_tx = crate::entropy::coeff_c::tx_size_from_dims(bw, bh);
+                        let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                            &res,
+                            &mut cf,
+                            bw,
+                            crate::leaf_funnel::TX_SIZE_FROM_C[c_tx],
+                            crate::leaf_funnel::TX_TYPE_FROM_C[d.tx_type as usize],
+                        );
+                        debug_assert!(ok, "fwd txfm {bw}x{bh} type {}", d.tx_type);
+                        let (pw0, ph0) = (bw.min(32), bh.min(32));
+                        let mut co = alloc::vec::Vec::new();
+                        for r in 0..ph0 {
+                            for (i, &val) in cf[r * bw..r * bw + pw0].iter().enumerate() {
+                                if val != 0 {
+                                    co.push(alloc::format!("{}:{val}", r * pw0 + i));
+                                }
+                            }
+                        }
+                        co.join(",")
+                    } else {
+                        alloc::string::String::new()
+                    };
+                    let nz: alloc::vec::Vec<_> = out
+                        .qcoeff
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &v)| v != 0)
+                        .map(|(i, v)| alloc::format!("{i}:{v}"))
+                        .collect();
+                    std::eprintln!(
+                        "PQLEV10 org=({x},{y}) {bw}x{bh} txt={} tsc={txb_skip_ctx} dsc={dc_sign_ctx} lam={lambda} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{co}]",
+                        d.tx_type,
+                        out.eob,
+                        nz.join(","),
+                    );
+                }
+            }
             // Overwrite the coded LUMA levels with the 10-bit result. The walk
             // re-derives the scan-order eob + skip from these coeffs.
             //
@@ -776,6 +886,7 @@ fn bd10_reencode_node(
                     mi_grid,
                     mi_stride,
                     mode_neighbors,
+                    committed_skip,
                 );
             };
             match *partition_type {
@@ -1095,10 +1206,26 @@ pub(super) fn bd10_reencode_chroma(
     // The DPB's reference pictures, whose 10-bit twin the INTER arm predicts
     // from. `None` on a key frame.
     inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The frame's MD-rate context — see `bd10_reencode_luma`'s `frame_cdfs`.
+    frame_cdfs: Option<&crate::port_frame_cdf::FrameCdfs>,
+    // IN: the luma pass's committed-skip leaf set — C's `md_skip_blk` zeroes
+    // the chroma TUs too (coding_loop.c:464) when MD committed the block as
+    // skip, so those leaves must not re-quantize chroma either.
+    committed_skip: &alloc::collections::BTreeSet<(u32, u32)>,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
-    let fc = crate::entropy::context::FrameContext::new_default();
-    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
-    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
+    let default_fc;
+    let default_cfc;
+    let (fc, cfc): (
+        &crate::entropy::context::FrameContext,
+        &crate::entropy::coeff_c::CoeffFc,
+    ) = if let Some(prev) = frame_cdfs {
+        (&prev.fc, &prev.coeff)
+    } else {
+        default_fc = crate::entropy::context::FrameContext::new_default();
+        default_cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
+        (&default_fc, &default_cfc)
+    };
+    let rates = crate::leaf_funnel::build_md_rates(fc, cfc);
     // Per-plane chroma quant tables (== each other, and == the old single
     // base-qindex table, whenever the FH chroma deltas are 0 -> mainline inert).
     let qt_u = crate::quant::build_quant_table_bd_sharp(qindex_u, bd, sharpness);
@@ -1181,6 +1308,7 @@ pub(super) fn bd10_reencode_chroma(
             &mi_grid,
             mi_stride,
             &mut mode_neighbors,
+            committed_skip,
         );
     }
     // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
@@ -1381,6 +1509,8 @@ fn bd10_reencode_chroma_node(
     mi_stride: usize,
     // The neighbour MODE grid `get_filt_type(xd, 1)` reads.
     mode_neighbors: &mut Bd10ModeNeighbors,
+    // IN — see `bd10_reencode_luma`'s `committed_skip` (luma pass output).
+    committed_skip: &alloc::collections::BTreeSet<(u32, u32)>,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -1585,7 +1715,12 @@ fn bd10_reencode_chroma_node(
                 }
                 None => (None, None),
             };
-            let forced_zero = d.inter.as_deref().is_some_and(|ic| ic.skip_mode);
+            // `skip_mode` OR C's `md_skip_blk`: the funnel committed the
+            // inter leaf all-zero, so the encode pass zeroes the chroma TUs
+            // without quantizing (coding_loop.c:464).
+            let forced_zero = d.inter.is_some()
+                && (d.inter.as_deref().is_some_and(|ic| ic.skip_mode)
+                    || committed_skip.contains(&(x as u32, y as u32)));
             let (u_q, u_eob, u_rec) = if forced_zero {
                 bd10_chroma_skip_plane(
                     recon10_u,
@@ -1723,6 +1858,7 @@ fn bd10_reencode_chroma_node(
                     mi_grid,
                     mi_stride,
                     mode_neighbors,
+                    committed_skip,
                 );
             };
             match *partition_type {
@@ -1825,6 +1961,8 @@ fn bd10_reencode_leaf_txs(
     mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
     mi_stride: usize,
     mode_neighbors: &Bd10ModeNeighbors,
+    // OUT — see `bd10_reencode_luma`'s `committed_skip`.
+    committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
 ) {
     let bw = d.width as usize;
     let bh = d.height as usize;
@@ -1891,19 +2029,31 @@ fn bd10_reencode_leaf_txs(
         p
     });
     let mut dep_recon = alloc::vec![0u16; bw * bh];
+    // `ed_ctx->md_skip_blk` (coding_loop.c:387): C's encode pass forces every
+    // TU's eob to 0 WITHOUT quantizing when MD committed the block as skip —
+    // i.e. the funnel's decision carried no coefficients at all. Capture the
+    // commitment before clearing the fields.
+    let committed_no_coeffs = d.eob == 0
+        && d.txb_eobs.iter().all(|&e| e == 0)
+        && d.qcoeffs.iter().all(|&v| v == 0)
+        && d.chroma_dec
+            .as_ref()
+            .is_none_or(|(_, _, u_eob, v_eob, _, _)| *u_eob == 0 && *v_eob == 0);
     d.eob = 0;
     d.qcoeffs.clear();
     d.txb_qcoeffs.clear();
     d.txb_eobs.clear();
     let committed_types = core::mem::take(&mut d.txb_tx_types);
     d.txb_tx_types = committed_types.clone();
-    // The `skip_mode` contract of the depth-0 arm, one level down: the decoder
-    // reads no txbs for the leaf, so no per-txb levels may be re-quantized
-    // into existence. Reconstruct the block as its (inter) prediction and
-    // leave the per-txb vectors empty — the writer reads them only for a
-    // non-skip block.
-    let forced_zero = d.inter.as_deref().is_some_and(|ic| ic.skip_mode);
+    // The `skip_mode`/`md_skip_blk` contract of the depth-0 arm, one level
+    // down: the decoder reads no txbs for the leaf, so no per-txb levels may
+    // be re-quantized into existence. Reconstruct the block as its (inter)
+    // prediction and leave the per-txb vectors empty — the writer reads them
+    // only for a non-skip block.
+    let forced_zero = d.inter.is_some()
+        && (d.inter.as_deref().is_some_and(|ic| ic.skip_mode) || committed_no_coeffs);
     if forced_zero {
+        committed_skip.insert((x as u32, y as u32));
         dep_recon
             .copy_from_slice(&inter_pred.as_deref().expect("a skip_mode leaf is inter")[..bw * bh]);
         coeff_neighbors.record(x, y, bw, bh, 0);
@@ -1941,7 +2091,7 @@ fn bd10_reencode_leaf_txs(
                 ),
             }
             let (tsc, dsc) = if real_coeff_ctx {
-                coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh)
+                coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh, bw, bh)
             } else {
                 (0, 0)
             };
@@ -1971,6 +2121,69 @@ fn bd10_reencode_leaf_txs(
                 qm_level,
                 None,
             );
+            // SVTAV1_QLEV_XY="x,y" (pixel org): post-pass per-txb dump
+            // joining C's QLEV `co=` — the pre-quant coefficients recomputed
+            // from the same (src10, pred, tt) triple tx_unit_hbd consumed.
+            #[cfg(feature = "std")]
+            {
+                static XY: std::sync::OnceLock<Option<Option<(usize, usize)>>> =
+                    std::sync::OnceLock::new();
+                let pin = *XY.get_or_init(|| {
+                    let s = std::env::var("SVTAV1_QLEV_XY").ok()?;
+                    if s.trim() == "all" {
+                        return Some(None);
+                    }
+                    let (a, b) = s.split_once(',')?;
+                    Some(Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
+                });
+                let fire = match pin {
+                    Some(None) => true,
+                    Some(Some(p)) => p == (x, y),
+                    None => false,
+                };
+                if fire {
+                    let n = txw * txh;
+                    let mut res = alloc::vec::Vec::with_capacity(n);
+                    for r in 0..txh {
+                        let srow = (y + tx_y + r) * src_stride + x + tx_x;
+                        for c in 0..txw {
+                            res.push((src10[srow + c] as i32 - pred[r * txw + c] as i32) as i16);
+                        }
+                    }
+                    let mut cf = alloc::vec![0i32; n];
+                    let c_tx = crate::entropy::coeff_c::tx_size_from_dims(txw, txh);
+                    let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                        &res,
+                        &mut cf,
+                        txw,
+                        crate::leaf_funnel::TX_SIZE_FROM_C[c_tx],
+                        crate::leaf_funnel::TX_TYPE_FROM_C[tt],
+                    );
+                    debug_assert!(ok, "fwd txfm {txw}x{txh} type {tt}");
+                    let (pw, ph) = (txw.min(32), txh.min(32));
+                    let mut co = alloc::vec::Vec::new();
+                    for r in 0..ph {
+                        for (i, &val) in cf[r * txw..r * txw + pw].iter().enumerate() {
+                            if val != 0 {
+                                co.push(alloc::format!("{}:{val}", r * pw + i));
+                            }
+                        }
+                    }
+                    let nz: alloc::vec::Vec<_> = out
+                        .qcoeff
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &v)| v != 0)
+                        .map(|(i, v)| alloc::format!("{i}:{v}"))
+                        .collect();
+                    std::eprintln!(
+                        "PQLEV10 org=({x},{y}) tx=({tx_x},{tx_y}) {txw}x{txh} tt={tt} tsc={tsc} dsc={dsc} lam={lambda} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{}]",
+                        out.eob,
+                        nz.join(","),
+                        co.join(",")
+                    );
+                }
+            }
             coeff_neighbors.record(x + tx_x, y + tx_y, txw, txh, out.cul);
             d.eob += out.eob;
             d.txb_eobs.push(out.eob);
@@ -2002,9 +2215,10 @@ mod tests {
     /// A 32x32 leaf on a 32x32 frame, driven through the depth-0 arm. The
     /// reference is flat so the prediction is flat; the source carries a hard
     /// gradient so that any residual the re-quantize computes is nonzero.
-    /// `skip_mode` flips the committed-syntax contract between the two arms
-    /// exercised below.
-    fn run_leaf(skip_mode: bool) -> (BlockDecision, alloc::vec::Vec<u16>) {
+    /// `skip_mode` flips the committed-syntax contract between the arms
+    /// exercised below; `committed` decides whether the leaf's MD decision
+    /// carries coefficients (C's `blk_skip_decision` / `md_skip_blk`).
+    fn run_leaf(skip_mode: bool, committed: bool) -> (BlockDecision, alloc::vec::Vec<u16>) {
         const W: usize = 32;
         const H: usize = 32;
         let bd = 10u8;
@@ -2051,7 +2265,14 @@ mod tests {
             inter: Some(alloc::boxed::Box::new(inter)),
             width: W as u16,
             height: H as u16,
-            qcoeffs: alloc::vec![0i32; W * H],
+            qcoeffs: {
+                let mut q = alloc::vec![0i32; W * H];
+                if committed {
+                    q[0] = 1;
+                }
+                q
+            },
+            eob: u16::from(committed),
             ..Default::default()
         });
         let fc = crate::entropy::context::FrameContext::new_default();
@@ -2092,6 +2313,7 @@ mod tests {
             &mi_grid,
             W / 4,
             &mut mn,
+            &mut alloc::collections::BTreeSet::new(),
         );
         let PartitionTree::Leaf(d) = tree else {
             panic!("a leaf in, a leaf out")
@@ -2110,13 +2332,15 @@ mod tests {
         // The control arm first: WITHOUT skip_mode the same leaf must
         // re-quantize the slope into real levels, or the witness below could
         // never observe a regression.
-        let (d, _) = run_leaf(false);
+        let (d, _) = run_leaf(false, true);
         assert!(
             d.eob > 0,
             "control leaf must produce a residual — a witness that cannot \
              fail is not a witness"
         );
-        let (d, recon10) = run_leaf(true);
+        // `skip_mode` alone forces the zero — even with committed coeffs
+        // (coding_loop.c: `md_skip_blk` covers both cases).
+        let (d, recon10) = run_leaf(true, true);
         assert_eq!(d.eob, 0, "skip_mode leaf must stay residual-free");
         assert!(
             d.qcoeffs.iter().all(|&c| c == 0),
@@ -2127,6 +2351,25 @@ mod tests {
         assert!(
             recon10.iter().all(|&s| s == 512),
             "skip_mode leaf reconstructs as its prediction"
+        );
+    }
+
+    /// The second half of C's `md_skip_blk` contract (coding_loop.c:387):
+    /// an inter leaf whose MD decision committed NO coefficients is
+    /// force-zeroed in the encode pass — the post-pass must not re-quantize
+    /// the residual back into existence. Measured: vidyo1 256x256 p6 frame 1
+    /// diverged only by such resurrected TUs until this arm existed.
+    #[test]
+    fn committed_zero_inter_leaf_stays_zero() {
+        let (d, recon10) = run_leaf(false, false);
+        assert_eq!(d.eob, 0, "committed-all-zero leaf must stay residual-free");
+        assert!(
+            d.qcoeffs.iter().all(|&c| c == 0),
+            "committed-all-zero leaf must commit all-zero levels"
+        );
+        assert!(
+            recon10.iter().all(|&s| s == 512),
+            "committed-all-zero leaf reconstructs as its prediction"
         );
     }
 

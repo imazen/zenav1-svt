@@ -2304,7 +2304,7 @@ pub(super) fn tx_unit_hbd_screened(
 use crate::quant::TX_SCALE_TAB;
 
 /// C TxType index -> Rust TxType (identical numbering).
-pub(super) const TX_TYPE_FROM_C: [svtav1_types::transform::TxType; 16] = {
+pub(crate) const TX_TYPE_FROM_C: [svtav1_types::transform::TxType; 16] = {
     use svtav1_types::transform::TxType::*;
     [
         DctDct,
@@ -2335,7 +2335,7 @@ pub(super) const TX_TYPE_FROM_C: [svtav1_types::transform::TxType; 16] = {
 /// was holding. Pinned against `rs_tx_size_match` by
 /// `rs_tx_size_table_matches_the_match_form`.
 #[rustfmt::skip]
-pub(super) const TX_SIZE_FROM_C: [svtav1_types::transform::TxSize; 19] = {
+pub(crate) const TX_SIZE_FROM_C: [svtav1_types::transform::TxSize; 19] = {
     use svtav1_types::transform::TxSize::*;
     [
         Tx4x4, Tx8x8, Tx16x16, Tx32x32, Tx64x64,
