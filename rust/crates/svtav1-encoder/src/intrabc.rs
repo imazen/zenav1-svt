@@ -73,6 +73,7 @@
 use crate::entropy::mv_coding::{MvSubpelPrecision, NmvContext, encode_mv_diff};
 use crate::entropy::writer::AomWriter;
 use alloc::vec::Vec;
+use archmage::prelude::*;
 use svtav1_types::interp::InterpFilter;
 use svtav1_types::motion::{FullMvLimits, Mv};
 use svtav1_types::prediction::{MotionMode, PredictionMode, UvPredictionMode};
@@ -1062,6 +1063,21 @@ pub fn variance_of_diff(
     w: usize,
     h: usize,
 ) -> u32 {
+    incant!(
+        variance_of_diff_impl(a, a_stride, b, b_stride, w, h),
+        [neon, scalar]
+    )
+}
+
+fn variance_of_diff_impl_scalar(
+    _t: ScalarToken,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut sum: i32 = 0;
     let mut sse: u32 = 0;
     for row in 0..h {
@@ -1073,6 +1089,51 @@ pub fn variance_of_diff(
             sse = sse.wrapping_add((diff * diff) as u32);
         }
     }
+    sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / ((w * h) as i64)) as u32)
+}
+
+/// Eight `i16` difference lanes per row-chunk, pairwise-folded into `i32`
+/// (`vpadalq_s16` sums, `vmlal_s16(d, d)` squares — `diff² <= 65025` so the
+/// signed lanes cannot wrap for any `w*h` this is called with; the scalar
+/// `sse` wraps mod 2^32 and the lane total is far below that anyway).
+/// Rows narrower than 8 and per-row tails stay scalar.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn variance_of_diff_impl_neon(
+    _t: NeonToken,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut sum_v = vdupq_n_s32(0);
+    let mut sse_v = vdupq_n_s32(0);
+    let mut sum: i32 = 0;
+    let mut sse: u32 = 0;
+    for row in 0..h {
+        let ra = &a[row * a_stride..row * a_stride + w];
+        let rb = &b[row * b_stride..row * b_stride + w];
+        let mut c = 0;
+        while c + 8 <= w {
+            let pa: &[u8; 8] = ra[c..c + 8].try_into().unwrap();
+            let pb: &[u8; 8] = rb[c..c + 8].try_into().unwrap();
+            let diff = vreinterpretq_s16_u16(vsubl_u8(vld1_u8(pa), vld1_u8(pb)));
+            sum_v = vpadalq_s16(sum_v, diff);
+            let lo = vget_low_s16(diff);
+            let hi = vget_high_s16(diff);
+            sse_v = vmlal_s16(vmlal_s16(sse_v, lo, lo), hi, hi);
+            c += 8;
+        }
+        for (&pa, &pb) in ra[c..].iter().zip(rb[c..].iter()) {
+            let diff = i32::from(pa) - i32::from(pb);
+            sum += diff;
+            sse = sse.wrapping_add((diff * diff) as u32);
+        }
+    }
+    sum = sum.wrapping_add(vaddvq_s32(sum_v));
+    sse = sse.wrapping_add(vaddvq_s32(sse_v) as u32);
     sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / ((w * h) as i64)) as u32)
 }
 
