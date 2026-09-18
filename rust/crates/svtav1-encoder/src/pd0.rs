@@ -2591,6 +2591,11 @@ pub(crate) struct SbInterLambda {
     /// `me_q_index - base_q_idx` for this superblock — the ONE input the
     /// three lambda derivations (PD0, the MD funnel, the MD searches) share.
     pub me_qdiff: i32,
+    /// C `ctx->full_lambda_md[EB_10_BIT_MD]` — what the encode pass hands the
+    /// quantizer at `encoder_bit_depth == 10` (coding_loop.c:436/517/564).
+    /// Per-SB for the same `update_lambda` reason as `full_8bit`; the bd10
+    /// post-pass re-quantizes against THIS value, not the picture lambda.
+    pub full_10bit: u32,
 }
 
 /// C `BlockSize` for a shape PD0 can cost — the square depths plus the two

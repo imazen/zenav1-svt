@@ -130,6 +130,21 @@ fi
 # `skip_contexts` table applies (entropy_coding.c:284). Three more cells
 # promoted: johnny/vidyo1/vidyo4 256x256 p6.
 #
+# 2026-09-19 (later): the encode-pass RDOQ lambda is per-SUPERBLOCK. C
+# re-runs `av1_lambda_assign_md` for every SB
+# (`svt_aom_mode_decision_configure_sb`, md_process.c:796), and
+# `update_lambda`'s stats_based_sb_lambda_modulation arm scales
+# `full_lambda_md` by a `me_q_index - base_q_idx` factor (rc_process.c:
+# 437-446) derived from `me_8x8_cost_variance` — live even with TPL off
+# (low-delay) and `delta_q_present == 0`. The port's `SbInterLambda` map
+# already carried the per-SB 8-bit MD lambdas; it now carries
+# `full_10bit` too (`inter_full_lambda_bd10` at the SB's me_qdiff), and
+# both bd10 re-encode walks resolve their RDOQ lambda per SB instead of
+# per frame. Measured on vidyo3 128x128 p6 frame 1: C's optimize_b
+# rdmult was 13188800/19783232 per SB vs the port's uniform 16881729 —
+# enough to flip two marginal eob-boundary coefficients. Four cells
+# promoted: johnny 256x256 p8, vidyo3 128x128 p6+p8, vidyo3 256x256 p6.
+#
 # Remaining: the P-slice where frame 0's recon did NOT already match — the
 # inter-mode surface itself, not the pd0/funnel fixes above.
 CELLS=(
@@ -140,7 +155,7 @@ CELLS=(
     "johnny         128x128 6 1/1"
     "johnny         128x128 8 1/0"
     "johnny         256x256 6 1/1"
-    "johnny         256x256 8 1/0"
+    "johnny         256x256 8 1/1"
     "kristenandsara 128x128 6 1/1"
     "kristenandsara 128x128 8 1/1"
     "kristenandsara 256x256 6 1/1"
@@ -149,9 +164,9 @@ CELLS=(
     "vidyo1         128x128 8 1/1"
     "vidyo1         256x256 6 1/1"
     "vidyo1         256x256 8 1/0"
-    "vidyo3         128x128 6 1/0"
-    "vidyo3         128x128 8 1/0"
-    "vidyo3         256x256 6 1/0"
+    "vidyo3         128x128 6 1/1"
+    "vidyo3         128x128 8 1/1"
+    "vidyo3         256x256 6 1/1"
     "vidyo3         256x256 8 1/0"
     "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/0"

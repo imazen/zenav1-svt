@@ -4677,6 +4677,19 @@ impl EncodePipeline {
                             lambda_mod_intra,
                             lw,
                         );
+                        // `full_lambda_md[EB_10_BIT_MD]` — the same
+                        // `av1_lambda_assign_md` chain at 10 bits, ending in
+                        // `*16` (md_process.c:728/753). The bd10 encode pass
+                        // re-quantizes against this per-SB value.
+                        let full_10bit = crate::pd0::inter_full_lambda_bd10(
+                            base_qindex,
+                            imf.base_update_type,
+                            md_lambda_factor_update_type,
+                            md_alt_lambda_factors,
+                            me_qdiff,
+                            lambda_mod_intra,
+                            lw,
+                        );
                         #[cfg(feature = "std")]
                         if crate::dbgenv::lamdump() {
                             std::eprintln!(
@@ -4706,6 +4719,7 @@ impl EncodePipeline {
                                 ((u64::from(raw) * u64::from(lw)) >> 7) as u32
                             },
                             me_qdiff,
+                            full_10bit,
                         });
                     }
                 }
@@ -5483,6 +5497,12 @@ impl EncodePipeline {
                     // md_config_process.c:292) — same source as `fun_rates`.
                     primary_ref_cdfs.as_deref(),
                     &mut committed_skip,
+                    // Per-SB `full_lambda_md[EB_10_BIT_MD]` — C's encode pass
+                    // re-runs `av1_lambda_assign_md` for every superblock
+                    // (mode_decision_configure_sb), so the RDOQ lambda varies
+                    // by SB through `me_q_index - base_q_idx` even with
+                    // `delta_q_present == 0`.
+                    sb_inter_lambda.as_deref(),
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -5549,6 +5569,7 @@ impl EncodePipeline {
                         inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
                         primary_ref_cdfs.as_deref(),
                         &committed_skip,
+                        sb_inter_lambda.as_deref(),
                     )?;
                     // Crop the SB-extent canvases to the in-frame planes every
                     // downstream consumer expects (the bd10 deblock-level /

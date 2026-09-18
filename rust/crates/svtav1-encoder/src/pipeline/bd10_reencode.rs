@@ -239,6 +239,13 @@ pub(super) fn bd10_reencode_luma(
     // coding_loop.c:387/1796). Collected here because the chroma pass runs
     // after this walk overwrites the leaf's eob fields.
     committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
+    // C `ctx->full_lambda_md[EB_10_BIT_MD]`, which `av1_lambda_assign_md`
+    // resolves PER SUPERBLOCK (`svt_aom_mode_decision_configure_sb`,
+    // md_process.c:796) — `update_lambda`'s stats-based arm modulates by
+    // `me_q_index - base_q_idx`, a per-SB quantity (rc_process.c:437-446).
+    // `Some` on an inter frame; `None` keeps the frame-level `lambda_bd10`
+    // (every SB's factor is the identity 128 on a key frame anyway).
+    sb_lambda10: Option<&[crate::pd0::SbInterLambda]>,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let default_fc;
     let default_cfc;
@@ -306,6 +313,11 @@ pub(super) fn bd10_reencode_luma(
         let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
         coeff_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
         mode_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
+        // C's encode-pass lambda is per-SB (mode_decision_configure_sb
+        // recomputes `full_lambda_md` for every superblock) — resolve it
+        // here, where `sb_idx` is known, so every leaf of this SB
+        // quantizes against its own lambda.
+        let lambda = sb_lambda10.map_or(lambda_bd10, |m| u64::from(m[sb_idx].full_10bit));
         bd10_reencode_node(
             base_qindex == 0,
             sb_size / 4,
@@ -318,7 +330,7 @@ pub(super) fn bd10_reencode_luma(
             src_stride,
             &qt,
             rdoq_level,
-            lambda_bd10,
+            lambda,
             allintra_rd_mult,
             &rates,
             real_coeff_ctx,
@@ -457,6 +469,7 @@ fn bd10_reencode_node(
                         lambda,
                         0,
                         allintra_rd_mult,
+                        false,
                         rates,
                         false,
                         bd,
@@ -714,6 +727,7 @@ fn bd10_reencode_node(
                 lambda,
                 0, // sharpness
                 allintra_rd_mult,
+                d.inter.as_deref().is_some_and(|ic| ic.mode as usize >= 13),
                 rates,
                 rdoq_level != 0,
                 bd,
@@ -780,8 +794,17 @@ fn bd10_reencode_node(
                         .filter(|&(_, &v)| v != 0)
                         .map(|(i, v)| alloc::format!("{i}:{v}"))
                         .collect();
+                    let rdm = crate::quant::rdoq_rdmult_full(
+                        lambda as u32,
+                        0,
+                        0,
+                        false,
+                        false,
+                        allintra_rd_mult,
+                        d.inter.as_deref().is_some_and(|ic| ic.mode as usize >= 13),
+                    );
                     std::eprintln!(
-                        "PQLEV10 org=({x},{y}) {bw}x{bh} txt={} tsc={txb_skip_ctx} dsc={dc_sign_ctx} lam={lambda} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{co}]",
+                        "PQLEV10 org=({x},{y}) {bw}x{bh} txt={} tsc={txb_skip_ctx} dsc={dc_sign_ctx} lam={lambda} rdm={rdm} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{co}]",
                         d.tx_type,
                         out.eob,
                         nz.join(","),
@@ -1212,6 +1235,10 @@ pub(super) fn bd10_reencode_chroma(
     // the chroma TUs too (coding_loop.c:464) when MD committed the block as
     // skip, so those leaves must not re-quantize chroma either.
     committed_skip: &alloc::collections::BTreeSet<(u32, u32)>,
+    // Per-SB encode-pass lambda — see `bd10_reencode_luma`'s `sb_lambda10`.
+    // C hands the chroma quantizer the same `full_lambda_md[EB_10_BIT_MD]`
+    // (coding_loop.c:517/564), per-SB like the luma value.
+    sb_lambda10: Option<&[crate::pd0::SbInterLambda]>,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
     let default_fc;
     let default_cfc;
@@ -1278,6 +1305,9 @@ pub(super) fn bd10_reencode_chroma(
         let tile_mi_l =
             tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, cframe_w * 2, cframe_h * 2);
         mode_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi_l);
+        // Per-SB `full_lambda_md[EB_10_BIT_MD]` — same value the luma pass
+        // resolved for this SB.
+        let lambda = sb_lambda10.map_or(lambda, |m| u64::from(m[sb_idx].full_10bit));
         bd10_reencode_chroma_node(
             sb_size / 4,
             tree,
@@ -1408,6 +1438,9 @@ fn bd10_reencode_chroma_plane(
         lambda,
         0, // sharpness
         allintra_rd_mult,
+        // C `pred_mode >= NEARESTMV` — an inter leaf reached here iff the
+        // caller supplied the MC prediction.
+        inter_pred.is_some(),
         rates,
         rdoq_level != 0,
         bd,
@@ -2115,6 +2148,7 @@ fn bd10_reencode_leaf_txs(
                 lambda,
                 0,
                 allintra_rd_mult,
+                d.inter.as_deref().is_some_and(|ic| ic.mode as usize >= 13),
                 rates,
                 rdoq_level != 0,
                 bd,
@@ -2176,8 +2210,17 @@ fn bd10_reencode_leaf_txs(
                         .filter(|&(_, &v)| v != 0)
                         .map(|(i, v)| alloc::format!("{i}:{v}"))
                         .collect();
+                    let rdm = crate::quant::rdoq_rdmult_full(
+                        lambda as u32,
+                        0,
+                        0,
+                        false,
+                        false,
+                        allintra_rd_mult,
+                        d.inter.as_deref().is_some_and(|ic| ic.mode as usize >= 13),
+                    );
                     std::eprintln!(
-                        "PQLEV10 org=({x},{y}) tx=({tx_x},{tx_y}) {txw}x{txh} tt={tt} tsc={tsc} dsc={dsc} lam={lambda} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{}]",
+                        "PQLEV10 org=({x},{y}) tx=({tx_x},{tx_y}) {txw}x{txh} tt={tt} tsc={tsc} dsc={dsc} lam={lambda} rdm={rdm} rdoq={rdoq_level} qm={qm_level} eob={} nz=[{}] co=[{}]",
                         out.eob,
                         nz.join(","),
                         co.join(",")
