@@ -236,9 +236,12 @@ static void dump_pd0_costs(FILE* f, const PC_TREE* t, unsigned poc) {
             dump_pd0_costs(f, t->split[i], poc);
 }
 
+int svt_wrap_in_pd0 = 0;
 bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                        MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
+    svt_wrap_in_pd0++;
     const bool  r    = __real_svt_aom_pick_partition_pd0(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
+    svt_wrap_in_pd0--;
     const char* all_path = getenv("SVT_PD0_ALL_OUT");
     if (all_path && *all_path) {
         FILE* all_file = fopen(all_path, "a");
@@ -376,6 +379,23 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
             }
         }
     }
+    /* SVT_TXBSIM_OUT: per-txb contexts + eobs in coding order — the C-side
+     * twin of the port's SVTAV1_TXBSIM lines. */
+    const char* tpath = getenv("SVT_TXBSIM_OUT");
+    if (tpath && allow_update_cdf) {
+        static FILE* tf = NULL;
+        if (!tf)
+            tf = fopen(tpath, "w");
+        if (tf) {
+            fprintf(tf,
+                    "CTBX sb=%u org=(%u,%u) txs=%d txs_uv=%d y_ctx=%d y_eob=%u cb_ctx=%d cb_eob=%u cr_ctx=%d cr_eob=%u comp=%d\n",
+                    (unsigned)ctx->sb_index, (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, (int)txsize,
+                    (int)txsize_uv, (int)ctx->luma_txb_skip_context, y_eob, (int)ctx->cb_txb_skip_context, cb_eob,
+                    (int)ctx->cr_txb_skip_context, cr_eob, (int)component_type);
+            fflush(tf);
+        }
+    }
+
     const char* path = getenv("SVT_CCOST_OUT");
     if (!path || !*path || allow_update_cdf)
         return ret;
@@ -1101,10 +1121,12 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
     __real_svt_av1_loop_filter_init(pcs);
 
     /* Snapshot the completed grid, excluding tentative search stamps from
-     * SVT_CTREE_OUT. Emit each coded block once at its top-left mi. */
+     * SVT_CTREE_OUT. Emit each coded block once at its top-left mi.
+     * Append + poc tag so a multi-frame run keeps every picture's grid —
+     * a per-frame "w" truncated everything but the last frame. */
     const char* final_path = getenv("SVT_FINAL_MI_OUT");
     if (final_path && *final_path) {
-        FILE* final_file = fopen(final_path, "w");
+        FILE* final_file = fopen(final_path, "a");
         if (final_file) {
             const int rows = pcs->ppcs->aligned_height / 4;
             const int cols = pcs->ppcs->aligned_width / 4;
@@ -1117,8 +1139,8 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
                         continue;
                     const BlockModeInfo* m = &mi->block_mi;
                     fprintf(final_file,
-                            "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d cflsgn=%d ibc=%d\n",
-                            r, c, (int)mi->bsize, (int)mi->partition, (int)m->mode,
+                            "CTREE poc=%u mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d cflsgn=%d ibc=%d\n",
+                            (unsigned)pcs->picture_number, r, c, (int)mi->bsize, (int)mi->partition, (int)m->mode,
                             (int)m->uv_mode, (int)m->filter_intra_mode,
                             (int)m->angle_delta[0], (int)m->angle_delta[1],
                             (int)m->tx_depth, (int)mi->palette_mode_info.palette_size,
@@ -2692,4 +2714,235 @@ int64_t __wrap_svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMoti
         fflush(f);
     }
     return rc;
+}
+
+/* TEMPORARY PD0 transform drill: dump residual + coeff at a pinned block.
+ * Env: SVT_ETXFM_OUT (file), SVT_ETXFM_XY "x,y" (pixel org), SVT_ETXFM_TXS (int). */
+EbErrorType __real_svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                              int16_t* residual_buffer, uint32_t residual_stride,
+                                              int32_t* coeff_buffer, uint32_t coeff_stride,
+                                              TxSize transform_size, uint64_t* three_quad_energy,
+                                              uint32_t bit_depth, TxType transform_type,
+                                              PlaneType component_type, TxCoeffShape trans_coeff_shape);
+EbErrorType __wrap_svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                              int16_t* residual_buffer, uint32_t residual_stride,
+                                              int32_t* coeff_buffer, uint32_t coeff_stride,
+                                              TxSize transform_size, uint64_t* three_quad_energy,
+                                              uint32_t bit_depth, TxType transform_type,
+                                              PlaneType component_type, TxCoeffShape trans_coeff_shape) {
+    extern int svt_wrap_in_pd0;
+    const char* path = getenv("SVT_ETXFM_OUT");
+    int dump = 0;
+    if (path && *path && svt_wrap_in_pd0 > 0) {
+        const char* xy = getenv("SVT_ETXFM_XY");
+        int px = 0, py = 0;
+        if (xy)
+            sscanf(xy, "%d,%d", &px, &py);
+        const char* ts = getenv("SVT_ETXFM_TXS");
+        dump = (int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py &&
+               (!ts || atoi(ts) == (int)transform_size) && component_type == 0;
+    }
+    if (dump) {
+        static FILE* f = NULL;
+        if (!f)
+            f = fopen(path, "a");
+        if (f) {
+            const int w = tx_size_wide[transform_size], h = tx_size_high[transform_size];
+            fprintf(f, "ETXF poc=%u org=(%u,%u) txs=%d bd=%u res=[",
+                    (unsigned)ctx->sb_ptr->pcs->picture_number, (unsigned)ctx->blk_org_x,
+                    (unsigned)ctx->blk_org_y, (int)transform_size, (unsigned)bit_depth);
+            for (int r = 0; r < h && r < 4; ++r) {
+                fprintf(f, "%s", r ? " " : "");
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%d,", (int)residual_buffer[r * residual_stride + c]);
+            }
+            fprintf(f, "] src8=[");
+            EbPictureBufferDesc* ep = (EbPictureBufferDesc*)pcs->ppcs->enhanced_unscaled_pic;
+            const uint8_t* sy = ep->y_buffer + ctx->blk_org_y * ep->y_stride + ctx->blk_org_x;
+            for (int r = 0; r < h && r < 4; ++r) {
+                fprintf(f, "%s", r ? " " : "");
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%d,", (int)sy[r * ep->y_stride + c]);
+            }
+            fprintf(f, "]\n");
+            fflush(f);
+        }
+    }
+    extern int svt_wrap_expect_qlev;
+    if (dump)
+        svt_wrap_expect_qlev = 1;
+    EbErrorType ret = __real_svt_aom_estimate_transform(pcs, ctx, residual_buffer, residual_stride,
+                                                        coeff_buffer, coeff_stride, transform_size,
+                                                        three_quad_energy, bit_depth, transform_type,
+                                                        component_type, trans_coeff_shape);
+    if (dump) {
+        static FILE* f2 = NULL;
+        if (!f2)
+            f2 = fopen(path, "a");
+        if (f2) {
+            const int w = tx_size_wide[transform_size], h = tx_size_high[transform_size];
+            fprintf(f2, "ETXC org=(%u,%u) tqe=%llu co=[", (unsigned)ctx->blk_org_x,
+                    (unsigned)ctx->blk_org_y, (unsigned long long)*three_quad_energy);
+            for (int i = 0; i < w * h && i < 24; ++i)
+                fprintf(f2, "%d,", (int)coeff_buffer[i]);
+            fprintf(f2, "]\n");
+            fflush(f2);
+        }
+    }
+    return ret;
+}
+
+/* TEMPORARY PD0 quant drill: chained after an ETXF dump — the next
+ * quantize_inv_quantize_light call inside PD0 is that block's. */
+int svt_wrap_expect_qlev = 0;
+void __real_svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t* coeff, int32_t* quant_coeff,
+                                              int32_t* recon_coeff, uint32_t qindex, TxSize txsize, uint16_t* eob,
+                                              uint32_t bit_depth, TxType tx_type);
+void __wrap_svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t* coeff, int32_t* quant_coeff,
+                                              int32_t* recon_coeff, uint32_t qindex, TxSize txsize, uint16_t* eob,
+                                              uint32_t bit_depth, TxType tx_type) {
+    __real_svt_aom_quantize_inv_quantize_light(pcs, coeff, quant_coeff, recon_coeff, qindex, txsize, eob,
+                                             bit_depth, tx_type);
+    if (svt_wrap_expect_qlev) {
+        svt_wrap_expect_qlev = 0;
+        const char* path = getenv("SVT_ETXFM_OUT");
+        static FILE* f = NULL;
+        if (!f)
+            f = fopen(path, "a");
+        if (f) {
+            const int w = tx_size_wide[txsize], h = tx_size_high[txsize];
+            fprintf(f, "QLEVL txs=%d eob=%u qc=[", (int)txsize, (unsigned)*eob);
+            for (int i = 0; i < w * h && i < 24; ++i)
+                fprintf(f, "%d,", quant_coeff[i]);
+            fprintf(f, "] dq=[");
+            for (int i = 0; i < w * h && i < 24; ++i)
+                fprintf(f, "%d,", recon_coeff[i]);
+            fprintf(f, "]\n");
+            fflush(f);
+        }
+    }
+}
+
+/* TEMPORARY: per-SB coeff-rate CDF seed — svt_aom_estimate_coefficients_rate
+ * is called once per SB (update_coef) with ec_ctx_array[sb]; dump the luma
+ * coeff_base_eob rows for a CHAINDUMP join. Env: SVT_CSEED_OUT. */
+void __real_svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc);
+void __wrap_svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc) {
+    const char* path = getenv("SVT_CSEED_OUT");
+    if (path && *path) {
+        static FILE* f = NULL;
+        static int call = 0;
+        if (!f)
+            f = fopen(path, "a");
+        if (f) {
+            fprintf(f, "CSEED sb=%d", call++);
+            /* port prints coeff_base_eob_cdf[tx=0..3][Y ctx0..3][0..1]
+             * flattened; C layout: [tx_size][plane][ctx][CDF_SIZE] */
+            for (int tx = 0; tx < 1; ++tx) {
+                fprintf(f, " cbeobY");
+                for (int c = 0; c < 4; ++c)
+                    fprintf(f, " %u,%u", fc->coeff_base_eob_cdf[tx][0][c][0],
+                            fc->coeff_base_eob_cdf[tx][0][c][1]);
+                fprintf(f, " cbeobU");
+                for (int c = 0; c < 4; ++c)
+                    fprintf(f, " %u,%u", fc->coeff_base_eob_cdf[tx][1][c][0],
+                            fc->coeff_base_eob_cdf[tx][1][c][1]);
+            }
+            /* 8x8 (txs_ctx=1) rows: eob, base(ctx0..11 head), br(ctx0..3), skip, dcsign */
+            fprintf(f, " t1eobY");
+            for (int c = 0; c < 4; ++c)
+                fprintf(f, " %u,%u", fc->coeff_base_eob_cdf[1][0][c][0],
+                        fc->coeff_base_eob_cdf[1][0][c][1]);
+            fprintf(f, " t1baseY");
+            for (int c = 0; c < 6; ++c)
+                fprintf(f, " %u,%u,%u", fc->coeff_base_cdf[1][0][c][0],
+                        fc->coeff_base_cdf[1][0][c][1], fc->coeff_base_cdf[1][0][c][2]);
+            fprintf(f, " t1brY");
+            for (int c = 0; c < 4; ++c)
+                fprintf(f, " %u,%u", fc->coeff_br_cdf[1][0][c][0],
+                        fc->coeff_br_cdf[1][0][c][1]);
+            fprintf(f, " t1skip=");
+            for (int c = 0; c < 13; ++c) fprintf(f, "%s%u", c ? "," : "", fc->txb_skip_cdf[1][c][0]);
+            fprintf(f, " dcsign=%u eobY1=%u,%u", fc->dc_sign_cdf[0][0][0],
+                    fc->eob_flag_cdf16[0][1][0], fc->eob_flag_cdf16[0][1][1]);
+            fprintf(f, " t0skip=");
+            for (int c = 0; c < 13; ++c) fprintf(f, "%s%u", c ? "," : "", fc->txb_skip_cdf[0][c][0]);
+            fprintf(f, "\n");
+            fflush(f);
+        }
+    }
+    __real_svt_aom_estimate_coefficients_rate(md_rate_est_ctx, fc);
+}
+
+
+/* TEMPORARY: dump C's inverse-transform recon input/output at a pinned block
+ * origin — isolates "dqcoeff differs" from "transform output differs" from
+ * "recon buffer read differs". Env: SVT_ITX_OUT (file), SVT_ITX_XY="x,y"
+ * (pixel block origin). Prints up to two rows of the u16 recon plus the
+ * nonzero dqcoeffs that fed it. */
+void __real_svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                                uint8_t* pred_buffer, uint32_t pred_offset,
+                                                uint32_t pred_stride, uint8_t* rec_buffer,
+                                                uint32_t rec_offset, uint32_t rec_stride,
+                                                int32_t* rec_coeff_buffer, uint32_t coeff_offset,
+                                                bool hbd, TxSize txsize, TxType transform_type,
+                                                PlaneType component_type, uint32_t eob);
+void __wrap_svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                                uint8_t* pred_buffer, uint32_t pred_offset,
+                                                uint32_t pred_stride, uint8_t* rec_buffer,
+                                                uint32_t rec_offset, uint32_t rec_stride,
+                                                int32_t* rec_coeff_buffer, uint32_t coeff_offset,
+                                                bool hbd, TxSize txsize, TxType transform_type,
+                                                PlaneType component_type, uint32_t eob) {
+    const char* path = getenv("SVT_ITX_OUT");
+    const char* xy   = getenv("SVT_ITX_XY");
+    int         hit  = 0;
+    if (path && *path && xy && *xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        hit = ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py);
+    }
+    __real_svt_aom_inv_transform_recon_wrapper(pcs, ctx, pred_buffer, pred_offset, pred_stride,
+                                             rec_buffer, rec_offset, rec_stride, rec_coeff_buffer,
+                                             coeff_offset, hbd, txsize, transform_type,
+                                             component_type, eob);
+    if (hit) {
+        static FILE* f = NULL;
+        if (!f)
+            f = fopen(path, "a");
+        if (f) {
+            const int w = tx_size_wide[txsize], h = tx_size_high[txsize];
+            fprintf(f, "ITX org=(%u,%u) comp=%u txs=%d txt=%d hbd=%d eob=%u co=%u dq=[",
+                    (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                    (unsigned)component_type, (int)txsize, (int)transform_type, (int)hbd,
+                    (unsigned)eob, coeff_offset);
+            int emitted = 0;
+            for (int i = 0; i < w * h && emitted < 1024; ++i) {
+                int32_t v = rec_coeff_buffer[coeff_offset + i];
+                if (v)
+                    fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, v);
+            }
+            fprintf(f, "] rec=[");
+            if (hbd) {
+                const uint16_t* rw = (const uint16_t*)rec_buffer + rec_offset;
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%s%u", c ? "," : "", rw[c]);
+                fprintf(f, "|");
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%s%u", c ? "," : "", rw[rec_stride + c]);
+            } else {
+                const uint8_t* rw = rec_buffer + rec_offset;
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%s%u", c ? "," : "", rw[c]);
+            }
+            fprintf(f, "] pred=[");
+            if (hbd) {
+                const uint16_t* pw = (const uint16_t*)pred_buffer + pred_offset;
+                for (int c = 0; c < w && c < 16; ++c)
+                    fprintf(f, "%s%u", c ? "," : "", pw[c]);
+            }
+            fprintf(f, "]\n");
+            fflush(f);
+        }
+    }
 }

@@ -29,3 +29,4 @@ publish = false
 # deps are literal, so host-independence beyond "sibling checkout adjacent"
 # needs a [patch]/paths entry in .cargo/config.toml, not an env var.
 aom-decode = { package = "zenav1-aom-decode", path = "../../../../zenav1-aom/crates/aom-decode" }
+aom-dsp = { package = "zenav1-aom-dsp", path = "../../../../zenav1-aom/crates/aom-dsp" }

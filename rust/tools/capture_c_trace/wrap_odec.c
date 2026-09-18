@@ -106,3 +106,12 @@ unsigned char* __wrap_svt_od_ec_enc_done(OdEcEnc* enc, uint32_t* nbytes) {
     }
     return ret;
 }
+
+/* TEMPORARY drill aid (revert before landing): let instrumented call sites
+   stamp a `# M <tag>` marker into the op stream, so an op index maps onto the
+   C statement that produced it. Not a --wrap interposer — called directly. */
+void svt_trace_mark(const char* tag) {
+    FILE* f = tf();
+    if (f)
+        fprintf(f, "# M %s\n", tag);
+}

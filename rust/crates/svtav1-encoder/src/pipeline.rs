@@ -14077,6 +14077,42 @@ fn encode_tile_rows(
                         let e = &cfc.coeff_base_eob_cdf[4 + c];
                         eprint!(" {},{}", e[0], e[1]);
                     }
+                    // Drill rows: tx1 (8x8) Y + dc_sign/eob16/t0-skip, to
+                    // join against the C-side CSEED dump row-for-row.
+                    eprint!(" t1eobY");
+                    for c in 0..4 {
+                        let e = &cfc.coeff_base_eob_cdf[(1 * 2 + 0) * 4 + c];
+                        eprint!(" {},{}", e[0], e[1]);
+                    }
+                    eprint!(" t1baseY");
+                    for c in 0..6 {
+                        let e = &cfc.coeff_base_cdf[(1 * 2 + 0) * 42 + c];
+                        eprint!(" {},{},{}", e[0], e[1], e[2]);
+                    }
+                    eprint!(" t1brY");
+                    for c in 0..4 {
+                        let e = &cfc.coeff_br_cdf[(1 * 2 + 0) * 21 + c];
+                        eprint!(" {},{}", e[0], e[1]);
+                    }
+                    eprint!(" t1skip=");
+                    for c in 0..13 {
+                        eprint!(
+                            "{}{}",
+                            if c == 0 { "" } else { "," },
+                            cfc.txb_skip_cdf[1 * 13 + c][0]
+                        );
+                    }
+                    let ds = &cfc.dc_sign_cdf[0];
+                    let eo = &cfc.eob_flag_cdf16[1];
+                    eprint!(" dcsign={} eobY1={},{}", ds[0], eo[0], eo[1]);
+                    eprint!(" t0skip=");
+                    for c in 0..13 {
+                        eprint!(
+                            "{}{}",
+                            if c == 0 { "" } else { "," },
+                            cfc.txb_skip_cdf[c][0]
+                        );
+                    }
                     eprintln!();
                 }
                 // SVTAV1_SEED_DUMP=1: one line per SB with salient SYNTAX-CDF

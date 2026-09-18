@@ -1807,14 +1807,68 @@ impl DepthWalk<'_, '_> {
                     predq[r * 2 + c] = d;
                 }
             }
+            // u16-domain luma-only quads — the C SUBSKIP dump's luma half
+            // (C's rec_dist_per_quadrant mixes luma+chroma; the split
+            // isolates which plane diverges).
+            let mut luma10 = [0u64; 4];
+            if bd10 {
+                for r in 0..2usize {
+                    for c in 0..2usize {
+                        let mut d: u64 = 0;
+                        for y in 0..quad {
+                            let ry = (r * quad + y) * sq + c * quad;
+                            for x in 0..quad {
+                                let src = match s10 {
+                                    Some(s) => {
+                                        s.y[(ev.abs_y + r * quad + y) * s.y_stride
+                                            + ev.abs_x
+                                            + c * quad
+                                            + x] as i64
+                                    }
+                                    None => {
+                                        (self.y_src[(ev.abs_y + r * quad + y) * self.y_src_stride
+                                            + ev.abs_x
+                                            + c * quad
+                                            + x] as i64)
+                                            << 2
+                                    }
+                                };
+                                let diff = src - yrec10[ry + x] as i64;
+                                d += (diff * diff) as u64;
+                            }
+                        }
+                        luma10[r * 2 + c] = d;
+                    }
+                }
+            }
+            let (rec_smp, src_smp, pred_smp): (Vec<u16>, Vec<u16>, Vec<u16>) = if bd10 {
+                (
+                    (0..8).map(|i| yrec10[i]).collect(),
+                    (0..4)
+                        .map(|x| match s10 {
+                            Some(s) => s.y[ev.abs_y * s.y_stride + ev.abs_x + x],
+                            None => 0,
+                        })
+                        .collect(),
+                    (0..4)
+                        .map(|i| ev.dbg_pred10().get(i).copied().unwrap_or(0))
+                        .collect(),
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
             eprintln!(
-                "NSQDBG SKIPSUBQ mi=({},{}) sq={} luma={:?} tot={:?} predq={:?}",
+                "NSQDBG SKIPSUBQ mi=({},{}) sq={} luma={:?} tot={:?} predq={:?} luma10={:?} rec10={:?} src10={:?} pred10={:?}",
                 ev.abs_y / 4,
                 ev.abs_x / 4,
                 sq,
                 luma,
                 dists,
                 predq,
+                luma10,
+                rec_smp,
+                src_smp,
+                pred_smp,
             );
         }
         dists

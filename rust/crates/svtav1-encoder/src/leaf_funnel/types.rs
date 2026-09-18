@@ -677,6 +677,12 @@ impl LeafEval {
         &self.win.pred
     }
 
+    /// NSQDBG only: the winner's 10-bit depth-0 luma prediction.
+    #[cfg(feature = "std")]
+    pub(crate) fn dbg_pred10(&self) -> &[u16] {
+        &self.win.pred10
+    }
+
     /// The quad-dist gate recon planes (see the `gate_y` field doc).
     pub(crate) fn gate_y(&self) -> &[u8] {
         &self.gate_y

@@ -1303,6 +1303,14 @@ pub fn write_coeffs_txb_1d(
     })
 }
 
+/// `SVTAV1_TXBSIM` drill gate, resolved once — a per-txb `env::var_os` scan
+/// would sit inside the chain-sim's hottest write loop.
+#[cfg(feature = "std")]
+fn txbsim_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SVTAV1_TXBSIM").is_some())
+}
+
 /// [`write_coeffs_txb_1d`]'s body, with the level map supplied by the caller.
 #[allow(clippy::too_many_arguments)]
 fn write_coeffs_txb_1d_inner(
@@ -1332,6 +1340,12 @@ fn write_coeffs_txb_1d_inner(
     let tx_class = TX_TYPE_TO_CLASS[tx_type];
 
     debug_assert!(txs_ctx < 5);
+    #[cfg(feature = "std")]
+    if w.cdf_only && txbsim_enabled() {
+        eprintln!(
+            "TXBSIM txs_ctx={txs_ctx} skip_ctx={txb_skip_ctx} plane={plane_type} eob={eob} tx={tx_size} tt={tx_type}"
+        );
+    }
     let cdf = fc.txb_skip(txs_ctx, txb_skip_ctx);
     w.write_symbol(usize::from(eob == 0), cdf, 2);
     if eob == 0 {

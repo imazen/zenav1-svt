@@ -2829,6 +2829,20 @@ fn skip0_bits() -> u64 {
     crate::entropy::context::av1_cost_symbol(32768 - 1097) as u64
 }
 
+/// `SVTAV1_ETXF=<px>,<py>` drill pin, parsed once.
+#[cfg(feature = "std")]
+fn etxf_pin() -> Option<(usize, usize)> {
+    static PIN: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *PIN.get_or_init(|| {
+        std::env::var("SVTAV1_ETXF").ok().and_then(|xy| {
+            let mut it = xy.split(',');
+            let px = it.next()?.parse().ok()?;
+            let py = it.next()?.parse().ok()?;
+            Some((px, py))
+        })
+    })
+}
+
 impl<'a> Pd0Ctx<'a> {
     /// `skip_fac_bits[0][0] + partition_fac_bits[0][PARTITION_NONE]` for the
     /// closed-form PD0 block cost (`svt_aom_full_cost_pd0`, rd_cost.c:1339).
@@ -3269,6 +3283,32 @@ impl<'a> Pd0Ctx<'a> {
             self.qm_level,
             step,
         );
+        // TEMPORARY drill: residual + coeff dump pinned to one block.
+        // `SVTAV1_ETXF=<px>,<py>` parsed once — a per-block env lookup would
+        // sit inside the PD0 eval's hottest loop.
+        #[cfg(feature = "std")]
+        if let Some((px, py)) = etxf_pin()
+            && abs_x == px
+            && abs_y == py
+            && bw == 8
+            && tx_h == 8
+        {
+            eprint!("RSRES org=({abs_x},{abs_y}) res=[");
+            for i in 0..(bw * tx_h).min(32) {
+                eprint!("{},", self.scratch.residual[i]);
+            }
+            eprintln!("]");
+            eprint!("RSCO org=({abs_x},{abs_y}) eob={eob} dist={dist} co=[");
+            for i in 0..(bw * tx_h).min(24) {
+                eprint!("{},", self.scratch.coeffs[i]);
+            }
+            eprintln!("]");
+            eprint!("RSDQ dq=[");
+            for i in 0..(bw * tx_h).min(24) {
+                eprint!("{},", self.scratch.dqcoeff[i]);
+            }
+            eprintln!("]");
+        }
         self.note_root_eob(bw, bh, abs_x, abs_y, eob);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
