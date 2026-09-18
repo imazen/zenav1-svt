@@ -3493,17 +3493,9 @@ fn eval_candidate(
             .inter
             .as_deref()
             .expect("the skip decision only runs for an inter candidate");
-        let (u_pred, v_pred) = (ic.u_pred.clone(), ic.v_pred.clone());
-        let pred = cand.pred.clone();
-        // The 10-bit twins of the recon=pred writeback below — a decoder
-        // reconstructs a skip block as prediction only, at the sequence's
-        // bit depth. `cand.pred10` is that prediction at true depth
-        // (post-IFS/-refinement, matching the signaled interp_filters/MV);
-        // leaving `y_recon10` empty would drop the winner into the intra
-        // `predict_unit_hbd` fallback in `evaluate_leaf`, which predicts a
-        // DC block where C codes motion compensation.
-        let pred10 = cand.pred10[..].to_vec();
-        let (u_pred10, v_pred10) = (ic.u_pred10.clone(), ic.v_pred10.clone());
+        // Recon = pred. One copy per destination buffer — the previous shape
+        // cloned into a temporary AND then `from_slice`d it into a second
+        // pooled buffer, paying two copies of every w*h plane per skip.
         cand.mds3_cost = full;
         cand.total_rate = total_rate;
         cand.full_dist = dist;
@@ -3517,8 +3509,8 @@ fn eval_candidate(
         cand.txb_eob = smallvec::smallvec![0u16];
         cand.txb_cul = smallvec::smallvec![0u8];
         cand.txb_type = smallvec::smallvec![cc::DCT_DCT as u8];
-        cand.y_recon = crate::vecpool::PoolVec::from_slice(&pred);
-        cand.y_recon_d0 = crate::vecpool::PoolVec::from_slice(&pred);
+        cand.y_recon = cand.pred.clone();
+        cand.y_recon_d0 = cand.pred.clone();
         cand.y_bits = 0;
         cand.y_dist = skip_y;
         cand.u_q = zeroed_pool::<i32>(cw * chh);
@@ -3527,19 +3519,19 @@ fn eval_candidate(
         cand.v_eob = 0;
         cand.u_cul = 0;
         cand.v_cul = 0;
-        cand.u_recon = crate::vecpool::PoolVec::from_slice(&u_pred);
-        cand.v_recon = crate::vecpool::PoolVec::from_slice(&v_pred);
+        cand.u_recon = crate::vecpool::PoolVec::from_slice(&ic.u_pred);
+        cand.v_recon = crate::vecpool::PoolVec::from_slice(&ic.v_pred);
         // Populate the 10-bit recons only where a 10-bit canvas consumes
         // them — `commit_leaf` asserts a canvas exists for every non-empty
         // chroma recon, and the pred10 buffers can be populated on paths
         // (e.g. the bd10 post-pass presets) whose canvases are absent.
         if fx.y_recon10.is_some() {
-            cand.y_recon10_d0 = pred10.clone();
-            cand.y_recon10 = pred10;
+            cand.y_recon10_d0 = cand.pred10[..].to_vec();
+            cand.y_recon10 = cand.pred10[..].to_vec();
         }
         if fx.u_recon10.is_some() && fx.v_recon10.is_some() {
-            cand.u_recon10 = u_pred10;
-            cand.v_recon10 = v_pred10;
+            cand.u_recon10 = ic.u_pred10.clone();
+            cand.v_recon10 = ic.v_pred10.clone();
         }
         cand.block_has_coeff = false;
         return;
