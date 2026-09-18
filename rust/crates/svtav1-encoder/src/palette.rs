@@ -21,6 +21,7 @@
 //! vectors traced against the C source, and carries a
 //! `PORT-NOTE(unverified)` marker — see the CLAUDE.md BULK-PORT MODE index.
 
+use archmage::prelude::*;
 use svtav1_types::prediction::PALETTE_MAX_SIZE;
 
 /// C `PALETTE_MIN_SIZE` (definitions.h:379).
@@ -311,6 +312,20 @@ pub fn calc_indices_dim1(
     assert!(centroids.len() >= k);
     assert!(indices.len() >= n);
     assert!(k >= 1);
+    incant!(
+        calc_indices_dim1(data, centroids, indices, n, k),
+        [neon, scalar]
+    )
+}
+
+fn calc_indices_dim1_scalar(
+    _token: ScalarToken,
+    data: &[i32],
+    centroids: &[i32],
+    indices: &mut [u8],
+    n: usize,
+    k: usize,
+) -> i64 {
     let mut total: i64 = 0;
     for i in 0..n {
         let x = data[i];
@@ -329,6 +344,99 @@ pub fn calc_indices_dim1(
         }
         indices[i] = idx;
         total += min_dist as i64;
+    }
+    total
+}
+
+/// NEON arm of [`calc_indices_dim1`]: 16 points per iteration held as four
+/// `i32x4` groups (x loaded once per group, reused across all `k`
+/// centroids). `vsubq`/`vmulq_s32` keep the low 32 bits — bit-identical to
+/// the scalar `i32` sub/mul including wrap cases; `vcltq_s32` is the strict
+/// `<` so the lowest centroid index still wins ties; `vpaddlq_s32` widens
+/// the per-lane minima into i64 pairs (exact, order-free) for the fused
+/// `calc_total_dist` return.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn calc_indices_dim1_neon(
+    _token: NeonToken,
+    data: &[i32],
+    centroids: &[i32],
+    indices: &mut [u8],
+    n: usize,
+    k: usize,
+) -> i64 {
+    let c0 = vdupq_n_s32(centroids[0]);
+    let mut acc = vdupq_n_s64(0);
+    let mut i = 0usize;
+    while i + 16 <= n {
+        let mut xs = [vdupq_n_s32(0); 4];
+        let mut mins = [vdupq_n_s32(0); 4];
+        let mut idx = [vdupq_n_s32(0); 4];
+        for g in 0..4 {
+            xs[g] = vld1q_s32(data[i + 4 * g..i + 4 * g + 4].try_into().unwrap());
+            let d = vsubq_s32(xs[g], c0);
+            mins[g] = vmulq_s32(d, d);
+        }
+        for j in 1..k {
+            let cj = vdupq_n_s32(centroids[j]);
+            let jv = vdupq_n_s32(j as i32);
+            for g in 0..4 {
+                let d = vsubq_s32(xs[g], cj);
+                let dist = vmulq_s32(d, d);
+                let m = vcltq_s32(dist, mins[g]);
+                mins[g] = vbslq_s32(m, dist, mins[g]);
+                idx[g] = vbslq_s32(m, jv, idx[g]);
+            }
+        }
+        for g in 0..4 {
+            acc = vaddq_s64(acc, vpaddlq_s32(mins[g]));
+        }
+        let lo = vcombine_s16(vmovn_s32(idx[0]), vmovn_s32(idx[1]));
+        let hi = vcombine_s16(vmovn_s32(idx[2]), vmovn_s32(idx[3]));
+        let bytes = vreinterpretq_u8_s8(vcombine_s8(vmovn_s16(lo), vmovn_s16(hi)));
+        let out: &mut [u8; 16] = (&mut indices[i..i + 16]).try_into().unwrap();
+        vst1q_u8(out, bytes);
+        i += 16;
+    }
+    while i + 4 <= n {
+        let x = vld1q_s32(data[i..i + 4].try_into().unwrap());
+        let d = vsubq_s32(x, c0);
+        let mut min = vmulq_s32(d, d);
+        let mut idx = vdupq_n_s32(0);
+        for j in 1..k {
+            let d = vsubq_s32(x, vdupq_n_s32(centroids[j]));
+            let dist = vmulq_s32(d, d);
+            let m = vcltq_s32(dist, min);
+            min = vbslq_s32(m, dist, min);
+            idx = vbslq_s32(m, vdupq_n_s32(j as i32), idx);
+        }
+        acc = vaddq_s64(acc, vpaddlq_s32(min));
+        let mut tmp = [0i32; 4];
+        vst1q_s32(&mut tmp, idx);
+        for g in 0..4 {
+            indices[i + g] = tmp[g] as u8;
+        }
+        i += 4;
+    }
+    let mut total = vaddvq_s64(acc);
+    while i < n {
+        let x = data[i];
+        let mut min_dist = {
+            let d = x - centroids[0];
+            d * d
+        };
+        let mut id = 0u8;
+        for j in 1..k {
+            let d = x - centroids[j];
+            let this_dist = d * d;
+            if this_dist < min_dist {
+                min_dist = this_dist;
+                id = j as u8;
+            }
+        }
+        indices[i] = id;
+        total += i64::from(min_dist);
+        i += 1;
     }
     total
 }
