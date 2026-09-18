@@ -978,7 +978,7 @@ pub(super) fn inject_candidates(
             // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
             // It used to be dropped here because only MDS0 ran at bd10.
             let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
-            let (fast_cost, distortion_cost) = match fx.y_recon10.as_deref() {
+            let (fast_cost, distortion_cost, fast_dist_metric) = match fx.y_recon10.as_deref() {
                 Some(canvas10) => {
                     pred10 = zeroed_pool::<u16>(w * h);
                     predict_unit_hbd(
@@ -997,20 +997,56 @@ pub(super) fn inject_candidates(
                         &mut pred10,
                         frame.bit_depth,
                     );
-                    let satd10 = hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h);
+                    // C `fast_loop_core`'s distortion switch at `hbd_md`
+                    // (product_coding_loop.c:1272-1307): SSD /
+                    // `mds0_use_hadamard_blk` / the `vf_hbd_10` VARIANCE arm —
+                    // the SAME three-way the u8 arm above takes. The VIDEO
+                    // arm's `mds0_use_hadamard_sb = false`
+                    // (enc_mode_config.c:7916, vs the allintra `true` at
+                    // :8148) sends a video key frame down the variance arm:
+                    // `svt_aom_highbd_10_variance` normalizes the u16
+                    // accumulators to the 8-bit scale, a different metric
+                    // than the hadamard SATD (variance is DC-invariant where
+                    // SATD is not), so scoring bd10 video frames with
+                    // `hadamard_satd_hbd` re-ordered C's MDS0 survivor
+                    // ranking at near-ties. `cand_bf->luma_fast_dist` carries
+                    // the PRE-shift metric; the <<4 lands in the fast-cost
+                    // dist term for the SATD/variance arms only.
+                    let metric10 = if frame.mds0_ssd {
+                        svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                            blk_y_src10,
+                            0,
+                            w,
+                            &pred10,
+                            0,
+                            w,
+                            w,
+                            h,
+                        )
+                    } else if mds0_use_hadamard {
+                        hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                    } else {
+                        residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
+                    };
+                    let dist10 = if frame.mds0_ssd {
+                        metric10
+                    } else {
+                        metric10 << 4
+                    };
                     #[cfg(feature = "std")]
                     {
-                        dbg_satd10 = satd10;
+                        dbg_satd10 = metric10;
                         dbg_pred0 = pred10[0];
                     }
                     (
-                        rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4),
-                        rdcost(lambda_bd10_fast, 0, satd10 << 4),
+                        rdcost(lambda_bd10_fast, flr + fcr, dist10),
+                        rdcost(lambda_bd10_fast, 0, dist10),
+                        metric10,
                     )
                 }
                 None => {
                     let d = if frame.mds0_ssd { satd } else { satd << 4 };
-                    (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d))
+                    (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d), satd)
                 }
             };
             // C `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334),
@@ -1041,7 +1077,7 @@ pub(super) fn inject_candidates(
             };
             if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
                 mds0_best_cost = Some(fast_cost);
-                mds0_best_dist = Some(satd);
+                mds0_best_dist = Some(fast_dist_metric);
             }
             #[cfg(feature = "std")]
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
@@ -1100,7 +1136,10 @@ pub(super) fn inject_candidates(
                 full_cost: u64::MAX,
                 mds3_cost_ssim: u64::MAX,
                 mds1_has_coeff: false,
-                luma_fast_dist: satd,
+                // `cand_bf->luma_fast_dist` — the PRE-shift fast metric, in
+                // the frame's MD domain (`vf_hbd_10`/hadamard/SSE16 at bd10,
+                // the u8 twin otherwise).
+                luma_fast_dist: fast_dist_metric,
                 mds1_cnt_nz: 0,
                 tx_depth: 0,
                 txb_q: Vec::new(),
@@ -1287,10 +1326,27 @@ pub(super) fn inject_candidates(
                 }
             }
             // MDS0 fast distortion at the real depth, mirroring the regular
-            // candidates' bd10 arm above (10-bit SATD against the 10-bit
-            // source, u8 SATD otherwise).
+            // candidates' bd10 arm above — including the `mds0_use_hadamard` /
+            // `mds0_ssd` split (`fast_loop_core`, product_coding_loop.c
+            // :1272-1307): the video arm prices `vf_hbd_10` variance, not
+            // SATD.
             let satd = if bd10_funnel {
-                hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                if frame.mds0_ssd {
+                    svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                        blk_y_src10,
+                        0,
+                        w,
+                        &pred10,
+                        0,
+                        w,
+                        w,
+                        h,
+                    )
+                } else if mds0_use_hadamard {
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                } else {
+                    residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
+                }
             } else {
                 hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
             };
@@ -1701,8 +1757,25 @@ pub(super) fn inject_candidates(
                 }
                 let satd = if bd10_funnel {
                     // Score MDS0 at the real depth, like every other
-                    // candidate's bd10 arm above.
-                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                    // candidate's bd10 arm above — same
+                    // `mds0_use_hadamard`/`mds0_ssd` split (the video arm's
+                    // `mds0_use_hadamard_sb = false` -> `vf_hbd_10` variance).
+                    if frame.mds0_ssd {
+                        svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                            blk_y_src10,
+                            0,
+                            w,
+                            &pred10,
+                            0,
+                            w,
+                            w,
+                            h,
+                        )
+                    } else if mds0_use_hadamard {
+                        hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                    } else {
+                        residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
+                    }
                 } else if frame.mds0_ssd {
                     let mut sse: u64 = 0;
                     for r in 0..h {
@@ -1727,7 +1800,11 @@ pub(super) fn inject_candidates(
                 );
                 let flr = u64::from(flr32);
                 let fast_cost = if bd10_funnel {
-                    rdcost(lambda_bd10_fast, flr, satd << 4)
+                    rdcost(
+                        lambda_bd10_fast,
+                        flr,
+                        if frame.mds0_ssd { satd } else { satd << 4 },
+                    )
                 } else {
                     rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
                 };

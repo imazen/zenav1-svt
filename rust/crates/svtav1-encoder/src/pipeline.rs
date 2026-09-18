@@ -13902,6 +13902,18 @@ fn encode_tile_rows(
                                     crate::part_arm::input_coeff_lvl(q.input_coeff_level)
                                 }),
                             temporal_layer,
+                            // C `pcs->hbd_md != 0` — `set_pd0_ctrls`
+                            // (enc_mode_config.c:5415) forces `PD0_LVL_0` on
+                            // exactly these frames. The derivation is the
+                            // frame-type ladder (`is_islice ? 2 : 0` at M6+,
+                            // `is_base ? 2 : 0` at M0..M5, 1 at MR —
+                            // enc_mode_config.c:2158-2163); `is_base` is
+                            // always true on this port's flat GOP and MR is
+                            // below the preset floor, so the term reduces to
+                            // `preset <= 5 || I-slice`. FALSE on a bd10
+                            // P-slice at M6+, which is exactly what makes
+                            // its PD0 keep the video ladder's level.
+                            bit_depth == 10 && (speed_config.preset <= 5 || inter_md.is_none()),
                             &pd0_sb_in,
                             &crate::part_arm::Pd0SigDerivInput {
                                 is_not_last_layer: pd0_det_frame.is_not_last_layer,
@@ -14272,11 +14284,19 @@ fn encode_tile_rows(
                             let mut sb_lpd1 = None;
                             let tree = if coded_lossless {
                                 crate::pd0::lossless_tree(x0, y0, unit_size, w, h)
-                            } else if bit_depth == 10 {
+                            } else if bit_depth == 10
+                                && (speed_config.preset <= 5 || inter_md.is_none())
+                            {
                                 // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
                                 // PD0_LVL_0 (full-RD partition search) at bd10 (hbd_md
                                 // set), regardless of preset — where bd8 uses the
-                                // preset's LVL_6/LVL_5 variance heuristic. LVL_0 runs
+                                // preset's LVL_6/LVL_5 variance heuristic. The force
+                                // is conditional on `pcs->hbd_md != 0`, NOT on the
+                                // bit depth alone: a bd10 non-I frame at M6+ derives
+                                // `hbd_md = 0` (`is_islice ? 2 : 0`,
+                                // enc_mode_config.c:2163 — TRACED 2026-09-18), so
+                                // it keeps the video ladder's level and falls to the
+                                // `ScArm::Video` arm below. LVL_0 runs
                                 // at 8-bit on the same MSB-truncated `sb_input`, so
                                 // this is a pure partition change; the coded levels
                                 // are recomputed at 10-bit by bd10_reencode_luma.
@@ -14618,8 +14638,14 @@ fn encode_tile_rows(
                             // refinement walk reuses it rather than paying for a
                             // second PD0.
                             let eval_pd0 = || -> crate::pd0::Pd0Eval {
+                                // Levels 1..=2 keep the `m6_eval` fallback —
+                                // `video_pd0_mode` has no block cost for them.
+                                // Level 0 is the `set_pd0_ctrls` hbd_md force
+                                // (a bd10 frame's every SB) and HAS the real
+                                // closed form, so it must take the video arm.
                                 if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. })
-                                    && sb_pd0_det.is_some_and(|t| (3..=6).contains(&t.0))
+                                    && sb_pd0_det
+                                        .is_some_and(|t| t.0 == 0 || (3..=6).contains(&t.0))
                                 {
                                     // The VIDEO arm's own PD0 entry point — the
                                     // same one the non-refined arm takes below.

@@ -25,7 +25,7 @@
 # regression nor a silent improvement passes unnoticed, and the honest state is
 # in the repo rather than in a commit message:
 #
-#     0 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-10)
+#     31 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-18)
 #
 # WHAT "DECODES" MEANS HERE, AND WHAT IT DOES NOT. The decode leg runs
 # `dav1d -o /dev/null` and asserts only that the stream PARSES. It does NOT
@@ -81,32 +81,56 @@ fi
 # coincidence. The P-slice now ships the u8-domain coefficients C emits at
 # pcs->hbd_md == 0 (enc_mode_config.c:2163 `is_islice ? 2 : 0`, traced on
 # this clip: frame 0 saved=2, frame 1 saved=0) instead of running the bd10
-# level re-encode. Frame 0 still carries its byte-17 divergence.
+# level re-encode.
+#
+# 2026-09-18 (later): the KEYFRAME converged — 23 of 24 cells are 1/x, i.e.
+# the hbd_md=2 I-slice is byte-identical to C. Two stacked fixes did it:
+#
+#   1. `set_pd0_ctrls` forces `pd0_level = PD0_LVL_0` when `hbd_md != 0`
+#      (enc_mode_config.c:5415) — the port now applies the force on the
+#      video arm (`video_pd0_params`'s hbd_md parameter), and maps it to
+#      the VIDEO-arm LVL_0 cost model: `sig_deriv_enc_dec_pd0` resolves
+#      `rate_est_level = 2` there (`pd0_level <= PD0_LVL_3`, :7357), i.e.
+#      `lpd0_qp_offset = 0` + `coeff_rate_est_lvl = 1` — `Pd0Mode::Lvl1`'s
+#      real coefficient pricing, NOT the allintra LVL_0's closed form
+#      (qindex+8, `5000 + 100*eob`). Per-node PD0 dist/ybits/cost now match
+#      C's `SVT_PD0COST_OUT` exactly.
+#   2. The bd10 MDS0 fast loop scored every candidate with
+#      `hadamard_satd_hbd`, but the VIDEO arm sets `mds0_use_hadamard_sb =
+#      false` (:7916) — C's `fast_loop_core` takes the `vf_hbd_10` variance
+#      arm (product_coding_loop.c:1296-1307), a DC-invariant metric. The
+#      port now mirrors the same SSD/hadamard/variance three-way at bd10
+#      that the u8 lane already had.
+#
+# Remaining: `kristenandsara 256x256 p6` frame 0 still diverges (the one
+# non-identical I-slice), and the P-slice where frame 0's recon did NOT
+# already match — the inter-mode surface itself, not the pd0/funnel fixes
+# above.
 CELLS=(
-    "fourpeople     128x128 6 0/0"
-    "fourpeople     128x128 8 0/0"
-    "fourpeople     256x256 6 0/0"
-    "fourpeople     256x256 8 0/0"
-    "johnny         128x128 6 0/0"
-    "johnny         128x128 8 0/0"
-    "johnny         256x256 6 0/0"
-    "johnny         256x256 8 0/0"
-    "kristenandsara 128x128 6 0/1"
-    "kristenandsara 128x128 8 0/0"
+    "fourpeople     128x128 6 1/1"
+    "fourpeople     128x128 8 1/1"
+    "fourpeople     256x256 6 1/1"
+    "fourpeople     256x256 8 1/1"
+    "johnny         128x128 6 1/0"
+    "johnny         128x128 8 1/0"
+    "johnny         256x256 6 1/0"
+    "johnny         256x256 8 1/0"
+    "kristenandsara 128x128 6 1/1"
+    "kristenandsara 128x128 8 1/1"
     "kristenandsara 256x256 6 0/0"
-    "kristenandsara 256x256 8 0/0"
-    "vidyo1         128x128 6 0/0"
-    "vidyo1         128x128 8 0/0"
-    "vidyo1         256x256 6 0/0"
-    "vidyo1         256x256 8 0/0"
-    "vidyo3         128x128 6 0/0"
-    "vidyo3         128x128 8 0/0"
-    "vidyo3         256x256 6 0/0"
-    "vidyo3         256x256 8 0/0"
-    "vidyo4         128x128 6 0/0"
-    "vidyo4         128x128 8 0/0"
-    "vidyo4         256x256 6 0/0"
-    "vidyo4         256x256 8 0/0"
+    "kristenandsara 256x256 8 1/1"
+    "vidyo1         128x128 6 1/1"
+    "vidyo1         128x128 8 1/1"
+    "vidyo1         256x256 6 1/0"
+    "vidyo1         256x256 8 1/0"
+    "vidyo3         128x128 6 1/0"
+    "vidyo3         128x128 8 1/0"
+    "vidyo3         256x256 6 1/0"
+    "vidyo3         256x256 8 1/0"
+    "vidyo4         128x128 6 1/0"
+    "vidyo4         128x128 8 1/0"
+    "vidyo4         256x256 6 1/0"
+    "vidyo4         256x256 8 1/0"
 )
 
 QP="${BVG_QP:-40}"

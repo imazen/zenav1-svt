@@ -565,6 +565,12 @@ pub(crate) fn video_pd0_params(
     // C `ppcs->temporal_layer_index` — `set_pic_pd0_lvl_default`'s `is_base`
     // (enc_mode_config.c:8594). 0 on a flat GOP's every picture.
     temporal_layer: u8,
+    // C `pcs->hbd_md != 0` — `set_pd0_ctrls` (enc_mode_config.c:5415) reads
+    // `ctx->hbd_md` BEFORE the PD0 pass forces it to 0, so a nonzero value
+    // short-circuits `pd0_level = PD0_LVL_0` and the `pd0_level > PD0_LVL_0`
+    // gate (enc_dec_process.c:2957) skips `pd0_detector` entirely: the
+    // ladder and the per-SB demote below never run on such a frame.
+    hbd_md: bool,
     sb: &crate::port_pd0_detector::Pd0SbInput,
     sig: &Pd0SigDerivInput,
     // `(pd0_level, coeff_rate_est_lvl, use_accurate_part_ctx, subres_step,
@@ -620,7 +626,15 @@ pub(crate) fn video_pd0_params(
     // differ above 4 (`lpd0_lvl` 5 AND 6 both mean `PD0_LVL_5`; 7 AND 8 both
     // mean `PD0_LVL_6`), and every consumer — here and in `crate::pd0` —
     // reads it as the LEVEL.
-    let pic_pd0_lvl = {
+    //
+    // `hbd_md` arm: `set_pd0_ctrls` (enc_mode_config.c:5415-5418) runs
+    // `if (ctx->hbd_md) { pd0_level = PD0_LVL_0; return; }` — the picture
+    // ladder's value never reaches `pd0_ctrls`, and `pd0_detector`'s
+    // `pd0_level > PD0_LVL_0` gate (enc_dec_process.c:2957) keeps the
+    // detector off, so the resolved level is a flat 0.
+    let pic_pd0_lvl = if hbd_md {
+        crate::port_pd0_detector::Pd0Level::Lvl0 as u8
+    } else {
         let ctrls = crate::port_pd0_detector::pd0_ctrls_for_level(pic_pd0_lvl);
         crate::port_pd0_detector::pd0_detector(&ctrls, sb) as u8
     };
@@ -636,9 +650,10 @@ pub(crate) fn video_pd0_params(
     // M12 (enc_mode_config.c:9654: `enc_mode <= ENC_M12 ? 0 : 600` — read
     // only by the LVL_6 `parent_cost_bias` arm this port does not consume),
     // `rtc_tune`/`allintra` are false on the video arm by definition, and
-    // `hbd_md` never reaches here — a bd10 frame's PD0 is forced to LVL_0 by
-    // `set_pd0_ctrls` before this signal set matters, and the port routes
-    // that arm to `pd0_pick_sb_partition_lvl0` instead.
+    // `hbd_md` arrives as the `hbd_md` parameter — applied above as the
+    // `set_pd0_ctrls` force to `PD0_LVL_0` (the level `sig_deriv` resolves
+    // the rest of the signals under), and as `pcs_hbd_md` for
+    // `pd0_use_src_samples`.
     let signals = crate::port_enc_mode_config::pd0::sig_deriv_enc_dec_pd0(
         crate::port_enc_mode_config::pd0::Pd0Inputs {
             pd0_level: pic_pd0_lvl,
@@ -649,8 +664,14 @@ pub(crate) fn video_pd0_params(
             enc_mode,
             transition_present: sb.transition_present,
             pic_pred_depth_only: sig.pic_pred_depth_only,
+            // `ctx->hbd_md` is already forced to 0 when
+            // `svt_aom_sig_deriv_enc_dec_pd0` runs (enc_dec_process.c:2965-2977
+            // window), so the `fast_lambda` select reads the 8-bit lambda even
+            // on a 10-bit frame. `pcs->hbd_md` is NOT forced — it stays at the
+            // frame's derived value, which is what `pd0_use_src_samples`
+            // (:7309) reads.
             ctx_hbd_md: false,
-            pcs_hbd_md: false,
+            pcs_hbd_md: hbd_md,
             fast_lambda_8bit: sig.fast_lambda_8bit,
             fast_lambda_10bit: 0,
             me_64x64_distortion: sb.me_64x64_distortion,
@@ -769,7 +790,7 @@ pub(crate) fn refined_pd0_model(
 #[cfg(test)]
 mod video_pd0_level_tests {
     use super::{Pd0SigDerivInput, SEQ_QP_MOD, video_pd0_params};
-    use crate::port_enc_mode_config::{ResolutionRange, leaf};
+    use crate::port_enc_mode_config::{InputCoeffLvl, ResolutionRange, leaf};
     use crate::port_pd0_detector::Pd0SbInput;
 
     /// The raw ladder value these tests are ABOUT, so a change in
@@ -826,6 +847,7 @@ mod video_pd0_level_tests {
             // function resolves that itself, so this argument is inert here.
             crate::port_enc_mode_config::InputCoeffLvl::Invalid,
             0,
+            false,
             &Pd0SbInput {
                 slice_type_is_intra: true,
                 ..Pd0SbInput::default()
@@ -852,6 +874,7 @@ mod video_pd0_level_tests {
             568 * 568,
             crate::port_enc_mode_config::InputCoeffLvl::Invalid,
             0,
+            false,
             &Pd0SbInput {
                 slice_type_is_intra: true,
                 ..Pd0SbInput::default()
@@ -876,6 +899,7 @@ mod video_pd0_level_tests {
                 64 * 64,
                 crate::port_enc_mode_config::InputCoeffLvl::Invalid,
                 0,
+                false,
                 &Pd0SbInput {
                     slice_type_is_intra: true,
                     ..Pd0SbInput::default()
@@ -894,6 +918,7 @@ mod video_pd0_level_tests {
                 64 * 64,
                 crate::port_enc_mode_config::InputCoeffLvl::Invalid,
                 0,
+                false,
                 &Pd0SbInput {
                     slice_type_is_intra: true,
                     ..Pd0SbInput::default()
@@ -903,5 +928,24 @@ mod video_pd0_level_tests {
             .0,
             4
         );
+    }
+
+    /// C `set_pd0_ctrls` (enc_mode_config.c:5415): `if (ctx->hbd_md) {
+    /// pd0_level = PD0_LVL_0; return; }` — a 10-bit frame bypasses the
+    /// ladder AND the detector, so a video I-slice resolves a flat 0 where
+    /// the same SB at 8-bit resolves 3.
+    #[test]
+    fn hbd_md_forces_pd0_lvl0_regardless_of_ladder() {
+        // Positive control: the non-hbd arm still resolves the ladder's 3.
+        assert_eq!(raw_ladder(6, 40, 64 * 64), 3);
+        let sb = Pd0SbInput {
+            slice_type_is_intra: true,
+            ..Pd0SbInput::default()
+        };
+        let sig = Pd0SigDerivInput::default();
+        let bd10 = video_pd0_params(6, 40, 64 * 64, InputCoeffLvl::Invalid, 0, true, &sb, &sig).0;
+        let bd8 = video_pd0_params(6, 40, 64 * 64, InputCoeffLvl::Invalid, 0, false, &sb, &sig).0;
+        assert_eq!(bd10, 0, "hbd_md must force PD0_LVL_0");
+        assert_eq!(bd8, 3, "the 8-bit arm keeps the ladder level");
     }
 }

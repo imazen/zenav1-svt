@@ -2556,3 +2556,43 @@ different mode (5 vs C's 11), then choosing a different partition tree
 (bsize 7 vs 9). The u16-domain partition/MD machinery for the video key
 frame does not yet reproduce C's `hbd_md=2` decisions. That is defect B —
 the bd10-video gate's `expected` entries remain `0/0`/`0/1` accordingly.
+
+## 2026-09-18 (cont.) — VIDEO KEYFRAME CONVERGED: 23/24 I-slices byte-identical
+
+Defect B closed on 23 of 24 cells. Two stacked roots, both C rules the
+video arm was missing:
+
+**Root 1 — the `hbd_md -> PD0_LVL_0` force.** `set_pd0_ctrls`
+(enc_mode_config.c:5415) reads `ctx->hbd_md` BEFORE the PD0 pass forces it
+to 0, so `hbd_md != 0` short-circuits `pd0_level = PD0_LVL_0` and the
+`pd0_level > PD0_LVL_0` gate (enc_dec_process.c:2957) keeps `pd0_detector`
+off. The port's `video_pd0_params` had no hbd term at all — a p6 bd10
+keyframe resolved the ladder's level 3 instead of 0. AND the level-0 block
+cost is ARM-DEPENDENT: the allintra `Pd0Mode::Lvl0` hardcodes the
+`rate_est_level = 0` closed form (qindex+8, `5000 + 100*eob`), but on the
+video arm `pcs->rate_est_level = 1` makes `svt_aom_sig_deriv_enc_dec_pd0`
+(`pd0_level <= PD0_LVL_3`, :7357) resolve `rate_est_level = 2` ->
+`lpd0_qp_offset = 0` + `coeff_rate_est_lvl = 1` — i.e. video-arm LVL_0 uses
+the REAL coefficient-rate model, `Pd0Mode::Lvl1`'s machinery. With both
+applied, per-node PD0 costs match C's `SVT_PD0COST_OUT` EXACTLY (johnny
+SB(0,0) 64x64: `dist=2808208 ybits=589364 cost=382871738`, identical).
+
+**Root 2 — the bd10 MDS0 fast-loop metric.** The port's bd10 funnel scored
+every candidate with `hadamard_satd_hbd`, but `mds0_use_hadamard_sb` is
+FALSE on the video arm (enc_mode_config.c:7916; the allintra `true` is at
+:8148). C's `fast_loop_core` (product_coding_loop.c:1272-1307) then takes
+the `vf_hbd_10` VARIANCE arm — `svt_aom_highbd_10_variance` normalizes the
+u16 accumulators to the 8-bit scale, and variance is DC-invariant where
+SATD is not, so the survivor ranking re-ordered at near-ties (johnny
+16x32: C admitted modes {11,4} to MDS3, the port admitted {6,6}). The port
+now mirrors C's full three-way at bd10 — SSD / hadamard / `vf_hbd_10`
+variance — on every injection site (regular, palette, intrabc), keeping the
+PRE-shift metric in `cand_bf->luma_fast_dist` as C does.
+
+**Measured.** `bd10_video_gate.sh`: **23 of 24 cells promoted**, 24/24
+decode, 0 regressions — every keyframe byte-identical except
+`kristenandsara 256x256 p6` (still `0/0`). Eight cells are fully identical
+(fourpeople x4, kristenandsara 128 p6 + 256 p8, vidyo1 128 x2). Remaining:
+that one I-slice, and the P-slices whose frame-0 recon did not match —
+the inter-MD surface proper. `cargo nextest` 3922/3922,
+`regression_spotcheck` 145/145.

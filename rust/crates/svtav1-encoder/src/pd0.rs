@@ -5007,6 +5007,19 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
 #[must_use]
 fn video_pd0_mode(pd0_level: u8) -> Pd0Mode {
     match pd0_level {
+        // `set_pd0_ctrls`'s `hbd_md` force (enc_mode_config.c:5415) — the
+        // resolved level on every bd10 frame. NOT `Pd0Mode::Lvl0`: that
+        // model is the ALLINTRA arm's LVL_0, whose `rate_est_level` is 0
+        // (`lpd0_qp_offset = 8` + `coeff_rate_est_lvl = 0` closed form). On
+        // the VIDEO arm `pcs->rate_est_level` is 1, so
+        // `svt_aom_sig_deriv_enc_dec_pd0` (`pd0_level <= PD0_LVL_3`,
+        // enc_mode_config.c:7357) resolves `rate_est_level = 2` ->
+        // `lpd0_qp_offset = 0` + `coeff_rate_est_lvl = 1` — the LVL_1 block
+        // cost exactly (`md_encode_block_pd0` + real coeff rate). The
+        // remaining differences are level-keyed signals that also land the
+        // same way: `intra_level` MAX_INTRA_LEVEL-1 -> DC-only pred, subres
+        // off at `pd0_level <= PD0_LVL_2`, `depth_early_exit_lvl` 1.
+        0 => Pd0Mode::Lvl1,
         3 => Pd0Mode::Lvl3,
         4 => Pd0Mode::Lvl4,
         5 => Pd0Mode::Lvl5,
@@ -5019,8 +5032,8 @@ fn video_pd0_mode(pd0_level: u8) -> Pd0Mode {
         6 => Pd0Mode::Lvl6,
         other => panic!(
             "PD0_LVL_{other} has no block cost in this port's video arm \
-             (0..=2 live only in the bd10 entry point and the video arm's \
-             low presets, which do not reach this dispatch)"
+             (1..=2 live only in the video arm's low presets, which do not \
+             reach this dispatch)"
         ),
     }
 }
