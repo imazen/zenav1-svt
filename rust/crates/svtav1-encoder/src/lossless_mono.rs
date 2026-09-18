@@ -202,7 +202,7 @@ fn encode_leaf(
                     rates,
                 )
             } as u32;
-            let cul = crate::leaf_funnel::compute_cul_level(scan, &q, eob);
+            let cul = crate::leaf_funnel::compute_cul_level(&q);
             above[cx] = cul;
             left[cy] = cul;
             culs[tx] = cul;

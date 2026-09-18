@@ -362,17 +362,28 @@ std::thread_local! {
         }) };
 }
 
-/// C `svt_av1_compute_cul_level` (full_loop.c:1356).
-pub(crate) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
+/// C `svt_av1_compute_cul_level` (full_loop.c:1366). The sum runs over
+/// `scan[0..eob]` in C, but every position at or past `eob` in scan order
+/// is zero by construction (`eob_from_qcoeff` derives eob FROM the buffer;
+/// `optimize_b` zeroes the tail it truncates), so the same total comes
+/// straight off the raster — no gather, and the abs+add reduction
+/// vectorises. C's own AVX2 port (`svt_av1_compute_cul_level_avx2`,
+/// convolve_avx2.c:1981) still pays an `_mm256_i32gather_epi32` per
+/// 8 positions; this arm is strictly less work. The 63-cap early exit
+/// survives per chunk: once `cul` reaches COEFF_CONTEXT_MASK the answer
+/// cannot change.
+pub(crate) fn compute_cul_level(qcoeff: &[i32]) -> u8 {
     let mut cul: u32 = 0;
-    for c in 0..eob as usize {
-        cul += qcoeff[scan[c] as usize].unsigned_abs();
+    // The per-element `.min(64)` is free under pminud and keeps the u32
+    // accumulator unwrappable (any |q| >= 64 already saturates the answer).
+    for chunk in qcoeff.chunks(32) {
+        cul += chunk.iter().map(|q| q.unsigned_abs().min(64)).sum::<u32>();
         if cul >= 63 {
             break;
         }
     }
     cul = cul.min(63);
-    let dc = if eob > 0 { qcoeff[0] } else { 0 };
+    let dc = qcoeff.first().copied().unwrap_or(0);
     if dc < 0 {
         cul |= 1 << 6;
     } else if dc > 0 {
@@ -1455,7 +1466,7 @@ pub(super) fn tx_unit_inner(
         ),
         RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
     };
-    let cul = compute_cul_level(scan, qcoeff, eob);
+    let cul = compute_cul_level(qcoeff);
 
     Some(TxUnitMeta {
         eob,
@@ -2302,7 +2313,7 @@ pub(super) fn tx_unit_hbd_screened(
         }
     };
 
-    let cul = compute_cul_level(scan, &qcoeff, eob);
+    let cul = compute_cul_level(&qcoeff);
     Some(TxUnitOutHbd {
         eob,
         qcoeff,
