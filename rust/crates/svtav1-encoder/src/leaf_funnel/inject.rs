@@ -602,6 +602,7 @@ pub(super) fn inject_candidates(
             },
             lambda,
             frame.inter_fast_lambda,
+            is_intra_bordered,
             fx.lpd1.as_ref().map(|l| (&l.sig, is_intra_bordered)),
         );
         inter_pre = Some((

@@ -788,6 +788,12 @@ pub fn block_prelude(
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
+    // C `ctx->is_intra_bordered` (product_coding_loop.c:9417) — the
+    // `use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx) : 0`
+    // product, computed by the caller. The regular lane resolves
+    // `ctx->updated_enable_pme` off it (:9418-9422); the light lane
+    // carries it inside `light`'s tuple for `run_block_searches_light`.
+    is_intra_bordered: bool,
     light: Option<(
         &crate::port_enc_mode_config::light_pd1::LightPd1Signals,
         bool,
@@ -899,14 +905,26 @@ pub fn block_prelude(
         // `me_mv_array` seed — the behaviour this module had before the
         // state existed. The funnel supplies it.
         sq_me: b.sq_me.as_deref().copied(),
+        // C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422):
+        // `md_pme_ctrls.enabled`, zeroed when this block's
+        // `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`. The
+        // caller's `is_intra_bordered` is already the `enabled`-gated
+        // product, so the conjunction collapses to `!is_intra_bordered`.
+        // Skipping `pme_search` here is what keeps an intra-bordered
+        // block's `inject_pme_candidates` from adding candidates C never
+        // had — MEASURED on `vidyo1 256x256 p8` frame 1, mi=(10,8),
+        // where the port's `sb_pme_mv` (20,6) injected three extra
+        // NEWMV/NEWNEWMV candidates C's `updated_enable_pme = 0`
+        // suppressed (`SVT_INJCFG_OUT`: `ibord=1 uepme=0`).
+        updated_enable_pme: f.search.md_pme_enabled && !is_intra_bordered,
     };
-    let search = if let Some((sig, is_intra_bordered)) = light {
+    let search = if let Some((sig, sig_ibord)) = light {
         crate::inter_search_arm::run_block_searches_light(
             &f.search,
             &search_in,
             &crate::inter_search_arm::LightSearchSig {
                 md_subpel_me: &sig.md_subpel_me,
-                is_intra_bordered,
+                is_intra_bordered: sig_ibord,
                 use_neighbouring_mode_enabled: sig.cand_reduction.use_neighbouring_mode_enabled
                     != 0,
                 shut_fast_rate: sig.shut_fast_rate,
@@ -1230,7 +1248,10 @@ pub fn build_inter_candidates(
         new_nearest_near_comb_injection: 0,
         inject_new_me: true,
         inject_new_pme: true,
-        updated_enable_pme: f.search.updated_enable_pme,
+        // The same per-block `ctx->updated_enable_pme` resolution
+        // `search_in` got in `block_prelude` — the injector and the
+        // search read ONE ctx field in C.
+        updated_enable_pme: f.search.md_pme_enabled && !is_intra_bordered,
         // C `ctx->cand_reduction_ctrls.reduce_unipred_candidates` — 0 at
         // levels 0..2, so inert on this envelope for the same reason.
         reduce_unipred_candidates: cand_red.reduce_unipred_candidates,

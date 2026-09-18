@@ -58,11 +58,21 @@ fi
 # 2026-09-19: three more frame-1s promoted (johnny 256x256 p8, vidyo3
 # 128x128/256x256 p8), measured under the arm+bit-depth `bypass_encdec`
 # stamp — though the promotions themselves predate it, since bd8 p6/p8
-# derive bypass=1 under both ladders. Only vidyo1 256x256 frame 1 remains.
+# derive bypass=1 under both ladders. vidyo1 256x256 p6 frame 1 promoted
+# 2026-09-21 when `set_start_end_depth` gained C's per-SB
+# `depth_removal_ctrls` e-depth clamp (enc_dec_process.c:1799-1813): the
+# pipeline already computed `disallow_below_16x16` per superblock, but the
+# value never reached `RefineEnv`, so a 16x16 leaf tested the 8x8 children
+# C never evaluates. vidyo1 256x256 p8 frame 1 closed the same day when
+# `updated_enable_pme` became per-BLOCK (product_coding_loop.c:9418-9422):
+# C zeroes it when `is_intra_bordered &&
+# use_neighbouring_mode_ctrls.enabled`, but the port stamped it from the
+# frame-level `md_pme_ctrls.enabled`, so an intra-bordered block ran
+# `pme_search` C skipped and `inject_pme_candidates` added the extra
+# NEWMV/NEWNEWMV candidates that flipped the block to inter.
 #
-# The frame-0 column is the interesting one: it is a KEY frame, so the two
-# remaining zeros (vidyo3/vidyo4 256x256 p8) are a STILL divergence on real
-# content reached through the video configuration. All SIX preset-6 key
+# The frame-0 column is the interesting one: it is a KEY frame. All SIX
+# preset-6 key
 # frames closed when the video arm's `skip_sub_depth_lvl` ladder was wired
 # (`encdec_arm::apply` stamps `enc_mode <= M1 -> 1 else 2`; the still bake
 # had pinned level 1's `coeff_perc` 15 where video M2+ derives 25), and three
@@ -86,8 +96,8 @@ CELLS=(
     "kristenandsara 256x256 8 1/1"
     "vidyo1         128x128 6 1/1"
     "vidyo1         128x128 8 1/1"
-    "vidyo1         256x256 6 1/0"
-    "vidyo1         256x256 8 1/0"
+    "vidyo1         256x256 6 1/1"
+    "vidyo1         256x256 8 1/1"
     "vidyo3         128x128 6 1/1"
     "vidyo3         128x128 8 1/1"
     "vidyo3         256x256 6 1/1"

@@ -130,8 +130,13 @@ pub struct SearchFrameCfg {
     /// `perform_md_reference_pruning` reads `max_dev_to_best`,
     /// `check_closest_multiplier` and `closest_refs` too.
     pub ref_pruning: crate::port_enc_mode_config::ctrls::RefPruningControls,
-    /// C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422).
-    pub updated_enable_pme: bool,
+    /// C `ctx->md_pme_ctrls.enabled` — the FIRST half of
+    /// `ctx->updated_enable_pme` (product_coding_loop.c:9418). The second
+    /// assignment (:9419-9422) zeroes it per block when
+    /// `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`, which is
+    /// per-BLOCK state this frame-level cfg cannot hold — the caller
+    /// resolves it into [`BlockSearchIn::updated_enable_pme`].
+    pub md_pme_enabled: bool,
     /// C `frm_hdr->quantization_params.base_q_idx`.
     pub base_q_idx: u8,
     /// C `svt_aom_get_sad_per_bit(base_q_idx, 0)`.
@@ -198,6 +203,14 @@ pub struct BlockSearchIn<'a> {
     /// caller has no square-parent state to offer, which makes every block
     /// take C's `me_mv_array` seed (what the port did before this existed).
     pub sq_me: Option<SqMeState>,
+    /// C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422) —
+    /// `md_pme_ctrls.enabled` zeroed per block when
+    /// `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`. Since
+    /// `ctx->is_intra_bordered` is itself the `enabled`-gated product
+    /// (:9417), the resolved value is `md_pme_enabled && !is_intra_bordered`.
+    /// Per-BLOCK, which is why it lives here and not on
+    /// [`SearchFrameCfg`].
+    pub updated_enable_pme: bool,
 }
 
 /// C `ctx->sq_sb_me_mv` and `pc_tree->tested_blk[PART_N][0]`, which are the
@@ -516,7 +529,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         && cfg.md_subpel_me.subpel_search_method
             == crate::port_enc_mode_config::encdec::subpel_search_method::SUBPEL_TREE_PRUNED
         && cfg.md_subpel_me.mvp_th != 0)
-        || cfg.updated_enable_pme
+        || b.updated_enable_pme
         || cfg.ref_pruning.enabled != 0;
 
     for &pair in b.ref_frame_type_arr {
@@ -808,7 +821,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 do_subpel,
                 subpel_fixed_stage: cfg.md_subpel_me.subpel_search_method
                     == subpel_search_method::SUBPEL_FIXED_STAGE_SEARCH,
-                needs_fp_me_dist: cfg.updated_enable_pme || cfg.ref_pruning.enabled != 0,
+                needs_fp_me_dist: b.updated_enable_pme || cfg.ref_pruning.enabled != 0,
                 shape_is_part_n: !b_w_ne_h,
             },
             &fp_ctx,
@@ -855,7 +868,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         perform_md_reference_pruning(cfg, b, &st, &mut out);
     }
 
-    if !cfg.updated_enable_pme {
+    if !b.updated_enable_pme {
         return out;
     }
 
@@ -1552,13 +1565,12 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         md_nsq_full_pel_h: nsq.full_pel_search_height,
         md_nsq_enable_psad: nsq.enable_psad != 0,
         ref_pruning: pruning,
-        // C `product_coding_loop.c:9418-9422`. The second assignment zeroes
-        // it when `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`;
-        // this port hands the injector `use_neighbouring_mode_ctrls_enabled
-        // = false` and `is_intra_bordered = false`, so that arm cannot fire
-        // and the value is the control's own. C agrees on the campaign's
-        // cells (`SVT_INJCFG_OUT`: `ibord=0 uepme=1`).
-        updated_enable_pme: pme.enabled != 0,
+        // C `ctx->md_pme_ctrls.enabled` — the FIRST assignment of
+        // `ctx->updated_enable_pme` (product_coding_loop.c:9418). The
+        // `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`
+        // zeroing (:9419-9422) is per-block and lands in
+        // `BlockSearchIn::updated_enable_pme` at the `block_prelude` call.
+        md_pme_enabled: pme.enabled != 0,
         cli_qp: i.cli_qp,
         picture_qp: i.picture_qp,
         base_q_idx: i.base_q_idx,
@@ -1784,6 +1796,8 @@ mod tests {
                 // No square parent: this positive control drives a 64x64
                 // square, which is the block that WRITES the state.
                 sq_me: None,
+                // Not intra-bordered: the PME arm this test exercises.
+                updated_enable_pme: true,
             },
         );
 
@@ -1836,6 +1850,77 @@ mod tests {
             -(SHIFT as i16) * 8,
             "the PME search must land on the true displacement, not on the \
              zero MVP it started from"
+        );
+    }
+
+    /// NEGATIVE CONTROL for the per-block gate — C's
+    /// `ctx->updated_enable_pme` is zeroed when `is_intra_bordered &&
+    /// use_neighbouring_mode_ctrls.enabled` (product_coding_loop.c:
+    /// 9419-9422), and on `vidyo1 256x256 p8` frame 1 the port's missing
+    /// zeroing let an intra-bordered 8x8 run `pme_search` and inject the
+    /// NEWMV/NEWNEWMV candidates C suppressed. With the flag cleared the
+    /// same fixture must produce NO PME output at all while the ME
+    /// refinement still lands.
+    #[test]
+    fn updated_enable_pme_false_suppresses_pme_search_but_not_me() {
+        let src = source();
+        let refp = PaddedRef {
+            y: PaddedPlane::from_plane(&reference(), W, H, 64),
+            uv: None,
+            hbd: None,
+        };
+        let padded_by_ref: [Option<&PaddedRef>; 8] =
+            [None, Some(&refp), None, None, None, Some(&refp), None, None];
+        let stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
+        let nmv = zero_cost();
+        let fac = [[0i32; 2]; DRL_MODE_CONTEXTS];
+        let tables = crate::intrabc::build_nmv_cost_table(
+            &crate::entropy::context::FrameContext::new_default().nmvc,
+            crate::entropy::mv_coding::MvSubpelPrecision::Low,
+        );
+        let me = frame_me_list1_only();
+        let out = run_block_searches(
+            &cfg(),
+            &BlockSearchIn {
+                full_lambda_8bit: 241_378,
+                fast_lambda_8bit: 6_633,
+                org_x: 0,
+                org_y: 0,
+                bw: 64,
+                bh: 64,
+                bsize: 12,
+                sq_size: 64,
+                mi_rows: (H / 4) as i32,
+                mi_cols: (W / 4) as i32,
+                src: &src,
+                src_stride: W,
+                ref_frame_type_arr: &[1, 5],
+                padded_by_ref: &padded_by_ref,
+                stacks: &stacks,
+                ref_mv_count: &[0; 8],
+                nmv: &nmv,
+                drl_mode_fac_bits: &fac,
+                search_tables: &tables,
+                me: &me,
+                sq_me: None,
+                // Intra-bordered: C's second assignment cleared it.
+                updated_enable_pme: false,
+            },
+        );
+
+        assert!(
+            out.pme_exit.iter().flatten().all(Option::is_none)
+                && out.valid_pme_mv.iter().flatten().all(|v| !*v)
+                && out.best_pme_mv.iter().flatten().all(|&m| m == Mv::ZERO),
+            "updated_enable_pme=0 must skip pme_search entirely"
+        );
+        assert_eq!(
+            out.sb_me_mv[1][0],
+            Mv {
+                x: -(SHIFT as i16) * 8,
+                y: 0
+            },
+            "the ME refinement is not gated on updated_enable_pme"
         );
     }
 }
