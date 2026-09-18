@@ -286,10 +286,28 @@ pub fn convolve_2d_sr(
     let bd = 8i32;
     let bits = FILTER_BITS * 2 - conv_params.round_0 - conv_params.round_1;
 
+    let x_filter = filter_x.subpel_kernel(subpel_x_q4);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = X64V3Token::summon() {
+        convolve_2d_sr_v3(
+            token,
+            src,
+            dst,
+            dst_stride,
+            w,
+            h,
+            x_filter,
+            filter_y.subpel_kernel(subpel_y_q4),
+            conv_params.round_0,
+            conv_params.round_1,
+            bits,
+        );
+        return;
+    }
+
     // Horizontal pass into the 16-bit intermediate. Note the vertical offset
     // uses `fo_vert`, matching `src_horiz = src - fo_vert * src_stride`.
     let mut im_block = alloc::vec![0i16; im_h * im_stride];
-    let x_filter = filter_x.subpel_kernel(subpel_x_q4);
     for y in 0..im_h {
         for x in 0..w {
             let mut sum = 1i32 << (bd + FILTER_BITS - 1);
@@ -317,6 +335,188 @@ pub fn convolve_2d_sr(
                 - ((1 << (offset_bits - conv_params.round_1))
                     + (1 << (offset_bits - conv_params.round_1 - 1)))) as i16;
             dst[y * dst_stride + x] = clip_pixel_8(round_power_of_two(res as i32, bits));
+        }
+    }
+}
+
+/// One horizontal-pass intermediate pixel of [`convolve_2d_sr`].
+#[inline(always)]
+fn convolve_2d_sr_hpx(
+    src: SrcView<'_>,
+    y: usize,
+    x: usize,
+    x_filter: &InterpKernel,
+    fo_vert: i32,
+    fo_horiz: i32,
+    round_0: i32,
+) -> i16 {
+    let mut sum = 1i32 << (8 + FILTER_BITS - 1);
+    for k in 0..SUBPEL_TAPS {
+        sum += x_filter[k] as i32 * src.at(y as i32 - fo_vert, x as i32 - fo_horiz + k as i32);
+    }
+    round_power_of_two(sum, round_0) as i16
+}
+
+/// One output pixel of [`convolve_2d_sr`]'s vertical pass.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn convolve_2d_sr_vpx(
+    im_block: &[i16],
+    im_stride: usize,
+    y: usize,
+    x: usize,
+    y_filter: &InterpKernel,
+    offset_bits: i32,
+    round_1: i32,
+    bits: i32,
+) -> u8 {
+    let mut sum = 1i32 << offset_bits;
+    for k in 0..SUBPEL_TAPS {
+        sum += y_filter[k] as i32 * im_block[(y + k) * im_stride + x] as i32;
+    }
+    let res = (round_power_of_two(sum, round_1)
+        - ((1 << (offset_bits - round_1)) + (1 << (offset_bits - round_1 - 1))))
+        as i16;
+    clip_pixel_8(round_power_of_two(res as i32, bits))
+}
+
+/// x86-64 v3 arm of [`convolve_2d_sr`]. Horizontal pass: same 8-wide
+/// shifted-tap trick as [`convolve_x_sr_v3`], storing the `as i16`
+/// truncation through `to_array` (the truncation is load-bearing — values
+/// always fit, but the semantics are C's `int16_t` store, not saturation).
+/// Vertical pass: each tap row is a contiguous `i16x8` load, products
+/// widened to `i32x4` pairs (|im| can exceed what an `i16` product holds),
+/// the final `as i16` + second rounding per lane.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_2d_sr_v3(
+    token: X64V3Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    y_filter: &InterpKernel,
+    round_0: i32,
+    round_1: i32,
+    bits: i32,
+) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let im_h = h + SUBPEL_TAPS - 1;
+    let fo_vert = (SUBPEL_TAPS / 2 - 1) as isize;
+    let fo_horiz = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let offset_bits = 8 + 2 * FILTER_BITS - round_0;
+
+    let mut im_block = alloc::vec![0i16; im_h * w];
+    let cfs_x: [i16x8<_>; SUBPEL_TAPS] =
+        core::array::from_fn(|i| i16x8::splat(token, x_filter[i]));
+    // C adds `1 << (bd + FILTER_BITS - 1)` into the dot-product sum and THEN
+    // `round_power_of_two(.., round_0)` contributes its own `1 << (r0 - 1)`.
+    let off0 = i32x4::splat(
+        token,
+        (1 << (8 + FILTER_BITS - 1)) + if round_0 > 0 { 1 << (round_0 - 1) } else { 0 },
+    );
+    for y in 0..im_h {
+        let row = origin + (y as isize - fo_vert) * stride;
+        let x0 = (fo_horiz - row).max(0).min(w as isize) as usize;
+        let x1 = ((len - 16 - 7 + fo_horiz - row).min(w as isize)).max(x0 as isize) as usize;
+        let imrow = &mut im_block[y * w..y * w + w];
+        for x in 0..x0 {
+            imrow[x] = convolve_2d_sr_hpx(
+                src,
+                y,
+                x,
+                x_filter,
+                fo_vert as i32,
+                fo_horiz as i32,
+                round_0,
+            );
+        }
+        let mut x = x0;
+        while x + 8 <= x1 {
+            let mut lo = i32x4::splat(token, 0);
+            let mut hi = i32x4::splat(token, 0);
+            for (k, cf) in cfs_x.iter().enumerate() {
+                let i = (row + x as isize - fo_horiz + k as isize) as usize;
+                let v = u8x16::load(token, src.data[i..i + 16].try_into().unwrap())
+                    .widen_low()
+                    .bitcast_i16x8();
+                let p = v * *cf;
+                lo += p.widen_low();
+                hi += p.widen_high();
+            }
+            let rl = (lo + off0).shr_arithmetic_uniform(round_0 as u32).to_array();
+            let rh = (hi + off0).shr_arithmetic_uniform(round_0 as u32).to_array();
+            for j in 0..4 {
+                imrow[x + j] = rl[j] as i16;
+                imrow[x + 4 + j] = rh[j] as i16;
+            }
+            x += 8;
+        }
+        for x in x..w {
+            imrow[x] = convolve_2d_sr_hpx(
+                src,
+                y,
+                x,
+                x_filter,
+                fo_vert as i32,
+                fo_horiz as i32,
+                round_0,
+            );
+        }
+    }
+
+    // Vertical pass — the i16 intermediate means tap loads need no widening
+    // from u8, but products widen to i32 (|im| is ~14-bit).
+    let cfs_y: [i32x4<_>; SUBPEL_TAPS] =
+        core::array::from_fn(|i| i32x4::splat(token, y_filter[i] as i32));
+    let offv = i32x4::splat(
+        token,
+        (1 << offset_bits) + if round_1 > 0 { 1 << (round_1 - 1) } else { 0 },
+    );
+    let corr = (1 << (offset_bits - round_1)) + (1 << (offset_bits - round_1 - 1));
+    for y in 0..h {
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        let mut x = 0usize;
+        while x + 8 <= w {
+            let mut lo = i32x4::splat(token, 0);
+            let mut hi = i32x4::splat(token, 0);
+            for (k, cf) in cfs_y.iter().enumerate() {
+                let v = i16x8::load(
+                    token,
+                    im_block[(y + k) * w + x..(y + k) * w + x + 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                lo += v.widen_low() * *cf;
+                hi += v.widen_high() * *cf;
+            }
+            let rl = (lo + offv).shr_arithmetic_uniform(round_1 as u32).to_array();
+            let rh = (hi + offv).shr_arithmetic_uniform(round_1 as u32).to_array();
+            for j in 0..4 {
+                let res = (rl[j] - corr) as i16;
+                drow[x + j] = clip_pixel_8(round_power_of_two(res as i32, bits));
+                let res = (rh[j] - corr) as i16;
+                drow[x + 4 + j] = clip_pixel_8(round_power_of_two(res as i32, bits));
+            }
+            x += 8;
+        }
+        for x in x..w {
+            drow[x] = convolve_2d_sr_vpx(
+                &im_block,
+                w,
+                y,
+                x,
+                y_filter,
+                offset_bits,
+                round_1,
+                bits,
+            );
         }
     }
 }

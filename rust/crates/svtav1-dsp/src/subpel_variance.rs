@@ -337,9 +337,13 @@ fn v_accum_v3(
 /// The streaming body, generic over the tier's two row kernels. The closures
 /// are bound inside an `#[arcane]` wrapper and inherit its target features, so
 /// the whole `h` rows run with ONE target-feature boundary per call.
+/// `W` is the compile-time block width for the standard sizes (`0` =
+/// dynamic fallback). A constant `W` folds into every kernel's `w`
+/// parameter, so the row loops unroll and their scalar tails vanish — the
+/// per-row cost is otherwise dominated by trip-count bookkeeping.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn sub_pixel_variance_streamed<H, V>(
+fn sub_pixel_variance_streamed<const W: usize, H, V>(
     h_row: &H,
     v_accum: &V,
     a: &[u8],
@@ -357,6 +361,8 @@ where
     H: Fn(&[u8], usize, u8, u8, &mut [u16]),
     V: Fn(&[u16], &[u16], &[u8], usize, u8, u8) -> (i32, u32),
 {
+    let w = if W == 0 { w } else { W };
+    debug_assert!(w <= MAX_SUBPEL_W);
     let fx = &BILINEAR_FILTERS_2T[xoffset];
     let fy = &BILINEAR_FILTERS_2T[yoffset];
 
@@ -410,9 +416,29 @@ macro_rules! subpel_variance_variant {
             let va = |p: &[u16], c: &[u16], bb: &[u8], w: usize, g0: u8, g1: u8| {
                 $vk(token, p, c, bb, w, g0, g1)
             };
-            sub_pixel_variance_streamed(
-                &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
-            )
+            match w {
+                4 => sub_pixel_variance_streamed::<4, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                8 => sub_pixel_variance_streamed::<8, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                16 => sub_pixel_variance_streamed::<16, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                32 => sub_pixel_variance_streamed::<32, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                64 => sub_pixel_variance_streamed::<64, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                128 => sub_pixel_variance_streamed::<128, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+                _ => sub_pixel_variance_streamed::<0, _, _>(
+                    &hr, &va, a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+                ),
+            }
         }
     };
 }
