@@ -145,6 +145,26 @@ fi
 # enough to flip two marginal eob-boundary coefficients. Four cells
 # promoted: johnny 256x256 p8, vidyo3 128x128 p6+p8, vidyo3 256x256 p6.
 #
+# 2026-10-08: two corrections to the "encode pass" model above. First,
+# `pic_bypass_encdec` is NOT forced off at bd10 — the
+# `md_config_process.c:1046` reset sits inside the `coded_lossless` arm,
+# so lossy bd10 video at M8+ runs `get_bypass_encdec_default` -> 1 and
+# `encode_b` ships the MD-committed coefficients through `update_b`
+# without re-quantizing. What re-quantizes at 10 bits instead is MDS3
+# itself: `product_coding_loop.c` bumps `ctx->hbd_md = 2` when
+# `bypass_encdec && encoder_bit_depth > 8 && pd_pass == PD_PASS_1 &&
+# perform_md_recon`, so the winner's quantize runs at `full_lambda_md[
+# EB_10_BIT_MD]` — the same arithmetic the post-pass already models.
+# Second, `rate_est_level` is a flat 1 on the video arm
+# (enc_mode_config.c:8942), so `update_skip_ctx_dc_sign_ctx` is ON for
+# every P-frame — the post-pass now derives real `(txb_skip_ctx,
+# dc_sign_ctx)` per TU for luma AND both chroma planes (C's `plane != 0`
+# arm is `ctx_base + 7`, never 0) instead of the allintra-ladder value.
+# Measured on vidyo4 128x128 p8 frame 1: C's MDS3 quantize of a split-TX
+# TU read tsc=2 (coded left neighbour -> `skip_contexts[0][1]`) where the
+# port passed 0 — enough to keep a lone DC C dropped. One cell promoted:
+# vidyo4 128x128 p8.
+#
 # Remaining: the P-slice where frame 0's recon did NOT already match — the
 # inter-mode surface itself, not the pd0/funnel fixes above.
 CELLS=(
@@ -169,7 +189,7 @@ CELLS=(
     "vidyo3         256x256 6 1/1"
     "vidyo3         256x256 8 1/0"
     "vidyo4         128x128 6 1/1"
-    "vidyo4         128x128 8 1/0"
+    "vidyo4         128x128 8 1/1"
     "vidyo4         256x256 6 1/1"
     "vidyo4         256x256 8 1/0"
 )

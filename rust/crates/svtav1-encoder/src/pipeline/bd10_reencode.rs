@@ -246,6 +246,13 @@ pub(super) fn bd10_reencode_luma(
     // `Some` on an inter frame; `None` keeps the frame-level `lambda_bd10`
     // (every SB's factor is the identity 128 on a key frame anyway).
     sb_lambda10: Option<&[crate::pd0::SbInterLambda]>,
+    // Per-SB `rdoq_ctrls->enabled` collected during the mode-decision walk:
+    // C's encode pass quantizes under the SAME `sig_deriv_enc_dec` arm the
+    // SB ran, and the light-PD1 row disables RDOQ outright
+    // (`sig_deriv_enc_dec_light_pd1_default`, `lpd1 > LPD1_LVL_4` → level 0)
+    // where `pcs->rdoq_level` kept it. `None` keeps the frame-level
+    // `rdoq_level` for every SB (key frames, where light-PD1 never fires).
+    sb_enc_rdoq: Option<&[bool]>,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let default_fc;
     let default_cfc;
@@ -318,6 +325,13 @@ pub(super) fn bd10_reencode_luma(
         // here, where `sb_idx` is known, so every leaf of this SB
         // quantizes against its own lambda.
         let lambda = sb_lambda10.map_or(lambda_bd10, |m| u64::from(m[sb_idx].full_10bit));
+        // `rdoq_ctrls->enabled` is per-SB too — a light-PD1 arm zeroes the
+        // level, which fp-quantizes instead of running the trellis.
+        let rdoq_level = if sb_enc_rdoq.map_or(true, |m| m[sb_idx]) {
+            rdoq_level
+        } else {
+            0
+        };
         bd10_reencode_node(
             base_qindex == 0,
             sb_size / 4,
@@ -446,7 +460,7 @@ fn bd10_reencode_node(
                         bd,
                     );
                     let (tsc, dsc) = if real_coeff_ctx {
-                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4, bw, bh)
+                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4, bw, bh, 0)
                     } else {
                         (0, 0)
                     };
@@ -704,7 +718,7 @@ fn bd10_reencode_node(
             // C disables context updates at the faster presets. Otherwise
             // derive contexts from the native levels committed in decode order.
             let (txb_skip_ctx, dc_sign_ctx) = if real_coeff_ctx {
-                coeff_neighbors.contexts(x, y, bw, bh, bw, bh)
+                coeff_neighbors.contexts(x, y, bw, bh, bw, bh, 0)
             } else {
                 (0, 0)
             };
@@ -1215,6 +1229,13 @@ pub(super) fn bd10_reencode_chroma(
     // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
+    // C `ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx` — derives a real
+    // `(txb_skip_ctx, dc_sign_ctx)` per chroma TU through the
+    // `cb_`/`cr_dc_sign_level_coeff_na` neighbour arrays
+    // (full_loop.c:2286-2296). TRUE on the video arm (`rate_est_level` is a
+    // flat 1 there, enc_mode_config.c:8942), so the hardcoded `0,0` this
+    // pass used to feed `optimize_b` was wrong on every video frame.
+    real_coeff_ctx: bool,
     edge_filter: bool,
     bd: u8,
     // [SVT_HDR_MODE] per-plane QM levels [U, V] (15 = off). C derives them
@@ -1239,6 +1260,10 @@ pub(super) fn bd10_reencode_chroma(
     // C hands the chroma quantizer the same `full_lambda_md[EB_10_BIT_MD]`
     // (coding_loop.c:517/564), per-SB like the luma value.
     sb_lambda10: Option<&[crate::pd0::SbInterLambda]>,
+    // Per-SB `rdoq_ctrls->enabled` — see `bd10_reencode_luma`'s
+    // `sb_enc_rdoq`. The chroma quantize gates on the same per-SB row
+    // (coding_loop.c's chroma TU loop reads `ctx->rdoq_ctrls` too).
+    sb_enc_rdoq: Option<&[bool]>,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
     let default_fc;
     let default_cfc;
@@ -1274,6 +1299,11 @@ pub(super) fn bd10_reencode_chroma(
     // sequence header's edge filter dropped the whole frame out of the
     // re-encode. Sized on LUMA coordinates because the walk carries those.
     let mut mode_neighbors = Bd10ModeNeighbors::new(cframe_w * 2, cframe_h * 2)?;
+    // Per-plane coefficient-context grids — C's `cb_`/`cr_dc_sign_level_
+    // coeff_na`, indexed in chroma 4x4 units (chroma px / 4). Only read when
+    // `real_coeff_ctx`; allocated unconditionally so `enter_sb` stays cheap.
+    let mut coeff_neighbors_u = Bd10CoeffNeighbors::new(cframe_w, cframe_h)?;
+    let mut coeff_neighbors_v = Bd10CoeffNeighbors::new(cframe_w, cframe_h)?;
     // The committed mode-info grid `inter_chroma_4xn_pred` reads for a sub-8
     // leaf's covered cells — the MD funnel stamps `commit_leaf`'s; this pass
     // rebuilds it from the committed trees (`stamp_inter_mi_grid`). Built only
@@ -1305,9 +1335,24 @@ pub(super) fn bd10_reencode_chroma(
         let tile_mi_l =
             tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, cframe_w * 2, cframe_h * 2);
         mode_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi_l);
+        if real_coeff_ctx {
+            // Chroma-domain tile bounds: the coeff grids index chroma 4x4
+            // units, so the SB span is `sb_size / 2` px.
+            let tile_mi_c =
+                tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size / 2, cframe_w, cframe_h);
+            let (cx0, cy0, csz) = (sb_col * sb_size / 2, sb_row * sb_size / 2, sb_size / 2);
+            coeff_neighbors_u.enter_sb(cx0, cy0, csz, tile_mi_c);
+            coeff_neighbors_v.enter_sb(cx0, cy0, csz, tile_mi_c);
+        }
         // Per-SB `full_lambda_md[EB_10_BIT_MD]` — same value the luma pass
         // resolved for this SB.
         let lambda = sb_lambda10.map_or(lambda, |m| u64::from(m[sb_idx].full_10bit));
+        // Same per-SB `rdoq_ctrls->enabled` the luma pass applied.
+        let rdoq_level = if sb_enc_rdoq.map_or(true, |m| m[sb_idx]) {
+            rdoq_level
+        } else {
+            0
+        };
         bd10_reencode_chroma_node(
             sb_size / 4,
             tree,
@@ -1326,6 +1371,9 @@ pub(super) fn bd10_reencode_chroma(
             lambda,
             allintra_rd_mult,
             &rates,
+            real_coeff_ctx,
+            &mut coeff_neighbors_u,
+            &mut coeff_neighbors_v,
             edge_filter,
             cframe_w,
             cframe_h,
@@ -1384,13 +1432,17 @@ fn bd10_reencode_chroma_plane(
     // (`cfl_prediction` regenerates DC at :3798-3801 before calling), so the
     // mode passed to `predict_unit_hbd` is forced to UV_DC_PRED here.
     cfl: Option<(&[i16], i32)>,
+    // The per-TU `(txb_skip_ctx, dc_sign_ctx)` RDOQ contexts — C's
+    // `get_txb_ctx(COMPONENT_CHROMA, ..)` output (full_loop.c:2286-2296) or
+    // `0,0` when `update_skip_ctx_dc_sign_ctx` is off.
+    txb_ctx: (usize, usize),
     // An INTER leaf's motion-compensated chroma prediction, already built by
     // the caller from the 10-bit reference. `Some` replaces the intra
     // prediction entirely — C codes no intra `uv_mode` on an inter block, so
     // running the intra predictor here would price and reconstruct a mode the
     // stream does not describe.
     inter_pred: Option<&[u16]>,
-) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
+) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>, u8) {
     let mut pred = alloc::vec![0u16; cw * ch];
     if let Some(p) = inter_pred {
         // An INTER leaf: the caller already motion-compensated this plane from
@@ -1431,8 +1483,8 @@ fn bd10_reencode_chroma_plane(
         ch,
         uv_tt,
         1, // chroma plane
-        0, // txb_skip_ctx (eff-M9 rate_est_level 0)
-        0, // dc_sign_ctx
+        txb_ctx.0,
+        txb_ctx.1,
         qt,
         rdoq_level,
         lambda,
@@ -1460,7 +1512,7 @@ fn bd10_reencode_chroma_plane(
         .iter()
         .map(|&s| (s >> shift).min(255) as u8)
         .collect();
-    (out.qcoeff, out.eob, rec_u8)
+    (out.qcoeff, out.eob, rec_u8, out.cul)
 }
 
 /// The chroma half of the `skip_mode` contract — see the luma twin in
@@ -1477,7 +1529,7 @@ fn bd10_chroma_skip_plane(
     ch: usize,
     inter_pred: &[u16],
     bd: u8,
-) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
+) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>, u8) {
     let cwr = cw.min(cstride.saturating_sub(cx));
     for r in 0..ch {
         let drow = (cy + r) * cstride + cx;
@@ -1490,7 +1542,7 @@ fn bd10_chroma_skip_plane(
         .iter()
         .map(|&s| (s >> shift).min(255) as u8)
         .collect();
-    (alloc::vec![0i32; cw * ch], 0, rec_u8)
+    (alloc::vec![0i32; cw * ch], 0, rec_u8, 0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1517,6 +1569,12 @@ fn bd10_reencode_chroma_node(
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
+    // C `rate_est_ctrls.update_skip_ctx_dc_sign_ctx` + the two per-plane NA
+    // grids (`cb_`/`cr_dc_sign_level_coeff_na`) it gates
+    // (full_loop.c:2286-2296).
+    real_coeff_ctx: bool,
+    coeff_neighbors_u: &mut Bd10CoeffNeighbors,
+    coeff_neighbors_v: &mut Bd10CoeffNeighbors,
     edge_filter: bool,
     cframe_w: usize,
     cframe_h: usize,
@@ -1754,7 +1812,16 @@ fn bd10_reencode_chroma_node(
             let forced_zero = d.inter.is_some()
                 && (d.inter.as_deref().is_some_and(|ic| ic.skip_mode)
                     || committed_skip.contains(&(x as u32, y as u32)));
-            let (u_q, u_eob, u_rec) = if forced_zero {
+            // C derives the chroma TU's `(txb_skip_ctx, dc_sign_ctx)` from
+            // the plane's own coeff NA right before its quantize
+            // (full_loop.c:2286-2296, and the Cr twin below); a
+            // `forced_zero` leaf writes cul=0 like the luma skip arm.
+            let u_ctx = if real_coeff_ctx && !forced_zero {
+                coeff_neighbors_u.contexts(cx, cy, cw, ch, cw, ch, 1)
+            } else {
+                (0, 0)
+            };
+            let (u_q, u_eob, u_rec, u_cul) = if forced_zero {
                 bd10_chroma_skip_plane(
                     recon10_u,
                     cstride,
@@ -1788,10 +1855,19 @@ fn bd10_reencode_chroma_node(
                     bd,
                     qm_uv[0],
                     cfl_u,
+                    u_ctx,
                     inter_u.as_deref(),
                 )
             };
-            let (v_q, v_eob, v_rec) = if forced_zero {
+            if real_coeff_ctx {
+                coeff_neighbors_u.record(cx, cy, cw, ch, u_cul);
+            }
+            let v_ctx = if real_coeff_ctx && !forced_zero {
+                coeff_neighbors_v.contexts(cx, cy, cw, ch, cw, ch, 1)
+            } else {
+                (0, 0)
+            };
+            let (v_q, v_eob, v_rec, v_cul) = if forced_zero {
                 bd10_chroma_skip_plane(
                     recon10_v,
                     cstride,
@@ -1825,9 +1901,13 @@ fn bd10_reencode_chroma_node(
                     bd,
                     qm_uv[1],
                     cfl_v,
+                    v_ctx,
                     inter_v.as_deref(),
                 )
             };
+            if real_coeff_ctx {
+                coeff_neighbors_v.record(cx, cy, cw, ch, v_cul);
+            }
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
             mode_neighbors.record(
                 x,
@@ -1874,6 +1954,9 @@ fn bd10_reencode_chroma_node(
                     lambda,
                     allintra_rd_mult,
                     rates,
+                    real_coeff_ctx,
+                    coeff_neighbors_u,
+                    coeff_neighbors_v,
                     edge_filter,
                     cframe_w,
                     cframe_h,
@@ -2124,7 +2207,7 @@ fn bd10_reencode_leaf_txs(
                 ),
             }
             let (tsc, dsc) = if real_coeff_ctx {
-                coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh, bw, bh)
+                coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh, bw, bh, 0)
             } else {
                 (0, 0)
             };

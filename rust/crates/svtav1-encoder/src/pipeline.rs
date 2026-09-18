@@ -5093,6 +5093,12 @@ impl EncodePipeline {
         // placed at their raster positions instead of appended.
         let mut tree_slots: Vec<Option<crate::partition::PartitionTree>> =
             (0..sb_cols * sb_rows).map(|_| None).collect();
+        // Same raster layout as `tree_slots`: the per-SB encode-pass RDOQ
+        // enable (`rdoq_ctrls->enabled`) collected during the walk — see the
+        // `encode_tile_rows` return tuple. Filled to the frame default so an
+        // SB whose slot never received a tree reads C's regular arm.
+        let mut sb_enc_rdoq: Vec<bool> =
+            vec![c_quant.as_ref().map_or(false, |q| q.rdoq_level != 0); sb_cols * sb_rows];
 
         // ---- bd10 FULL-RD 10-bit post-MD canvas (frame scope) ----------
         // Each tile returns its own frame-extent canvas with only its SB
@@ -5161,12 +5167,15 @@ impl EncodePipeline {
         // the palette pair) — so it was a whole extra allocate+memcpy+free of
         // the frame's entire decision set for a value that is dropped a few
         // lines later. `tile_recons` is not read after this loop.
-        for (tile_idx, (tile_recon, tile_trees, _canvas10)) in tile_recons.into_iter().enumerate() {
+        for (tile_idx, (tile_recon, tile_trees, _canvas10, tile_rdoq)) in
+            tile_recons.into_iter().enumerate()
+        {
             let (tile_sb_row_start, tile_sb_row_end) =
                 tile_grid.row_span(tile_idx / tile_grid.tile_cols);
             let (tile_sb_col_start, tile_sb_col_end) =
                 tile_grid.col_span(tile_idx % tile_grid.tile_cols);
             let mut tile_trees = tile_trees.into_iter();
+            let mut tile_rdoq = tile_rdoq.into_iter();
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check (no-op
                 // for the default `Unstoppable` token — `may_stop()` is false).
@@ -5178,6 +5187,9 @@ impl EncodePipeline {
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     crate::stop_check(&stop)?;
                     tree_slots[sb_row * sb_cols + sb_col] = tile_trees.next();
+                    if let Some(en) = tile_rdoq.next() {
+                        sb_enc_rdoq[sb_row * sb_cols + sb_col] = en;
+                    }
                 }
             }
             let mut offset = 0;
@@ -5350,34 +5362,43 @@ impl EncodePipeline {
             // `pcs->hbd_md` gates only the MD quantization depth
             // (`is_islice ? 2 : 0` at M6+, `is_base ? 2 : 0` at M0..M5 —
             // TRACED 2026-09-18: the johnny p6 cell's P-frame derives 0). The
-            // ENCODE pass is different: `md_config_process.c:1046` forces
-            // `pic_bypass_encdec = 0` at any bit depth > 8, so on EVERY bd10
-            // frame — I or P — C runs coding_loop's true 10-bit re-quantize
-            // (`ed_ctx->bit_depth = encoder_bit_depth`, `is_encode_pass =
-            // true`). The earlier "C ships the u8-domain coefficients at
-            // hbd_md == 0" reading conflated the MD quantizer
-            // (full_loop.c:2047, `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT`)
-            // with the encode pass; the QLEV wrap shows `enc=1 bd=10` on
-            // P-frames, and the u8 levels the port shipped diverge on
-            // near-threshold coefficients. `coded_lossless` still needs the
-            // post-pass on every frame — a lossless 10-bit stream must code
-            // the low 2 bits, which an 8-bit-domain level cannot carry.
+            // residual 10-bit re-quantize this post-pass models is C's at TWO
+            // different sites depending on `pic_bypass_encdec`:
+            // - bypass off (bd10 video <= M7): the ENCODE pass
+            //   (`av1_encode_loop` -> `svt_aom_quantize_inv_quantize` with
+            //   `is_encode_pass = true`, `ed_ctx->bit_depth =
+            //   encoder_bit_depth`).
+            // - bypass on (bd10 video M8+, `get_bypass_encdec_default`,
+            //   enc_mode_config.c:8426-8433): `encode_b` early-returns
+            //   through `update_b` and ships the MD-committed levels — but
+            //   `product_coding_loop.c:9649` first bumps `ctx->hbd_md = 2`
+            //   for `bypass_encdec && encoder_bit_depth > 8 &&
+            //   pd_pass == PD_PASS_1 && perform_md_recon`, so MDS3 itself
+            //   quantizes the winner at TRUE 10-bit (`full_lambda_md[
+            //   EB_10_BIT_MD]`). TRACED 2026-10-08 on vidyo4 p8: zero
+            //   `is_encode_pass` quantize calls, and the MD-side `lam`
+            //   equals the 10-bit chain exactly.
+            // Either way the coded coefficients are a 10-bit re-quantize of
+            // the committed TUs, so the post-pass runs in both modes.
             let bd10_postpass_runs = !bd10_full_rd
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter, coded_lossless));
-            // Native luma supports real coefficient contexts. Chroma's
-            // level-only pass still requires zero contexts, so full-RD color
-            // levels must remain authoritative at lower presets.
-            debug_assert!(
-                !bd10_postpass_runs
-                    || !self.chroma_420
-                    || !crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset)
-                        .real_coeff_ctx,
-                "bd10 level-only post-pass would run where real_coeff_ctx is true \
-                 (preset {}): chroma post-pass requires zero contexts",
-                self.speed_config.preset
-            );
+            // `update_skip_ctx_dc_sign_ctx` for THIS arm — C gates the
+            // per-TU `get_txb_ctx` derivation (and its RDOQ input) on it
+            // (`rate_est_ctrls` at enc_mode_config.c:6428). `for_preset`
+            // bakes the allintra ladder (real ctx only <= M6); the video arm
+            // is a flat `rate_est_level = 1` (:8942), so P/B-frames derive
+            // REAL coefficient contexts at every preset — MEASURED on the
+            // vidyo4 p8 cell, where C's MDS3 quantize read tsc=2 on a
+            // split-TX TU whose coded left neighbour feeds the
+            // `skip_contexts` table.
+            let postpass_real_ctx =
+                crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(
+                    sc_arm,
+                    crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
+                ))
+                .1;
             // Diagnostic: which 10-bit canvas the post-filter searches (DLF
             // level, CDEF strength, Wiener LR) end up reading. The two
             // producers — the FULL-RD funnel's committed per-block recon and
@@ -5481,8 +5502,7 @@ impl EncodePipeline {
                     cq.rdoq_level,
                     lambda_bd10,
                     cq.allintra_rd_mult,
-                    crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset)
-                        .real_coeff_ctx,
+                    postpass_real_ctx,
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
@@ -5503,6 +5523,12 @@ impl EncodePipeline {
                     // by SB through `me_q_index - base_q_idx` even with
                     // `delta_q_present == 0`.
                     sb_inter_lambda.as_deref(),
+                    // Per-SB `rdoq_ctrls->enabled` — the light-PD1 encode arm
+                    // can turn RDOQ off where `pcs->rdoq_level` kept it
+                    // (`sig_deriv_enc_dec_light_pd1_default`, lpd1 > L4 →
+                    // level 0). Uniform `rdoq_level != 0` on key frames, so
+                    // the stills gates are byte-inert.
+                    Some(&sb_enc_rdoq),
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -5562,6 +5588,7 @@ impl EncodePipeline {
                         cq.rdoq_level,
                         lambda_bd10,
                         cq.allintra_rd_mult,
+                        postpass_real_ctx,
                         bd10_edge_filter,
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
@@ -5570,6 +5597,7 @@ impl EncodePipeline {
                         primary_ref_cdfs.as_deref(),
                         &committed_skip,
                         sb_inter_lambda.as_deref(),
+                        Some(&sb_enc_rdoq),
                     )?;
                     // Crop the SB-extent canvases to the in-frame planes every
                     // downstream consumer expects (the bd10 deblock-level /
@@ -11473,8 +11501,14 @@ fn encode_block_syntax(
                         .iter()
                         .filter(|&&v| v != 0)
                         .count();
+                    let list: alloc::string::String = decision.txb_qcoeffs[txb]
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &v)| v != 0)
+                        .map(|(i, &v)| alloc::format!("{i}:{v},"))
+                        .collect();
                     eprintln!(
-                        "PACKTXB blk=({block_x},{block_y}) {w}x{h} d={} ibc={} txb={txb} pos=({rel_x},{rel_y}) tt={} nz={nz}",
+                        "PACKTXB blk=({block_x},{block_y}) {w}x{h} d={} ibc={} txb={txb} pos=({rel_x},{rel_y}) tt={} nz={nz} cf=[{list}]",
                         decision.tx_depth, decision.use_intrabc, decision.txb_tx_types[txb],
                     );
                 }
@@ -12383,7 +12417,11 @@ impl Bd10CoeffNeighbors {
     /// `leaf_w`x`leaf_h` pixels. `leaf == tu` is C's `plane_bsize ==
     /// txsize_to_bsize[tx_size]` (entropy_coding.c:284): a tx-split leaf's TU
     /// does NOT span the block, so `txb_skip_ctx` comes from the
-    /// `skip_contexts` table, not the 0 shortcut.
+    /// `skip_contexts` table, not the 0 shortcut. `plane` selects C's
+    /// `plane != 0` arm (:310-314): `ctx_base + (is_chroma_larger ? 10 : 7)`
+    /// where `is_chroma_larger` is `num_pels_log2(plane_bsize) >
+    /// num_pels_log2(tx_bsize)` — leaf pels > TU pels. Chroma callers index
+    /// this grid in CHROMA coordinates (x,y,w,h in chroma px).
     fn contexts(
         &self,
         x: usize,
@@ -12392,14 +12430,15 @@ impl Bd10CoeffNeighbors {
         h: usize,
         leaf_w: usize,
         leaf_h: usize,
+        plane: usize,
     ) -> (usize, usize) {
         let (mx, my) = (x / 4, y / 4);
         crate::entropy::coeff_c::get_txb_ctx(
-            0,
+            plane,
             &self.above[mx..(mx + w / 4).min(self.above.len())],
             &self.left[my..(my + h / 4).min(self.left.len())],
             w == leaf_w && h == leaf_h,
-            false,
+            leaf_w * leaf_h > w * h,
         )
     }
 
@@ -12905,6 +12944,14 @@ fn encode_tile_rows(
         // like the u8 `tile_frame_recon`. `None` outside the bd10 full-RD
         // envelope. See the merge site.
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
+        // Per-SB encode-pass RDOQ enable, aligned with `tile_trees`: C's
+        // `ed_ctx->md_ctx->rdoq_ctrls->enabled`, resolved per superblock by
+        // the SAME `sig_deriv_enc_dec` arm the mode-decision walk ran — a
+        // light-PD1 superblock's row can turn RDOQ off
+        // (`sig_deriv_enc_dec_light_pd1_default`, `lpd1 > LPD1_LVL_4` →
+        // level 0) where the frame-level `pcs->rdoq_level` kept it. The bd10
+        // re-encode post-pass quantizes under this value.
+        Vec<bool>,
     )>,
 > {
     // Mode-decision chroma blocks can cross the aligned right edge. Give
@@ -12942,6 +12989,7 @@ fn encode_tile_rows(
         Vec<u8>,
         Vec<crate::partition::PartitionTree>,
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
+        Vec<bool>,
     )> {
         let (tile_sb_row_start, tile_sb_row_end) =
             tile_grid.row_span(tile_idx / tile_grid.tile_cols);
@@ -13539,6 +13587,9 @@ fn encode_tile_rows(
         // the same reason `tile_recon` is reserved above. A `PartitionTree` is
         // a large value, so each doubling memcpy's the whole array.
         let mut tile_trees: Vec<crate::partition::PartitionTree> =
+            svtav1_types::try_with_capacity!((tile_sb_row_end - tile_sb_row_start) * tile_sb_cols)?;
+        // Aligned with `tile_trees` — see the return-tuple comment.
+        let mut tile_enc_rdoq: Vec<bool> =
             svtav1_types::try_with_capacity!((tile_sb_row_end - tile_sb_row_start) * tile_sb_cols)?;
         // C `pcs->sb_intra` / `pcs->sb_skip` MID-WALK (`update_b`,
         // coding_loop.c:1606/1643): `pd0_detector` reads the LEFT and TOP
@@ -14339,6 +14390,10 @@ fn encode_tile_rows(
                 // SB itself — see the `units` comment above).
                 let mut unit_results: Vec<crate::partition::PartitionResult> =
                     Vec::with_capacity(units.len());
+                // Per-unit encode-pass RDOQ enable (C's per-SB
+                // `ed_ctx->md_ctx->rdoq_ctrls->enabled`), folded into one
+                // `tile_enc_rdoq` entry when the units merge below.
+                let mut unit_enc_rdoq: Vec<bool> = Vec::with_capacity(units.len());
                 // SB128 depth-refinement: C's `get_max_min_pd0_depths`
                 // (enc_dec_process.c:1943) derives max/min PD0 block sizes over
                 // the WHOLE 128 SB pc_tree (all four 64x64 quadrants), and feeds
@@ -14428,6 +14483,13 @@ fn encode_tile_rows(
                                 temporal_layer,
                             )
                             .enabled);
+                    // C `ed_ctx->md_ctx->rdoq_ctrls->enabled` for the encode
+                    // pass — `set_rdoq_controls(pcs->rdoq_level)` on the
+                    // regular arm (`sig_deriv_enc_dec_default`); a light-PD1
+                    // superblock's funnel-ctx site below overrides it with
+                    // that arm's row (`sig.rdoq.enabled`).
+                    let mut enc_rdoq_enabled =
+                        c_quant.as_ref().map_or(false, |q| q.rdoq_level != 0);
                     let sb_result = if coded_lossless && !use_funnel {
                         let tree = crate::pd0::lossless_tree(x0, y0, unit_size, w, h);
                         crate::lossless_mono::encode_tree(
@@ -14635,6 +14697,12 @@ fn encode_tile_rows(
                             // a leftover from another superblock could not be
                             // read anyway.
                             let mut inter_sq_me = crate::inter_search_arm::SqMeState::default();
+                            // Same per-SB `sig_deriv` arm the funnel ctx below
+                            // encodes: a light-PD1 superblock's `rdoq_ctrls`
+                            // row, not the frame `rdoq_level`.
+                            if let Some(l) = sb_lpd1.as_ref() {
+                                enc_rdoq_enabled = l.sig.rdoq.enabled;
+                            }
                             let mut funnel_ctx = if use_funnel {
                                 let (u_src, v_src) = chroma_src.unwrap();
                                 Some(crate::leaf_funnel::FunnelCtx {
@@ -15609,6 +15677,12 @@ fn encode_tile_rows(
                                         )
                                     })
                                 });
+                                // Encode pass quantizes under the SAME per-SB
+                                // `sig_deriv` arm — a light-PD1 row can turn
+                                // RDOQ off where `pcs->rdoq_level` kept it.
+                                if let Some(l) = sb_lpd1.as_ref() {
+                                    enc_rdoq_enabled = l.sig.rdoq.enabled;
+                                }
                                 #[cfg(feature = "std")]
                                 if crate::dbgenv::pd0dbg()
                                     && crate::depth_refine::nsqdbg_here(x0, y0)
@@ -15751,6 +15825,7 @@ fn encode_tile_rows(
                         )
                     };
                     unit_results.push(sb_result);
+                    unit_enc_rdoq.push(enc_rdoq_enabled);
                 } // end per-b64 coding-unit loop
 
                 // Merge the b64 units into this SUPERBLOCK's result. At SB64
@@ -15762,6 +15837,12 @@ fn encode_tile_rows(
                 // bsl=4 (ctx 16..19), then the quadrants in Z-order.
                 let sb_result =
                     merge_sb_units(unit_results, sb_size, unit_size, ref_frame_data.is_none());
+                // SB128 fold of the per-unit RDOQ enables: C resolves
+                // `rdoq_ctrls` once per 128 SB while the funnel resolves lpd1
+                // per 64 unit, so disagreeing quadrants are already an MD-side
+                // approximation — `any` keeps RDOQ where any unit kept it.
+                // Identity at SB64 (`units.len() == 1`).
+                let sb_enc_rdoq = unit_enc_rdoq.iter().any(|&e| e);
 
                 // Chain: evolve this SB's contexts by re-coding the decided
                 // tree (throwaway arithmetic state; only the CDF updates
@@ -15866,6 +15947,7 @@ fn encode_tile_rows(
                     sb_intra_acc[sb_index] = u8::from(intra);
                     sb_skip_acc[sb_index] = u8::from(skip);
                     tile_trees.push(tree);
+                    tile_enc_rdoq.push(sb_enc_rdoq);
                 }
             }
         }
@@ -15909,7 +15991,7 @@ fn encode_tile_rows(
             tile_recon.capacity(),
             "tile_recon grew past its reservation"
         );
-        Ok((tile_recon, tile_trees, tile_canvas10))
+        Ok((tile_recon, tile_trees, tile_canvas10, tile_enc_rdoq))
     };
 
     // Parallel encoding with std::thread::scope when available, BOUNDED to
@@ -15988,35 +16070,35 @@ mod tests {
         let mut neighbors = Bd10CoeffNeighbors::new(136, 136).unwrap();
         let tile = TileMi::whole_frame(136, 136);
         neighbors.enter_sb(0, 0, 64, tile);
-        assert_eq!(neighbors.contexts(0, 0, 8, 8, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(0, 0, 8, 8, 8, 8, 0), (0, 0));
         neighbors.record(0, 0, 8, 16, 64 | 7); // negative DC
-        assert_eq!(neighbors.contexts(8, 0, 8, 16, 8, 16), (0, 1));
+        assert_eq!(neighbors.contexts(8, 0, 8, 16, 8, 16, 0), (0, 1));
         neighbors.record(8, 0, 8, 16, 128 | 2); // positive DC
-        assert_eq!(neighbors.contexts(16, 0, 8, 16, 8, 16), (0, 2));
+        assert_eq!(neighbors.contexts(16, 0, 8, 16, 8, 16, 0), (0, 2));
         neighbors.record(0, 0, 64, 64, 64 | 3);
         neighbors.enter_sb(64, 0, 64, tile);
-        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8), (0, 1));
+        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8, 0), (0, 1));
         neighbors.enter_sb(0, 64, 64, tile);
-        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8), (0, 1));
+        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8, 0), (0, 1));
 
         let right_tile = TileMi {
             mi_col_start: 16,
             ..tile
         };
         neighbors.enter_sb(64, 0, 64, right_tile);
-        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(64, 0, 8, 8, 8, 8, 0), (0, 0));
         let bottom_tile = TileMi {
             mi_row_start: 16,
             ..tile
         };
         neighbors.enter_sb(0, 64, 64, bottom_tile);
-        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8), (0, 0));
+        assert_eq!(neighbors.contexts(0, 64, 8, 8, 8, 8, 0), (0, 0));
 
         // A legal straddling leaf records only the visible frame spans.
         neighbors.record(128, 128, 16, 16, 128 | 1);
-        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16), (0, 2));
+        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16, 0), (0, 2));
         neighbors.record(128, 128, 16, 16, 0);
-        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16), (0, 0));
+        assert_eq!(neighbors.contexts(128, 128, 16, 16, 16, 16, 0), (0, 0));
     }
 
     use super::*;
