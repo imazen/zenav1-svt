@@ -1929,33 +1929,69 @@ pub(super) fn inject_candidates(
             // MDS0 -> MDS1 survivor ranking. `build_inter_candidates`
             // prices the RATE and the cost is re-formed here so the two
             // lanes are comparable.
-            let satd = if frame.mds0_ssd {
-                let mut sse: u64 = 0;
-                for r in 0..h {
-                    let srow = y_src_off + r * y_src_stride;
-                    for col in 0..w {
-                        let d = i64::from(y_src[srow + col]) - i64::from(c.y_pred[r * w + col]);
-                        sse += (d * d) as u64;
-                    }
-                }
-                sse
-            } else if mds0_use_hadamard {
-                hadamard_satd(y_src, y_src_stride, y_src_off, &c.y_pred, w, h)
+            //
+            // At bd10 C scores the u16 buffers —
+            // `spatial_full_dist_type_fun` for `enc_mode <= M7`,
+            // `vf_hbd_10` variance above it — NOT the 8-bit view, whose
+            // downconverted SSE runs ~1/16 of the true one and re-orders
+            // near-ties (MEASURED johnny 128x128 p6 bd10 frame 1
+            // mi=(16,8): C's compound NEW_NEWMV dist 234912 beats
+            // NEARMV's 278496; the u8 canvas flipped it).
+            let (satd, d, lam) = if bd10_funnel {
+                let metric10 = if frame.mds0_ssd {
+                    svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                        blk_y_src10,
+                        0,
+                        w,
+                        &c.y_pred10,
+                        0,
+                        w,
+                        w,
+                        h,
+                    )
+                } else if mds0_use_hadamard {
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &c.y_pred10, w, h)
+                } else {
+                    residual_variance_hbd(blk_y_src10, w, 0, 0, &c.y_pred10, w, h)
+                };
+                (
+                    metric10,
+                    if frame.mds0_ssd {
+                        metric10
+                    } else {
+                        metric10 << 4
+                    },
+                    lambda_bd10_fast,
+                )
             } else {
-                // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)`,
-                // product_coding_loop.c:1296-1299 — same call as the intra
-                // variance arm above.
-                u64::from(svtav1_dsp::variance::variance_diff(
-                    &c.y_pred,
-                    w,
-                    &y_src[y_src_off..],
-                    y_src_stride,
-                    w,
-                    h,
-                ))
+                let satd = if frame.mds0_ssd {
+                    let mut sse: u64 = 0;
+                    for r in 0..h {
+                        let srow = y_src_off + r * y_src_stride;
+                        for col in 0..w {
+                            let d = i64::from(y_src[srow + col]) - i64::from(c.y_pred[r * w + col]);
+                            sse += (d * d) as u64;
+                        }
+                    }
+                    sse
+                } else if mds0_use_hadamard {
+                    hadamard_satd(y_src, y_src_stride, y_src_off, &c.y_pred, w, h)
+                } else {
+                    // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)`,
+                    // product_coding_loop.c:1296-1299 — same call as the intra
+                    // variance arm above.
+                    u64::from(svtav1_dsp::variance::variance_diff(
+                        &c.y_pred,
+                        w,
+                        &y_src[y_src_off..],
+                        y_src_stride,
+                        w,
+                        h,
+                    ))
+                };
+                (satd, if frame.mds0_ssd { satd } else { satd << 4 }, lambda)
             };
             let flr = u64::from(c.fast_luma_rate);
-            let d = if frame.mds0_ssd { satd } else { satd << 4 };
             // C's `*(cand_bf->fast_cost) = svt_aom_inter_fast_cost(...)`
             // (product_coding_loop.c:1342) charges the SKIP-MODE rate when
             // `skip_mode_rate < luma_rate` (rd_cost.c:997-1003). The cost is
@@ -1980,9 +2016,9 @@ pub(super) fn inject_candidates(
             // C's `SVT_IFCOST` dump showed the NEWMV candidates injected but
             // never fast-costed. A pruned candidate carries MAX_MODE_COST
             // into the pool exactly like the intra lane's.
-            let mut fast_cost = rdcost(lambda, charged, d);
+            let mut fast_cost = rdcost(lam, charged, d);
             if let (Some(th), Some(best)) = (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
-                if 100i128 * (i128::from(rdcost(lambda, 0, d)) - i128::from(best))
+                if 100i128 * (i128::from(rdcost(lam, 0, d)) - i128::from(best))
                     > i128::from(best) * i128::from(th)
                 {
                     fast_cost = crate::port_md::lpd1_loop::MAX_MODE_COST;
