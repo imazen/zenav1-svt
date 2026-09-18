@@ -46,6 +46,8 @@
 
 pub mod tables;
 
+#[allow(unused_imports)]
+use archmage::prelude::*;
 use svtav1_types::block::BlockSize;
 use svtav1_types::motion::{Mv, TransformationType, WarpedMotionParams};
 use svtav1_types::tables::block::{BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE};
@@ -589,6 +591,118 @@ pub fn warp_affine(
     gamma: i16,
     delta: i16,
 ) {
+    incant!(
+        warp_affine_impl(
+            mat,
+            reference,
+            width,
+            height,
+            stride,
+            pred,
+            dst,
+            p_col,
+            p_row,
+            p_width,
+            p_height,
+            p_stride,
+            subsampling_x,
+            subsampling_y,
+            conv_params,
+            alpha,
+            beta,
+            gamma,
+            delta
+        ),
+        [v3, scalar]
+    )
+}
+
+/// One 8x8 sub-block's projected origin and sub-sample offsets — the block
+/// header of `svt_av1_warp_affine_c` (warped_motion.c:604-621). The centre of
+/// the block is projected to luma coordinates (if in a subsampled chroma
+/// plane), transformed, then converted back.
+#[derive(Clone, Copy)]
+struct WarpGeom {
+    ix4: i32,
+    iy4: i32,
+    sx4: i32,
+    sy4: i32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warp_affine_geom(
+    mat: &[i32; 6],
+    j: i32,
+    i: i32,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) -> WarpGeom {
+    let src_x = (j + 4) << subsampling_x;
+    let src_y = (i + 4) << subsampling_y;
+    let dst_x = mat[2]
+        .wrapping_mul(src_x)
+        .wrapping_add(mat[3].wrapping_mul(src_y))
+        .wrapping_add(mat[0]);
+    let dst_y = mat[4]
+        .wrapping_mul(src_x)
+        .wrapping_add(mat[5].wrapping_mul(src_y))
+        .wrapping_add(mat[1]);
+    let x4 = dst_x >> subsampling_x;
+    let y4 = dst_y >> subsampling_y;
+
+    let ix4 = x4 >> WARPEDMODEL_PREC_BITS;
+    let mut sx4 = x4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
+    let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
+    let mut sy4 = y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
+
+    sx4 += i32::from(alpha) * (-4) + i32::from(beta) * (-4);
+    sy4 += i32::from(gamma) * (-4) + i32::from(delta) * (-4);
+
+    sx4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
+    sy4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
+
+    WarpGeom {
+        ix4,
+        iy4,
+        sx4,
+        sy4,
+    }
+}
+
+/// The two separable filter passes of `svt_av1_warp_affine_c` for ONE 8x8
+/// sub-block — horizontal into the 15x8 `tmp` (rows aligned with the REFERENCE
+/// image, columns with the DESTINATION), then vertical into the output.
+/// `k_end`/`l_end` clip the OUTPUT extent for partial edge sub-blocks; the
+/// input clamps handle reference-plane edges.
+#[allow(clippy::too_many_arguments)]
+fn warp_affine_subblock(
+    g: WarpGeom,
+    i: i32,
+    j: i32,
+    reference: &[u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    pred: &mut [u8],
+    dst: Option<&mut [u16]>,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    conv_params: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    let WarpGeom {
+        ix4, iy4, sx4, sy4,
+    } = g;
     let mut tmp = [0i32; 15 * 8];
     let bd = 8i32;
     let reduce_bits_horiz = conv_params.round_0;
@@ -604,112 +718,299 @@ pub fn warp_affine(
 
     let mut dst = dst;
 
+    // Horizontal filter: 15 rows of 8.
+    for k in -7..8i32 {
+        let iy = (iy4 + k).clamp(0, height - 1);
+        let mut sx = sx4 + i32::from(beta) * (k + 4);
+        for l in -4..4i32 {
+            let ix = ix4 + l - 3;
+            let offs = round_power_of_two(sx, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS;
+            debug_assert!((0..=WARPEDPIXEL_PREC_SHIFTS * 3).contains(&offs));
+            let coeffs = &WARPED_FILTER[offs as usize];
+
+            let mut sum = 1i32 << offset_bits_horiz;
+            for m in 0..8i32 {
+                let sample_x = (ix + m).clamp(0, width - 1);
+                sum += i32::from(reference[iy as usize * stride + sample_x as usize])
+                    * i32::from(coeffs[m as usize]);
+            }
+            sum = round_power_of_two(sum, reduce_bits_horiz);
+            tmp[((k + 7) * 8 + (l + 4)) as usize] = sum;
+            sx += i32::from(alpha);
+        }
+    }
+
+    // Vertical filter.
+    let k_end = 4.min(p_row + p_height - i - 4);
+    let l_end = 4.min(p_col + p_width - j - 4);
+    for k in -4..k_end {
+        let mut sy = sy4 + i32::from(delta) * (k + 4);
+        for l in -4..l_end {
+            let offs = round_power_of_two(sy, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS;
+            debug_assert!((0..=WARPEDPIXEL_PREC_SHIFTS * 3).contains(&offs));
+            let coeffs = &WARPED_FILTER[offs as usize];
+
+            let mut sum = 1i32 << offset_bits_vert;
+            for m in 0..8i32 {
+                sum += tmp[((k + m + 4) * 8 + (l + 4)) as usize] * i32::from(coeffs[m as usize]);
+            }
+            let out_row = (i - p_row + k + 4) as usize;
+            let out_col = (j - p_col + l + 4) as usize;
+            if conv_params.is_compound {
+                let dst_buf = dst
+                    .as_mut()
+                    .expect("compound warp_affine requires a destination buffer");
+                let pi = out_row * conv_params.dst_stride + out_col;
+                let sum = round_power_of_two(sum, reduce_bits_vert);
+                if conv_params.do_average {
+                    let mut tmp32 = i32::from(dst_buf[pi]);
+                    if conv_params.use_jnt_comp_avg {
+                        tmp32 = tmp32 * conv_params.fwd_offset + sum * conv_params.bck_offset;
+                        tmp32 >>= DIST_PRECISION_BITS;
+                    } else {
+                        tmp32 += sum;
+                        tmp32 >>= 1;
+                    }
+                    tmp32 = tmp32
+                        - (1 << (offset_bits - conv_params.round_1))
+                        - (1 << (offset_bits - conv_params.round_1 - 1));
+                    pred[out_row * p_stride + out_col] =
+                        clip_pixel(round_power_of_two(tmp32, round_bits));
+                } else {
+                    dst_buf[pi] = sum as u16;
+                }
+            } else {
+                let sum = round_power_of_two(sum, reduce_bits_vert);
+                pred[out_row * p_stride + out_col] =
+                    clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
+            }
+            sy += i32::from(gamma);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warp_affine_impl_scalar(
+    _token: ScalarToken,
+    mat: &[i32; 6],
+    reference: &[u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    pred: &mut [u8],
+    dst: Option<&mut [u16]>,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    conv_params: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    let mut dst = dst;
     let mut i = p_row;
     while i < p_row + p_height {
         let mut j = p_col;
         while j < p_col + p_width {
-            // Centre of this 8x8 block, projected to luma coordinates (if in a
-            // subsampled chroma plane), transformed, then converted back.
-            let src_x = (j + 4) << subsampling_x;
-            let src_y = (i + 4) << subsampling_y;
-            let dst_x = mat[2]
-                .wrapping_mul(src_x)
-                .wrapping_add(mat[3].wrapping_mul(src_y))
-                .wrapping_add(mat[0]);
-            let dst_y = mat[4]
-                .wrapping_mul(src_x)
-                .wrapping_add(mat[5].wrapping_mul(src_y))
-                .wrapping_add(mat[1]);
-            let x4 = dst_x >> subsampling_x;
-            let y4 = dst_y >> subsampling_y;
+            let g = warp_affine_geom(mat, j, i, subsampling_x, subsampling_y, alpha, beta, gamma, delta);
+            warp_affine_subblock(
+                g,
+                i,
+                j,
+                reference,
+                width,
+                height,
+                stride,
+                pred,
+                dst.as_deref_mut(),
+                p_col,
+                p_row,
+                p_width,
+                p_height,
+                p_stride,
+                conv_params,
+                alpha,
+                beta,
+                gamma,
+                delta,
+            );
+            j += 8;
+        }
+        i += 8;
+    }
+}
 
-            let ix4 = x4 >> WARPEDMODEL_PREC_BITS;
-            let mut sx4 = x4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
-            let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
-            let mut sy4 = y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
-
-            sx4 += i32::from(alpha) * (-4) + i32::from(beta) * (-4);
-            sy4 += i32::from(gamma) * (-4) + i32::from(delta) * (-4);
-
-            sx4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
-            sy4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
-
-            // Horizontal filter: 15 rows of 8.
-            for k in -7..8i32 {
-                let iy = (iy4 + k).clamp(0, height - 1);
-                let mut sx = sx4 + i32::from(beta) * (k + 4);
-                for l in -4..4i32 {
-                    let ix = ix4 + l - 3;
-                    let offs =
-                        round_power_of_two(sx, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS;
-                    debug_assert!((0..=WARPEDPIXEL_PREC_SHIFTS * 3).contains(&offs));
-                    let coeffs = &WARPED_FILTER[offs as usize];
-
-                    let mut sum = 1i32 << offset_bits_horiz;
-                    for m in 0..8i32 {
-                        let sample_x = (ix + m).clamp(0, width - 1);
-                        sum += i32::from(reference[iy as usize * stride + sample_x as usize])
-                            * i32::from(coeffs[m as usize]);
-                    }
-                    sum = round_power_of_two(sum, reduce_bits_horiz);
-                    tmp[((k + 7) * 8 + (l + 4)) as usize] = sum;
-                    sx += i32::from(alpha);
-                }
-            }
-
-            // Vertical filter.
-            let k_end = 4.min(p_row + p_height - i - 4);
-            let l_end = 4.min(p_col + p_width - j - 4);
-            for k in -4..k_end {
-                let mut sy = sy4 + i32::from(delta) * (k + 4);
-                for l in -4..l_end {
-                    let offs =
-                        round_power_of_two(sy, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS;
-                    debug_assert!((0..=WARPEDPIXEL_PREC_SHIFTS * 3).contains(&offs));
-                    let coeffs = &WARPED_FILTER[offs as usize];
-
-                    let mut sum = 1i32 << offset_bits_vert;
-                    for m in 0..8i32 {
-                        sum += tmp[((k + m + 4) * 8 + (l + 4)) as usize]
-                            * i32::from(coeffs[m as usize]);
-                    }
-                    let out_row = (i - p_row + k + 4) as usize;
-                    let out_col = (j - p_col + l + 4) as usize;
-                    if conv_params.is_compound {
-                        let dst_buf = dst
-                            .as_mut()
-                            .expect("compound warp_affine requires a destination buffer");
-                        let pi = out_row * conv_params.dst_stride + out_col;
-                        let sum = round_power_of_two(sum, reduce_bits_vert);
-                        if conv_params.do_average {
-                            let mut tmp32 = i32::from(dst_buf[pi]);
-                            if conv_params.use_jnt_comp_avg {
-                                tmp32 =
-                                    tmp32 * conv_params.fwd_offset + sum * conv_params.bck_offset;
-                                tmp32 >>= DIST_PRECISION_BITS;
-                            } else {
-                                tmp32 += sum;
-                                tmp32 >>= 1;
-                            }
-                            tmp32 = tmp32
-                                - (1 << (offset_bits - conv_params.round_1))
-                                - (1 << (offset_bits - conv_params.round_1 - 1));
-                            pred[out_row * p_stride + out_col] =
-                                clip_pixel(round_power_of_two(tmp32, round_bits));
-                        } else {
-                            dst_buf[pi] = sum as u16;
-                        }
-                    } else {
-                        let sum = round_power_of_two(sum, reduce_bits_vert);
-                        pred[out_row * p_stride + out_col] =
-                            clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
-                    }
-                    sy += i32::from(gamma);
-                }
+/// The vector arm of `warp_affine_impl`. Per sub-block: when the sub-block is
+/// a FULL 8x8 inside the output window, its warp source touches no reference
+/// edge (the horizontal pass reads `iy4-7 .. iy4+7` rows and `ix4-7 .. ix4+7`
+/// columns), and the single-reference (non-compound) writeback applies, the
+/// two filter passes run as [`warp_affine_subblock_v3`]. Everything else —
+/// partial sub-blocks, edge-clamped sources, the compound arms — takes the
+/// scalar sub-block unchanged.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn warp_affine_impl_v3(
+    token: Desktop64,
+    mat: &[i32; 6],
+    reference: &[u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    pred: &mut [u8],
+    dst: Option<&mut [u16]>,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    conv_params: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    let mut dst = dst;
+    let mut i = p_row;
+    while i < p_row + p_height {
+        let mut j = p_col;
+        while j < p_col + p_width {
+            let g = warp_affine_geom(mat, j, i, subsampling_x, subsampling_y, alpha, beta, gamma, delta);
+            // The SIMD arm needs the full 8x8 output extent (the scalar loop's
+            // `k_end`/`l_end` clip it at the window edge) and every input tap
+            // inside the reference plane (the scalar loop clamps per sample).
+            let full = i + 8 <= p_row + p_height && j + 8 <= p_col + p_width;
+            let interior = g.iy4 >= 7
+                && g.iy4 <= height - 8
+                && g.ix4 >= 7
+                && g.ix4 <= width - 8;
+            if full && interior && !conv_params.is_compound {
+                warp_affine_subblock_v3(
+                    token, &g, i, j, reference, stride, pred, p_col, p_row, p_stride, conv_params,
+                    alpha, beta, gamma, delta,
+                );
+            } else {
+                warp_affine_subblock(
+                    g,
+                    i,
+                    j,
+                    reference,
+                    width,
+                    height,
+                    stride,
+                    pred,
+                    dst.as_deref_mut(),
+                    p_col,
+                    p_row,
+                    p_width,
+                    p_height,
+                    p_stride,
+                    conv_params,
+                    alpha,
+                    beta,
+                    gamma,
+                    delta,
+                );
             }
             j += 8;
         }
         i += 8;
+    }
+}
+
+/// The vectorised sub-block of [`warp_affine_impl_v3`]: the same arithmetic as
+/// [`warp_affine_subblock`]'s non-compound arm, with `tmp` stored TRANSPOSED
+/// (`tmp[l][k]`, lane-major) so the vertical pass's 8-tap column dot is a
+/// contiguous `i32` slice.
+///
+/// Horizontal pass: one 8-tap dot per `(k, l)` — the 8 reference bytes load
+/// once and widen to `i16x8`, `madd_adjacent` against the `WARPED_FILTER` row
+/// computes four adjacent-pair products, and `reduce_add` finishes the sum.
+/// That is the scalar `sum = 1<<offset_bits_horiz; sum += ref[m]*coeff[m]` —
+/// integer multiply-accumulate is order-free, so the result is identical.
+///
+/// Vertical pass: per output `(k, l)`, `i32x4` pairs multiply the contiguous
+/// `tmp[l][k..k+8]` column by the widened coefficient row and `reduce_add`
+/// finishes — again identical arithmetic, different order.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn warp_affine_subblock_v3(
+    token: Desktop64,
+    g: &WarpGeom,
+    i: i32,
+    j: i32,
+    reference: &[u8],
+    stride: usize,
+    pred: &mut [u8],
+    p_col: i32,
+    p_row: i32,
+    p_stride: usize,
+    conv_params: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    use magetypes::simd::generic::{i16x8, i32x4, u8x16};
+    let WarpGeom {
+        ix4, iy4, sx4, sy4,
+    } = *g;
+    let bd = 8i32;
+    let reduce_bits_horiz = conv_params.round_0;
+    let reduce_bits_vert = 2 * FILTER_BITS - reduce_bits_horiz;
+    let offset_bits_horiz = bd + FILTER_BITS - 1;
+    let offset_bits_vert = bd + 2 * FILTER_BITS - reduce_bits_horiz;
+
+    // Horizontal filter: 15 rows of 8, stored transposed (tmp[l][k]).
+    let mut tmp = [[0i32; 15]; 8];
+    for kk in 0..15usize {
+        let iy = (iy4 + kk as i32 - 7) as usize;
+        let row = &reference[iy * stride..];
+        let mut sx = sx4 + i32::from(beta) * (kk as i32 - 3);
+        for l in 0..8usize {
+            let offs =
+                (round_power_of_two(sx, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS) as usize;
+            let cf = i16x8::load(token, &WARPED_FILTER[offs]);
+            let base = (ix4 + l as i32 - 7) as usize;
+            let mut b = [0u8; 16];
+            b[..8].copy_from_slice(&row[base..base + 8]);
+            let v = u8x16::load(token, &b).widen_low().bitcast_i16x8();
+            tmp[l][kk] = round_power_of_two(
+                v.madd_adjacent(cf).reduce_add() + (1 << offset_bits_horiz),
+                reduce_bits_horiz,
+            );
+            sx += i32::from(alpha);
+        }
+    }
+
+    // Vertical filter: tmp[l][kk..kk+8] is the contiguous 8-tap column.
+    for kk in 0..8usize {
+        let mut sy = sy4 + i32::from(delta) * (kk as i32);
+        let out_row = (i - p_row + kk as i32) as usize;
+        for l in 0..8usize {
+            let offs =
+                (round_power_of_two(sy, WARPEDDIFF_PREC_BITS) + WARPEDPIXEL_PREC_SHIFTS) as usize;
+            let cf = i16x8::load(token, &WARPED_FILTER[offs]);
+            let lo = i32x4::load(token, tmp[l][kk..kk + 4].try_into().unwrap()) * cf.widen_low();
+            let hi =
+                i32x4::load(token, tmp[l][kk + 4..kk + 8].try_into().unwrap()) * cf.widen_high();
+            let sum = round_power_of_two(
+                (lo + hi).reduce_add() + (1 << offset_bits_vert),
+                reduce_bits_vert,
+            );
+            let out_col = (j - p_col + l as i32) as usize;
+            pred[out_row * p_stride + out_col] =
+                clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
+            sy += i32::from(gamma);
+        }
     }
 }
 
