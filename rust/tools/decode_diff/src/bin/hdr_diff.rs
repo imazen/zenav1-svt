@@ -148,6 +148,22 @@ fn main() {
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         let xs = format!("{x:#?}");
         let ys = format!("{y:#?}");
+        if std::env::var_os("HDR_DUMP").is_some() {
+            let xl: Vec<&str> = xs.lines().collect();
+            let yl: Vec<&str> = ys.lines().collect();
+            for (l, (lx, ly)) in xl.iter().zip(yl.iter()).enumerate() {
+                if lx != ly {
+                    let lo = l.saturating_sub(6);
+                    for (w, (wx, wy)) in
+                        xl.iter().zip(yl.iter()).enumerate().skip(lo).take(13)
+                    {
+                        println!("    {w:4}: C={wx}  RUST={wy}");
+                    }
+                    println!("    ----");
+                }
+            }
+            continue;
+        }
         if xs == ys {
             println!("frame {i}: headers identical");
             continue;
