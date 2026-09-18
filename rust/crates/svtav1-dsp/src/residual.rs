@@ -242,14 +242,18 @@ fn residual_i16_impl_scalar(
     residual_i16_core(src, src_stride, pred, pred_stride, w, h, out);
 }
 
-/// Same measured outcome as [`residual_i32_impl_v3`]: the scalar core
-/// auto-vectorizes better than a hand-written arm (+1.1M Ir on the same
-/// callgrind A/B).
+/// Widen-subtract per row group. The scalar core autovectorizes per ROW, but
+/// the callers are dominated by 4/8-wide TUs where per-row slice checks and
+/// the vector-vs-tail dispatch cost more than the arithmetic — callgrind put
+/// the generic body at ~4.6x `svt_residual_kernel8bit_avx2`'s Ir on a
+/// 512x512 p6 encode. Packing two (w=8) or four (w=4) strided rows into one
+/// u8x16 load amortizes all of that: one pair of loads, one widen+subtract,
+/// one store per 16 pixels.
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn residual_i16_impl_v3(
-    _token: Desktop64,
+    token: Desktop64,
     src: &[u8],
     src_stride: usize,
     pred: &[u8],
@@ -258,7 +262,111 @@ fn residual_i16_impl_v3(
     h: usize,
     out: &mut [i16],
 ) {
-    residual_i16_core(src, src_stride, pred, pred_stride, w, h, out);
+    use magetypes::simd::generic::{u8x16, u8x32};
+    // One u8x16 widen-subtract-store covering `out[dst..dst + 16]`, i.e. the
+    // first 16 bytes of `a`/`b` as pixels. Byte-exact with the scalar core:
+    // `u8 -> i16` widening then wrapping i16 subtract is `s as i16 - p as i16`.
+    let sub16 = |a: &[u8; 16], b: &[u8; 16], dst: &mut [i16]| {
+        let av = u8x16::load(token, a);
+        let bv = u8x16::load(token, b);
+        let d_lo = av.widen_low().bitcast_i16x8() - bv.widen_low().bitcast_i16x8();
+        let d_hi = av.widen_high().bitcast_i16x8() - bv.widen_high().bitcast_i16x8();
+        d_lo.store((&mut dst[..8]).try_into().unwrap());
+        d_hi.store((&mut dst[8..16]).try_into().unwrap());
+    };
+    match w {
+        4 => {
+            // Four rows per u8x16: pack 4x u32.
+            let full = h / 4;
+            for r4 in 0..full {
+                let r = r4 * 4;
+                let s0 = r * src_stride;
+                let p0 = r * pred_stride;
+                let mut a = [0u8; 16];
+                let mut b = [0u8; 16];
+                for k in 0..4 {
+                    a[k * 4..k * 4 + 4]
+                        .copy_from_slice(&src[s0 + k * src_stride..s0 + k * src_stride + 4]);
+                    b[k * 4..k * 4 + 4].copy_from_slice(
+                        &pred[p0 + k * pred_stride..p0 + k * pred_stride + 4],
+                    );
+                }
+                sub16(&a, &b, &mut out[r * 4..r * 4 + 16]);
+            }
+            // h % 4 tail rows.
+            for r in full * 4..h {
+                let s = &src[r * src_stride..r * src_stride + 4];
+                let p = &pred[r * pred_stride..r * pred_stride + 4];
+                let o = &mut out[r * 4..r * 4 + 4];
+                for ((o, &s), &p) in o.iter_mut().zip(s).zip(p) {
+                    *o = s as i16 - p as i16;
+                }
+            }
+        }
+        8 => {
+            // Two rows per u8x16: pack 2x u64.
+            let full = h / 2;
+            for r2 in 0..full {
+                let r = r2 * 2;
+                let a: [u8; 16] = (u64::from_le_bytes(
+                    src[r * src_stride..r * src_stride + 8].try_into().unwrap(),
+                ) as u128
+                    | ((u64::from_le_bytes(
+                        src[(r + 1) * src_stride..(r + 1) * src_stride + 8]
+                            .try_into()
+                            .unwrap(),
+                    ) as u128)
+                        << 64))
+                    .to_le_bytes();
+                let b: [u8; 16] = (u64::from_le_bytes(
+                    pred[r * pred_stride..r * pred_stride + 8].try_into().unwrap(),
+                ) as u128
+                    | ((u64::from_le_bytes(
+                        pred[(r + 1) * pred_stride..(r + 1) * pred_stride + 8]
+                            .try_into()
+                            .unwrap(),
+                    ) as u128)
+                        << 64))
+                    .to_le_bytes();
+                sub16(&a, &b, &mut out[r * 8..r * 8 + 16]);
+            }
+            if h % 2 != 0 {
+                let r = h - 1;
+                let s = &src[r * src_stride..r * src_stride + 8];
+                let p = &pred[r * pred_stride..r * pred_stride + 8];
+                let o = &mut out[r * 8..r * 8 + 8];
+                for ((o, &s), &p) in o.iter_mut().zip(s).zip(p) {
+                    *o = s as i16 - p as i16;
+                }
+            }
+        }
+        w if w % 16 == 0 => {
+            for r in 0..h {
+                let s0 = r * src_stride;
+                let p0 = r * pred_stride;
+                let o0 = r * w;
+                let mut c = 0;
+                while c + 32 <= w {
+                    let a: &[u8; 32] = src[s0 + c..s0 + c + 32].try_into().unwrap();
+                    let b: &[u8; 32] = pred[p0 + c..p0 + c + 32].try_into().unwrap();
+                    let d_lo = u8x32::load(token, a).widen_low().bitcast_i16x16()
+                        - u8x32::load(token, b).widen_low().bitcast_i16x16();
+                    let d_hi = u8x32::load(token, a).widen_high().bitcast_i16x16()
+                        - u8x32::load(token, b).widen_high().bitcast_i16x16();
+                    d_lo.store((&mut out[o0 + c..o0 + c + 16]).try_into().unwrap());
+                    d_hi.store((&mut out[o0 + c + 16..o0 + c + 32]).try_into().unwrap());
+                    c += 32;
+                }
+                while c + 16 <= w {
+                    let a: &[u8; 16] = src[s0 + c..s0 + c + 16].try_into().unwrap();
+                    let b: &[u8; 16] = pred[p0 + c..p0 + c + 16].try_into().unwrap();
+                    sub16(a, b, &mut out[o0 + c..o0 + c + 16]);
+                    c += 16;
+                }
+            }
+        }
+        _ => residual_i16_core(src, src_stride, pred, pred_stride, w, h, out),
+    }
 }
 
 /// 16 columns per iteration: widen both u8 rows to i16 and subtract (the
