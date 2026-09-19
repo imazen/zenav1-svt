@@ -50,7 +50,7 @@ pub fn variance_diff(
 ) -> u32 {
     let (sse, sum) = incant!(
         variance_diff_parts_impl(a, a_stride, b, b_stride, width, height),
-        [v3, neon, scalar]
+        [v4, v3, neon, scalar]
     );
     let n = (width * height) as i64;
     (sse as u32).wrapping_sub(((sum * sum) / n) as u32)
@@ -285,6 +285,218 @@ fn vdiff_packed_rows_v3<const W: usize>(
     }
     let mut sse = u64::from(acc.0.reduce_add() as u32);
     let mut sum = i64::from(acc.1.reduce_add());
+    while row < height {
+        let a_off = row * a_stride;
+        let b_off = row * b_stride;
+        for col in 0..W {
+            let d = a[a_off + col] as i32 - b[b_off + col] as i32;
+            sum += d as i64;
+            sse += (d * d) as u64;
+        }
+        row += 1;
+    }
+    (sse, sum)
+}
+
+// --- AVX-512 ---
+//
+// The identical signed-difference pipeline at twice the width: `u8x64` loads,
+// `widen_low`/`widen_high` -> `u16x32` -> `bitcast_i16x32` (the diff keeps its
+// sign — `sum` needs it), then `i16x32::madd_adjacent` -> `i32x16`. Same
+// arithmetic, same lane bound: px/16 products per i32 lane, so the
+// `width * height > 32_768` guard transfers verbatim.
+
+// `X64V4Token` implements only the 512-bit magetypes backends (u8x64,
+// i16x32, i32x16 — no 128/256-bit generics), so every sub-64 column group
+// here is STAGED into a zero-padded `[u8; 64]`. Pad bytes difference to
+// zero and contribute nothing to either accumulator, keeping the result
+// bit-identical and the lane bound unchanged: px/16 products per i32 lane.
+
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+fn variance_diff_parts_impl_v4(
+    token: X64V4Token,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) -> (u64, i64) {
+    if width * height > 32_768 {
+        return variance_diff_parts_impl_scalar(
+            ScalarToken,
+            a,
+            a_stride,
+            b,
+            b_stride,
+            width,
+            height,
+        );
+    }
+    use magetypes::simd::generic::{i16x32, i32x16, u8x64};
+    let ones = i16x32::splat(token, 1);
+    let mut acc = (i32x16::splat(token, 0), i32x16::splat(token, 0));
+    let fold = |acc: (i32x16<X64V4Token>, i32x16<X64V4Token>),
+                av: &[u8; 64],
+                bv: &[u8; 64]| {
+        let a = u8x64::load(token, av);
+        let b = u8x64::load(token, bv);
+        let d_lo = a.widen_low().bitcast_i16x32() - b.widen_low().bitcast_i16x32();
+        let d_hi = a.widen_high().bitcast_i16x32() - b.widen_high().bitcast_i16x32();
+        (
+            acc.0 + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi),
+            acc.1 + d_lo.madd_adjacent(ones) + d_hi.madd_adjacent(ones),
+        )
+    };
+    let mut sse: u64 = 0;
+    let mut sum: i64 = 0;
+    if width >= 64 {
+        for row in 0..height {
+            let a_off = row * a_stride;
+            let b_off = row * b_stride;
+            let mut col = 0;
+            while col + 64 <= width {
+                let av: &[u8; 64] = a[a_off + col..a_off + col + 64].try_into().unwrap();
+                let bv: &[u8; 64] = b[b_off + col..b_off + col + 64].try_into().unwrap();
+                acc = fold(acc, av, bv);
+                col += 64;
+            }
+            if col < width {
+                let mut sa = [0u8; 64];
+                let mut rb = [0u8; 64];
+                sa[..width - col].copy_from_slice(&a[a_off + col..a_off + width]);
+                rb[..width - col].copy_from_slice(&b[b_off + col..b_off + width]);
+                acc = fold(acc, &sa, &rb);
+            }
+        }
+    } else if width == 32 || width == 16 || width == 8 || width == 4 {
+        // `64 / width` rows per staged fold — the v3 arm's row-packing
+        // trick at zmm width.
+        let (s, t) = match width {
+            4 => vdiff_packed_rows_v4::<4>(token, a, a_stride, b, b_stride, height),
+            8 => vdiff_packed_rows_v4::<8>(token, a, a_stride, b, b_stride, height),
+            16 => vdiff_packed_rows_v4::<16>(token, a, a_stride, b, b_stride, height),
+            _ => vdiff_packed_rows_v4::<32>(token, a, a_stride, b, b_stride, height),
+        };
+        sse += s;
+        sum += t;
+    } else {
+        // Widths that do not tile a 64-byte vector: one staged fold per row.
+        for row in 0..height {
+            let a_off = row * a_stride;
+            let b_off = row * b_stride;
+            let mut sa = [0u8; 64];
+            let mut rb = [0u8; 64];
+            sa[..width].copy_from_slice(&a[a_off..a_off + width]);
+            rb[..width].copy_from_slice(&b[b_off..b_off + width]);
+            acc = fold(acc, &sa, &rb);
+        }
+    }
+    (
+        sse + u64::from(acc.0.reduce_add() as u32),
+        sum + i64::from(acc.1.reduce_add()),
+    )
+}
+
+/// Packs `64 / W` rows starting at `row` into one zmm by direct register
+/// loads — no stack staging. A staged `[u8; 64]` copy would hand the fold a
+/// 64-byte load spanning several narrow stores: a store-to-load forwarding
+/// failure on every group.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+fn pack_rows_v4<const W: usize>(
+    _token: X64V4Token,
+    p: &[u8],
+    stride: usize,
+    row: usize,
+) -> __m512i {
+    if W == 32 {
+        let lo: &[u8; 32] = p[row * stride..row * stride + 32].try_into().unwrap();
+        let hi: &[u8; 32] = p[(row + 1) * stride..(row + 1) * stride + 32]
+            .try_into()
+            .unwrap();
+        _mm512_inserti64x4::<1>(
+            _mm512_castsi256_si512(_mm256_loadu_si256(lo)),
+            _mm256_loadu_si256(hi),
+        )
+    } else if W == 16 {
+        let ld = |r: usize| -> __m128i {
+            let s: &[u8; 16] = p[r * stride..r * stride + 16].try_into().unwrap();
+            _mm_loadu_si128(s)
+        };
+        _mm512_inserti32x4::<3>(
+            _mm512_inserti32x4::<2>(
+                _mm512_inserti32x4::<1>(_mm512_castsi128_si512(ld(row)), ld(row + 1)),
+                ld(row + 2),
+            ),
+            ld(row + 3),
+        )
+    } else if W == 8 {
+        let ld = |r: usize| i64::from_le_bytes(p[r * stride..r * stride + 8].try_into().unwrap());
+        _mm512_inserti64x4::<1>(
+            _mm512_castsi256_si512(_mm256_setr_epi64x(
+                ld(row),
+                ld(row + 1),
+                ld(row + 2),
+                ld(row + 3),
+            )),
+            _mm256_setr_epi64x(ld(row + 4), ld(row + 5), ld(row + 6), ld(row + 7)),
+        )
+    } else {
+        // W == 4: sixteen GPR loads + a `_mm_setr_epi32`/inserti32x4 tree.
+        let ld = |r: usize| i32::from_le_bytes(p[r * stride..r * stride + 4].try_into().unwrap());
+        let q = |r: usize| _mm_setr_epi32(ld(r), ld(r + 1), ld(r + 2), ld(r + 3));
+        _mm512_inserti32x4::<3>(
+            _mm512_inserti32x4::<2>(
+                _mm512_inserti32x4::<1>(_mm512_castsi128_si512(q(row)), q(row + 4)),
+                q(row + 8),
+            ),
+            q(row + 12),
+        )
+    }
+}
+
+/// The `width in {4, 8, 16, 32}` arm of [`variance_diff_parts_impl_v4`]:
+/// packs `64 / W` rows into one 64-byte fold.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+fn vdiff_packed_rows_v4<const W: usize>(
+    token: X64V4Token,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    height: usize,
+) -> (u64, i64) {
+    let ones = _mm512_set1_epi16(1);
+    let mut acc_sse = _mm512_setzero_si512();
+    let mut acc_sum = _mm512_setzero_si512();
+    let g = 64 / W;
+    let mut row = 0usize;
+    while row + g <= height {
+        let av = pack_rows_v4::<W>(token, a, a_stride, row);
+        let bv = pack_rows_v4::<W>(token, b, b_stride, row);
+        let d_lo = _mm512_sub_epi16(
+            _mm512_cvtepu8_epi16(_mm512_castsi512_si256(av)),
+            _mm512_cvtepu8_epi16(_mm512_castsi512_si256(bv)),
+        );
+        let d_hi = _mm512_sub_epi16(
+            _mm512_cvtepu8_epi16(_mm512_extracti64x4_epi64::<1>(av)),
+            _mm512_cvtepu8_epi16(_mm512_extracti64x4_epi64::<1>(bv)),
+        );
+        acc_sse = _mm512_add_epi32(
+            acc_sse,
+            _mm512_add_epi32(_mm512_madd_epi16(d_lo, d_lo), _mm512_madd_epi16(d_hi, d_hi)),
+        );
+        acc_sum = _mm512_add_epi32(
+            acc_sum,
+            _mm512_add_epi32(_mm512_madd_epi16(d_lo, ones), _mm512_madd_epi16(d_hi, ones)),
+        );
+        row += g;
+    }
+    let mut sse = u64::from(_mm512_reduce_add_epi32(acc_sse) as u32);
+    let mut sum = i64::from(_mm512_reduce_add_epi32(acc_sum));
     while row < height {
         let a_off = row * a_stride;
         let b_off = row * b_stride;
@@ -941,6 +1153,8 @@ mod tests {
             (32, 8),
             (64, 64),
             (64, 16),
+            (128, 16),
+            (96, 8),
         ] {
             for pad in [0usize, 7] {
                 let (astr, bstr) = (w + pad, w + 2 * pad);
@@ -975,6 +1189,58 @@ mod tests {
                     rep.permutations_run >= 2,
                     "only {} permutation(s) ran",
                     rep.permutations_run
+                );
+            }
+        }
+    }
+
+    /// Positive witness: on an AVX-512 host the `_v4` arm itself must be
+    /// exercised — the permutation test alone cannot distinguish "v4 ran"
+    /// from a silent fall-through to v3. Covers every `pack_rows_v4` width,
+    /// the >=64 chunked path, its staged remainder, and the odd-width
+    /// staged path.
+    #[test]
+    fn variance_diff_v4_arm_matches_scalar_when_summoned() {
+        extern crate std;
+        let Some(v4) = X64V4Token::summon() else {
+            std::eprintln!("X64V4Token unavailable — _v4 arm NOT exercised on this host");
+            return;
+        };
+        let mut st = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u8
+        };
+        for &(w, h) in &[
+            (4usize, 20usize),
+            (8, 12),
+            (16, 20),
+            (32, 6),
+            (64, 8),
+            (128, 8),
+            (96, 8),
+            (12, 4),
+            (24, 8),
+        ] {
+            for pad in [0usize, 5] {
+                let (astr, bstr) = (w + pad, w + 2 * pad);
+                let a: alloc::vec::Vec<u8> = (0..astr * h).map(|_| next()).collect();
+                let b: alloc::vec::Vec<u8> = (0..bstr * h).map(|_| next()).collect();
+                let want = variance_diff_parts_impl_scalar(
+                    ScalarToken::summon().unwrap(),
+                    &a,
+                    astr,
+                    &b,
+                    bstr,
+                    w,
+                    h,
+                );
+                assert_eq!(
+                    variance_diff_parts_impl_v4(v4, &a, astr, &b, bstr, w, h),
+                    want,
+                    "variance_diff_parts_impl_v4 {w}x{h} strides ({astr},{bstr})"
                 );
             }
         }

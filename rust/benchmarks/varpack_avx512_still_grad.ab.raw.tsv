@@ -1,0 +1,18 @@
+# perf_ab raw — one row per interleaved paired round (NEITHER SIDE NICED)
+# base=/tmp/zenav1-base/rust/target/release/examples/perf_encode
+# cand=target/release/examples/perf_encode
+# commit=e569e3028 host=r7900x date=2026-09-19T10:25:32Z
+# content=gradient sizes=[512] presets=[6] qp=40 rounds=12
+size	preset	round	base_ns	cand_ns	ident
+512	6	1	23297362	23097222	Y
+512	6	2	23122370	22970491	Y
+512	6	3	22904866	23912781	Y
+512	6	4	22948159	23093304	Y
+512	6	5	23038711	23121207	Y
+512	6	6	20464071	22079439	Y
+512	6	7	20563410	20423224	Y
+512	6	8	20375864	21854914	Y
+512	6	9	20325769	20405070	Y
+512	6	10	20369983	20278249	Y
+512	6	11	20452730	20204699	Y
+512	6	12	20546658	20302936	Y

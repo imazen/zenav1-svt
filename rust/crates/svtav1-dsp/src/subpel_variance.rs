@@ -334,6 +334,23 @@ fn v_accum_v3(
     (sum, sse)
 }
 
+// --- AVX-512: measured dead end on Zen 4 (2026-09-19, r7900x). ---
+//
+// A `h_row_v4`/`v_accum_v4` zmm pair regressed the gradient inter cell
+// ~6-10% wall clock (benchmarks/subpel_only_avx512_inter_grad.ab.tsv).
+// Two independent mechanisms, both measured:
+//   * the streamed pipeline is a store->load handoff per row (`h_row`
+//     writes `cur`, `v_accum` reads it back immediately); 512-bit
+//     store->load pairs do not forward, and LLVM both fuses split ymm
+//     stores back into `vmovdqu64 zmm` and folds split loads into zmm
+//     memory operands, so the stall survives source-level I/O splitting;
+//   * with the kernels rewritten as byte-identical ymm bodies the arm
+//     STILL regressed ~1.3-3% (benchmarks/subpel_ymmonly_inter_grad.ab.tsv)
+//     — the avx512 codegen context itself (EVEX tails, init lowering)
+//     costs more than zmm width can repay on a double-pumped host.
+// The pointer-swap row handoff below (no 256B `mem::swap` per row) is the
+// salvageable part and benefits every tier.
+
 /// The streaming body, generic over the tier's two row kernels. The closures
 /// are bound inside an `#[arcane]` wrapper and inherit its target features, so
 /// the whole `h` rows run with ONE target-feature boundary per call.
@@ -366,10 +383,16 @@ where
     let fx = &BILINEAR_FILTERS_2T[xoffset];
     let fy = &BILINEAR_FILTERS_2T[yoffset];
 
-    let mut prev = [0u16; MAX_SUBPEL_W];
-    let mut cur = [0u16; MAX_SUBPEL_W];
+    let mut prev_buf = [0u16; MAX_SUBPEL_W];
+    let mut cur_buf = [0u16; MAX_SUBPEL_W];
+    // Swap row POINTERS, not row data: `mem::swap` on the arrays is a 256B
+    // memcpy per row, and under an avx512 target-feature context LLVM
+    // lowers it to zmm ops whose loads straddle `h_row`'s just-committed
+    // narrower stores — a store-to-load forwarding failure per row.
+    let mut prev: &mut [u16] = &mut prev_buf[..w];
+    let mut cur: &mut [u16] = &mut cur_buf[..w];
 
-    h_row(&a[a_base..], w, fx[0], fx[1], &mut prev[..w]);
+    h_row(&a[a_base..], w, fx[0], fx[1], prev);
 
     let mut sum: i64 = 0;
     let mut sse: u64 = 0;
@@ -379,10 +402,10 @@ where
             w,
             fx[0],
             fx[1],
-            &mut cur[..w],
+            cur,
         );
         let bo = b_base + i * b_stride;
-        let (rs, rq) = v_accum(&prev[..w], &cur[..w], &b[bo..], w, fy[0], fy[1]);
+        let (rs, rq) = v_accum(prev, cur, &b[bo..], w, fy[0], fy[1]);
         sum += i64::from(rs);
         sse += u64::from(rq);
         core::mem::swap(&mut prev, &mut cur);

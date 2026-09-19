@@ -1,0 +1,115 @@
+**`variance_diff_parts` gets its `_v4` arm — and `subpel_variance` gets a
+MEASURED NO, plus a tier-agnostic row-handoff fix.** Second target of the
+AVX-512 coverage campaign after `e569e3028` (me_sad family). The inter delta
+(`~/tmp/cg-inter/delta_port_*`, callgrind — prices the `_v3` arm on this
+host, valgrind 3.27.1 cannot run zmm) put `variance_diff_parts_impl_v3` at
+51.9M self Ir (7.8% of the delta) on photo p6 inter and 9.0M (2.1%) on
+gradient p8, and `subpel_variance_dispatch_v3` at 24.9M (5.8%) on gradient
+p8. C registers AVX-512 for neither name directly; coverage follows the
+variance family registrations (`variance_highbd`/`mse` ASM_AVX512 objects).
+
+date:   2026-09-19
+host:   r7900x — AMD Ryzen 9 7900X, **Zen 4: AVX-512 double-pumped over
+        256-bit units**. A 512-bit arm here buys instruction count and
+        front-end width, NOT execution width. perf_event_paranoid=4: NO
+        hardware counters — wall clock is the only real measurement.
+base:   `e569e3028` — the me_sad _v4 commit (so this A/B isolates
+        variance+subpel, not the SAD family).
+cand:   working tree — `crates/svtav1-dsp/src/{variance,subpel_variance}.rs`.
+data:   benchmarks/variance_avx512_inter_grad.ab.{tsv,raw.tsv}  (staged fold)
+        benchmarks/varpack_avx512_inter_grad.ab.{tsv,raw.tsv}   (direct pack)
+        benchmarks/varpack_avx512_still_grad.ab.{tsv,raw.tsv}   (still cell)
+        benchmarks/subpel_only_avx512_inter_grad.ab.{tsv,raw.tsv}   (v4 zmm)
+        benchmarks/subpel_fwdfix_inter_grad.ab.{tsv,raw.tsv}        (split I/O)
+        benchmarks/subpel_ptrswap_inter_grad.ab.{tsv,raw.tsv}       (ptr swap)
+        benchmarks/subpel_ymmonly_inter_grad.ab.{tsv,raw.tsv}       (ymm ctl)
+
+========================= 1. WHAT LANDS =========================
+
+`variance.rs`:
+
+  * `variance_diff_parts_impl_v4` — the v3 widen-subtract-madd pipeline at
+    64 lanes. `X64V4Token` implements ONLY the 512-bit magetypes backends
+    (`u8x64`/`i16x32`/`i32x16`), so the arm's own structure had to differ
+    from v3's 16-byte generics:
+      - `width >= 64`: direct `_mm512` fold per 64-byte chunk + staged
+        remainder (dead for real callers — AV1 block widths are pow2);
+      - `width in {4,8,16,32}`: `pack_rows_v4` builds each operand zmm from
+        `64/W` rows by DIRECT register loads (GPR `from_le_bytes` +
+        `setr`/`inserti32x4`/`inserti64x4` trees — same shape as
+        `block_sad_x4_v4`'s row packs). NO stack staging: a staged
+        `[u8;64]` hands the fold a 64B load spanning several narrow stores
+        = a store-forwarding failure per group;
+      - other widths: per-row staged fold (unreachable for real callers);
+      - `width * height > 32_768` keeps the scalar guard verbatim.
+    `variance_diff` dispatch is now `[v4, v3, neon, scalar]`.
+  * `variance_diff_v4_arm_matches_scalar_when_summoned` — positive witness
+    asserting the v4 arm itself (not a fall-through) matches scalar on
+    every pack width, the chunked path, staged remainder, and odd widths.
+
+`subpel_variance.rs`:
+
+  * NO v4 arm — measured dead end, see §3.
+  * `sub_pixel_variance_streamed` now swaps row POINTERS (`&mut [u16]`)
+    instead of `mem::swap` on two `[u16; 128]` arrays — removes a 256-byte
+    memcpy per block row for EVERY tier. Under an avx512 codegen context
+    LLVM was lowering that copy to `vmovdqu64 zmm` whose loads straddled
+    `h_row`'s just-committed narrower stores.
+
+============================ 2. WALL CLOCK ============================
+
+`tools/perf_ab.sh`, interleaved randomised paired rounds, neither side
+niced, every cell ident=Y. INTER cell = 4-frame translated GOP
+(`SVTAV1_FRAMES=4 _FRAME_SHIFT=3 _INTRA_PERIOD=64 _HIER_LEVELS=0
+_INTER_EXPERIMENTAL=1`), 24 rounds (>21 bar for sub-5%):
+
+  cell                          cand/base ratio (p25-p75)            net
+  gradient inter 512 p6         0.9797 (0.9758-0.9813)               ~1.021x, DISJOINT
+  gradient inter 512 p8         0.9902 (0.9885-0.9934)               ~1.010x, DISJOINT
+  gradient still 512 p6         0.9995 (0.9914-1.0063), 12 rounds    flat (not hot there)
+
+Staged-fold variant measured first (0.9815 / 0.9922); the direct-pack
+rewrite is what ships (0.9797 / 0.9902). This number bundles the variance
+v4 arm AND the pointer-swap fix — both measured positive in the same
+direction; the subpel bisect below shows the swap alone was worth ~2-3%
+against a regressed v4, so its v3 contribution is small but nonnegative.
+
+=================== 3. THE SUBPEL _v4 DEAD END ===================
+
+`h_row_v4`/`v_accum_v4` (zmm row kernels, exact same lanewise arithmetic)
+regressed the gradient inter cell — bisected with variance's arm disabled:
+
+  build                                     p6        p8        verdict
+  zmm kernels, array mem::swap              1.0665    1.1029    ~7-10% SLOWER
+  + kernel I/O split to ymm halves          1.0568    1.0881    LLVM refuses:
+        it re-fuses the split stores to `vmovdqu64 zmm` and folds the
+        split loads into zmm memory operands (`vpmullw (%rdi),%zmm`)
+  + pointer swap instead of array swap      1.0486    1.0595    still slower
+  ymm-IDENTICAL kernels under v4 token      1.0130    1.0293    STILL slower
+
+The ymm-identical control is the discriminator: with the same instruction
+mix the arm still loses ~1.3-3%, so the residual is the avx512 codegen
+CONTEXT (EVEX tail lowering, init vectorization) — not the zmm ops. On a
+double-pumped host the zmm compute bought nothing to begin with, the
+per-row `cur` store->load handoff stalls on 512-bit forwarding, and even
+the empty context is a small loss. The arm is deliberately ABSENT; the
+comment above `sub_pixel_variance_streamed` records why. A future Zen-5
+(full-width 512) measurement could revisit.
+
+============================ 4. GATES =============================
+
+  * `cargo test -p zenav1-svt-dsp --lib`: 271/271 (incl. the new v4 witness).
+  * `cargo nextest run --workspace --locked --test-threads 4`: 3930/3930.
+  * `tools/regression_spotcheck.sh`: 145/145.
+  * Byte-identity: `ident=Y` on every measured cell.
+  * decode gate NOT run: no dav1d on this host — coverage gap, same as
+    recorded for the wiener and me_sad changes.
+
+============================ 5. CAVEATS =============================
+
+  * Zen-4-only numbers. Nothing here predicts a full-width-512 host; the
+    subpel result in particular could invert on Zen 5.
+  * `width*height > 32_768` still falls to scalar inside the v4 arm —
+    preserves the existing accumulator-bound argument verbatim.
+  * The `width >= 64` staged remainder and the odd-width staged path are
+    covered by tests but unreachable for real (pow2) callers.
