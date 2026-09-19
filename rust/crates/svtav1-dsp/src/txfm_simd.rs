@@ -119,7 +119,7 @@ pub fn try_fwd_dct_square(
     }
     incant!(
         try_fwd_dct_square_impl(input, output, input_stride, n),
-        [v3, neon, scalar]
+        [v4, v3, neon, scalar]
     )
 }
 
@@ -1181,6 +1181,175 @@ mod v3 {
     include!("txfm_simd_adst.rs");
     include!("txfm_simd_ext.rs");
     include!("txfm_simd_4dim.rs");
+}
+
+/// AVX-512 (`v4`) arms of the square FORWARD DCT-DCT path — 16 lanes per
+/// vector. The butterfly kernels are lanewise-identical to `mod v3`'s
+/// (same `hbtf`/`add`/`sub` order, doubled width), so they stay bit-exact;
+/// the row-pass tile transpose is rebuilt from the proven 8x8 `ymm`
+/// sequence applied per quadrant (`transpose16`). Only the forward square
+/// sizes 16/32/64 are covered — `n == 8` delegates back to `v3`, and the
+/// inverse/rect/ADST/ext paths still dispatch through `v3`.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[allow(clippy::identity_op, clippy::needless_range_loop)]
+mod v4 {
+    use super::*;
+
+    // ----- primitives (zmm twins of `mod v3`'s) -----
+
+    /// Broadcast an i32 to all 16 lanes.
+    #[rite]
+    pub(super) fn splat(_t: X64V4Token, v: i32) -> __m512i {
+        _mm512_set1_epi32(v)
+    }
+
+    /// Vector `half_btf`: `((w0·n0 + w1·n1) + round) >> bit`, arithmetic
+    /// shift — the same wrapping-`mullo` exactness argument as `mod v3`'s,
+    /// one lane wider.
+    #[rite]
+    pub(super) fn hbtf(
+        _t: X64V4Token,
+        w0: __m512i,
+        n0: __m512i,
+        w1: __m512i,
+        n1: __m512i,
+        rnd: __m512i,
+        sh: __m128i,
+    ) -> __m512i {
+        let x = _mm512_mullo_epi32(w0, n0);
+        let y = _mm512_mullo_epi32(w1, n1);
+        _mm512_sra_epi32(_mm512_add_epi32(_mm512_add_epi32(x, y), rnd), sh)
+    }
+
+    /// `round_shift_array` element op at 16 lanes — same semantics as
+    /// `mod v3`'s.
+    #[rite]
+    pub(super) fn round_shift_v(_t: X64V4Token, v: __m512i, bit: i32) -> __m512i {
+        if bit > 0 {
+            let b = bit as u32;
+            let rnd = _mm512_set1_epi32(1 << (b - 1));
+            _mm512_sra_epi32(_mm512_add_epi32(v, rnd), _mm_cvtsi32_si128(bit))
+        } else if bit < 0 {
+            _mm512_sll_epi32(v, _mm_cvtsi32_si128(-bit))
+        } else {
+            v
+        }
+    }
+
+    /// The `mod v3` 8x8 transpose sequence, verbatim — used as the quadrant
+    /// primitive for [`transpose16`]. `ymm` ops are legal under the v4
+    /// token (AVX2 is a strict subset of the v4 feature set).
+    #[rite]
+    fn transpose8(_t: X64V4Token, inp: &[__m256i; 8]) -> [__m256i; 8] {
+        let a0 = _mm256_unpacklo_epi32(inp[0], inp[1]);
+        let a1 = _mm256_unpackhi_epi32(inp[0], inp[1]);
+        let a2 = _mm256_unpacklo_epi32(inp[2], inp[3]);
+        let a3 = _mm256_unpackhi_epi32(inp[2], inp[3]);
+        let a4 = _mm256_unpacklo_epi32(inp[4], inp[5]);
+        let a5 = _mm256_unpackhi_epi32(inp[4], inp[5]);
+        let a6 = _mm256_unpacklo_epi32(inp[6], inp[7]);
+        let a7 = _mm256_unpackhi_epi32(inp[6], inp[7]);
+        let b0 = _mm256_unpacklo_epi64(a0, a2);
+        let b1 = _mm256_unpackhi_epi64(a0, a2);
+        let b2 = _mm256_unpacklo_epi64(a1, a3);
+        let b3 = _mm256_unpackhi_epi64(a1, a3);
+        let b4 = _mm256_unpacklo_epi64(a4, a6);
+        let b5 = _mm256_unpackhi_epi64(a4, a6);
+        let b6 = _mm256_unpacklo_epi64(a5, a7);
+        let b7 = _mm256_unpackhi_epi64(a5, a7);
+        [
+            _mm256_permute2x128_si256::<0x20>(b0, b4),
+            _mm256_permute2x128_si256::<0x20>(b1, b5),
+            _mm256_permute2x128_si256::<0x20>(b2, b6),
+            _mm256_permute2x128_si256::<0x20>(b3, b7),
+            _mm256_permute2x128_si256::<0x31>(b0, b4),
+            _mm256_permute2x128_si256::<0x31>(b1, b5),
+            _mm256_permute2x128_si256::<0x31>(b2, b6),
+            _mm256_permute2x128_si256::<0x31>(b3, b7),
+        ]
+    }
+
+    /// Transpose a 16x16 i32 tile: `out[i]` lane `l` = `inp[l][i]`. Splits
+    /// into the four 8x8 quadrants of `T = [[A,B],[C,D]]`, transposes each
+    /// with the proven `ymm` sequence, and repacks — `T^T`'s quadrants are
+    /// `[[A^T,C^T],[B^T,D^T]]`.
+    #[rite]
+    pub(super) fn transpose16(t: X64V4Token, inp: &[__m512i; 16]) -> [__m512i; 16] {
+        let lo: [__m256i; 16] =
+            core::array::from_fn(|i| _mm512_castsi512_si256(inp[i]));
+        let hi: [__m256i; 16] =
+            core::array::from_fn(|i| _mm512_extracti64x4_epi64::<1>(inp[i]));
+        let join = |a: __m256i, b: __m256i| {
+            _mm512_inserti64x4::<1>(_mm512_castsi256_si512(a), b)
+        };
+        let a = transpose8(t, &lo[..8].try_into().unwrap()); // rows 0-7,  cols 0-7
+        let b = transpose8(t, &hi[..8].try_into().unwrap()); // rows 0-7,  cols 8-15
+        let c = transpose8(t, &lo[8..].try_into().unwrap()); // rows 8-15, cols 0-7
+        let d = transpose8(t, &hi[8..].try_into().unwrap()); // rows 8-15, cols 8-15
+        [
+            join(a[0], c[0]),
+            join(a[1], c[1]),
+            join(a[2], c[2]),
+            join(a[3], c[3]),
+            join(a[4], c[4]),
+            join(a[5], c[5]),
+            join(a[6], c[6]),
+            join(a[7], c[7]),
+            join(b[0], d[0]),
+            join(b[1], d[1]),
+            join(b[2], d[2]),
+            join(b[3], d[3]),
+            join(b[4], d[4]),
+            join(b[5], d[5]),
+            join(b[6], d[6]),
+            join(b[7], d[7]),
+        ]
+    }
+
+    /// Load 16 contiguous i32 at `buf[off..off+16]`.
+    #[rite]
+    pub(super) fn load16(_t: X64V4Token, buf: &[i32], off: usize) -> __m512i {
+        let a: &[i32; 16] = buf[off..off + 16].try_into().unwrap();
+        _mm512_loadu_si512(a)
+    }
+
+    /// Load 16 contiguous i16 at `buf[off..off+16]`, sign-extended to i32.
+    #[rite]
+    pub(super) fn load16w(_t: X64V4Token, buf: &[i16], off: usize) -> __m512i {
+        let a: &[i16; 16] = buf[off..off + 16].try_into().unwrap();
+        _mm512_cvtepi16_epi32(_mm256_loadu_si256(a))
+    }
+
+    /// Store 16 i32 to `buf[off..off+16]`.
+    #[rite]
+    pub(super) fn store16(_t: X64V4Token, buf: &mut [i32], off: usize, v: __m512i) {
+        let a: &mut [i32; 16] = (&mut buf[off..off + 16]).try_into().unwrap();
+        _mm512_storeu_si512(a, v);
+    }
+
+    include!("txfm_simd_kernels_v4.rs");
+    include!("txfm_simd_drivers_v4.rs");
+}
+
+/// AVX-512 forward square DCT-DCT. Dispatched only on the `v4` tier; `n == 8`
+/// delegates to the `v3` module (8 columns don't fill a zmm — v3 is always
+/// available when v4 is).
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+fn try_fwd_dct_square_impl_v4(
+    t: X64V4Token,
+    input: &[i16],
+    output: &mut [TranLow],
+    input_stride: usize,
+    n: usize,
+) -> bool {
+    if n == 8 {
+        let Some(t3) = Desktop64::summon() else {
+            return false;
+        };
+        return v3::fwd_dct_square(t3, input, output, input_stride, n);
+    }
+    v4::fwd_dct_square(t, input, output, input_stride, n)
 }
 
 /// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
