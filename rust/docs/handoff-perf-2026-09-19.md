@@ -33,6 +33,11 @@ dr_predictor z1/z2/z3 rewrite, skip-arm double-clone fix.
 
 ### Perf position (measured, this host `lilith` WSL, taskset -c 3)
 
+> HOST CORRECTION (2026-09-19 follow-up session): the box these numbers came
+> from is `i265`, native Ubuntu (kernel 7.0.0-31-generic) — a 265K Arrow Lake
+> host, not a WSL guest. Treat "`lilith` WSL" labels in this file as meaning
+> this machine.
+
 - Still (1014 imazen 512×512 q32 p6): port ~44ms vs C ~36ms → **~1.22×**
 - Inter (synthetic translate 4f): ~1.38×, was ~2.3× before the campaign
 - Video BD-rate (freshly measured, see below): **~parity** (−0.23% johnny p6,
@@ -182,17 +187,17 @@ cargo build --release --example perf_encode   # ~29s
 
 - `optimize_b`/`cost_coeffs_txb`/`tx_unit_inner` grind (above).
 - **AVX-512 tiers for the port — must be done/measured on `r7900x`** (Zen 4;
-  `lilith`/265K has no AVX-512). Precedent exists: the wiener `_v4`/`X64V4Token`
+  this 265K host has no AVX-512). Precedent exists: the wiener `_v4`/`X64V4Token`
   tier and the `avx512` cargo feature (`svtav1-dsp` `avx512 = ["archmage/avx512",
   "magetypes/avx512"]`) — see `docs/perf-status.md` §AVX-512 (~line 560-680):
   valgrind 3.x cannot execute AVX-512 so `_v4` arms price by `perf stat` + wall
   only, and kernels WITHOUT an AVX2 arm are priority targets. Compare against
   C's AVX-512 build (`EN_AVX512_SUPPORT` already ON in cbuild-static).
-- **target-cpu experiment (done 2026-09-19, lilith) — see the section below.**
-  Port gains ~2.5% wall / ~4.9% Ir at `target-cpu=native`, ~1.2%/… at
-  `x86-64-v3`; Ir win concentrates in `optimize_b` incl (−8.2%) and
-  `tx_unit_inner` incl (−6.6%). C NATIVE=ON gains only ~1% — the port has MORE
-  ISA headroom than C in its scalar-side bottleneck.
+- **target-cpu experiment (done 2026-09-19, i265) — see the section below.**
+  Port gains ~2.5% wall / ~5.3% Ir at `target-cpu=native`, ~1.2% wall /
+  ~4.9% Ir at `x86-64-v3`; Ir win concentrates in `optimize_b` incl (−8.3%)
+  and `tx_unit_inner` incl (−7.0%). C NATIVE=ON gains only ~1% — the port has
+  MORE ISA headroom than C in its scalar-side bottleneck.
 - Pre-existing divergence: johnny-class 8-frame P content isn't byte-
   identical to C (RD-neutral, ~±1%); e.g. 1014 4f translate cell diverges at
   HEAD too — NOT a regression, verified byte-neutral vs HEAD.
@@ -201,22 +206,31 @@ cargo build --release --example perf_encode   # ~29s
   means instruction reduction in the trellis/rate/tx-driver block, which is
   ~68% of the encode but written at C-parity structure.
 
-## target-cpu A/B results (2026-09-19, lilith)
+## target-cpu A/B results (2026-09-19, i265, native Ubuntu)
 
 Record: `benchmarks/cpunative_ab_2026-09-19.meta`. Cell: 1014 512² q32 p6,
 all builds byte-identical (BYTES=21491), medians over interleaved runs.
+Ir now via the committed iai-callgrind bench (`svtav1/benches/iai_encode.rs`,
+`cargo bench --bench iai_encode -p zenav1-svt`) — single-encode counts,
+setup excluded.
 
-| build | ENCODE_NS | vs base | Ir (callgrind) |
-|---|---|---|---|
-| port default dispatch | 33.91ms | — | 2,007.4M (3 enc) |
-| port `-C target-cpu=x86-64-v3` | 33.49ms | −1.2% | 1,908.6M (−4.9%) |
-| port `-C target-cpu=native` | 33.09ms | −2.5% | n/a (GFNI SIGILL) |
-| C NATIVE=OFF | 27.72ms | — | 970.5M (2 enc) |
-| C NATIVE=ON | 27.44ms | −1.0% | 957.6M (−1.3%) |
+| build | ENCODE_NS | vs base | Ir (iai-callgrind, 1 enc) | est. cycles |
+|---|---|---|---|---|
+| port default dispatch | 33.91ms | — | 669.69M | 973.5M |
+| port `-C target-cpu=x86-64-v3` | 33.49ms | −1.2% | 636.83M (−4.9%) | 933.5M (−4.1%) |
+| port `-C target-cpu=native` | 33.09ms | −2.5% | 634.13M (−5.3%) | 932.3M (−4.2%) |
+| C NATIVE=OFF | 27.72ms | — | 970.5M (2-enc raw cg) | |
+| C NATIVE=ON | 27.44ms | −1.0% | 957.6M (−1.3%) | |
 
-Port/C: 1.223× → 1.206× both-native. v3 inclusive Ir: optimize_b −8.2%,
-tx_unit_inner −6.6%, eval_candidate −6.2%, eval_uv −6.8%, txt_search −6.1%,
-write_coeffs_txb_1d −3.5%, cost_coeffs_txb −1.7%.
+The port-native Ir above is `target-cpu=native` MINUS the features
+valgrind-3.26 cannot execute (`-C target-feature=-gfni,-vaes,-vpclmulqdq,
+-avxvnni,-avxvnniint8,-avxvnniint16,-avxifma,-avxneconvert,-sha,-sm3,-sm4`
+makes the native build callgrind-safe; full-native SIGILLs on
+`vgf2p8affineqb`). Its ΔIr vs v3 is small — post-v3 ISA buys ~0.4% Ir.
+
+Port/C: 1.223× → 1.206× both-native. Native-vs-base inclusive Ir
+(single-encode): optimize_b −8.3%, tx_unit_inner −7.0%, eval_candidate −6.4%,
+txt_search −6.4%, run_mds1 −6.1%, cost_coeffs_txb −2.8%, fwd_txfm2d −1.9%.
 
 Read: ~half the v3 Ir reduction lands on the wall clock. Part of it is
 `#[arcane]` kernels inlining into scalar callers — a boundary runtime
@@ -226,14 +240,23 @@ trellis/rate callers autovectorize (or explicit SIMD where legal), not
 flipping target-cpu.
 
 **New measurement traps found this session:**
-- `kernel.perf_event_paranoid=4` on this WSL boot — `perf stat`/`perf record`
-  are dead for unprivileged users (even software events). The handoff's
-  earlier `perf stat` numbers were taken under a lower setting; check
-  `/proc/sys/kernel/perf_event_paranoid` before planning hardware-counter
-  work.
-- `target-cpu=native` binaries are un-callgrindable here: LLVM emitted GFNI
-  (`vgf2p8affineqb`) even inside `fmt` code; valgrind 3.26 SIGILLs. Use
-  `x86-64-v3` for the callgrind-measurable tier (valgrind handles AVX2).
+- `kernel.perf_event_paranoid=4` on this host's current boot (i265, native
+  Ubuntu) — `perf stat`/`perf record` are dead for unprivileged users (even
+  software events). The earlier `perf stat` numbers were taken under a lower
+  setting; check `/proc/sys/kernel/perf_event_paranoid` before planning
+  hardware-counter work.
+- `target-cpu=native` binaries are un-callgrindable here as-built: LLVM emits
+  GFNI (`vgf2p8affineqb`) even inside `fmt` code; valgrind 3.26 SIGILLs.
+  Workaround that ran clean: `target-cpu=native` +
+  `-C target-feature=-gfni,-vaes,-vpclmulqdq,-avxvnni,-avxvnniint8,
+  -avxvnniint16,-avxifma,-avxneconvert,-sha,-sm3,-sm4`. `x86-64-v3` needs no
+  pruning (valgrind handles AVX2).
+- `iai-callgrind` is now the per-function instruction tool:
+  `svtav1/benches/iai_encode.rs` encodes this exact cell under callgrind with
+  setup excluded — `cargo bench --bench iai_encode -p zenav1-svt`. Works on
+  every build that valgrind can execute; gives Ir + L1/LL/RAM hits +
+  estimated cycles in one run. Runner `iai-callgrind-runner 0.16.1` already
+  in ~/.cargo/bin; library pinned at `iai-callgrind = "0.16.1"` dev-dep.
 - At `target-cpu=x86-64-v3`, callers satisfy `#[target_feature]` so
   `#[arcane]` fns INLINE into scalar callers — self-cost symbol attribution
   reshapes massively. Diff INCLUSIVE costs of stable driver functions, not

@@ -37,3 +37,5 @@ target-heapdbg/
 target-perf-base/
 target-native/
 target-v3/
+svtav1/target-native/
+svtav1/target-v3/

@@ -1,12 +1,31 @@
 # target-cpu=native / x86-64-v3 A/B — does ISA codegen explain the residual gap?
 date: 2026-09-19T07:1x:00Z
 commit: 557032ba (main @ measurement time)
-host: lilith (WSL, Core Ultra 7 265K Arrow Lake — AVX2, NO AVX-512; taskset -c 3)
+host: i265 (native Ubuntu, Core Ultra 7 265K Arrow Lake — AVX2, NO AVX-512; taskset -c 3)
 cell: 1014.yuv 512x512 q32 p6 still (target/perfgap/1014.yuv)
 output: ALL FOUR builds byte-identical (port base == v3 == native == C base == C native; BYTES=21491)
-note: perf_event_paranoid=4 on this boot — NO hardware counters; Ir via callgrind
-  (same-tool comparisons only; C callgrind is known-inflated vs hardware per
-  handoff learning #1, used here ONLY for C-vs-C).
+note: perf_event_paranoid=4 on this boot — NO hardware counters; Ir via
+  callgrind/iai-callgrind (same-tool comparisons only; C callgrind is
+  known-inflated vs hardware per handoff learning #1, used here ONLY for C-vs-C).
+
+IAI-CALLGRIND (svtav1/benches/iai_encode.rs, committed; single-encode,
+setup excluded — `cargo bench --bench iai_encode -p zenav1-svt`):
+  base   : 669,686,730 Ir | 973.5M est cycles
+  v3     : 636,834,678 Ir | 933.5M est cycles  (-4.90% Ir / -4.1% cyc)
+  native : 634,128,840 Ir | 932.3M est cycles  (-5.31% Ir / -4.2% cyc)
+           (native here = target-cpu=native MINUS valgrind-unsupported
+           features: -gfni,-vaes,-vpclmulqdq,-avxvnni,-avxvnniint8,
+           -avxvnniint16,-avxifma,-avxneconvert,-sha,-sm3,-sm4 — full native
+           SIGILLs under valgrind-3.26 on vgf2p8affineqb)
+
+  native-vs-base inclusive Ir (single encode):
+    optimize_b        121.0M -> 111.0M  -8.3%
+    tx_unit_inner     381.1M -> 354.2M  -7.0%
+    eval_candidate    395.7M -> 370.3M  -6.4%
+    txt_search        237.3M -> 222.2M  -6.4%
+    run_mds1           63.6M ->  59.7M  -6.1%
+    cost_coeffs_txb    68.8M ->  66.9M  -2.8%
+    fwd_txfm2d_c_exact 57.6M ->  56.5M  -1.9%
 
 PORT (cargo build --release --example perf_encode, lto=fat cg=1):
   base   : default target (x86-64 baseline + archmage runtime AVX2 dispatch)
@@ -16,9 +35,9 @@ PORT (cargo build --release --example perf_encode, lto=fat cg=1):
   ENCODE_NS medians (n=10 base/nat interleaved, n=8 v3):
     base 33.91ms | v3 33.49ms (-1.2%) | native 33.09ms (-2.5%)
   callgrind Ir (warmup=2 => ~3 encodes):
-    base 2,007.4M | v3 1,908.6M (-4.9%) | native SIGILL under valgrind-3.26
-    (GFNI vgf2p8affineqb emitted even in fmt code — native build is
-    un-callgrindable on this host)
+    base 2,007.4M | v3 1,908.6M (-4.9%) | full native SIGILL under
+    valgrind-3.26 on GFNI — SUPERSEDED: feature-pruned native is
+    callgrind-safe, see the IAI-CALLGRIND section above
 
   v3-vs-base Ir by inclusive subtree (inlining reshapes self-cost symbols —
   at v3, callers satisfy target_feature so #[arcane] fns inline into callers):
@@ -49,7 +68,7 @@ RATIOS: port/C = 33.91/27.72 = 1.223x base; 33.09/27.44 = 1.206x both-native.
 READ:
 - C gains ~1% from native: its hot paths were already hand asm and its generic
   TUs are deliberately -mno-avx even under NATIVE=ON. Little headroom.
-- Port gains ~2.5% wall / ~4.9% Ir — MORE than C, concentrated in the
+- Port gains ~2.5% wall / ~5.3% Ir — MORE than C, concentrated in the
   scalar-side bottleneck (RDOQ trellis / tx pipeline / candidate eval): the
   "diffuse 20-30% codegen overhead" vs C is partly ISA-recoverable (autovec,
   BMI2, addressing), not purely structural.

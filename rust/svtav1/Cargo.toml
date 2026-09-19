@@ -58,6 +58,7 @@ rusty_h264 = { version = "0.16.0", default-features = false, features = ["std", 
 # Dev-only: no release build carries it.
 archmage = { workspace = true, features = ["testable_dispatch"] }
 zenav1-svt-encoder = { workspace = true }
+iai-callgrind = "0.16.1"
 
 [lints]
 workspace = true
@@ -146,3 +147,10 @@ required-features = ["avif-container"]
 [[example]]
 name = "mp4_to_avif"
 required-features = ["avif-container"]
+
+# Instruction-count (callgrind) benchmark for the still-encode perf cell —
+# see benches/iai_encode.rs. `harness = false` lets the iai main! drive the
+# runner itself under `cargo bench`.
+[[bench]]
+name = "iai_encode"
+harness = false
