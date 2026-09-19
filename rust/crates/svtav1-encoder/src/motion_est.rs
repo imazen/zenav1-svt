@@ -25,6 +25,8 @@ use archmage::prelude::*;
 use svtav1_dsp::me_sad::block_sad_scalar;
 #[cfg(target_arch = "x86_64")]
 use svtav1_dsp::me_sad::block_sad_v3;
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+use svtav1_dsp::me_sad::block_sad_v4;
 #[cfg(target_arch = "aarch64")]
 use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 use svtav1_types::motion::Mv;
@@ -220,6 +222,13 @@ full_pel_search_variant!(
     Desktop64,
     block_sad_v3
 );
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+full_pel_search_variant!(
+    #[arcane]
+    full_pel_search_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
+);
 
 #[allow(clippy::too_many_arguments)]
 pub fn full_pel_search(
@@ -253,7 +262,7 @@ pub fn full_pel_search(
             pic_width,
             pic_height
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 

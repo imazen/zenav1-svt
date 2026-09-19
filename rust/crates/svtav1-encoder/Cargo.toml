@@ -36,8 +36,12 @@ archmage = { workspace = true, features = ["testable_dispatch"] }
 workspace = true
 
 [features]
-default = ["std"]
+default = ["std", "avx512"]
 std = []
+# Same rationale as zenav1-svt-dsp's `avx512` feature: default-on so the `_v4`
+# arms this crate's `incant!` lists name are actually compiled; whether they
+# RUN is a run-time `X64V4Token::summon()` (CPUID) decision.
+avx512 = ["archmage/avx512", "magetypes/avx512", "zenav1-svt-dsp/avx512"]
 unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "unchecked_entropy"]
 # Bounds-check elision in the entropy coder hot loops (former entropy-crate feature).
 unchecked_entropy = []

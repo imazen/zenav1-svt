@@ -1,0 +1,96 @@
+**THE ME-SAD FAMILY GETS ITS `_v4` ARM — the largest single `_v3`-only cost
+in the inter-frame profile.** The inter delta (`~/tmp/cg-inter/delta_port_*`,
+callgrind, so it prices the `_v3` arm on this host) puts
+`me_sad::block_sad_v3` at 106.3M self Ir / 281,464 calls — 24.7% of the
+inter-frame delta on gradient p8, 167.1M / 506,426 (25.1%) on photo p6.
+Roughly half of that is w=8 block SADs under `ext_all8`/`ext_sad8`; the rest
+is 16..64-wide blocks under `sad_loop` and `full_pel_search`. C runs AVX-512
+here (`svt_nxm_sad_kernel_helper_avx512`, `sad64x*/sad128x*_avx512`,
+`svt_sad_loop_kernel_avx512_intrin` in ASM_AVX512/compute_sad_intrin_avx512.c).
+
+date:   2026-09-19
+host:   r7900x — AMD Ryzen 9 7900X, **Zen 4: AVX-512 double-pumped over
+        256-bit units**. Every number below is a Zen-4 number; a 512-bit arm
+        here buys instruction count and front-end width, NOT 512-bit
+        execution width. perf_event_paranoid=4 on this box: NO hardware
+        counters — wall clock is the only real measurement, and valgrind
+        3.27.1 cannot execute AVX-512 at all (masks the CPUID bits, SIGILL on
+        a forced zmm — verified empirically), so callgrind prices `_v3`.
+base:   `ded9b46c1` — built from a `git worktree` checkout of HEAD.
+cand:   working tree — `crates/svtav1-dsp/src/me_sad.rs` +
+        `crates/svtav1-encoder/{Cargo.toml,inter_me/sad.rs,motion_est.rs,port_md/pme.rs}`.
+data:   benchmarks/sad_avx512_inter_grad.ab.{tsv,raw.tsv} (A/B),
+        benchmarks/sad_avx512_inter_grad.ctrl.{tsv,raw.tsv} (same-binary control),
+        benchmarks/sad_avx512_still_grad.ab.{tsv,raw.tsv} (still cell).
+
+========================= 1. WHAT THE ARMS DO =========================
+
+All three are `#[arcane]` `X64V4Token` functions in `me_sad.rs`, all built on
+`_mm512_sad_epu8` (8 independent u64 partial sums per zmm — lane total is
+order-insensitive, so every packing below is a reordering of an exact
+integer sum):
+
+  * `block_sad_v4` — w=8 packs FOUR ROWS into one ymm (the proven
+    `block_sad_x4_v3` shape: this is where ~half the profile cost lives,
+    `ext_all8` alone does 512 8x8/8x4 SADs per call); w=16 packs four rows
+    per zmm (`inserti32x4` chain); w=32 packs two rows per zmm
+    (`inserti64x4`); other widths take a 64-byte zmm rung then the v3
+    32/16/8 sub-rungs and scalar tail.
+  * `block_sad_x4_v4` — same dispatch shape for the 4-candidate kernel:
+    w=4/w=8 keep the v3 packs (the GPR loads that feed a wider pack
+    dominate, so zmm packing is not a win there); w=16/w=32 get zmm packs;
+    the generic path gets a 64-byte rung.
+  * `block_sum_sse_v4` — `_mm512_cvtepu8_epi16` + `_mm512_madd_epi16` on
+    32-byte chunks, 16/8-byte rungs kept at 256-bit.
+
+Encoder plumbing: `sad_loop`, `ext_sad8`, `ext_eight8`, `ext_all8`
+(`inter_me/sad.rs`), `full_pel_search` (`motion_est.rs`) and
+`pme_sad_loop` (`port_md/pme.rs`) each gained a `_dispatch_v4` arcane
+variant via the existing macros, with `v4` added to their `incant!` lists.
+`zenav1-svt-encoder` gained `avx512` as a DEFAULT-ON feature — same
+rationale as dsp's: it makes the arm exist at compile time; whether it RUNS
+is a run-time `X64V4Token::summon()` CPUID decision. One-shot call sites
+(`pd0`'s 64x32, `md_search`, `detect`, `intrabc`'s `block_sad_x4`) pick the
+tier up through the dispatching wrappers.
+
+============================ 2. WALL CLOCK ============================
+
+`tools/perf_ab.sh`, interleaved randomised paired rounds, neither side
+niced, every cell ident=Y. INTER cell = 4-frame translated GOP
+(`SVTAV1_FRAMES=4 _FRAME_SHIFT=3 _INTRA_PERIOD=64 _HIER_LEVELS=0
+_INTER_EXPERIMENTAL=1`), 24 rounds — past the >21 bar for sub-5% claims.
+Control = base vs a byte copy of base, same session:
+
+  cell                          CONTROL ratio (p25-p75)      A/B ratio (p25-p75)         net
+  gradient inter 512 p6         0.9988 (0.9960-1.0017)       0.9779 (0.9762-0.9817)      ~1.021x, DISJOINT
+  gradient inter 512 p8         1.0014 (0.9980-1.0039)       0.9745 (0.9723-0.9782)      ~1.026x, DISJOINT
+  gradient still 512 p6         —                            0.9979 (0.9871-1.0007)      flat (ME is inter-dominated)
+
+Every measured cell's .obu cmp-identical base vs candidate (the perf_ab
+`ident` column, plus a direct smoke sweep: still 512 p6 x {gradient,
+photo_cid, screen_terminal} and inter4 x {gradient, photo_cid} x {p6, p8}).
+
+No Ir figure is quoted for the _v4 arm: callgrind cannot run it (valgrind
+masks AVX-512 — see header) and perf_event_paranoid=4 blocks counters.
+That is a known blind spot, not an omission.
+
+============================== 3. GATES ==============================
+
+  * `cargo nextest run --workspace --locked --test-threads 4`: 3929/3929.
+  * `tools/regression_spotcheck.sh`: 145/145.
+  * me_sad tier tests exercise v4 via `for_each_token_permutation`, and the
+    new `me_sad_v4_arms_match_scalar_when_summoned` is the positive witness —
+    on this host `X64V4Token::summon()` succeeds and all three v4 arms are
+    asserted equal to scalar across every SIZES entry plus pack-factor
+    remainder heights. On a non-AVX-512 host the test prints the gap.
+  * decode gate NOT run: no dav1d on this host — coverage gap, same as
+    recorded for the wiener change.
+
+============================ 4. CAVEATS ==============================
+
+  * Zen-4-only numbers. Nothing here predicts a full-width-512 host.
+  * The x4 kernel is only as wide as its callers are — IntraBC mesh feeds
+    it w=4/w=8 mostly, where the arm keeps the v3 packing; the zmm rung is
+    for the wider sdx4df shapes.
+  * `w=48` and other 33..63 widths take 32+16 sub-rungs, not a zmm pack —
+    the pack factors were chosen where the profile cost actually is.

@@ -25,6 +25,8 @@ use archmage::prelude::*;
 use svtav1_dsp::me_sad::block_sad_scalar;
 #[cfg(target_arch = "x86_64")]
 use svtav1_dsp::me_sad::block_sad_v3;
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+use svtav1_dsp::me_sad::block_sad_v4;
 #[cfg(target_arch = "aarch64")]
 use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 
@@ -205,6 +207,13 @@ sad_loop_variant!(
     Desktop64,
     block_sad_v3
 );
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+sad_loop_variant!(
+    #[arcane]
+    sad_loop_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
+);
 
 /// C `svt_sad_loop_kernel_c` (C_DEFAULT/compute_sad_c.c:63).
 ///
@@ -248,7 +257,7 @@ pub fn sad_loop_kernel(
             search_area_width,
             search_area_height
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 
@@ -647,6 +656,13 @@ ext_sad_8x8_16x16_variant!(
     Desktop64,
     block_sad_v3
 );
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+ext_sad_8x8_16x16_variant!(
+    #[arcane]
+    ext_sad8_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
+);
 
 ext_eight_sad_8x8_16x16_variant!(ext_eight8_dispatch_scalar, ScalarToken, block_sad_scalar);
 #[cfg(target_arch = "aarch64")]
@@ -670,6 +686,13 @@ ext_eight_sad_8x8_16x16_variant!(
     Desktop64,
     block_sad_v3
 );
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+ext_eight_sad_8x8_16x16_variant!(
+    #[arcane]
+    ext_eight8_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
+);
 
 ext_all_sad_8x8_16x16_variant!(ext_all8_dispatch_scalar, ScalarToken, block_sad_scalar);
 #[cfg(target_arch = "aarch64")]
@@ -692,6 +715,13 @@ ext_all_sad_8x8_16x16_variant!(
     ext_all8_dispatch_v3,
     Desktop64,
     block_sad_v3
+);
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+ext_all_sad_8x8_16x16_variant!(
+    #[arcane]
+    ext_all8_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
 );
 
 /// C `svt_ext_sad_calculation_8x8_16x16_c` (motion_estimation.c:100).
@@ -720,7 +750,7 @@ pub fn ext_sad_calculation_8x8_16x16(
             src, src_stride, rf, ref_stride, best_sad, best_mv, off8, off16, mv, p_sad16x16,
             i16x16, p_sad8x8, i8x8, sub_sad
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 
@@ -760,7 +790,7 @@ pub fn ext_eight_sad_calculation_8x8_16x16(
             p_eight_sad16x16,
             sub_sad
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 
@@ -793,6 +823,6 @@ pub fn ext_all_sad_calculation_8x8_16x16(
             p_eight_sad16x16,
             sub_sad
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }

@@ -232,6 +232,184 @@ pub fn block_sad_v3(
     (_mm_cvtsi128_si64(s) as u64 as u32) + tail
 }
 
+// --- x86-64 AVX-512 ---
+//
+// `_mm512_sad_epu8` sums each contiguous 8-byte group into its own u64 lane.
+// The block total is the sum of all lanes regardless of how rows are packed
+// into the register, so the narrow widths below pack MULTIPLE ROWS per vector
+// — the same reordering `block_sad_x4_v3` proves bit-identical for w == 4 and
+// w == 8. The 64-byte rung covers the >= 64-wide calls (HME base level,
+// `full_pel_search`, `md_search` whole blocks); nothing here changes the sum.
+
+/// AVX-512 block SAD. Lane accumulators are u64 — each `_mm512_sad_epu8` lane
+/// adds at most `8 * 255 = 2040` per op, so no h can overflow them.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+pub fn block_sad_v4(
+    _token: X64V4Token,
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut acc512 = _mm512_setzero_si512();
+    let mut acc256 = _mm256_setzero_si256();
+    let mut acc128 = _mm_setzero_si128();
+    let mut tail = 0u32;
+
+    // w == 8: the most-called ME shape (every `ext_*` block SAD is 8x4/8x8).
+    // Four rows per 256-bit register, `block_sad_x4_v3`'s proven packing.
+    if w == 8 {
+        let ld = |p: &[u8], o: usize| i64::from_le_bytes(p[o..o + 8].try_into().unwrap());
+        let mut y = 0;
+        while y + 4 <= h {
+            let a = _mm256_setr_epi64x(
+                ld(src, y * src_stride),
+                ld(src, (y + 1) * src_stride),
+                ld(src, (y + 2) * src_stride),
+                ld(src, (y + 3) * src_stride),
+            );
+            let b = _mm256_setr_epi64x(
+                ld(rf, y * ref_stride),
+                ld(rf, (y + 1) * ref_stride),
+                ld(rf, (y + 2) * ref_stride),
+                ld(rf, (y + 3) * ref_stride),
+            );
+            acc256 = _mm256_add_epi64(acc256, _mm256_sad_epu8(a, b));
+            y += 4;
+        }
+        while y < h {
+            for x in 0..w {
+                tail += u32::from(src[y * src_stride + x].abs_diff(rf[y * ref_stride + x]));
+            }
+            y += 1;
+        }
+    } else if w == 16 {
+        // Four rows per 512-bit register: 4 xmm loads + 3 inserts replace
+        // 4 x (2 loads + sad + add) of the straight xmm ladder.
+        let mut y = 0;
+        while y + 4 <= h {
+            let la = |r: usize| -> __m128i {
+                let s: &[u8; 16] = src[r * src_stride..r * src_stride + 16].try_into().unwrap();
+                _mm_loadu_si128(s)
+            };
+            let lb = |r: usize| -> __m128i {
+                let s: &[u8; 16] = rf[r * ref_stride..r * ref_stride + 16].try_into().unwrap();
+                _mm_loadu_si128(s)
+            };
+            let a = _mm512_inserti32x4::<3>(
+                _mm512_inserti32x4::<2>(
+                    _mm512_inserti32x4::<1>(_mm512_castsi128_si512(la(y)), la(y + 1)),
+                    la(y + 2),
+                ),
+                la(y + 3),
+            );
+            let b = _mm512_inserti32x4::<3>(
+                _mm512_inserti32x4::<2>(
+                    _mm512_inserti32x4::<1>(_mm512_castsi128_si512(lb(y)), lb(y + 1)),
+                    lb(y + 2),
+                ),
+                lb(y + 3),
+            );
+            acc512 = _mm512_add_epi64(acc512, _mm512_sad_epu8(a, b));
+            y += 4;
+        }
+        while y < h {
+            let a: &[u8; 16] = src[y * src_stride..y * src_stride + 16].try_into().unwrap();
+            let b: &[u8; 16] = rf[y * ref_stride..y * ref_stride + 16].try_into().unwrap();
+            acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si128(a), _mm_loadu_si128(b)));
+            y += 1;
+        }
+    } else if w == 32 {
+        // Two rows per 512-bit register.
+        let mut y = 0;
+        while y + 2 <= h {
+            let a0: &[u8; 32] = src[y * src_stride..y * src_stride + 32].try_into().unwrap();
+            let a1: &[u8; 32] = src[(y + 1) * src_stride..(y + 1) * src_stride + 32]
+                .try_into()
+                .unwrap();
+            let a = _mm512_inserti64x4::<1>(
+                _mm512_castsi256_si512(_mm256_loadu_si256(a0)),
+                _mm256_loadu_si256(a1),
+            );
+            let b0: &[u8; 32] = rf[y * ref_stride..y * ref_stride + 32].try_into().unwrap();
+            let b1: &[u8; 32] = rf[(y + 1) * ref_stride..(y + 1) * ref_stride + 32]
+                .try_into()
+                .unwrap();
+            let b = _mm512_inserti64x4::<1>(
+                _mm512_castsi256_si512(_mm256_loadu_si256(b0)),
+                _mm256_loadu_si256(b1),
+            );
+            acc512 = _mm512_add_epi64(acc512, _mm512_sad_epu8(a, b));
+            y += 2;
+        }
+        if y < h {
+            let a: &[u8; 32] = src[y * src_stride..y * src_stride + 32].try_into().unwrap();
+            let b: &[u8; 32] = rf[y * ref_stride..y * ref_stride + 32].try_into().unwrap();
+            acc256 = _mm256_add_epi64(
+                acc256,
+                _mm256_sad_epu8(_mm256_loadu_si256(a), _mm256_loadu_si256(b)),
+            );
+        }
+    } else {
+        // General width ladder: 64-byte chunks, then the same 32/16/8
+        // sub-rungs and scalar tail as `block_sad_v3`.
+        for y in 0..h {
+            let so = y * src_stride;
+            let ro = y * ref_stride;
+            let mut c = 0usize;
+            while c + 64 <= w {
+                let a: &[u8; 64] = src[so + c..so + c + 64].try_into().unwrap();
+                let b: &[u8; 64] = rf[ro + c..ro + c + 64].try_into().unwrap();
+                acc512 = _mm512_add_epi64(
+                    acc512,
+                    _mm512_sad_epu8(_mm512_loadu_si512(a), _mm512_loadu_si512(b)),
+                );
+                c += 64;
+            }
+            while c + 32 <= w {
+                let a: &[u8; 32] = src[so + c..so + c + 32].try_into().unwrap();
+                let b: &[u8; 32] = rf[ro + c..ro + c + 32].try_into().unwrap();
+                acc256 = _mm256_add_epi64(
+                    acc256,
+                    _mm256_sad_epu8(_mm256_loadu_si256(a), _mm256_loadu_si256(b)),
+                );
+                c += 32;
+            }
+            while c + 16 <= w {
+                let a: &[u8; 16] = src[so + c..so + c + 16].try_into().unwrap();
+                let b: &[u8; 16] = rf[ro + c..ro + c + 16].try_into().unwrap();
+                acc128 =
+                    _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si128(a), _mm_loadu_si128(b)));
+                c += 16;
+            }
+            if c + 8 <= w {
+                let a: &[u8; 8] = src[so + c..so + c + 8].try_into().unwrap();
+                let b: &[u8; 8] = rf[ro + c..ro + c + 8].try_into().unwrap();
+                acc128 =
+                    _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si64(a), _mm_loadu_si64(b)));
+                c += 8;
+            }
+            while c < w {
+                tail += u32::from(src[so + c].abs_diff(rf[ro + c]));
+                c += 1;
+            }
+        }
+    }
+
+    let s = _mm_add_epi64(
+        acc128,
+        _mm_add_epi64(
+            _mm256_castsi256_si128(acc256),
+            _mm256_extracti128_si256::<1>(acc256),
+        ),
+    );
+    let s = _mm_add_epi64(s, _mm_srli_si128::<8>(s));
+    (_mm512_reduce_add_epi64(acc512) as u32) + (_mm_cvtsi128_si64(s) as u64 as u32) + tail
+}
+
 // ---------------------------------------------------------------------------
 // Sum / sum-of-squares, the other shape the ME distortions need.
 //
@@ -397,6 +575,91 @@ pub fn block_sum_sse_v3(
     (sum, (red(acc_sse) as u32).wrapping_add(tail_sse))
 }
 
+/// AVX-512 `block_sum_sse`: the same widen-to-i16 + `_mm512_madd_epi16`
+/// pipeline as `_v3`, on 32-byte chunks, with the 16/8 rungs kept at 256-bit.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+pub fn block_sum_sse_v4(
+    _token: X64V4Token,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (i32, u32) {
+    let mut acc_a = _mm512_setzero_si512();
+    let mut acc_b = _mm512_setzero_si512();
+    let mut acc_sse = _mm512_setzero_si512();
+    let mut acc_a256 = _mm256_setzero_si256();
+    let mut acc_b256 = _mm256_setzero_si256();
+    let mut acc_sse256 = _mm256_setzero_si256();
+    let mut tail_sum: i32 = 0;
+    let mut tail_sse: u32 = 0;
+    let ones = _mm512_set1_epi16(1);
+    let ones256 = _mm256_set1_epi16(1);
+    for y in 0..h {
+        let ao = y * a_stride;
+        let bo = y * b_stride;
+        let mut c = 0usize;
+        while c + 32 <= w {
+            let av: &[u8; 32] = a[ao + c..ao + c + 32].try_into().unwrap();
+            let bv: &[u8; 32] = b[bo + c..bo + c + 32].try_into().unwrap();
+            let va = _mm512_cvtepu8_epi16(_mm256_loadu_si256(av));
+            let vb = _mm512_cvtepu8_epi16(_mm256_loadu_si256(bv));
+            acc_a = _mm512_add_epi32(acc_a, _mm512_madd_epi16(va, ones));
+            acc_b = _mm512_add_epi32(acc_b, _mm512_madd_epi16(vb, ones));
+            let d = _mm512_sub_epi16(va, vb);
+            acc_sse = _mm512_add_epi32(acc_sse, _mm512_madd_epi16(d, d));
+            c += 32;
+        }
+        while c + 16 <= w {
+            let av: &[u8; 16] = a[ao + c..ao + c + 16].try_into().unwrap();
+            let bv: &[u8; 16] = b[bo + c..bo + c + 16].try_into().unwrap();
+            let va = _mm256_cvtepu8_epi16(_mm_loadu_si128(av));
+            let vb = _mm256_cvtepu8_epi16(_mm_loadu_si128(bv));
+            acc_a256 = _mm256_add_epi32(acc_a256, _mm256_madd_epi16(va, ones256));
+            acc_b256 = _mm256_add_epi32(acc_b256, _mm256_madd_epi16(vb, ones256));
+            let d = _mm256_sub_epi16(va, vb);
+            acc_sse256 = _mm256_add_epi32(acc_sse256, _mm256_madd_epi16(d, d));
+            c += 16;
+        }
+        if c + 8 <= w {
+            let av: &[u8; 8] = a[ao + c..ao + c + 8].try_into().unwrap();
+            let bv: &[u8; 8] = b[bo + c..bo + c + 8].try_into().unwrap();
+            let va = _mm256_cvtepu8_epi16(_mm_loadu_si64(av));
+            let vb = _mm256_cvtepu8_epi16(_mm_loadu_si64(bv));
+            acc_a256 = _mm256_add_epi32(acc_a256, _mm256_madd_epi16(va, ones256));
+            acc_b256 = _mm256_add_epi32(acc_b256, _mm256_madd_epi16(vb, ones256));
+            let d = _mm256_sub_epi16(va, vb);
+            acc_sse256 = _mm256_add_epi32(acc_sse256, _mm256_madd_epi16(d, d));
+            c += 8;
+        }
+        while c < w {
+            let d = i32::from(a[ao + c]) - i32::from(b[bo + c]);
+            tail_sum += d;
+            tail_sse += (d * d) as u32;
+            c += 1;
+        }
+    }
+    let red256 = |v: __m256i| -> i32 {
+        let s = _mm_add_epi32(
+            _mm256_castsi256_si128(v),
+            _mm256_extracti128_si256::<1>(v),
+        );
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b00_01_00_01>(s));
+        _mm_cvtsi128_si32(s)
+    };
+    let sum = (_mm512_reduce_add_epi32(acc_a) + red256(acc_a256))
+        - (_mm512_reduce_add_epi32(acc_b) + red256(acc_b256))
+        + tail_sum;
+    let sse = (_mm512_reduce_add_epi32(acc_sse) as u32)
+        .wrapping_add(red256(acc_sse256) as u32)
+        .wrapping_add(tail_sse);
+    (sum, sse)
+}
+
 /// Dispatching `(SUM(a - b), SUM((a - b)^2))` for the one-shot call sites.
 pub fn block_sum_sse(
     a: &[u8],
@@ -408,7 +671,7 @@ pub fn block_sum_sse(
 ) -> (i32, u32) {
     incant!(
         block_sum_sse(a, a_stride, b, b_stride, w, h),
-        [v3, neon, scalar]
+        [v4, v3, neon, scalar]
     )
 }
 
@@ -416,7 +679,7 @@ pub fn block_sum_sse(
 
 /// Dispatching block SAD, for the call sites that are NOT inside a search
 /// loop. Inside a loop, summon once and call the `_arm_v2` / `_neon` / `_v3` /
-/// `_scalar` helper directly.
+/// `_v4` / `_scalar` helper directly.
 pub fn block_sad(
     src: &[u8],
     src_stride: usize,
@@ -427,7 +690,7 @@ pub fn block_sad(
 ) -> u32 {
     incant!(
         block_sad(src, src_stride, rf, ref_stride, w, h),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 
@@ -443,7 +706,7 @@ pub fn block_sad_x4(
 ) -> [u32; 4] {
     incant!(
         block_sad_x4(src, src_stride, refs, ref_stride, w, h),
-        [v3, neon, scalar]
+        [v4, v3, neon, scalar]
     )
 }
 
@@ -757,6 +1020,270 @@ pub fn block_sad_x4_v3(
     tail
 }
 
+/// AVX-512 four-candidate SAD: same load-once/accumulate-four shape as
+/// `block_sad_x4_v3` with a 64-byte chunk rung and 512-bit row packs for
+/// w == 16 and w == 32. The w == 4 / w == 8 packs stay at 128/256-bit — the
+/// GPR loads that feed a wider pack dominate, so a zmm pack is not a win
+/// there. Sum order is again only a reordering of an integer total.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+pub fn block_sad_x4_v4(
+    _token: X64V4Token,
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> [u32; 4] {
+    let mut zmm = [_mm512_setzero_si512(); 4];
+    let mut wide = [_mm256_setzero_si256(); 4];
+    let mut narrow = [_mm_setzero_si128(); 4];
+    let mut tail = [0u32; 4];
+
+    if w == 4 {
+        let ld = |p: &[u8], o: usize| i32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+        let mut y = 0;
+        while y + 4 <= h {
+            let (s0, s1, s2, s3) = (
+                y * src_stride,
+                (y + 1) * src_stride,
+                (y + 2) * src_stride,
+                (y + 3) * src_stride,
+            );
+            let a = _mm_setr_epi32(ld(src, s0), ld(src, s1), ld(src, s2), ld(src, s3));
+            let (r0, r1, r2, r3) = (
+                y * ref_stride,
+                (y + 1) * ref_stride,
+                (y + 2) * ref_stride,
+                (y + 3) * ref_stride,
+            );
+            for i in 0..4 {
+                let rp = refs[i];
+                let b = _mm_setr_epi32(ld(rp, r0), ld(rp, r1), ld(rp, r2), ld(rp, r3));
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            y += 4;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            for x in 0..w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            let sw = _mm_add_epi64(narrow[i], _mm_srli_si128::<8>(narrow[i]));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
+    if w == 8 {
+        let ld = |p: &[u8], o: usize| i64::from_le_bytes(p[o..o + 8].try_into().unwrap());
+        let mut y = 0;
+        while y + 4 <= h {
+            let a = _mm256_setr_epi64x(
+                ld(src, y * src_stride),
+                ld(src, (y + 1) * src_stride),
+                ld(src, (y + 2) * src_stride),
+                ld(src, (y + 3) * src_stride),
+            );
+            for i in 0..4 {
+                let rp = refs[i];
+                let b = _mm256_setr_epi64x(
+                    ld(rp, y * ref_stride),
+                    ld(rp, (y + 1) * ref_stride),
+                    ld(rp, (y + 2) * ref_stride),
+                    ld(rp, (y + 3) * ref_stride),
+                );
+                wide[i] = _mm256_add_epi64(wide[i], _mm256_sad_epu8(a, b));
+            }
+            y += 4;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            for x in 0..w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            let sw = _mm_add_epi64(
+                _mm256_castsi256_si128(wide[i]),
+                _mm256_extracti128_si256::<1>(wide[i]),
+            );
+            let sw = _mm_add_epi64(sw, _mm_srli_si128::<8>(sw));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
+    if w == 16 {
+        // Four rows per 512-bit register: 4 xmm loads + 3 inserts for the
+        // source, the same per reference, then one `_mm512_sad_epu8`.
+        let mut y = 0;
+        while y + 4 <= h {
+            let la = |p: &[u8], stride: usize, r: usize| -> __m128i {
+                let s: &[u8; 16] = p[r * stride..r * stride + 16].try_into().unwrap();
+                _mm_loadu_si128(s)
+            };
+            let pack = |p: &[u8], stride: usize, y: usize| -> __m512i {
+                _mm512_inserti32x4::<3>(
+                    _mm512_inserti32x4::<2>(
+                        _mm512_inserti32x4::<1>(
+                            _mm512_castsi128_si512(la(p, stride, y)),
+                            la(p, stride, y + 1),
+                        ),
+                        la(p, stride, y + 2),
+                    ),
+                    la(p, stride, y + 3),
+                )
+            };
+            let a = pack(src, src_stride, y);
+            for i in 0..4 {
+                let b = pack(refs[i], ref_stride, y);
+                zmm[i] = _mm512_add_epi64(zmm[i], _mm512_sad_epu8(a, b));
+            }
+            y += 4;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            let a = _mm_loadu_si128::<[u8; 16]>(src[so..so + 16].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm_loadu_si128::<[u8; 16]>(refs[i][ro..ro + 16].try_into().unwrap());
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            tail[i] += _mm512_reduce_add_epi64(zmm[i]) as u32;
+            let sw = _mm_add_epi64(narrow[i], _mm_srli_si128::<8>(narrow[i]));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
+    if w == 32 {
+        // Two rows per 512-bit register.
+        let mut y = 0;
+        while y + 2 <= h {
+            let la = |p: &[u8], stride: usize, r: usize| -> __m256i {
+                let s: &[u8; 32] = p[r * stride..r * stride + 32].try_into().unwrap();
+                _mm256_loadu_si256(s)
+            };
+            let pack = |p: &[u8], stride: usize, y: usize| -> __m512i {
+                _mm512_inserti64x4::<1>(
+                    _mm512_castsi256_si512(la(p, stride, y)),
+                    la(p, stride, y + 1),
+                )
+            };
+            let a = pack(src, src_stride, y);
+            for i in 0..4 {
+                let b = pack(refs[i], ref_stride, y);
+                zmm[i] = _mm512_add_epi64(zmm[i], _mm512_sad_epu8(a, b));
+            }
+            y += 2;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            let a = _mm256_loadu_si256::<[u8; 32]>(src[so..so + 32].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm256_loadu_si256::<[u8; 32]>(refs[i][ro..ro + 32].try_into().unwrap());
+                wide[i] = _mm256_add_epi64(wide[i], _mm256_sad_epu8(a, b));
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            tail[i] += _mm512_reduce_add_epi64(zmm[i]) as u32;
+            let sw = _mm_add_epi64(
+                _mm256_castsi256_si128(wide[i]),
+                _mm256_extracti128_si256::<1>(wide[i]),
+            );
+            let sw = _mm_add_epi64(sw, _mm_srli_si128::<8>(sw));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
+    for y in 0..h {
+        let so = y * src_stride;
+        let ro = y * ref_stride;
+        let mut x = 0;
+        while x + 64 <= w {
+            let a = _mm512_loadu_si512::<[u8; 64]>(src[so + x..so + x + 64].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm512_loadu_si512::<[u8; 64]>(
+                    refs[i][ro + x..ro + x + 64].try_into().unwrap(),
+                );
+                zmm[i] = _mm512_add_epi64(zmm[i], _mm512_sad_epu8(a, b));
+            }
+            x += 64;
+        }
+        while x + 32 <= w {
+            let a = _mm256_loadu_si256::<[u8; 32]>(src[so + x..so + x + 32].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm256_loadu_si256::<[u8; 32]>(
+                    refs[i][ro + x..ro + x + 32].try_into().unwrap(),
+                );
+                wide[i] = _mm256_add_epi64(wide[i], _mm256_sad_epu8(a, b));
+            }
+            x += 32;
+        }
+        if x + 16 <= w {
+            let a = _mm_loadu_si128::<[u8; 16]>(src[so + x..so + x + 16].try_into().unwrap());
+            for i in 0..4 {
+                let b =
+                    _mm_loadu_si128::<[u8; 16]>(refs[i][ro + x..ro + x + 16].try_into().unwrap());
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 16;
+        }
+        if x + 8 <= w {
+            let a = _mm_loadu_si64::<[u8; 8]>(src[so + x..so + x + 8].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm_loadu_si64::<[u8; 8]>(refs[i][ro + x..ro + x + 8].try_into().unwrap());
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 8;
+        }
+        if x + 4 <= w {
+            let a = _mm_cvtsi32_si128(i32::from_le_bytes(
+                src[so + x..so + x + 4].try_into().unwrap(),
+            ));
+            for i in 0..4 {
+                let b = _mm_cvtsi32_si128(i32::from_le_bytes(
+                    refs[i][ro + x..ro + x + 4].try_into().unwrap(),
+                ));
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 4;
+        }
+        while x < w {
+            for i in 0..4 {
+                tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+            }
+            x += 1;
+        }
+    }
+    for i in 0..4 {
+        let s = _mm_add_epi64(
+            narrow[i],
+            _mm_add_epi64(
+                _mm256_castsi256_si128(wide[i]),
+                _mm256_extracti128_si256::<1>(wide[i]),
+            ),
+        );
+        let s = _mm_add_epi64(s, _mm_srli_si128::<8>(s));
+        tail[i] += (_mm_cvtsi128_si64(s) as u32) + (_mm512_reduce_add_epi64(zmm[i]) as u32);
+    }
+    tail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,5 +1449,90 @@ mod tests {
         let b = [255u8; 128 * 8];
         assert_eq!(block_sad(&a, 128, &a, 128, 128, 8), 0);
         assert_eq!(block_sad(&a, 128, &b, 128, 128, 8), 255 * 128 * 8);
+    }
+
+    /// Positive witness that the AVX-512 arms are EXERCISED, not just
+    /// compiled — the permutation tests above pass even if dispatch silently
+    /// falls through to `_v3`. On a host without AVX-512 the summon returns
+    /// `None` and the test reports the gap rather than claiming coverage.
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    #[test]
+    fn me_sad_v4_arms_match_scalar_when_summoned() {
+        extern crate std;
+        let Some(v4) = X64V4Token::summon() else {
+            std::eprintln!("X64V4Token unavailable — _v4 arms NOT exercised on this host");
+            return;
+        };
+        let stride = 160usize;
+        let src = plane(7, stride * 160);
+        let rf = plane(1_234_567, stride * 160);
+        for &(w, h) in SIZES {
+            let want = block_sad_scalar(
+                ScalarToken::summon().unwrap(),
+                &src,
+                stride,
+                &rf,
+                stride,
+                w,
+                h,
+            );
+            assert_eq!(
+                block_sad_v4(v4, &src, stride, &rf, stride, w, h),
+                want,
+                "block_sad_v4 {w}x{h}"
+            );
+            let (sum, sse) = {
+                let mut sum = 0i32;
+                let mut sse = 0u32;
+                for y in 0..h {
+                    for x in 0..w {
+                        let d = i32::from(src[y * stride + x]) - i32::from(rf[y * stride + x]);
+                        sum += d;
+                        sse += (d * d) as u32;
+                    }
+                }
+                (sum, sse)
+            };
+            assert_eq!(
+                block_sum_sse_v4(v4, &src, stride, &rf, stride, w, h),
+                (sum, sse),
+                "block_sum_sse_v4 {w}x{h}"
+            );
+            let ss = w + 7;
+            let rs = w + 11;
+            let src4 = plane(71, ss * (h - 1) + w);
+            let refs4: [Vec<u8>; 4] =
+                core::array::from_fn(|i| plane(99 + i as u32, rs * (h - 1) + w));
+            let refs4 = refs4.each_ref().map(|v| v.as_slice());
+            let expected: [u32; 4] = core::array::from_fn(|i| {
+                (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (y, x)))
+                    .map(|(y, x)| u32::from(src4[y * ss + x].abs_diff(refs4[i][y * rs + x])))
+                    .sum()
+            });
+            assert_eq!(
+                block_sad_x4_v4(v4, &src4, ss, refs4, rs, w, h),
+                expected,
+                "block_sad_x4_v4 {w}x{h}"
+            );
+        }
+        // Heights not divisible by the pack factors (4 and 2) hit the row
+        // tails inside the packed width paths.
+        for &(w, h) in &[(8, 5), (16, 7), (32, 3), (8, 1), (16, 1), (32, 1)] {
+            let want = block_sad_scalar(
+                ScalarToken::summon().unwrap(),
+                &src,
+                stride,
+                &rf,
+                stride,
+                w,
+                h,
+            );
+            assert_eq!(
+                block_sad_v4(v4, &src, stride, &rf, stride, w, h),
+                want,
+                "block_sad_v4 tail {w}x{h}"
+            );
+        }
     }
 }

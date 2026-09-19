@@ -37,6 +37,8 @@ use archmage::prelude::*;
 use svtav1_dsp::me_sad::block_sad_scalar;
 #[cfg(target_arch = "x86_64")]
 use svtav1_dsp::me_sad::block_sad_v3;
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+use svtav1_dsp::me_sad::block_sad_v4;
 #[cfg(target_arch = "aarch64")]
 use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 use svtav1_types::motion::Mv;
@@ -418,6 +420,13 @@ pme_sad_loop_variant!(
     Desktop64,
     block_sad_v3
 );
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+pme_sad_loop_variant!(
+    #[arcane]
+    pme_sad_loop_dispatch_v4,
+    X64V4Token,
+    block_sad_v4
+);
 
 /// C `svt_pme_sad_loop_kernel_c` (product_coding_loop.c:1775-1826, EXPORTED).
 ///
@@ -459,7 +468,7 @@ pub fn pme_sad_loop_kernel(
             mvx,
             mvy
         ),
-        [arm_v2, v3, neon, scalar]
+        [v4, arm_v2, v3, neon, scalar]
     )
 }
 
