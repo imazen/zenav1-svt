@@ -31,6 +31,74 @@ pub const TUNE_IQ: u8 = 3;
 pub const TUNE_MS_SSIM: u8 = 4;
 pub const TUNE_FILM_GRAIN: u8 = 5;
 
+/// C `--tune` selector for the still/allintra path (`enc_handle.c`,
+/// `definitions.h:1919`), as a typed enum so the public builder does not
+/// expose the raw `u8`.
+///
+/// Each variant installs the same configuration bundle C's `--tune`
+/// applies in `svt_av1_enc_set_parameter` — for [`Iq`](Self::Iq) and
+/// [`MsSsim`](Self::MsSsim) that is QM on + still-image levels, sharpness 7,
+/// variance boost on/strength 3/curve 2, and (IQ only) `max_tx_size`
+/// `qp<=45 ? 32 : 64` plus `screen_content_mode = 3`
+/// (`HdrForkConfig::apply_tune_overrides`, docs/tune-iq-port-map.md). The
+/// bundle overrides the individual `with_qm`/`with_variance_boost` knobs
+/// where they disagree, matching C's apply order.
+///
+/// Slot 5 is not exposed: in the mainline enum it is VMAF (unmodeled — its
+/// unsharp machinery is absent), in the fork enum FILM_GRAIN.
+///
+/// # Byte-parity vs C is a per-variant property
+///
+/// `tools/issue9_knobs_gate.sh` records the measured grid. `Psnr` and `Vq`
+/// are byte-identical to C on every probed cell. `Ssim`, `Iq` and
+/// `MsSsim` additionally engage the per-16x16 SSIM-rdmult scaling
+/// (`pow`/`log`/`exp`, port_md_lambda.rs — see its cross-ISA note) and
+/// diverge from C decisionally on part of the grid: frame headers match
+/// field-for-field and the variance-boost plan is C-exact, but near-tie
+/// decisions (first observed: wiener lr-taps) can flip. Those cells are
+/// pinned in the gate rather than silently green; decoder-validity of every
+/// variant is unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SvtTune {
+    /// `--tune 0`: visual quality (VQ). Byte-identical to C on the probed grid.
+    Vq,
+    /// `--tune 1`: PSNR — the C and port default.
+    #[default]
+    Psnr,
+    /// `--tune 2`: SSIM — SSIM-rdmult scaling only.
+    Ssim,
+    /// `--tune 3`: image quality (IQ) — C's still-image bundle.
+    Iq,
+    /// `--tune 4`: MS-SSIM — the IQ bundle without the max-tx/scm extras.
+    MsSsim,
+}
+
+impl SvtTune {
+    /// The `static_config.tune` value (`definitions.h:1919`).
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::Vq => TUNE_VQ,
+            Self::Psnr => TUNE_PSNR,
+            Self::Ssim => TUNE_SSIM,
+            Self::Iq => TUNE_IQ,
+            Self::MsSsim => TUNE_MS_SSIM,
+        }
+    }
+
+    /// The `--tune` value, or `None` for out-of-range/unmodeled slots (5 is
+    /// VMAF in mainline / FILM_GRAIN in the fork — not exposed).
+    pub const fn from_raw(v: u8) -> Option<Self> {
+        match v {
+            TUNE_VQ => Some(Self::Vq),
+            TUNE_PSNR => Some(Self::Psnr),
+            TUNE_SSIM => Some(Self::Ssim),
+            TUNE_IQ => Some(Self::Iq),
+            TUNE_MS_SSIM => Some(Self::MsSsim),
+            _ => None,
+        }
+    }
+}
+
 /// Does this tune run the per-block SSIM rdmult scaling?
 pub fn tune_uses_ssim_rdmult(tune: u8) -> bool {
     matches!(tune, TUNE_SSIM | TUNE_IQ | TUNE_MS_SSIM)
@@ -294,5 +362,25 @@ mod sharpness_ifs_tests {
             assert!(!sharpness_ifs(TUNE_MS_SSIM, alt));
             assert_eq!(sharpness_ifs(TUNE_SSIM, alt), alt);
         }
+    }
+
+    /// The enum is a 1:1 view of `static_config.tune` values 0..=4; slot 5
+    /// (VMAF / fork FILM_GRAIN=6) and everything out of range refuse to map.
+    #[test]
+    fn svt_tune_raw_mapping_is_exact() {
+        assert_eq!(SvtTune::Psnr, SvtTune::default());
+        for (raw, want) in [
+            (0, SvtTune::Vq),
+            (1, SvtTune::Psnr),
+            (2, SvtTune::Ssim),
+            (3, SvtTune::Iq),
+            (4, SvtTune::MsSsim),
+        ] {
+            assert_eq!(SvtTune::from_raw(raw), Some(want));
+            assert_eq!(want.to_raw(), raw);
+        }
+        assert_eq!(SvtTune::from_raw(5), None);
+        assert_eq!(SvtTune::from_raw(6), None);
+        assert_eq!(SvtTune::from_raw(255), None);
     }
 }

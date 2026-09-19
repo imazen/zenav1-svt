@@ -1,0 +1,101 @@
+**`ZenEnhancement::StillImageTune` recipe v1 — measured on a 42-image
+k-means-diverse imazen-26 subset.** The bundle = C's tune-IQ overrides
+(`apply_tune_overrides`: QM on + still levels, sharpness 7, variance boost
+strength 3 / curve 2, `max_tx_size` 32 at qp<=45, `screen_content_mode = 3`)
+with `variance_octile` pinned to 8 instead of the default 5. Everything else
+that tune IQ installs is untouched; caller-set knobs survive the recipe.
+
+date:   2026-09-19
+host:   r7900x — AMD Ryzen 9 7900X (Zen 4), no hw perf counters
+        (perf_event_paranoid=4) — wall clock only, spawn overhead included
+        identically in every arm.
+port:   `ba8d35e52` + working tree (SvtTune enum, with_tune,
+        StillImageTune). C reference `3115c0c1b`.
+rustc:  1.98.1
+data:   benchmarks/still_image_tune_v1_round1_2026-09-19.tsv (1512 cells)
+        benchmarks/still_image_tune_v1_round2_2026-09-19.tsv (756 cells)
+        benchmarks/still_image_tune_v1_subset_2026-09-19.tsv (42 images)
+        benchmarks/still_image_tune_v1_sweep_*.py (harness)
+
+========================= 1. SUBSET =========================
+
+42 images, 21 top-level classes, exactly 2 per class — the class's two
+largest k-means clusters' representatives from
+`imazen-26-png-v3/manifests/kmeans_k300_representatives.tsv` where present,
+else the next distinct representative of that class. Git-LFS materialized
+(`git lfs pull`); all 42 verified PNG-signatured, not pointer stubs.
+
+Protocol per cell: `identity_run "crop:<png>" 512 512 <qp> 6 <out>` — the
+encoder's own `crop:` path center-crops to 512² and converts RGB→I420 with
+its integer BT.601-limited transform; `<out>.yuv` records the exact samples
+encoded. Then `aomdec -o <out>.y4m <out>.obu`, y4m→I420, inverse BT.601 to
+PNG, `fast-ssim2-cli image <src.png> <dec.png>`. Encode ms is wall clock of
+the whole `identity_run` process (~0.3 s spawn+PNG decode overhead included
+in every arm alike). qp ∈ {20, 32, 44}, preset 6, all-intra.
+
+2268 cells total; 0 encode errors, 0 decode errors — every stream aomdec
+decodes. Sanity anchors: identical PNG pair scores 100.0; the C encoder on
+the stone-texture cell produces BYTE-IDENTICAL output to the port (24319 B,
+same −472 score — the content is adversarial, not a scoring bug).
+
+========================= 2. HEADLINE — recipe vs plain tune IQ =========================
+
+Matched-qp deltas, `st_oct8` (= shipped recipe v1) vs `t3`, 126 cells:
+
+    bytes:   q20 −9.8%  q32 −15.4%  q44 −18.8%   (medians)
+             pooled p25/p50/p75 = −20.7 / −13.0 / −6.9
+    ssim2:   p25/p50/p75 = −0.010 / +0.011 / +0.136   (≈ no change)
+    cells:   108 dominant (fewer bytes AND ≥ score) / 0 losing
+    time:    1473 ms median vs t3's 1901 ms — ~22% FASTER than tune IQ
+             (fewer boosted SBs → less VB/MD work)
+    classes: NEGATIVE in all 21 classes at q32 (−2.9% patents … −25.0%
+             nature) — no class regression.
+
+Mechanism: `variance_octile` picks which octile of the sorted per-SB
+variance distribution anchors the boost curve. Octile 8 restricts the boost
+to the top-variance octile only, trimming most of tune IQ's matched-qp byte
+inflation while keeping the rest of the bundle (QM, sharpness 7, max-tx
+cap, forced screen detection) intact.
+
+Ablations swept (round 1 + 2, all on top of the IQ base): octile 6 (−4.5%
+med) and 7 (−9.9%) — same direction, smaller; vb_strength 4 = WORSE
+(+3.8% med, 27 losing cells); ac_bias 0.6/1.0/2.0 ≈ neutral (Δssim2 med
+≤ +0.017, not pinned); oct8+vb4 and oct8+ac10 no better than oct8 alone.
+
+========================= 3. HONEST BASELINE — vs default PSNR tune =========================
+
+At matched qp on THIS corpus the IQ-based bundles still spend more bytes
+than default tune 1 for ~no measured ssim2 change:
+
+    t3  vs t1:  +33.3% med bytes (p25 +9.9, p75 +81.5), Δssim2 −0.078,
+                7 dominant / 64 losing cells, +40% encode time.
+    st_oct8 vs t1: +9.3% med bytes at q44 … +12.5% at q32 (pooled p50
+                +13.7%), Δssim2 −0.077, 14 dominant / 56 losing.
+    t2  vs t1:  −2.2% med bytes at Δssim2 ≈ 0 (81 dom / 1 loss) — a
+                modest clean win, but t2 is SSIM-rdmult only, not a still
+                bundle.
+    t4  vs t1:  +29.1% med bytes, Δssim2 −0.070.
+
+So the bundle's value is strictly measured AGAINST TUNE IQ, which it beats
+everywhere; against the shipping default it is a measured trade (more bits,
+IQ's feature set), NOT a free win on this protocol — which is exactly why
+it ships as an explicit opt-in enhancement and not an inferred default.
+
+========================= 4. CAVEATS =========================
+
+- Operating point: 512² center-crops of 1–12 MP sources at qp 20–44 land
+  deep in ssim2's negative range (t1@q32 medians run −12.6 to −240 per
+  class). The metric functions (sanity anchors above) but Δssim2≈0 partly
+  reflects saturation; matched-qp BYTES are the reliable signal here. A
+  prior single-photo probe (complete scene at 512², q20) showed t3 beating
+  t1 (−8% bytes AND +0.3 ssim2) — the IQ bundle's value is
+  content/protocol-dependent, not universal.
+- Formal BD-rate was computed but discarded: on flat/saturated content the
+  ssim2-vs-rate curve is non-monotone and interpolation explodes (e.g.
+  renders showed +222% artifacts). Matched-qp deltas used instead.
+- enc_ms includes process spawn + PNG decode; ratios are fair, absolute
+  numbers are not codec-time-pure.
+- n=2 per class: per-class rows are indicative, pooled medians are the
+  claim.
+- Recipe pins are env-sweepable (`SVT_FORK_*` survives the tune override),
+  so the bundle remains tunable without a new enum version.

@@ -2116,7 +2116,14 @@ impl EncodePipeline {
         // These four (tune, QM, variance boost, sharpness) are MAINLINE v4.2.0
         // features, not fork additions — they used to be gated behind
         // `is_fork()` here, which silently ignored them in mainline mode.
-        self.hdr.apply_tune_overrides(self.rc_config.qp);
+        if self
+            .enhancements
+            .contains(crate::enhancements::ZenEnhancement::StillImageTune)
+        {
+            crate::enhancements::apply_still_image_tune(&mut self.hdr, self.rc_config.qp);
+        } else {
+            self.hdr.apply_tune_overrides(self.rc_config.qp);
+        }
         // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
         // `*_hbd` entry points) so it can never leak into a following u8
         // frame. `None` on every u8 path -> every bd10 stage keeps widening

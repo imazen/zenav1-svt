@@ -31,6 +31,8 @@ pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
 pub use svtav1_encoder::reference::SvtReference;
 /// Checked C preset domain, including research -1.
 pub use svtav1_encoder::speed_config::NativePreset;
+/// C `--tune` bundles (`--tune 0..4`) for the still/allintra path.
+pub use svtav1_encoder::tune::SvtTune;
 
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,10 @@ pub struct AvifEncoder {
     /// C `static_config.enable_qm` — quantization matrices. Wired to
     /// `EncodePipeline::hdr.enable_qm`; see [`AvifEncoder::with_qm`].
     enable_qm: bool,
+    /// C `static_config.tune` (`--tune`) — the per-tune configuration
+    /// bundle C applies in `svt_av1_enc_set_parameter`. Wired to
+    /// `EncodePipeline::hdr.tune`; see [`AvifEncoder::with_tune`].
+    tune: SvtTune,
     /// C `static_config.enable_variance_boost` — the per-superblock
     /// delta-q that IS SVT-AV1's still-image adaptive quantization. Wired to
     /// `EncodePipeline::hdr.enable_variance_boost`.
@@ -189,6 +195,7 @@ impl AvifEncoder {
             // recorded-and-ignored, and defaulting them to `true` now that
             // they are live would silently change every caller's output.
             enable_qm: false,
+            tune: SvtTune::Psnr,
             enable_variance_boost: false,
             variance_boost_strength: 2,
             film_grain: Default::default(),
@@ -454,6 +461,31 @@ impl AvifEncoder {
         self
     }
 
+    /// Select C's `--tune` bundle (C `static_config.tune`,
+    /// `svt_av1_enc_set_parameter` / `apply_tune_overrides`).
+    ///
+    /// LIVE: sets `EncodePipeline::hdr.tune`. [`SvtTune::Iq`] is the
+    /// still-image tune — QM on, sharpness 7, variance boost strength 3 /
+    /// curve 2, `max_tx_size` 32 at qp<=45, screen detection forced on —
+    /// and is measured BD-positive vs the default on photographic content
+    /// at no encode-time cost. The tune's bundle overrides the individual
+    /// `with_qm`/`with_variance_boost` settings where they disagree,
+    /// matching C's apply order. Default [`SvtTune::Psnr`] is byte-unchanged.
+    ///
+    /// Byte-parity vs C is per-variant (see [`SvtTune`]); the
+    /// SSIM-rdmult-bearing tunes (`Ssim`, `Iq`, `MsSsim`) carry pinned
+    /// decision-level divergences on part of the gate grid while remaining
+    /// decoder-valid.
+    pub fn with_tune(mut self, tune: SvtTune) -> Self {
+        self.tune = tune;
+        self
+    }
+
+    /// The configured `--tune` bundle.
+    pub fn tune(&self) -> SvtTune {
+        self.tune
+    }
+
     /// Request lossless encoding.
     ///
     /// Selects QP 0 for exact 8-bit or native 10-bit source reconstruction on
@@ -594,6 +626,7 @@ impl AvifEncoder {
         // byte-neutral for a caller that sets neither.
         pipeline.film_grain = self.film_grain.clone();
         pipeline.hdr.enable_qm = self.enable_qm;
+        pipeline.hdr.tune = self.tune.to_raw();
         pipeline.hdr.enable_variance_boost = self.enable_variance_boost;
         pipeline.hdr.variance_boost_strength = self.variance_boost_strength;
         pipeline
@@ -870,6 +903,7 @@ impl AvifEncoder {
             enable_qm: self.enable_qm,
             enable_variance_boost: self.enable_variance_boost,
             variance_boost_strength: self.variance_boost_strength,
+            tune: self.tune.to_raw(),
             ..Default::default()
         };
         self.reference
@@ -1162,6 +1196,29 @@ mod tests {
             .expect("4:2:0 encode")
             .data;
         assert_ne!(mono, colour);
+    }
+
+    /// `with_tune` reaches `hdr.tune`: the IQ bundle (QM + sharpness +
+    /// variance boost + max_tx_size + scm) changes the emitted bytes, and
+    /// the default stays exactly the historical PSNR stream. The encoded
+    /// tunes also differ from EACH OTHER, which is the non-vacuity half.
+    #[test]
+    fn tune_knob_changes_bytes() {
+        let base = AvifEncoder::new().with_quality(60.0).with_speed(6);
+        let (y, u, v) = yuv420_mixed(128);
+        let enc_t = |t: SvtTune| {
+            base.clone()
+                .with_tune(t)
+                .encode_yuv420(&y, &u, &v, 128, 128, 128)
+                .expect("4:2:0 encode")
+                .data
+        };
+        let psnr = enc_t(SvtTune::Psnr);
+        assert_eq!(psnr, enc_t(SvtTune::default()), "Psnr must be the default");
+        for t in [SvtTune::Vq, SvtTune::Ssim, SvtTune::Iq, SvtTune::MsSsim] {
+            assert_ne!(psnr, enc_t(t), "{t:?} did not change the emitted bytes");
+        }
+        assert_ne!(enc_t(SvtTune::Iq), enc_t(SvtTune::MsSsim));
     }
 
     /// Item 7 liveness: `with_qm` reaches `hdr.enable_qm`.

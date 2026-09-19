@@ -1164,6 +1164,12 @@ fn main() {
             _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
         }
     }
+    if std::env::var("SVTAV1_STILL_TUNE").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::StillImageTune);
+        eprintln!("SVTAV1_ENHANCEMENT=still-image-tune-v1");
+    }
     if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
         pipeline.reference = reference
             .parse()

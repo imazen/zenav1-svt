@@ -12,6 +12,39 @@ that is the property a wrong stream actually violates and because the port's
 inter search does not track C's bytes on all content. Never infer one from the
 other.
 
+## Tune surface (`--tune`) — 2026-09-19
+
+`SvtTune` (`zenav1-svt::SvtTune`, builder `with_tune`) exposes C's
+`static_config.tune` values 0–4 as a typed enum: `Vq`, `Psnr` (default),
+`Ssim`, `Iq`, `MsSsim`. Slot 5 is not exposed (mainline VMAF unmodeled;
+the fork's FILM_GRAIN=6 is a different thing). The default is byte-neutral:
+`Psnr` writes `tune = 1`, the value the pipeline already defaulted to.
+
+Byte-parity vs C is per-variant, measured through `tools/issue9_knobs_gate.sh`
+(not in CI; historically red — see below):
+
+- `Vq` / `Psnr`: byte-identical on every probed cell (128²–512², p6/p10,
+  qp 20/32/40/55, gradient + photo).
+- `Ssim` / `Iq` / `MsSsim`: engage the per-16x16 SSIM-rdmult scaling
+  (`pow`/`log`/`exp`, `port_md_lambda.rs` cross-ISA caveat) and diverge
+  DECISIONALLY on part of the grid — frame headers match field-for-field
+  and the variance-boost plan is C-exact, but near-tie decisions flip
+  (first observed: a wiener `lr-taps` symbol; tuneiq-gradient-128-p6 q20:
+  3199 B port vs 3205 B C). The gate reports 33/36 today; the three IQ
+  cells have differed since the gate landed (`b80c2aa35`) and predate the
+  AVX-512 campaign — documented, not silently green. Every variant's output
+  is decoder-valid (aomdec-verified in the tune sweep).
+
+`ZenEnhancement::StillImageTune` ("still-image-tune-v1") is the opt-in Zen
+bundle: tune IQ's overrides with `variance_octile` pinned to 8. Requires
+`EncodingPolicy::Zen` (SvtParity refuses all enhancements); validated for
+all-intra 4:2.0 at ordinary presets, NOT byte-pinned to C — verified by
+aomdec decode (2268/2268 cells clean) and the RD record in
+`benchmarks/still_image_tune_v1_2026-09-19.meta`: −13.0% median bytes vs
+tune IQ at equal ssim2, 108/0 dominating/losing cells, ~22% faster encode.
+Against default PSNR at matched qp it still spends +9–14% bytes on this
+corpus — a measured trade, hence opt-in rather than inferred.
+
 ## Still identity — 2026-09-08
 
 Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old
