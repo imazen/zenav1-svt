@@ -181,6 +181,18 @@ cargo build --release --example perf_encode   # ~29s
 ## Open threads
 
 - `optimize_b`/`cost_coeffs_txb`/`tx_unit_inner` grind (above).
+- **AVX-512 tiers for the port — must be done/measured on `r7900x`** (Zen 4;
+  `lilith`/265K has no AVX-512). Precedent exists: the wiener `_v4`/`X64V4Token`
+  tier and the `avx512` cargo feature (`svtav1-dsp` `avx512 = ["archmage/avx512",
+  "magetypes/avx512"]`) — see `docs/perf-status.md` §AVX-512 (~line 560-680):
+  valgrind 3.x cannot execute AVX-512 so `_v4` arms price by `perf stat` + wall
+  only, and kernels WITHOUT an AVX2 arm are priority targets. Compare against
+  C's AVX-512 build (`EN_AVX512_SUPPORT` already ON in cbuild-static).
+- **target-cpu experiment (done 2026-09-19, lilith) — see the section below.**
+  Port gains ~2.5% wall / ~4.9% Ir at `target-cpu=native`, ~1.2%/… at
+  `x86-64-v3`; Ir win concentrates in `optimize_b` incl (−8.2%) and
+  `tx_unit_inner` incl (−6.6%). C NATIVE=ON gains only ~1% — the port has MORE
+  ISA headroom than C in its scalar-side bottleneck.
 - Pre-existing divergence: johnny-class 8-frame P content isn't byte-
   identical to C (RD-neutral, ~±1%); e.g. 1014 4f translate cell diverges at
   HEAD too — NOT a regression, verified byte-neutral vs HEAD.
@@ -188,3 +200,47 @@ cargo build --release --example perf_encode   # ~29s
 - Wall-clock still gap ~1.22× (instructions +39%, IPC higher) — closing it
   means instruction reduction in the trellis/rate/tx-driver block, which is
   ~68% of the encode but written at C-parity structure.
+
+## target-cpu A/B results (2026-09-19, lilith)
+
+Record: `benchmarks/cpunative_ab_2026-09-19.meta`. Cell: 1014 512² q32 p6,
+all builds byte-identical (BYTES=21491), medians over interleaved runs.
+
+| build | ENCODE_NS | vs base | Ir (callgrind) |
+|---|---|---|---|
+| port default dispatch | 33.91ms | — | 2,007.4M (3 enc) |
+| port `-C target-cpu=x86-64-v3` | 33.49ms | −1.2% | 1,908.6M (−4.9%) |
+| port `-C target-cpu=native` | 33.09ms | −2.5% | n/a (GFNI SIGILL) |
+| C NATIVE=OFF | 27.72ms | — | 970.5M (2 enc) |
+| C NATIVE=ON | 27.44ms | −1.0% | 957.6M (−1.3%) |
+
+Port/C: 1.223× → 1.206× both-native. v3 inclusive Ir: optimize_b −8.2%,
+tx_unit_inner −6.6%, eval_candidate −6.2%, eval_uv −6.8%, txt_search −6.1%,
+write_coeffs_txb_1d −3.5%, cost_coeffs_txb −1.7%.
+
+Read: ~half the v3 Ir reduction lands on the wall clock. Part of it is
+`#[arcane]` kernels inlining into scalar callers — a boundary runtime
+dispatch requires — so a static native build captures something the shipped
+model can't fully keep. The lever for shipped code is making the scalar-side
+trellis/rate callers autovectorize (or explicit SIMD where legal), not
+flipping target-cpu.
+
+**New measurement traps found this session:**
+- `kernel.perf_event_paranoid=4` on this WSL boot — `perf stat`/`perf record`
+  are dead for unprivileged users (even software events). The handoff's
+  earlier `perf stat` numbers were taken under a lower setting; check
+  `/proc/sys/kernel/perf_event_paranoid` before planning hardware-counter
+  work.
+- `target-cpu=native` binaries are un-callgrindable here: LLVM emitted GFNI
+  (`vgf2p8affineqb`) even inside `fmt` code; valgrind 3.26 SIGILLs. Use
+  `x86-64-v3` for the callgrind-measurable tier (valgrind handles AVX2).
+- At `target-cpu=x86-64-v3`, callers satisfy `#[target_feature]` so
+  `#[arcane]` fns INLINE into scalar callers — self-cost symbol attribution
+  reshapes massively. Diff INCLUSIVE costs of stable driver functions, not
+  leaf self costs.
+- SVT-AV1 `NATIVE=ON` = `-march=native -mno-avx` on the 255 generic TUs:
+  native codegen but still no AVX outside dispatch kernels. Its gain is ~1%.
+  Build recipe: same cmake configure as cbuild-static + `-DNATIVE=ON` +
+  `-DCMAKE_OUTPUT_DIRECTORY=<repo>/Bin/ReleaseNative/`; link driver with
+  `SVT_CREF_LIB_DIR=<repo>/Bin/ReleaseNative SVT_NO_AUTO_CMAKE=1
+  tools/perf_c_encode/build.sh <out>`.

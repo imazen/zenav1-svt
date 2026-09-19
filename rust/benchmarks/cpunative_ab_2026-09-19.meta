@@ -1,0 +1,63 @@
+# target-cpu=native / x86-64-v3 A/B — does ISA codegen explain the residual gap?
+date: 2026-09-19T07:1x:00Z
+commit: 557032ba (main @ measurement time)
+host: lilith (WSL, Core Ultra 7 265K Arrow Lake — AVX2, NO AVX-512; taskset -c 3)
+cell: 1014.yuv 512x512 q32 p6 still (target/perfgap/1014.yuv)
+output: ALL FOUR builds byte-identical (port base == v3 == native == C base == C native; BYTES=21491)
+note: perf_event_paranoid=4 on this boot — NO hardware counters; Ir via callgrind
+  (same-tool comparisons only; C callgrind is known-inflated vs hardware per
+  handoff learning #1, used here ONLY for C-vs-C).
+
+PORT (cargo build --release --example perf_encode, lto=fat cg=1):
+  base   : default target (x86-64 baseline + archmage runtime AVX2 dispatch)
+  v3     : RUSTFLAGS="-C target-cpu=x86-64-v3"  CARGO_TARGET_DIR=target-v3
+  native : RUSTFLAGS="-C target-cpu=native"     CARGO_TARGET_DIR=target-native
+
+  ENCODE_NS medians (n=10 base/nat interleaved, n=8 v3):
+    base 33.91ms | v3 33.49ms (-1.2%) | native 33.09ms (-2.5%)
+  callgrind Ir (warmup=2 => ~3 encodes):
+    base 2,007.4M | v3 1,908.6M (-4.9%) | native SIGILL under valgrind-3.26
+    (GFNI vgf2p8affineqb emitted even in fmt code — native build is
+    un-callgrindable on this host)
+
+  v3-vs-base Ir by inclusive subtree (inlining reshapes self-cost symbols —
+  at v3, callers satisfy target_feature so #[arcane] fns inline into callers):
+    optimize_b        363.1M -> 333.3M  -8.2%
+    tx_unit_inner   1,143.0M -> 1,067.6M  -6.6%
+    eval_candidate  1,187.3M -> 1,114.0M  -6.2%
+    eval_uv (chroma)   84.9M ->  79.1M   -6.8%
+    txt_search        711.9M -> 668.2M   -6.1%
+    write_coeffs_txb_1d 73.3M -> 70.7M   -3.5%
+    cost_coeffs_txb   206.4M -> 202.8M   -1.7%
+    fwd_txfm2d_c_exact 172.7M -> 169.3M  -2.0%
+
+C (SVT-AV1 v4.2.0, gcc 15.2, Release):
+  base   : cbuild-static  NATIVE=OFF (generic TUs baseline, 255 files -mno-avx;
+           AVX2/AVX-512 via per-file flags + NASM, runtime dispatch)
+  native : cbuild-native  NATIVE=ON  (generic TUs get -march=native -mno-avx —
+           i.e. BMI2/SSE4.2/LZCNT etc but STILL no AVX on non-kernel code)
+           -> Bin/ReleaseNative/libSvtAv1Enc.a, tools/perf_c_encode linked via
+           SVT_CREF_LIB_DIR=$repo/Bin/ReleaseNative SVT_NO_AUTO_CMAKE=1
+
+  ENCODE_NS medians (n=8 interleaved):
+    base 27.72ms | native 27.44ms (-1.0%)
+  callgrind Ir (warmup=1 => ~2 encodes):
+    base 970.5M | native 957.6M (-1.3%)
+
+RATIOS: port/C = 33.91/27.72 = 1.223x base; 33.09/27.44 = 1.206x both-native.
+
+READ:
+- C gains ~1% from native: its hot paths were already hand asm and its generic
+  TUs are deliberately -mno-avx even under NATIVE=ON. Little headroom.
+- Port gains ~2.5% wall / ~4.9% Ir — MORE than C, concentrated in the
+  scalar-side bottleneck (RDOQ trellis / tx pipeline / candidate eval): the
+  "diffuse 20-30% codegen overhead" vs C is partly ISA-recoverable (autovec,
+  BMI2, addressing), not purely structural.
+- Ir -4.9% but wall only -2.5%: about half the removed instructions were off
+  the critical path.
+- v3->native residual (~1.3% wall): post-v3 ISA (VNNI/GFNI/etc) small here.
+- Part of the v3 win is cross-boundary inlining of #[arcane] SIMD kernels into
+  scalar callers — at runtime dispatch that boundary must exist. So a static
+  -C target-cpu=v3/native build captures gains the dispatch model cannot fully
+  keep; the analogue for shipped code is restructuring scalar callers so LLVM
+  autovectorizes THEM (they're the ones at baseline codegen today).

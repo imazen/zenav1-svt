@@ -35,3 +35,5 @@ tools/decode_diff/Cargo.lock
 benchmarks/identity_full_8bit_latest.tsv
 target-heapdbg/
 target-perf-base/
+target-native/
+target-v3/
