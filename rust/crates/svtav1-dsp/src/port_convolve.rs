@@ -287,6 +287,25 @@ pub fn convolve_2d_sr(
     let bits = FILTER_BITS * 2 - conv_params.round_0 - conv_params.round_1;
 
     let x_filter = filter_x.subpel_kernel(subpel_x_q4);
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16 {
+        if let Some(token) = X64V4Token::summon() {
+            convolve_2d_sr_v4(
+                token,
+                src,
+                dst,
+                dst_stride,
+                w,
+                h,
+                x_filter,
+                filter_y.subpel_kernel(subpel_y_q4),
+                conv_params.round_0,
+                conv_params.round_1,
+                bits,
+            );
+            return;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
         convolve_2d_sr_v3(
@@ -534,6 +553,13 @@ pub fn convolve_y_sr(
 ) {
     let fo_vert = (SUBPEL_TAPS / 2 - 1) as i32;
     let y_filter = filter_y.subpel_kernel(subpel_y_q4);
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16 {
+        if let Some(token) = X64V4Token::summon() {
+            convolve_y_sr_v4(token, src, dst, dst_stride, w, h, y_filter);
+            return;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
         convolve_y_sr_v3(token, src, dst, dst_stride, w, h, y_filter);
@@ -645,6 +671,23 @@ pub fn convolve_x_sr(
     let fo_horiz = (SUBPEL_TAPS / 2 - 1) as i32;
     let bits = FILTER_BITS - conv_params.round_0;
     let x_filter = filter_x.subpel_kernel(subpel_x_q4);
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16 {
+        if let Some(token) = X64V4Token::summon() {
+            convolve_x_sr_v4(
+                token,
+                src,
+                dst,
+                dst_stride,
+                w,
+                h,
+                x_filter,
+                conv_params.round_0,
+                bits,
+            );
+            return;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = X64V3Token::summon() {
         convolve_x_sr_v3(
@@ -783,6 +826,450 @@ fn convolve_x_sr_v3(
         }
         for x in x..w {
             drow[x] = convolve_x_sr_px(src, y, x, x_filter, fo as i32, round_0, bits);
+        }
+    }
+}
+
+// --- AVX-512 (`_v4`) arms ---
+//
+// Same lanewise pipelines as the `_v3` arms at 32 output pixels per
+// iteration: each tap is a 32-byte `_mm256_loadu_si256` widened by
+// `_mm512_cvtepu8_epi16`, an exact `i16` `mullo`, then both halves widened
+// to `i32x16` for the tap-sum accumulator. Rounding uses per-lane `sra`
+// (the shift amounts are runtime values, so `srav`), and the final
+// `clip_pixel_8` is an ORDERED narrow — `vpmovsdw`/`vpmovuswb` truncate in
+// lane order, so no `packs` lane fixup is ever needed.
+//
+// The public dispatchers only send `w >= 16` here: narrower blocks keep the
+// `_v3` arm. Each kernel runs a 32-px zmm loop, a 16-px rung (xmm load ->
+// ymm widen -> a single i32x16 accumulator), then a scalar tail.
+
+/// Narrow two `i32x16` partial results (pixels `x..x+16` and `x+16..x+32`)
+/// to `u8x32` with `clip_pixel_8` semantics — ordered, no lane interleave.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+fn pack_u8x32_v4(_token: X64V4Token, lo: __m512i, hi: __m512i) -> __m256i {
+    let t16 = _mm512_inserti64x4::<1>(
+        _mm512_castsi256_si512(_mm512_cvtsepi32_epi16(lo)),
+        _mm512_cvtsepi32_epi16(hi),
+    );
+    _mm512_cvtusepi16_epi8(_mm512_max_epi16(t16, _mm512_setzero_si512()))
+}
+
+/// Narrow one `i32x16` partial result (pixels `x..x+16`) to `u8x16` with
+/// `clip_pixel_8` semantics — ordered.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+fn pack_u8x16_v4(_token: X64V4Token, lo: __m512i) -> __m128i {
+    let t16 = _mm512_cvtsepi32_epi16(lo);
+    _mm256_cvtusepi16_epi8(_mm256_max_epi16(t16, _mm256_setzero_si256()))
+}
+
+/// Truncate two `i32x16` partial results to `i16x32` — the `as i16` store
+/// the 2D horizontal pass writes into `im_block`.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+fn trunc_i16x32_v4(_token: X64V4Token, lo: __m512i, hi: __m512i) -> __m512i {
+    _mm512_inserti64x4::<1>(
+        _mm512_castsi256_si512(_mm512_cvtepi32_epi16(lo)),
+        _mm512_cvtepi32_epi16(hi),
+    )
+}
+
+/// x86-64 v4 arm of [`convolve_x_sr`]: 32 output pixels per iteration.
+/// Only reached for `w >= 32` (see the dispatcher), so the tail after the
+/// 32-wide loop is scalar.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_x_sr_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    round_0: i32,
+    bits: i32,
+) {
+    let cfs: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(x_filter[i]));
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let r0_off = _mm512_set1_epi32(1 << (round_0 - 1));
+    // `round_power_of_two(v, 0) = v` — bits can be 0 for single prediction.
+    let b_off = _mm512_set1_epi32(if bits > 0 { 1 << (bits - 1) } else { 0 });
+    let r0v = _mm512_set1_epi32(round_0);
+    let bv = _mm512_set1_epi32(bits.max(0));
+    for y in 0..h {
+        let row = origin + y as isize * stride;
+        // Vector range: every tap load `row + x - fo + k .. + V`, k <= 7,
+        // must stay inside `data`; the two rungs have separate bounds.
+        let x0 = (fo - row).max(0).min(w as isize) as usize;
+        let x1_32 =
+            ((len - 32 - 7 + fo - row).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 =
+            ((len - 16 - 7 + fo - row).min(w as isize)).max(x0 as isize) as usize;
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        for x in 0..x0 {
+            drow[x] = convolve_x_sr_px(src, y, x, x_filter, fo as i32, round_0, bits);
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row + x as isize - fo + k as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            let res_lo = _mm512_srav_epi32(
+                _mm512_add_epi32(
+                    _mm512_srav_epi32(_mm512_add_epi32(lo, r0_off), r0v),
+                    b_off,
+                ),
+                bv,
+            );
+            let res_hi = _mm512_srav_epi32(
+                _mm512_add_epi32(
+                    _mm512_srav_epi32(_mm512_add_epi32(hi, r0_off), r0v),
+                    b_off,
+                ),
+                bv,
+            );
+            let px = pack_u8x32_v4(token, res_lo, res_hi);
+            let out: &mut [u8; 32] = (&mut drow[x..x + 32]).try_into().unwrap();
+            _mm256_storeu_si256(out, px);
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row + x as isize - fo + k as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            let res = _mm512_srav_epi32(
+                _mm512_add_epi32(
+                    _mm512_srav_epi32(_mm512_add_epi32(acc, r0_off), r0v),
+                    b_off,
+                ),
+                bv,
+            );
+            let px = pack_u8x16_v4(token, res);
+            let out: &mut [u8; 16] = (&mut drow[x..x + 16]).try_into().unwrap();
+            _mm_storeu_si128(out, px);
+            x += 16;
+        }
+        for x in x..w {
+            drow[x] = convolve_x_sr_px(src, y, x, x_filter, fo as i32, round_0, bits);
+        }
+    }
+}
+
+/// x86-64 v4 arm of [`convolve_y_sr`]: 32 columns at a time, tap rows are
+/// contiguous 32-byte loads. Only reached for `w >= 32`.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+fn convolve_y_sr_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    y_filter: &InterpKernel,
+) {
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let cfs: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(y_filter[i]));
+    let off64 = _mm512_set1_epi32(64);
+    let seven = _mm512_set1_epi32(7);
+    for y in 0..h {
+        let row0 = origin + (y as isize - fo) * stride;
+        let row7 = row0 + 7 * stride;
+        // Column window: every tap row's `x .. x + V` load must stay inside
+        // `data`; the two rungs have separate bounds.
+        let x0 = (-row0).max(0).min(w as isize) as usize;
+        let x1_32 = ((len - 32 - row7).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 = ((len - 16 - row7).min(w as isize)).max(x0 as isize) as usize;
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        for x in 0..x0 {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            drow[x] = clip_pixel_8(round_power_of_two(res, FILTER_BITS));
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row0 + k as isize * stride + x as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            let res_lo = _mm512_srav_epi32(_mm512_add_epi32(lo, off64), seven);
+            let res_hi = _mm512_srav_epi32(_mm512_add_epi32(hi, off64), seven);
+            let px = pack_u8x32_v4(token, res_lo, res_hi);
+            let out: &mut [u8; 32] = (&mut drow[x..x + 32]).try_into().unwrap();
+            _mm256_storeu_si256(out, px);
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row0 + k as isize * stride + x as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            let res = _mm512_srav_epi32(_mm512_add_epi32(acc, off64), seven);
+            let px = pack_u8x16_v4(token, res);
+            let out: &mut [u8; 16] = (&mut drow[x..x + 16]).try_into().unwrap();
+            _mm_storeu_si128(out, px);
+            x += 16;
+        }
+        for x in x..w {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            drow[x] = clip_pixel_8(round_power_of_two(res, FILTER_BITS));
+        }
+    }
+}
+
+/// x86-64 v4 arm of [`convolve_2d_sr`]: both passes at 32 columns per
+/// iteration. Only reached for `w >= 32`. The h-pass writes `i16x32` via
+/// `vpmovdw` (the `as i16` truncation), and the whole intermediate block is
+//  committed before the v-pass reads it — the passes never form a
+/// per-row store->load handoff.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_2d_sr_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    y_filter: &InterpKernel,
+    round_0: i32,
+    round_1: i32,
+    bits: i32,
+) {
+    let im_h = h + SUBPEL_TAPS - 1;
+    let fo_vert = (SUBPEL_TAPS / 2 - 1) as isize;
+    let fo_horiz = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let offset_bits = 8 + 2 * FILTER_BITS - round_0;
+
+    let mut im_block = alloc::vec![0i16; im_h * w];
+    let cfs_x: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(x_filter[i]));
+    let off0 = _mm512_set1_epi32(
+        (1 << (8 + FILTER_BITS - 1)) + if round_0 > 0 { 1 << (round_0 - 1) } else { 0 },
+    );
+    let r0v = _mm512_set1_epi32(round_0);
+    for y in 0..im_h {
+        let row = origin + (y as isize - fo_vert) * stride;
+        let x0 = (fo_horiz - row).max(0).min(w as isize) as usize;
+        let x1_32 =
+            ((len - 32 - 7 + fo_horiz - row).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 =
+            ((len - 16 - 7 + fo_horiz - row).min(w as isize)).max(x0 as isize) as usize;
+        let imrow = &mut im_block[y * w..y * w + w];
+        for x in 0..x0 {
+            imrow[x] = convolve_2d_sr_hpx(
+                src,
+                y,
+                x,
+                x_filter,
+                fo_vert as i32,
+                fo_horiz as i32,
+                round_0,
+            );
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs_x.iter().enumerate() {
+                let i = (row + x as isize - fo_horiz + k as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            let rl = _mm512_srav_epi32(_mm512_add_epi32(lo, off0), r0v);
+            let rh = _mm512_srav_epi32(_mm512_add_epi32(hi, off0), r0v);
+            let t = trunc_i16x32_v4(token, rl, rh);
+            let out: &mut [i16; 32] = (&mut imrow[x..x + 32]).try_into().unwrap();
+            _mm512_storeu_si512(out, t);
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs_x.iter().enumerate() {
+                let i = (row + x as isize - fo_horiz + k as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            let r = _mm512_srav_epi32(_mm512_add_epi32(acc, off0), r0v);
+            let t16 = _mm512_cvtepi32_epi16(r);
+            let out: &mut [i16; 16] = (&mut imrow[x..x + 16]).try_into().unwrap();
+            _mm256_storeu_si256(out, t16);
+            x += 16;
+        }
+        for x in x..w {
+            imrow[x] = convolve_2d_sr_hpx(
+                src,
+                y,
+                x,
+                x_filter,
+                fo_vert as i32,
+                fo_horiz as i32,
+                round_0,
+            );
+        }
+    }
+
+    // Vertical pass — i16 tap loads widened to i32; |im| is ~14-bit so the
+    // product needs the width.
+    let cfs_y: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi32(y_filter[i] as i32));
+    let offv = _mm512_set1_epi32(
+        (1 << offset_bits) + if round_1 > 0 { 1 << (round_1 - 1) } else { 0 },
+    );
+    let corrv = _mm512_set1_epi32(
+        (1 << (offset_bits - round_1)) + (1 << (offset_bits - round_1 - 1)),
+    );
+    let r1v = _mm512_set1_epi32(round_1);
+    // `round_power_of_two(v, 0) = v` — bits is 0 for single prediction.
+    let bv = _mm512_set1_epi32(bits.max(0));
+    let b_off = _mm512_set1_epi32(if bits > 0 { 1 << (bits - 1) } else { 0 });
+    for y in 0..h {
+        let drow = &mut dst[y * dst_stride..y * dst_stride + w];
+        let mut x = 0usize;
+        // `(acc + offv) >> round_1 - corr`, truncated `as i16`, then the
+        // second `round_power_of_two(res, bits)` — all at i32, matching the
+        // scalar arm's re-widened i16.
+        let el = |acc: __m512i| -> __m512i {
+            let t = _mm512_sub_epi32(
+                _mm512_srav_epi32(_mm512_add_epi32(acc, offv), r1v),
+                corrv,
+            );
+            // `as i16` then `as i32`: truncate to 16 bits and sign-extend.
+            let t16 = _mm512_cvtepi16_epi32(_mm512_cvtepi32_epi16(t));
+            _mm512_srav_epi32(_mm512_add_epi32(t16, b_off), bv)
+        };
+        while x + 32 <= w {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs_y.iter().enumerate() {
+                let s: &[i16; 32] = im_block[(y + k) * w + x..(y + k) * w + x + 32]
+                    .try_into()
+                    .unwrap();
+                let v = _mm512_loadu_si512(s);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_mullo_epi32(
+                        _mm512_cvtepi16_epi32(_mm512_castsi512_si256(v)),
+                        *cf,
+                    ),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_mullo_epi32(
+                        _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(v)),
+                        *cf,
+                    ),
+                );
+            }
+            let res_lo = el(lo);
+            let res_hi = el(hi);
+            let px = pack_u8x32_v4(token, res_lo, res_hi);
+            let out: &mut [u8; 32] = (&mut drow[x..x + 32]).try_into().unwrap();
+            _mm256_storeu_si256(out, px);
+            x += 32;
+        }
+        while x + 16 <= w {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs_y.iter().enumerate() {
+                let s: &[i16; 16] = im_block[(y + k) * w + x..(y + k) * w + x + 16]
+                    .try_into()
+                    .unwrap();
+                let v = _mm512_cvtepi16_epi32(_mm256_loadu_si256(s));
+                acc = _mm512_add_epi32(acc, _mm512_mullo_epi32(v, *cf));
+            }
+            let res = el(acc);
+            let px = pack_u8x16_v4(token, res);
+            let out: &mut [u8; 16] = (&mut drow[x..x + 16]).try_into().unwrap();
+            _mm_storeu_si128(out, px);
+            x += 16;
+        }
+        for x in x..w {
+            drow[x] = convolve_2d_sr_vpx(
+                &im_block,
+                w,
+                y,
+                x,
+                y_filter,
+                offset_bits,
+                round_1,
+                bits,
+            );
         }
     }
 }

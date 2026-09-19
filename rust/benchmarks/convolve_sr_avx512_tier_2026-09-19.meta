@@ -1,0 +1,80 @@
+**`convolve_{x,y,2d}_sr` get `_v4` arms — the largest mapped C-AVX-512 gap
+remaining after SAD + variance.** Third target of the AVX-512 coverage
+campaign. The inter delta (`~/tmp/cg-inter/delta_port_*`, callgrind — prices
+the `_v3` arm on this host; valgrind 3.27.1 cannot run zmm) put the three
+kernels at 15.9M + 13.9M + 8.4M self Ir = ~8.9% of the port-vs-C inter-frame
+delta on gradient p8. C registers all three at AVX-512
+(`convolve_avx512.c`, `convolve_2d_avx512.c`).
+
+date:   2026-09-19
+host:   r7900x — AMD Ryzen 9 7900X, **Zen 4: AVX-512 double-pumped over
+        256-bit units**. A 512-bit arm buys instruction count and front-end
+        width, NOT execution width. perf_event_paranoid=4: NO hardware
+        counters — wall clock is the only real measurement.
+base:   `1d4421242` — variance `_v4` + subpel dead-end commit (so this A/B
+        isolates convolve).
+cand:   working tree — `crates/svtav1-dsp/src/port_convolve.rs`.
+data:   benchmarks/convolve_sr_avx512_inter_grad.ab.{tsv,raw.tsv}  (48r w16)
+        benchmarks/convolve_sr_avx512_still_grad.ab.{tsv,raw.tsv}  (16r still)
+
+========================= 1. WHAT LANDS =========================
+
+`port_convolve.rs`: three `#[arcane]` v4 kernels dispatched at `w >= 16`
+before the `_v3` arm (narrower blocks keep `_v3`):
+
+- `convolve_x_sr_v4` / `convolve_y_sr_v4` / `convolve_2d_sr_v4` — the v3
+  lanewise pipelines at 32 output pixels/iter (ymm loads ->
+  `_mm512_cvtepu8_epi16` -> `i16 mullo` -> halves widened to `i32x16`
+  accumulators), plus a 16-px rung (xmm load -> ymm widen -> single
+  `i32x16` acc) and a scalar tail.
+
+Semantics preserved exactly:
+
+- ordered narrows via `vpmovsdw`/`vpmovuswb` — `packs`'s 128-bit lane
+  interleave is never used, so no permute fixups;
+- `round_power_of_two(v, 0) = v`: `bits` is **0** for single prediction
+  (round_0=3, round_1=11), so `b_off`/`bv` are `bits.max(0)`-guarded —
+  `1 << -1` would panic;
+- `as i16` truncation in `convolve_2d_sr` is `vpmovdw` (truncate), not
+  `vpmovsdw` (saturate); the vertical pass truncates then re-widens to i32
+  for the final `round_power_of_two(.., bits)` exactly like the scalar arm;
+- separate source-boundary bounds per rung (`x1_32` / `x1_16`); edge columns
+  go scalar as in v3.
+
+Gate at `w >= 16`, not `w >= 8`: the 8-px path would be xmm-identical to
+v3 with EVEX context on top — the subpel dead end showed that buys nothing
+on Zen 4.
+
+========================= 2. RESULTS (Zen 4, wall clock) =========================
+
+Interleaved paired A/B, `tools/perf_ab.sh`, gradient 512², inter cell
+(SVTAV1_FRAMES=4 FRAME_SHIFT=3 INTRA_PERIOD=64 HIER_LEVELS=0
+INTER_EXPERIMENTAL=1). `ident=Y` on every measured cell.
+
+  w>=32 only, 24r:    p6 0.9953 [0.9933, 1.0001]  p8 0.9972 [0.9950, 1.0005]
+                      (median win but p25/p75 straddle — not disjoint)
+  w>=16,     48r:     p6 0.9917 [0.9876, 0.9969]  p8 0.9920 [0.9891, 0.9960]
+                      **disjoint win, ~0.8% both presets** — the 16-px rung
+                      roughly doubled the effect.
+  still 512 p6, 16r:  1.0054 [0.9982, 1.0167] — flat (convolve_sr is
+                      inter-only; spans 1.0 = noise).
+
+Numbers are Zen-4-specific; full-width 512-bit silicon is unmeasured.
+
+========================= 3. GATES =========================
+
+- `cargo nextest run -p zenav1-svt-dsp --locked`: 847/847 (incl.
+  c_parity_port_convolve 10/10 — real C FFI oracle across filters × sizes
+  up to 64×64 × phases; exercises the v4 rungs on this host).
+- `cargo nextest run --workspace --locked --test-threads 4`: 3930/3930.
+- `tools/regression_spotcheck.sh`: 145/145.
+- Decode gate NOT run (no dav1d on this host) — known coverage gap.
+
+========================= 4. REMAINING MAPPED GAPS =========================
+
+- `jnt_convolve_{x,y,2d}` + `convolve_2d_copy_sr` — C registers AVX-512; the
+  port has them scalar/v3. Compound/jnt paths are cooler than the `_sr`
+  family on these cells.
+- `fwd_txfm2d_*_avx512` (lowbd slots) — registered at AVX-512 in C; a deep
+  butterfly pipeline, higher effort/risk.
+- Wiener lane-utilization gaps (16 vs 32 lanes, i16 madd) — partially open.
