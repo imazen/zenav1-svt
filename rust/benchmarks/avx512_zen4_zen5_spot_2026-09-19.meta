@@ -1,0 +1,51 @@
+**Cross-host spot check: does the AVX-512 campaign gain more on Zen 5's
+full-width datapath than on Zen 4's double-pumped one? Answer: NO — the
+gains are identical within noise on the inter cell.**
+
+Cumulative campaign A/B: base `908e0a23d` (pre-campaign, all `_v3`/scalar)
+vs cand `51b289bfc` (all five v4 landings: ME SAD, variance_diff_parts,
+convolve _sr, fwd square DCT, jnt_convolve). The commit range contains
+ONLY the v4 work plus the subpel pointer-swap; nothing else.
+
+date:   2026-09-19
+hosts:  r7900x — Ryzen 9 7900X, Zen 4 (AVX-512 double-pumped over 256-bit)
+        dev    — Ryzen 9 9950X3D, Zen 5 (native 512-bit datapath),
+                 via nomad docker `rust:bookworm`, cpuset 0-15 (CCD0)
+toolchain: rustc 1.98.1 on both
+data:   benchmarks/avx512_cumulative_inter_grad.ab.{tsv,raw.tsv} (r7900x, 32r)
+        benchmarks/avx512_cumulative_still_grad.ab.{tsv,raw.tsv} (r7900x, 16r)
+        dev numbers from nomad job `avx512-zen5-spot` alloc 5127aa9b logs
+        (32r inter / 16r still — raw rows not preserved; medians+quartiles below)
+cell:   gradient 512², inter env SVTAV1_FRAMES=2 FRAME_SHIFT=3
+        INTRA_PERIOD=64 HIER_LEVELS=0 INTER_EXPERIMENTAL=1
+
+================== INTER (cumulative v4 campaign) ==================
+
+              r7900x Zen 4               dev Zen 5 (9950X3D)
+  p6:   0.9324 [0.9298, 0.9362]    0.9324 [0.9220, 0.9436]   → +7.3% both
+  p8:   0.9294 [0.9266, 0.9331]    0.9288 [0.9152, 0.9353]   → +7.6% / +7.7%
+
+  ident=Y everywhere on both hosts.
+
+================== STILL ==================
+
+              r7900x Zen 4               dev Zen 5
+  p6:   0.9859 [0.9802, 0.9927]    0.9696 [0.9632, 1.0030]*  +1.4% / +3.1%
+  p8:   0.9830 [0.9651, 0.9886]    0.9743 [0.9595, 0.9794]   +1.7% / +2.6%
+  (* dev p6 p75 straddles 1.0 — 16 rounds, noisier; direction same)
+
+================== READ ==================
+
+The v4 wins are NOT execution-width-limited on Zen 4: Zen 5's native
+512-bit units did not widen the margin at all on the inter cell
+(identical medians to 4 decimal places at p6). The campaign's gains are
+instruction-count / front-end / loop-overhead savings — the kernels
+measured are throughput- and memory-bound, not 512-bit-execution-bound.
+
+Consequence for target selection: the scalar→v4 jumps (jnt +3-5%) beat
+v3→v4 jumps (~1-2%) per unit of work on BOTH microarchitectures — the
+lever is removing scalar/short-vector overhead, not unlocking wider
+execution. Don't deprioritize a v4 arm just because "Zen 4 halves it".
+
+Baseline speed context (not a perf claim): dev's base was ~11% faster
+than r7900x's at p6 inter (83.4ms vs 93.8ms per frame).
