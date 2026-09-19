@@ -20,7 +20,7 @@
 #
 # INTER / VIDEO cells (FRAMES > 1 or VIDEO=1) export the SAME env set
 # tools/perf_gate.sh exports (SVTAV1_FRAMES/_FRAME_SHIFT/_INTRA_PERIOD/
-# _HIER_LEVELS + SVTAV1_VIDEO on the port; SVT_FRAMES/
+# _HIER_LEVELS/_INTER_EXPERIMENTAL + SVTAV1_VIDEO on the port; SVT_FRAMES/
 # _INTRA_PERIOD/_HIER_LEVELS/_PRED_STRUCT + SVT_AVIF=0 on C), so a cell here
 # is the same encode the wall-clock harness times. Identity is then checked
 # PER FRAME (port <pfx>.obu.f<i> vs C <pfx>.c.obu.pts<i>), never on the
