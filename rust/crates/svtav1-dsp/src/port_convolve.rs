@@ -1274,6 +1274,731 @@ fn convolve_2d_sr_v4(
     }
 }
 
+// --- AVX-512 (`_v4`) arms of the compound (`jnt`) family ---
+//
+// Same tap-load shape as the `_sr` v4 arms; only the epilogue differs: where
+// `_sr` clips to `u8`, `jnt` either stores the `ConvBufType` (u16) `res` into
+// `conv_buf` or folds it into the previous prediction through `jnt_average`.
+// Reached only for `w >= 16` (16-px and 32-px rungs, scalar tails) and only
+// when `conv_buf`/`dst` geometry is row-contiguous the way the scalar body
+// indexes it (`dst_stride >= w`, `conv_params.dst_stride >= w`).
+
+/// The `jnt_average`/`ConvBufType` tail for one 16-lane group.
+///
+/// `res` is the i32x16 value the scalar body calls `res`. `TRUNC_RES` selects
+/// whether the average sees the `as u16` truncation first: `jnt_convolve_2d`
+/// and `jnt_convolve_2d_copy` truncate `res` to `ConvBufType` BEFORE
+/// `jnt_average` re-widens it; `jnt_convolve_x`/`_y` pass the untruncated i32.
+/// The `!do_average` store truncates to u16 either way (`res as u16`).
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn jnt_epilogue16_v4<const TRUNC_RES: bool>(
+    token: X64V4Token,
+    res: __m512i,
+    conv_row: &mut [u16],
+    dst_row: &mut [u8],
+    x: usize,
+    cp: &ConvolveParams,
+    round_offset: i32,
+    round_bits: i32,
+) {
+    let res_u16 = _mm512_cvtepi32_epi16(res);
+    if !cp.do_average {
+        let slot: &mut [u16; 16] = (&mut conv_row[x..x + 16]).try_into().unwrap();
+        _mm256_storeu_si256(slot, res_u16);
+        return;
+    }
+    let cbv: &[u16; 16] = conv_row[x..x + 16].try_into().unwrap();
+    let cb32 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(cbv));
+    let res32 = if TRUNC_RES {
+        _mm512_cvtepu16_epi32(res_u16)
+    } else {
+        res
+    };
+    let tmp = if cp.use_jnt_comp_avg {
+        _mm512_srai_epi32::<{ DIST_PRECISION_BITS as u32 }>(_mm512_add_epi32(
+            _mm512_mullo_epi32(cb32, _mm512_set1_epi32(cp.fwd_offset)),
+            _mm512_mullo_epi32(res32, _mm512_set1_epi32(cp.bck_offset)),
+        ))
+    } else {
+        _mm512_srai_epi32::<1>(_mm512_add_epi32(cb32, res32))
+    };
+    let tmp = _mm512_sub_epi32(tmp, _mm512_set1_epi32(round_offset));
+    // clip_pixel_8(round_power_of_two(tmp, round_bits)) — pack_u8x16_v4's
+    // saturating narrow after max(0) IS that clamp.
+    let rb_off = _mm512_set1_epi32(if round_bits > 0 {
+        1 << (round_bits - 1)
+    } else {
+        0
+    });
+    let v = _mm512_srav_epi32(
+        _mm512_add_epi32(tmp, rb_off),
+        _mm512_set1_epi32(round_bits.max(0)),
+    );
+    let px = pack_u8x16_v4(token, v);
+    let out: &mut [u8; 16] = (&mut dst_row[x..x + 16]).try_into().unwrap();
+    _mm_storeu_si128(out, px);
+}
+
+/// 32-lane twin of [`jnt_epilogue16_v4`].
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn jnt_epilogue32_v4<const TRUNC_RES: bool>(
+    token: X64V4Token,
+    res_lo: __m512i,
+    res_hi: __m512i,
+    conv_row: &mut [u16],
+    dst_row: &mut [u8],
+    x: usize,
+    cp: &ConvolveParams,
+    round_offset: i32,
+    round_bits: i32,
+) {
+    let lo16 = _mm512_cvtepi32_epi16(res_lo);
+    let hi16 = _mm512_cvtepi32_epi16(res_hi);
+    if !cp.do_average {
+        let res16x32 =
+            _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo16), hi16);
+        let slot: &mut [u16; 32] = (&mut conv_row[x..x + 32]).try_into().unwrap();
+        _mm512_storeu_si512(slot, res16x32);
+        return;
+    }
+    let rb_off = _mm512_set1_epi32(if round_bits > 0 {
+        1 << (round_bits - 1)
+    } else {
+        0
+    });
+    let rbv = _mm512_set1_epi32(round_bits.max(0));
+    let roff = _mm512_set1_epi32(round_offset);
+    let fwd = _mm512_set1_epi32(cp.fwd_offset);
+    let bck = _mm512_set1_epi32(cp.bck_offset);
+    let avg = |res: __m512i, res16: __m256i, off: usize| -> __m512i {
+        let cbv: &[u16; 16] = conv_row[x + off..x + off + 16].try_into().unwrap();
+        let cb32 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(cbv));
+        let res32 = if TRUNC_RES {
+            _mm512_cvtepu16_epi32(res16)
+        } else {
+            res
+        };
+        let tmp = if cp.use_jnt_comp_avg {
+            _mm512_srai_epi32::<{ DIST_PRECISION_BITS as u32 }>(_mm512_add_epi32(
+                _mm512_mullo_epi32(cb32, fwd),
+                _mm512_mullo_epi32(res32, bck),
+            ))
+        } else {
+            _mm512_srai_epi32::<1>(_mm512_add_epi32(cb32, res32))
+        };
+        _mm512_srav_epi32(_mm512_add_epi32(_mm512_sub_epi32(tmp, roff), rb_off), rbv)
+    };
+    let px = pack_u8x32_v4(token, avg(res_lo, lo16, 0), avg(res_hi, hi16, 16));
+    let out: &mut [u8; 32] = (&mut dst_row[x..x + 32]).try_into().unwrap();
+    _mm256_storeu_si256(out, px);
+}
+
+/// x86-64 v4 arm of [`jnt_convolve_x`]: the `convolve_x_sr_v4` tap pipeline
+/// feeding the compound epilogue. `bits = FILTER_BITS - round_1` — the
+/// upstream asymmetry is kept.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn jnt_convolve_x_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    cp: &ConvolveParams,
+) {
+    let cb_stride = cp.dst_stride;
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let bits = FILTER_BITS - cp.round_1;
+    let offset_bits = 8 + 2 * FILTER_BITS - cp.round_0;
+    let round_offset =
+        (1 << (offset_bits - cp.round_1)) + (1 << (offset_bits - cp.round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+    let cfs: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(x_filter[i]));
+    let r0_off = _mm512_set1_epi32(if cp.round_0 > 0 {
+        1 << (cp.round_0 - 1)
+    } else {
+        0
+    });
+    let r0v = _mm512_set1_epi32(cp.round_0);
+    let scale = _mm512_set1_epi32(1 << bits);
+    let roff = _mm512_set1_epi32(round_offset);
+    for y in 0..h {
+        let row = origin + y as isize * stride;
+        let x0 = (fo - row).max(0).min(w as isize) as usize;
+        let x1_32 =
+            ((len - 32 - 7 + fo - row).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 =
+            ((len - 16 - 7 + fo - row).min(w as isize)).max(x0 as isize) as usize;
+        // res = (1 << bits) * round_power_of_two(acc, round_0) + round_offset
+        let fin = |acc: __m512i| -> __m512i {
+            let r = _mm512_srav_epi32(_mm512_add_epi32(acc, r0_off), r0v);
+            _mm512_add_epi32(_mm512_mullo_epi32(r, scale), roff)
+        };
+        for x in 0..x0 {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += x_filter[k] as i32 * src.at(y as i32, x as i32 - fo as i32 + k as i32);
+            }
+            let res = (1 << bits) * round_power_of_two(res, cp.round_0) + round_offset;
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res as u16;
+            }
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row + x as isize - fo + k as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            jnt_epilogue32_v4::<false>(
+                token,
+                fin(lo),
+                fin(hi),
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row + x as isize - fo + k as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            jnt_epilogue16_v4::<false>(
+                token,
+                fin(acc),
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 16;
+        }
+        for x in x..w {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += x_filter[k] as i32 * src.at(y as i32, x as i32 - fo as i32 + k as i32);
+            }
+            let res = (1 << bits) * round_power_of_two(res, cp.round_0) + round_offset;
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res as u16;
+            }
+        }
+    }
+}
+
+/// x86-64 v4 arm of [`jnt_convolve_y`]: the `convolve_y_sr_v4` tap pipeline
+/// feeding the compound epilogue. `bits = FILTER_BITS - round_0` here (the
+/// `_x` twin uses `round_1`) — upstream asymmetry kept verbatim.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn jnt_convolve_y_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    w: usize,
+    h: usize,
+    y_filter: &InterpKernel,
+    cp: &ConvolveParams,
+) {
+    let cb_stride = cp.dst_stride;
+    let fo = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let bits = FILTER_BITS - cp.round_0;
+    let offset_bits = 8 + 2 * FILTER_BITS - cp.round_0;
+    let round_offset =
+        (1 << (offset_bits - cp.round_1)) + (1 << (offset_bits - cp.round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+    let cfs: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(y_filter[i]));
+    let scale = _mm512_set1_epi32(1 << bits);
+    let r1_off = _mm512_set1_epi32(if cp.round_1 > 0 {
+        1 << (cp.round_1 - 1)
+    } else {
+        0
+    });
+    let r1v = _mm512_set1_epi32(cp.round_1);
+    let roff = _mm512_set1_epi32(round_offset);
+    // res = round_power_of_two(acc * (1 << bits), round_1) + round_offset
+    let fin = |acc: __m512i| -> __m512i {
+        let t = _mm512_mullo_epi32(acc, scale);
+        _mm512_add_epi32(_mm512_srav_epi32(_mm512_add_epi32(t, r1_off), r1v), roff)
+    };
+    for y in 0..h {
+        let row0 = origin + (y as isize - fo) * stride;
+        let row7 = row0 + 7 * stride;
+        let x0 = (-row0).max(0).min(w as isize) as usize;
+        let x1_32 = ((len - 32 - row7).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 = ((len - 16 - row7).min(w as isize)).max(x0 as isize) as usize;
+        for x in 0..x0 {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            let res = round_power_of_two(res * (1 << bits), cp.round_1) + round_offset;
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res as u16;
+            }
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row0 + k as isize * stride + x as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            jnt_epilogue32_v4::<false>(
+                token,
+                fin(lo),
+                fin(hi),
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs.iter().enumerate() {
+                let i = (row0 + k as isize * stride + x as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            jnt_epilogue16_v4::<false>(
+                token,
+                fin(acc),
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 16;
+        }
+        for x in x..w {
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += y_filter[k] as i32 * src.at(y as i32 - fo as i32 + k as i32, x as i32);
+            }
+            let res = round_power_of_two(res * (1 << bits), cp.round_1) + round_offset;
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res as u16;
+            }
+        }
+    }
+}
+
+/// x86-64 v4 arm of [`jnt_convolve_2d`]: the `convolve_2d_sr_v4` horizontal
+/// pass (identical arithmetic — `1 << (bd + FILTER_BITS - 1)` seed, `round_0`
+/// shift, `as i16` store into `im_block`), then a vertical pass whose `res`
+/// goes through `round_1` into the compound epilogue.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn jnt_convolve_2d_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    w: usize,
+    h: usize,
+    x_filter: &InterpKernel,
+    y_filter: &InterpKernel,
+    cp: &ConvolveParams,
+) {
+    let cb_stride = cp.dst_stride;
+    let im_h = h + SUBPEL_TAPS - 1;
+    let fo_vert = (SUBPEL_TAPS / 2 - 1) as isize;
+    let fo_horiz = (SUBPEL_TAPS / 2 - 1) as isize;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let offset_bits = 8 + 2 * FILTER_BITS - cp.round_0;
+    let round_offset =
+        (1 << (offset_bits - cp.round_1)) + (1 << (offset_bits - cp.round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+
+    let mut im_block = alloc::vec![0i16; im_h * w];
+    let cfs_x: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi16(x_filter[i]));
+    let off0 = _mm512_set1_epi32(
+        (1 << (8 + FILTER_BITS - 1)) + if cp.round_0 > 0 { 1 << (cp.round_0 - 1) } else { 0 },
+    );
+    let r0v = _mm512_set1_epi32(cp.round_0);
+    for y in 0..im_h {
+        let row = origin + (y as isize - fo_vert) * stride;
+        let x0 = (fo_horiz - row).max(0).min(w as isize) as usize;
+        let x1_32 =
+            ((len - 32 - 7 + fo_horiz - row).min(w as isize)).max(x0 as isize) as usize;
+        let x1_16 =
+            ((len - 16 - 7 + fo_horiz - row).min(w as isize)).max(x0 as isize) as usize;
+        let imrow = &mut im_block[y * w..y * w + w];
+        for x in 0..x0 {
+            let mut sum = 1i32 << (8 + FILTER_BITS - 1);
+            for k in 0..SUBPEL_TAPS {
+                sum += x_filter[k] as i32
+                    * src.at(y as i32 - fo_vert as i32, x as i32 - fo_horiz as i32 + k as i32);
+            }
+            imrow[x] = round_power_of_two(sum, cp.round_0) as i16;
+        }
+        let mut x = x0;
+        while x + 32 <= x1_32 {
+            let mut lo = _mm512_setzero_si512();
+            let mut hi = _mm512_setzero_si512();
+            for (k, cf) in cfs_x.iter().enumerate() {
+                let i = (row + x as isize - fo_horiz + k as isize) as usize;
+                let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+                let v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(s));
+                let p = _mm512_mullo_epi16(v, *cf);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_cvtepi16_epi32(_mm512_castsi512_si256(p)),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(p)),
+                );
+            }
+            let rl = _mm512_srav_epi32(_mm512_add_epi32(lo, off0), r0v);
+            let rh = _mm512_srav_epi32(_mm512_add_epi32(hi, off0), r0v);
+            let t = trunc_i16x32_v4(token, rl, rh);
+            let out: &mut [i16; 32] = (&mut imrow[x..x + 32]).try_into().unwrap();
+            _mm512_storeu_si512(out, t);
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let mut acc = _mm512_setzero_si512();
+            for (k, cf) in cfs_x.iter().enumerate() {
+                let i = (row + x as isize - fo_horiz + k as isize) as usize;
+                let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+                let v = _mm256_cvtepu8_epi16(_mm_loadu_si128(s));
+                let p = _mm512_cvtepi16_epi32(_mm256_mullo_epi16(
+                    v,
+                    _mm512_castsi512_si256(*cf),
+                ));
+                acc = _mm512_add_epi32(acc, p);
+            }
+            let r = _mm512_srav_epi32(_mm512_add_epi32(acc, off0), r0v);
+            let t16 = _mm512_cvtepi32_epi16(r);
+            let out: &mut [i16; 16] = (&mut imrow[x..x + 16]).try_into().unwrap();
+            _mm256_storeu_si256(out, t16);
+            x += 16;
+        }
+        for x in x..w {
+            let mut sum = 1i32 << (8 + FILTER_BITS - 1);
+            for k in 0..SUBPEL_TAPS {
+                sum += x_filter[k] as i32
+                    * src.at(y as i32 - fo_vert as i32, x as i32 - fo_horiz as i32 + k as i32);
+            }
+            imrow[x] = round_power_of_two(sum, cp.round_0) as i16;
+        }
+    }
+
+    // Vertical pass — same i16 tap loads as `convolve_2d_sr_v4`, but the seed
+    // is `1 << offset_bits` inside the sum and `res` truncates to u16 (the
+    // ConvBufType store semantics `jnt_epilogue`'s TRUNC_RES models).
+    let cfs_y: [__m512i; SUBPEL_TAPS] =
+        core::array::from_fn(|i| _mm512_set1_epi32(y_filter[i] as i32));
+    let seed = _mm512_set1_epi32(1 << offset_bits);
+    let r1_off = _mm512_set1_epi32(if cp.round_1 > 0 {
+        1 << (cp.round_1 - 1)
+    } else {
+        0
+    });
+    let r1v = _mm512_set1_epi32(cp.round_1);
+    for y in 0..h {
+        let mut x = 0usize;
+        while x + 32 <= w {
+            let mut lo = seed;
+            let mut hi = seed;
+            for (k, cf) in cfs_y.iter().enumerate() {
+                let s: &[i16; 32] = im_block[(y + k) * w + x..(y + k) * w + x + 32]
+                    .try_into()
+                    .unwrap();
+                let v = _mm512_loadu_si512(s);
+                lo = _mm512_add_epi32(
+                    lo,
+                    _mm512_mullo_epi32(
+                        _mm512_cvtepi16_epi32(_mm512_castsi512_si256(v)),
+                        *cf,
+                    ),
+                );
+                hi = _mm512_add_epi32(
+                    hi,
+                    _mm512_mullo_epi32(
+                        _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64::<1>(v)),
+                        *cf,
+                    ),
+                );
+            }
+            let fin = |acc: __m512i| -> __m512i {
+                _mm512_srav_epi32(_mm512_add_epi32(acc, r1_off), r1v)
+            };
+            jnt_epilogue32_v4::<true>(
+                token,
+                fin(lo),
+                fin(hi),
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 32;
+        }
+        while x + 16 <= w {
+            let mut acc = seed;
+            for (k, cf) in cfs_y.iter().enumerate() {
+                let s: &[i16; 16] = im_block[(y + k) * w + x..(y + k) * w + x + 16]
+                    .try_into()
+                    .unwrap();
+                let v = _mm512_cvtepi16_epi32(_mm256_loadu_si256(s));
+                acc = _mm512_add_epi32(acc, _mm512_mullo_epi32(v, *cf));
+            }
+            let res = _mm512_srav_epi32(_mm512_add_epi32(acc, r1_off), r1v);
+            jnt_epilogue16_v4::<true>(
+                token,
+                res,
+                &mut conv_buf[y * cb_stride..],
+                &mut dst[y * dst_stride..],
+                x,
+                cp,
+                round_offset,
+                round_bits,
+            );
+            x += 16;
+        }
+        for x in x..w {
+            let mut sum = 1i32 << offset_bits;
+            for k in 0..SUBPEL_TAPS {
+                sum += y_filter[k] as i32 * im_block[(y + k) * w + x] as i32;
+            }
+            let res = round_power_of_two(sum, cp.round_1) as u16;
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res as i32,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res;
+            }
+        }
+    }
+}
+
+/// x86-64 v4 arm of [`jnt_convolve_2d_copy`]: `(src << bits) + round_offset`
+/// with `ConvBufType` (u16) wrap — `mullo_epi16`/`add_epi16` wrap in 16-bit
+/// lanes, matching the scalar `u16` arithmetic exactly.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn jnt_convolve_2d_copy_v4(
+    token: X64V4Token,
+    src: SrcView<'_>,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    w: usize,
+    h: usize,
+    cp: &ConvolveParams,
+) {
+    let cb_stride = cp.dst_stride;
+    let len = src.data.len() as isize;
+    let origin = src.origin as isize;
+    let stride = src.stride as isize;
+    let bits = FILTER_BITS * 2 - cp.round_1 - cp.round_0;
+    let offset_bits = 8 + 2 * FILTER_BITS - cp.round_0;
+    let round_offset =
+        (1 << (offset_bits - cp.round_1)) + (1 << (offset_bits - cp.round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+    let shl = _mm512_set1_epi16((1u16 << bits) as i16);
+    let roff16 = _mm512_set1_epi16(round_offset as u16 as i16);
+    for y in 0..h {
+        let row = origin + y as isize * stride;
+        let x1_32 = ((len - 32 - row).min(w as isize)).max(0) as usize;
+        let x1_16 = ((len - 16 - row).min(w as isize)).max(0) as usize;
+        let mut x = 0usize;
+        while x + 32 <= x1_32 {
+            let i = (row + x as isize) as usize;
+            let s: &[u8; 32] = src.data[i..i + 32].try_into().unwrap();
+            let v = _mm512_add_epi16(
+                _mm512_mullo_epi16(_mm512_cvtepu8_epi16(_mm256_loadu_si256(s)), shl),
+                roff16,
+            );
+            if !cp.do_average {
+                let slot: &mut [u16; 32] =
+                    (&mut conv_buf[y * cb_stride + x..y * cb_stride + x + 32])
+                        .try_into()
+                        .unwrap();
+                _mm512_storeu_si512(slot, v);
+            } else {
+                // u16 lanes widened to i32 — the same value the scalar body
+                // holds in `res` (already a u16).
+                let lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(v));
+                let hi =
+                    _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64::<1>(v));
+                jnt_epilogue32_v4::<true>(
+                    token,
+                    lo,
+                    hi,
+                    &mut conv_buf[y * cb_stride..],
+                    &mut dst[y * dst_stride..],
+                    x,
+                    cp,
+                    round_offset,
+                    round_bits,
+                );
+            }
+            x += 32;
+        }
+        while x + 16 <= x1_16 {
+            let i = (row + x as isize) as usize;
+            let s: &[u8; 16] = src.data[i..i + 16].try_into().unwrap();
+            let v = _mm256_add_epi16(
+                _mm256_mullo_epi16(
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(s)),
+                    _mm512_castsi512_si256(shl),
+                ),
+                _mm512_castsi512_si256(roff16),
+            );
+            if !cp.do_average {
+                let slot: &mut [u16; 16] =
+                    (&mut conv_buf[y * cb_stride + x..y * cb_stride + x + 16])
+                        .try_into()
+                        .unwrap();
+                _mm256_storeu_si256(slot, v);
+            } else {
+                let res = _mm512_cvtepu16_epi32(v);
+                jnt_epilogue16_v4::<true>(
+                    token,
+                    res,
+                    &mut conv_buf[y * cb_stride..],
+                    &mut dst[y * dst_stride..],
+                    x,
+                    cp,
+                    round_offset,
+                    round_bits,
+                );
+            }
+            x += 16;
+        }
+        for x in x..w {
+            let mut res = (src.at(y as i32, x as i32) as u16) << bits;
+            res = res.wrapping_add(round_offset as u16);
+            if cp.do_average {
+                dst[y * dst_stride + x] = jnt_average(
+                    conv_buf[y * cb_stride + x],
+                    res as i32,
+                    round_offset,
+                    round_bits,
+                    cp,
+                );
+            } else {
+                conv_buf[y * cb_stride + x] = res;
+            }
+        }
+    }
+}
+
 /// `svt_av1_convolve_2d_copy_sr_c` (inter_prediction.c:431) — the whole-pel
 /// path, and the ONLY MC kernel `svt_inter_predictor_pd0` reaches.
 pub fn convolve_2d_copy_sr(
@@ -1329,6 +2054,28 @@ pub fn jnt_convolve_2d(
     subpel_y_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16
+        && conv_params.dst_stride >= w
+        && conv_buf.len() >= conv_params.dst_stride * h
+        && (!conv_params.do_average || dst.len() >= (h - 1) * dst_stride + w)
+    {
+        if let Some(token) = X64V4Token::summon() {
+            jnt_convolve_2d_v4(
+                token,
+                src,
+                dst,
+                dst_stride,
+                conv_buf,
+                w,
+                h,
+                filter_x.subpel_kernel(subpel_x_q4),
+                filter_y.subpel_kernel(subpel_y_q4),
+                conv_params,
+            );
+            return;
+        }
+    }
     let cb_stride = conv_params.dst_stride;
     let im_h = h + SUBPEL_TAPS - 1;
     let im_stride = w;
@@ -1390,6 +2137,27 @@ pub fn jnt_convolve_y(
     subpel_y_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16
+        && conv_params.dst_stride >= w
+        && conv_buf.len() >= conv_params.dst_stride * h
+        && (!conv_params.do_average || dst.len() >= (h - 1) * dst_stride + w)
+    {
+        if let Some(token) = X64V4Token::summon() {
+            jnt_convolve_y_v4(
+                token,
+                src,
+                dst,
+                dst_stride,
+                conv_buf,
+                w,
+                h,
+                filter_y.subpel_kernel(subpel_y_q4),
+                conv_params,
+            );
+            return;
+        }
+    }
     let cb_stride = conv_params.dst_stride;
     let fo_vert = (SUBPEL_TAPS / 2 - 1) as i32;
     let bits = FILTER_BITS - conv_params.round_0;
@@ -1440,6 +2208,27 @@ pub fn jnt_convolve_x(
     subpel_x_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16
+        && conv_params.dst_stride >= w
+        && conv_buf.len() >= conv_params.dst_stride * h
+        && (!conv_params.do_average || dst.len() >= (h - 1) * dst_stride + w)
+    {
+        if let Some(token) = X64V4Token::summon() {
+            jnt_convolve_x_v4(
+                token,
+                src,
+                dst,
+                dst_stride,
+                conv_buf,
+                w,
+                h,
+                filter_x.subpel_kernel(subpel_x_q4),
+                conv_params,
+            );
+            return;
+        }
+    }
     let cb_stride = conv_params.dst_stride;
     let fo_horiz = (SUBPEL_TAPS / 2 - 1) as i32;
     let bits = FILTER_BITS - conv_params.round_1;
@@ -1490,6 +2279,19 @@ pub fn jnt_convolve_2d_copy(
     h: usize,
     conv_params: &ConvolveParams,
 ) {
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    if w >= 16
+        && conv_params.dst_stride >= w
+        && conv_buf.len() >= conv_params.dst_stride * h
+        && (!conv_params.do_average || dst.len() >= (h - 1) * dst_stride + w)
+    {
+        if let Some(token) = X64V4Token::summon() {
+            jnt_convolve_2d_copy_v4(
+                token, src, dst, dst_stride, conv_buf, w, h, conv_params,
+            );
+            return;
+        }
+    }
     let cb_stride = conv_params.dst_stride;
     let bits = FILTER_BITS * 2 - conv_params.round_1 - conv_params.round_0;
     let bd = 8i32;
@@ -1563,6 +2365,171 @@ mod tests {
             for (phase, k) in t.iter().enumerate() {
                 let s: i32 = k.iter().map(|&v| v as i32).sum();
                 assert_eq!(s, 128, "{name} phase {phase} sums to {s}");
+            }
+        }
+    }
+
+    /// Positive witness that the jnt `_v4` arms are EXERCISED and exact, not
+    /// just compiled — the c_parity tests pass either way since the scalar
+    /// fallback is also correct. The oracle is the scalar body transcribed
+    /// per kernel; each `w` covers the 32-px rung, the 16-px rung, and the
+    /// scalar tail (w = 56 -> 32 + 16 + 8).
+    #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+    #[test]
+    fn jnt_v4_arms_match_scalar_when_summoned() {
+        extern crate std;
+        use alloc::vec;
+        use alloc::vec::Vec;
+        let Some(v4) = X64V4Token::summon() else {
+            std::eprintln!("X64V4Token unavailable — jnt _v4 arms NOT exercised on this host");
+            return;
+        };
+        let fp = interp_filter_params_with_block_size(InterpFilterKind::EightTapRegular, 32);
+        let mk_cp = |do_average: bool, use_jnt: bool| {
+            let mut cp = ConvolveParams::no_round(do_average, 64, true, 8);
+            cp.use_jnt_comp_avg = use_jnt;
+            cp.fwd_offset = 9;
+            cp.bck_offset = 7;
+            cp
+        };
+        let stride = 80usize;
+        let src: Vec<u8> = (0..stride * 80)
+            .map(|i| ((i * 37 + 11) % 251) as u8)
+            .collect();
+        let view = SrcView::new(&src, 8 * stride + 8, stride);
+        let bd = 8i32;
+
+        for &(w, h) in &[(16usize, 8usize), (32, 8), (56, 8), (64, 16)] {
+            for cp in [mk_cp(false, false), mk_cp(true, false), mk_cp(true, true)] {
+                let cb_stride = cp.dst_stride;
+                // --- scalar oracles (verbatim transcriptions) ---
+                let off = bd + 2 * FILTER_BITS - cp.round_0;
+                let roff = (1 << (off - cp.round_1)) + (1 << (off - cp.round_1 - 1));
+                let rbits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+                let mut cb0 = vec![0u16; cb_stride * h];
+                let mut d0 = vec![0u8; w * h];
+                let mut cb1 = cb0.clone();
+                let mut d1 = d0.clone();
+
+                // jnt_convolve_x
+                let xf = fp.subpel_kernel(5);
+                let bits = FILTER_BITS - cp.round_1;
+                for y in 0..h {
+                    for x in 0..w {
+                        let mut res = 0i32;
+                        for k in 0..SUBPEL_TAPS {
+                            res += xf[k] as i32 * view.at(y as i32, x as i32 - 3 + k as i32);
+                        }
+                        let res = (1 << bits) * round_power_of_two(res, cp.round_0) + roff;
+                        if cp.do_average {
+                            d0[y * w + x] = jnt_average(cb0[y * cb_stride + x], res, roff, rbits, &cp);
+                        } else {
+                            cb0[y * cb_stride + x] = res as u16;
+                        }
+                    }
+                }
+                jnt_convolve_x_v4(
+                    v4, view, &mut d1, w, &mut cb1, w, h, xf, &cp,
+                );
+                assert_eq!(cb0, cb1, "jnt_x_v4 conv_buf {w}x{h} avg={}", cp.do_average);
+                assert_eq!(d0, d1, "jnt_x_v4 dst {w}x{h} avg={}", cp.do_average);
+
+                // jnt_convolve_y
+                let yf = fp.subpel_kernel(9);
+                let bits = FILTER_BITS - cp.round_0;
+                let mut cb0 = vec![0u16; cb_stride * h];
+                let mut d0 = vec![0u8; w * h];
+                let mut cb1 = cb0.clone();
+                let mut d1 = d0.clone();
+                for y in 0..h {
+                    for x in 0..w {
+                        let mut res = 0i32;
+                        for k in 0..SUBPEL_TAPS {
+                            res += yf[k] as i32 * view.at(y as i32 - 3 + k as i32, x as i32);
+                        }
+                        let res = round_power_of_two(res * (1 << bits), cp.round_1) + roff;
+                        if cp.do_average {
+                            d0[y * w + x] = jnt_average(cb0[y * cb_stride + x], res, roff, rbits, &cp);
+                        } else {
+                            cb0[y * cb_stride + x] = res as u16;
+                        }
+                    }
+                }
+                jnt_convolve_y_v4(
+                    v4, view, &mut d1, w, &mut cb1, w, h, yf, &cp,
+                );
+                assert_eq!(cb0, cb1, "jnt_y_v4 conv_buf {w}x{h} avg={}", cp.do_average);
+                assert_eq!(d0, d1, "jnt_y_v4 dst {w}x{h} avg={}", cp.do_average);
+
+                // jnt_convolve_2d
+                let mut cb0 = vec![0u16; cb_stride * h];
+                let mut d0 = vec![0u8; w * h];
+                let mut cb1 = cb0.clone();
+                let mut d1 = d0.clone();
+                let im_h = h + SUBPEL_TAPS - 1;
+                let mut im = vec![0i16; im_h * w];
+                for y in 0..im_h {
+                    for x in 0..w {
+                        let mut sum = 1i32 << (bd + FILTER_BITS - 1);
+                        for k in 0..SUBPEL_TAPS {
+                            sum += xf[k] as i32
+                                * view.at(y as i32 - 3, x as i32 - 3 + k as i32);
+                        }
+                        im[y * w + x] = round_power_of_two(sum, cp.round_0) as i16;
+                    }
+                }
+                for y in 0..h {
+                    for x in 0..w {
+                        let mut sum = 1i32 << off;
+                        for k in 0..SUBPEL_TAPS {
+                            sum += yf[k] as i32 * im[(y + k) * w + x] as i32;
+                        }
+                        let res = round_power_of_two(sum, cp.round_1) as u16;
+                        if cp.do_average {
+                            d0[y * w + x] = jnt_average(
+                                cb0[y * cb_stride + x],
+                                res as i32,
+                                roff,
+                                rbits,
+                                &cp,
+                            );
+                        } else {
+                            cb0[y * cb_stride + x] = res;
+                        }
+                    }
+                }
+                jnt_convolve_2d_v4(
+                    v4, view, &mut d1, w, &mut cb1, w, h, xf, yf, &cp,
+                );
+                assert_eq!(cb0, cb1, "jnt_2d_v4 conv_buf {w}x{h} avg={}", cp.do_average);
+                assert_eq!(d0, d1, "jnt_2d_v4 dst {w}x{h} avg={}", cp.do_average);
+
+                // jnt_convolve_2d_copy
+                let mut cb0 = vec![0u16; cb_stride * h];
+                let mut d0 = vec![0u8; w * h];
+                let mut cb1 = cb0.clone();
+                let mut d1 = d0.clone();
+                let bits = FILTER_BITS * 2 - cp.round_1 - cp.round_0;
+                for y in 0..h {
+                    for x in 0..w {
+                        let res = ((view.at(y as i32, x as i32) as u16) << bits)
+                            .wrapping_add(roff as u16);
+                        if cp.do_average {
+                            d0[y * w + x] = jnt_average(
+                                cb0[y * cb_stride + x],
+                                res as i32,
+                                roff,
+                                rbits,
+                                &cp,
+                            );
+                        } else {
+                            cb0[y * cb_stride + x] = res;
+                        }
+                    }
+                }
+                jnt_convolve_2d_copy_v4(v4, view, &mut d1, w, &mut cb1, w, h, &cp);
+                assert_eq!(cb0, cb1, "jnt_copy_v4 conv_buf {w}x{h} avg={}", cp.do_average);
+                assert_eq!(d0, d1, "jnt_copy_v4 dst {w}x{h} avg={}", cp.do_average);
             }
         }
     }

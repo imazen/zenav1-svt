@@ -1,0 +1,85 @@
+**`jnt_convolve_{x,y,2d,2d_copy}` get `_v4` arms — scalar→v4, the largest
+remaining mapped C-AVX-512 gap.** Fourth target of the AVX-512 coverage
+campaign. On the FRESH inter delta (`~/tmp/cg-inter2/delta_port_*`, callgrind —
+prices the `_v3` arm on this host; valgrind 3.27.1 cannot run zmm) the family
+accounted for most of `dispatch_convolve_8`'s 46.7M self Ir (inlined jnt
+bodies) plus `jnt_convolve_2d_copy`'s own 6.6M — ~5–15% of the port-vs-C
+inter-frame delta across cells. C registers the whole family at AVX-512
+(`jnt_convolve_avx512.c`); the port had it PURE SCALAR — no vector arm at all.
+
+date:   2026-09-19
+host:   r7900x — AMD Ryzen 9 7900X, **Zen 4: AVX-512 double-pumped over
+        256-bit units**. A 512-bit arm buys instruction count and front-end
+        width, NOT execution width. perf_event_paranoid=4: NO hardware
+        counters — wall clock is the only real measurement.
+base:   `ea92ffac4` — fwd square DCT `_v4` commit (so this A/B isolates jnt).
+cand:   working tree — `crates/svtav1-dsp/src/port_convolve.rs`.
+data:   benchmarks/jnt_avx512_inter_grad.ab.{tsv,raw.tsv}  (24r w16, inter)
+        benchmarks/jnt_avx512_still_grad.ab.{tsv,raw.tsv}  (12r still)
+
+========================= 1. WHAT LANDS =========================
+
+`port_convolve.rs`: four `#[arcane]` v4 kernels plus two shared
+`#[rite]` epilogue helpers, dispatched at `w >= 16` before the scalar body:
+
+- `jnt_convolve_x_v4` / `jnt_convolve_y_v4` / `jnt_convolve_2d_v4` /
+  `jnt_convolve_2d_copy_v4` — the scalar lanewise pipelines at 32 output
+  pixels/iter (two `i32x16` accumulators) plus a 16-px rung (one `i32x16`
+  accumulator) and a scalar tail.
+- `jnt_epilogue16_v4<TRUNC_RES>` / `jnt_epilogue32_v4<TRUNC_RES>` — shared
+  compound-average epilogue: stores `ConvBufType` intermediates when
+  `do_average == false`, else loads prior compound values and applies the
+  `fwd_offset`/`bck_offset`/`use_jnt_comp_avg` weighted average, rounding,
+  offset subtraction and clip→u8 narrowing exactly as the scalar body.
+
+Semantics preserved exactly:
+
+- `TRUNC_RES` splits the two epilogue shapes: `jnt_convolve_2d` /
+  `jnt_convolve_2d_copy` truncate the filter result to `ConvBufType` before
+  averaging; `jnt_convolve_x` / `jnt_convolve_y` pass the untruncated i32 —
+  matching the scalar arms bit-for-bit.
+- narrows via ordered `vpmovdw`/`vpmovuswb` forms — no `packs` lane
+  interleave, no permute fixups.
+- dispatch guards check `w >= 16`, `dst_stride >= w`, `conv_buf` length
+  covers `dst_stride * h`, and `dst` length covers the averaged footprint;
+  otherwise falls back to the existing scalar path (also the path on
+  non-AVX-512 hosts and `w < 16`).
+
+========================= 2. RESULTS (Zen 4, wall clock) =========================
+
+Interleaved paired A/B, `tools/perf_ab.sh`, gradient 512², inter cell
+(SVTAV1_FRAMES=2 FRAME_SHIFT=3 INTRA_PERIOD=64 HIER_LEVELS=0
+INTER_EXPERIMENTAL=1). `ident=Y` on every measured cell.
+
+  inter, 24r:  p6 0.9704 [0.9664, 0.9728]  p8 0.9493 [0.9431, 0.9565]
+               **disjoint win: +3.0% p6, +5.3% p8** — the largest single
+               landing of the campaign, consistent with scalar→v4 out-pricing
+               v3→v4 per unit of work.
+  still, 12r:  p6 1.0013 [0.9973, 1.0063]  p8 0.9926 [0.9881, 1.0044]
+               flat (jnt compound is inter-only; spans 1.0 = noise).
+
+Numbers are Zen-4-specific; full-width 512-bit silicon is unmeasured.
+
+========================= 3. GATES =========================
+
+- `cargo nextest run -p zenav1-svt-dsp --locked`: all pass, incl.
+  c_parity_port_convolve jnt tests (real C FFI oracle across filters × sizes
+  4–64 × both average modes; exercises the v4 rungs on this host) and the
+  positive-witness `jnt_v4_arms_match_scalar_when_summoned` (direct `_v4`
+  calls under a summoned `X64V4Token` vs an inline scalar oracle — proves
+  the arms execute, not merely compile).
+- `cargo nextest run --workspace --locked --test-threads 4`: 3931/3931.
+- `tools/regression_spotcheck.sh`: 145/145.
+- Decode gate NOT run (no dav1d on this host) — known coverage gap.
+
+========================= 4. REMAINING MAPPED GAPS =========================
+
+- `fwd_txfm2d` rect/inverse + `inv_txfm2d_add` AVX-512 — the x16 kernel
+  machinery now exists (square path landed in `ea92ffac4`); rect is
+  incremental, cold on these cells.
+- `compute_stats` (v3, ~5.3M but only 4 calls), `residual_kernel8bit`
+  (v3 arm measured slower than LLVM auto-vec — documented dead end),
+  `spatial_full_distortion`, `txb_init_levels`, `pixel_proj_error` — all
+  cold on the profiled cells.
+- Wiener lane-utilization gaps (i16 madd, 16 vs 32 lanes) — open but cold
+  (717K self Ir; still cells are trellis-dominated).
