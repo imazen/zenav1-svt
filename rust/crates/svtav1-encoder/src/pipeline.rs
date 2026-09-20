@@ -283,6 +283,11 @@ pub struct EncodePipeline {
     /// When the derivation asks for 128 but the SB128 encode path cannot
     /// yet code the cell, [`Self::sb128_fallback`] records it and this stays
     /// 64 — a clean, decodable (if non-matching) stream rather than a panic.
+    ///
+    /// RE-DERIVED at the top of `encode_frame_impl`: the C rule also reads
+    /// `static_config.enable_variance_boost` (VB forces 64), which is only
+    /// final once the tune overrides have run — they apply inside
+    /// `encode_frame_impl`, mirroring `copy_api_from_app` ordering.
     pub sb_size: usize,
     /// Explicit SB-size override (`SVTAV1_SB` in the harness). `None` =
     /// derive from the C rule. Set to `Some(64)`/`Some(128)` to pin one —
@@ -2024,6 +2029,63 @@ impl EncodePipeline {
                 "pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension",
             )));
         }
+        // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
+        // `--tune 3` (IQ, "still image only") and `--tune 4` (MS-SSIM) are not
+        // single RD knobs: C rewrites qm on/min/max (luma AND chroma),
+        // sharpness, variance boost on/strength/curve, and — for IQ —
+        // `max_tx_size` and `screen_content_mode`. Applying them here, once,
+        // against the CLI-domain qp is what makes `hdr.tune = TUNE_IQ` in this
+        // port mean the same thing as `--tune 3` in C. A no-op for every other
+        // tune, so the default path is byte-unchanged.
+        //
+        // These four (tune, QM, variance boost, sharpness) are MAINLINE v4.2.0
+        // features, not fork additions — they used to be gated behind
+        // `is_fork()` here, which silently ignored them in mainline mode.
+        //
+        // The application point MUST precede the superblock derivation below:
+        // C applies these in `copy_api_from_app` (enc_handle.c:4890-4918) and
+        // derives `super_block_size` later in `set_param_based_on_input`
+        // (:4995 -> :4077), so the tune-IQ `enable_variance_boost = 1` is
+        // already visible when the sb-size rule runs — and that rule forces
+        // SB64 whenever variance boost is on. `new()` cannot reproduce that
+        // ordering because `self.hdr` is caller-mutated after construction.
+        if self
+            .enhancements
+            .contains(crate::enhancements::ZenEnhancement::StillImageTune)
+        {
+            crate::enhancements::apply_still_image_tune(&mut self.hdr, self.rc_config.qp);
+        } else {
+            self.hdr.apply_tune_overrides(self.rc_config.qp);
+        }
+        // C derives `super_block_size` in `svt_av1_enc_init_handle` — AFTER
+        // the full static_config exists — and `enable_variance_boost` forces
+        // 64 (enc_handle.c:4075-4078). This port mutates `self.hdr` AFTER
+        // `new()` ran the derivation with `variance_boost: false`, so an
+        // encode-time VB request (tune IQ, `with_variance_boost`, the still
+        // recipe) could leave a sb128 derivation in place that C never
+        // emits — and whose delta-q emission then desynced the tile. Re-run
+        // the derivation at the encode choke point with the true VB input.
+        // An explicit `with_sb_size(128)` override still wins (that config
+        // is a port extension C cannot express; the emission path below now
+        // codes it decodably, just not byte-identically to anything C makes).
+        {
+            let sb_inputs = crate::sb128_geom::SbSizeInputs {
+                qp: self.rc_config.qp,
+                allintra: self.gop.intra_period <= 1,
+                variance_boost: self.hdr.enable_variance_boost,
+                ..Default::default()
+            };
+            let derived = crate::sb128_geom::derive_super_block_size(
+                self.width as usize,
+                self.height as usize,
+                self.speed_config.preset as i8,
+                &sb_inputs,
+            );
+            let (sb_size, fell_back) =
+                Self::resolve_sb_size(derived, self.sb_size_override, self.speed_config.preset);
+            self.sb_size = sb_size;
+            self.sb128_fallback = fell_back;
+        }
         if let Some(why) = self.sb_size_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
@@ -2104,26 +2166,6 @@ impl EncodePipeline {
         // with a GOP structure and encode only its key frame; that stream is a
         // valid still and is what several tests do. Only an actual INTER frame
         // is unencodable.
-        // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
-        // `--tune 3` (IQ, "still image only") and `--tune 4` (MS-SSIM) are not
-        // single RD knobs: C rewrites qm on/min/max (luma AND chroma),
-        // sharpness, variance boost on/strength/curve, and — for IQ —
-        // `max_tx_size` and `screen_content_mode`. Applying them here, once,
-        // against the CLI-domain qp is what makes `hdr.tune = TUNE_IQ` in this
-        // port mean the same thing as `--tune 3` in C. A no-op for every other
-        // tune, so the default path is byte-unchanged.
-        //
-        // These four (tune, QM, variance boost, sharpness) are MAINLINE v4.2.0
-        // features, not fork additions — they used to be gated behind
-        // `is_fork()` here, which silently ignored them in mainline mode.
-        if self
-            .enhancements
-            .contains(crate::enhancements::ZenEnhancement::StillImageTune)
-        {
-            crate::enhancements::apply_still_image_tune(&mut self.hdr, self.rc_config.qp);
-        } else {
-            self.hdr.apply_tune_overrides(self.rc_config.qp);
-        }
         // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
         // `*_hbd` entry points) so it can never leak into a following u8
         // frame. `None` on every u8 path -> every bd10 stage keeps widening
@@ -2802,6 +2844,16 @@ impl EncodePipeline {
         let sb_plan = if self.hdr.enable_variance_boost {
             let sb_cols_p = w.div_ceil(64);
             let sb_rows_p = h.div_ceil(64);
+            // C iterates the per-SB plan `sb_addr < scs->sb_total_count`
+            // (rc_aq.c:465 / :233) over `ppcs->variance[sb_addr]` — but that
+            // array is the per-B64 map picture analysis fills
+            // (pic_analysis_process.c:414). At sb_size 128 sb_total_count is
+            // a QUARTER of the b64 count, so C's plan consumes only the
+            // first sb_cnt b64 entries (raster order = the frame's top-left
+            // quadrant) for every real SB. Mirror the quirk by truncating
+            // the b64 map to the real SB count; at sb_size 64 the counts are
+            // equal and this is byte-neutral.
+            let sb_cnt = w.div_ceil(self.sb_size) * h.div_ceil(self.sb_size);
             let mut vars = svtav1_types::try_with_capacity![sb_cols_p * sb_rows_p]?;
             for r in 0..sb_rows_p {
                 for c in 0..sb_cols_p {
@@ -2815,6 +2867,7 @@ impl EncodePipeline {
                     ));
                 }
             }
+            vars.truncate(sb_cnt);
             // C has TWO boost paths and they take DIFFERENT variance domains:
             // mainline (rc_aq.c:350/454) reads the INTEGER per-b64 map that
             // picture analysis builds (`pd0::compute_b64_variance`) and leaves
@@ -2839,6 +2892,7 @@ impl EncodePipeline {
                     .map(|(r, c)| {
                         crate::pd0::compute_b64_variance(sb_input, in_stride, c * 64, r * 64)
                     })
+                    .take(sb_cnt)
                     .collect();
                 crate::sb_qindex::variance_adjust_qp_mainline(
                     base_qindex,
@@ -5890,7 +5944,7 @@ impl EncodePipeline {
                 // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
                 // (C prev_qindex tile-init); uniform plan = every SB at base.
                 if let Some(res) = delta_q_res_signal {
-                    ectx.delta_q_state = Some((res, i32::from(base_qindex)));
+                    ectx.delta_q_state = Some((res, i32::from(base_qindex), sb_size));
                     ectx.delta_q_sb_qindex = i32::from(base_qindex);
                 }
                 let mut chroma_pass = sb_chroma_owned.as_ref().map(|(u_src, v_src)| ChromaPass {
@@ -8742,12 +8796,15 @@ pub(crate) struct EntropyCtx {
     aligned_h_px: usize,
     bit_depth: u8,
     /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
-    /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
-    /// FH signaled delta_q_present. The walk arms `delta_q_pending` with
-    /// the SB's target qindex at each SB start; the FIRST block whose
-    /// origin is the SB corner (and bsize != SB size || !skip) emits
-    /// `(cur - prev) / res` via av1_write_delta_q_index and updates prev.
-    pub delta_q_state: Option<(u8, i32)>,
+    /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex, sb_size))`
+    /// when the FH signaled delta_q_present. The walk arms
+    /// `delta_q_pending` with the SB's target qindex at each SB start; the
+    /// FIRST block whose origin is the SB corner (and bsize != SB size ||
+    /// !skip) emits `(cur - prev) / res` via av1_write_delta_q_index and
+    /// updates prev. `sb_size` is the real superblock size — C tests the
+    /// block origin against `sb_mi_size`, so at SB128 the symbol must fire
+    /// once per 128x128 SB, not at every 64-boundary.
+    pub delta_q_state: Option<(u8, i32, usize)>,
     /// The current SB's target qindex, set by the walk at SB start.
     pub delta_q_sb_qindex: i32,
     /// Pending `cdef_idx` emission for the CURRENT superblock — C
@@ -10810,10 +10867,14 @@ fn encode_block_syntax(
 
     // [SVT_HDR_MODE] per-SB delta-q (C entropy_coding.c:4997, spec 5.11.41
     // mode_info -> read_delta_qindex): only at the SB's upper-left block,
-    // and only when (bsize != sb_size || !skip). sb_size is 64 here.
-    if let Some((res, prev)) = ectx.delta_q_state {
-        let super_block_upper_left = block_x.is_multiple_of(64) && block_y.is_multiple_of(64);
-        let is_sb_sized = decision.width == 64 && decision.height == 64;
+    // and only when (bsize != sb_size || !skip). C tests the block origin
+    // against `sb_mi_size` (sb_size in MI units) — the REAL sb grid — so at
+    // SB128 the symbol fires once per 128x128 SB. Emitting it at every
+    // 64-boundary writes up to 4 extra symbols per SB: the decoder reads
+    // one and desyncs the rest of the tile ("Failed to decode tile data").
+    if let Some((res, prev, sb_sz)) = ectx.delta_q_state {
+        let super_block_upper_left = block_x.is_multiple_of(sb_sz) && block_y.is_multiple_of(sb_sz);
+        let is_sb_sized = decision.width as usize == sb_sz && decision.height as usize == sb_sz;
         if super_block_upper_left && (!is_sb_sized || !skip) {
             let cur = ectx.delta_q_sb_qindex;
             let reduced = (cur - prev) / i32::from(res);
@@ -10822,7 +10883,7 @@ fn encode_block_syntax(
                 &mut frame_ctx.delta_q_cdf,
                 reduced,
             );
-            ectx.delta_q_state = Some((res, cur));
+            ectx.delta_q_state = Some((res, cur, sb_sz));
         }
     }
 
@@ -16866,6 +16927,45 @@ mod tests {
         assert_eq!(
             EncodePipeline::resolve_sb_size(64, Some(128), 0),
             (128, false)
+        );
+    }
+
+    /// Variance boost forces SB64 in C (enc_handle.c:4077 — the derivation
+    /// reads `static_config.enable_variance_boost`, which tune IQ sets in
+    /// `copy_api_from_app` BEFORE `set_param_based_on_input` runs). The port
+    /// mutates `hdr` after `new()` derived the size with `variance_boost:
+    /// false`, so the derivation is re-run at the encode choke point with
+    /// the true value. Without that, preset -1 + VB emitted an SB128 stream
+    /// whose per-64 delta-q symbols desynced the tile.
+    #[test]
+    fn variance_boost_rederives_sb64_at_encode_time() {
+        let y = vec![128u8; 512 * 512];
+        let u = vec![128u8; 256 * 256];
+        let v = vec![128u8; 256 * 256];
+        let mut p = EncodePipeline::new_with_preset(
+            512,
+            512,
+            crate::speed_config::NativePreset::new(-1).unwrap(),
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 32,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_chroma_420(true);
+        // Construction-time derivation still says 128: the VB input is not
+        // visible until hdr mutation, exactly like the fixed state.
+        assert_eq!(p.derived_sb_size, 128);
+        p.hdr.tune = crate::tune::TUNE_IQ;
+        let out = p
+            .try_encode_frame_420(&y, &u, &v, 512)
+            .expect("tune IQ at preset -1 must encode");
+        assert!(!out.is_empty());
+        assert_eq!(
+            p.sb_size, 64,
+            "variance boost (via tune IQ) must force SB64 — C never emits a VB+SB128 stream"
         );
     }
 

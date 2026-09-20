@@ -2,20 +2,25 @@
 k-means-diverse imazen-26 subset.** The bundle = C's tune-IQ overrides
 (`apply_tune_overrides`: QM on + still levels, sharpness 7, variance boost
 strength 3 / curve 2, `max_tx_size` 32 at qp<=45, `screen_content_mode = 3`)
-with `variance_octile` pinned to 8 instead of the default 5. Everything else
-that tune IQ installs is untouched; caller-set knobs survive the recipe.
+verbatim. The recipe's only delta vs `with_tune(Iq)`: bundle-covered knobs
+are snapshotted first and caller-set values survive, so with no caller
+extras the emitted stream is byte-identical to plain tune IQ.
 
-date:   2026-09-19
+date:   2026-09-19 (analysis corrected same-day — see §4)
 host:   r7900x — AMD Ryzen 9 7900X (Zen 4), no hw perf counters
-        (perf_event_paranoid=4) — wall clock only, spawn overhead included
-        identically in every arm.
+        (perf_event_paranoid=4) — wall clock + child cpu via getrusage,
+        spawn overhead included identically in every arm.
 port:   `ba8d35e52` + working tree (SvtTune enum, with_tune,
-        StillImageTune). C reference `3115c0c1b`.
+        StillImageTune, SB128+VB re-derivation fix). C reference `3115c0c1b`.
 rustc:  1.98.1
 data:   benchmarks/still_image_tune_v1_round1_2026-09-19.tsv (1512 cells)
         benchmarks/still_image_tune_v1_round2_2026-09-19.tsv (756 cells)
+        benchmarks/still_image_tune_v1_zones_2026-09-19.tsv (4410 cells)
+        benchmarks/still_image_tune_v1_oct_2026-09-19.tsv (3024 cells)
+        benchmarks/still_image_tune_v1_backfill_2026-09-19.tsv (6930 cells)
+        benchmarks/still_image_tune_v1_s46_2026-09-19.tsv (1008 cells)
         benchmarks/still_image_tune_v1_subset_2026-09-19.tsv (42 images)
-        benchmarks/still_image_tune_v1_sweep_*.py (harness)
+        benchmarks/still_image_tune_v1_sweep_*.py (harnesses)
 
 ========================= 1. SUBSET =========================
 
@@ -25,77 +30,123 @@ largest k-means clusters' representatives from
 else the next distinct representative of that class. Git-LFS materialized
 (`git lfs pull`); all 42 verified PNG-signatured, not pointer stubs.
 
-Protocol per cell: `identity_run "crop:<png>" 512 512 <qp> 6 <out>` — the
-encoder's own `crop:` path center-crops to 512² and converts RGB→I420 with
-its integer BT.601-limited transform; `<out>.yuv` records the exact samples
-encoded. Then `aomdec -o <out>.y4m <out>.obu`, y4m→I420, inverse BT.601 to
-PNG, `fast-ssim2-cli image <src.png> <dec.png>`. Encode ms is wall clock of
-the whole `identity_run` process (~0.3 s spawn+PNG decode overhead included
-in every arm alike). qp ∈ {20, 32, 44}, preset 6, all-intra.
+Protocol per cell: `identity_run "crop:<png>" 512 512 <qp> <preset> <out>`
+plus the arm's env — the encoder's own `crop:` path center-crops to 512²
+and converts RGB→I420 with its integer BT.601-limited transform;
+`<out>.yuv` records the exact samples encoded. Then `aomdec -o <out>.y4m`,
+y4m→I420 (the parser skips the per-frame `FRAME\n` marker — see §4),
+inverse BT.601 to PNG, `fast-ssim2-cli image <src.png> <dec.png>`.
+wall_ms is whole-process wall clock; cpu_ms is rusage user+sys of the
+child. qp ∈ {20, 32, 44}; presets −1,0,1,2,4,6,8,10,12; all-intra.
 
-2268 cells total; 0 encode errors, 0 decode errors — every stream aomdec
-decodes. Sanity anchors: identical PNG pair scores 100.0; the C encoder on
-the stone-texture cell produces BYTE-IDENTICAL output to the port (24319 B,
-same −472 score — the content is adversarial, not a scoring bug).
+16380 cells total across the campaign; every stream aomdec-decoded —
+0 decode errors after the SB128+VB fix (§3).
 
-========================= 2. HEADLINE — recipe vs plain tune IQ =========================
+========================= 2. HEADLINE — per-speed-zone curve =================
 
-Matched-qp deltas, `st_oct8` (= shipped recipe v1) vs `t3`, 126 cells:
+BD-rate vs `t1` (default tune), ssim2 quality axis, log-rate piecewise
+interpolation over the qp{20,32,44} curve, n=42 images per cell.
+Negative = fewer bytes at equal quality. Median / [p25,p75]:
 
-    bytes:   q20 −9.8%  q32 −15.4%  q44 −18.8%   (medians)
-             pooled p25/p50/p75 = −20.7 / −13.0 / −6.9
-    ssim2:   p25/p50/p75 = −0.010 / +0.011 / +0.136   (≈ no change)
-    cells:   108 dominant (fewer bytes AND ≥ score) / 0 losing
-    time:    1473 ms median vs t3's 1901 ms — ~22% FASTER than tune IQ
-             (fewer boosted SBs → less VB/MD work)
-    classes: NEGATIVE in all 21 classes at q32 (−2.9% patents … −25.0%
-             nature) — no class regression.
+  preset   t2(SSIM)        t3(IQ)           t4(MS-SSIM)     st(bundle)
+   -1      -1.5 [-3.3,-0.2] -4.2 [-10.1,+3.6] -5.0 [-9.1,+0.9]  ≡ t3
+    0      -1.4 [-3.3,+0.1] -4.0 [-9.5,+5.6]  -3.1 [-8.9,-0.2]  ≡ t3
+    1      -1.7 [-3.5,+0.4] -4.3 [-10.7,+2.8] -3.6 [-9.3,-0.1]  ≡ t3
+    2      -2.1 [-4.3,-0.8] -4.6 [-11.6,+4.7] -4.0 [-10.2,-1.0] (old st8: -4.8)
+    4      -2.6 [-4.3,-0.5] -4.3 [-10.7,+3.4] -4.5 [-9.7,-0.5]  (old st8: -3.3)
+    6      -1.7 [-3.6,-0.4] -6.3 [-11.6,+1.9] -5.8 [-10.2,-0.3] (old st8: -4.9)
+    8      -2.0 [-3.8,-1.1] -12.2 [-20.6,-1.5] -4.5 [-12.6,-1.4](old st8: -8.5)
+   10      -2.1 [-4.2,-1.2] -14.2 [-22.6,-4.3] -6.1 [-12.3,+0.1](old st8: -11.7)
+   12      -2.1 [-4.2,-1.2] -14.2 [-22.6,-4.3] -6.1 [-12.3,+0.1](old st8: -11.7)
 
-Mechanism: `variance_octile` picks which octile of the sorted per-SB
-variance distribution anchors the boost curve. Octile 8 restricts the boost
-to the top-variance octile only, trimming most of tune IQ's matched-qp byte
-inflation while keeping the rest of the bundle (QM, sharpness 7, max-tx
-cap, forced screen detection) intact.
+WINNER: `t3` / the StillImageTune bundle (byte-identical to it) at every
+zone. t4 is within noise of t3 at p-1 (head-to-head 19/19) and p4, and
+clearly worse from p6 up. t2 is a consistent small win vs t1 but never
+beats t3. IQ's advantage grows with preset speed because its tools
+(variance boost, QM, sharpness) survive where the slower presets' heavier
+search already captures most of the gain.
 
-Ablations swept (round 1 + 2, all on top of the IQ base): octile 6 (−4.5%
-med) and 7 (−9.9%) — same direction, smaller; vb_strength 4 = WORSE
-(+3.8% med, 27 losing cells); ac_bias 0.6/1.0/2.0 ≈ neutral (Δssim2 med
-≤ +0.017, not pinned); oct8+vb4 and oct8+ac10 no better than oct8 alone.
+Encode cost of the winner vs t1 (median wall / cpu per cell):
+   -1: +27% wall, +88% cpu   0: +26% / +10%   1: +16% / -4%
+    4: +21% / +137%          6: +18% / -63%   8: +29% / -27%
+   10: +30% / -10%          12: +15% / -34%
+(Tile-thread scheduling dominates at slow presets — cpu_ms is noisy;
+wall_ms is the honest cost: roughly +15-30% for IQ everywhere.)
 
-========================= 3. HONEST BASELINE — vs default PSNR tune =========================
+========================= 3. EXTRAS ABLATION vs plain IQ =================
 
-At matched qp on THIS corpus the IQ-based bundles still spend more bytes
-than default tune 1 for ~no measured ssim2 change:
+Round 3 (p4/6/8/10, n=168 per arm pooled) + octile round (3024 cells),
+all BD-rate vs `t3` on the SAME corrected metric:
 
-    t3  vs t1:  +33.3% med bytes (p25 +9.9, p75 +81.5), Δssim2 −0.078,
-                7 dominant / 64 losing cells, +40% encode time.
-    st_oct8 vs t1: +9.3% med bytes at q44 … +12.5% at q32 (pooled p50
-                +13.7%), Δssim2 −0.077, 14 dominant / 56 losing.
-    t2  vs t1:  −2.2% med bytes at Δssim2 ≈ 0 (81 dom / 1 loss) — a
-                modest clean win, but t2 is SSIM-rdmult only, not a still
-                bundle.
-    t4  vs t1:  +29.1% med bytes, Δssim2 −0.070.
+  arm                     BD%med (p4/6/8/10)              verdict
+  s3  (sharpness 3)       +1.3/+3.4/+1.9/+1.9            WORSE
+  s4  (sharpness 4)       +0.1/ 0.0/-0.4/-0.2            ~neutral (90/168 neg.)
+  s5  (sharpness 5)       -0.1/-0.4/-0.4/-0.2            best of grid:
+                                                       -0.34% pooled, 100/168
+                                                       neg., p≈0.017 — real but
+                                                       inside per-image noise
+  s6  (sharpness 6)       -0.2/ 0.0/-0.1/-0.1            -0.10% pooled
+  ac10 (ac_bias 1.0)      -0.2/-0.0/-0.0/0.0             neutral — not pinned
+  cv1 (vb curve 1)        +1.1/+1.0/+1.0/+1.0            WORSE
+  qm2/qm6 (min_qm 2/6)    0.00 byte-identical            min_qm doesn't bind
+  s0/vs2                  0.00 byte-identical            env=default: absorbed
+  o6  (octile 6)          +0.10/-0.17/-0.34/-0.26        within noise
+  o7/o7ac                 +0.43/-0.10/+0.53/+0.28        within noise
+  o8  (octile 8)          +1.10/+0.57/+1.87/+1.32        WORSE — the old pin
+  vb4 (strength 4, r2)    +3.8% bytes matched-qp         WORSE — dropped
 
-So the bundle's value is strictly measured AGAINST TUNE IQ, which it beats
-everywhere; against the shipping default it is a measured trade (more bits,
-IQ's feature set), NOT a free win on this protocol — which is exactly why
-it ships as an explicit opt-in enhancement and not an inferred default.
+Recipe v1 therefore pins NOTHING beyond IQ's own bundle: every measured
+extra is neutral or worse at ≥ one zone, and the best of them — sharpness
+5, the bottom of the s3>s4>s5>s6>s7 response curve — buys only ~0.3% at
+p75 +0.55 (a third of cells still lose). Sharpness is also the one knob
+whose whole purpose is trading metric points for edge crispness, so
+spending it to win an ssim2 sweep is self-defeating; callers who want it
+can set `SVT_FORK_SHARPNESS=5` / `hdr.sharpness = 5` and the recipe will
+preserve it. The bundle keeps IQ's 7.
+
+========================= 3b. SB128+VB defect found & fixed =================
+
+The first zone sweep produced `Failed to decode tile data` for EVERY
+IQ-family cell at preset -1 (378/378 cells) while C produced clean sb64
+streams for the identical config. Root cause: C derives `super_block_size`
+in `set_param_based_on_input` AFTER the tune overrides applied in
+`copy_api_from_app`, and its rule forces 64 whenever
+`enable_variance_boost` is on (enc_handle.c:4077). The port derived
+sb_size in `new()` — before `hdr` mutations existed — so tune IQ kept the
+sb128 the -1 preset wants, then emitted per-64 delta-q symbols inside an
+sb128 tile: decoder desync.
+
+Fix (this change): `encode_frame_impl` re-derives `sb_size` immediately
+after the tune-override application point (moved to match C ordering);
+the delta-q emission gate uses the real `sb_size` instead of a hardcoded
+64; the VB plan is truncated to `sb_total_count` mirroring C's
+`variance[sb_addr]`-over-b64-map quirk. Results: all p-1/p0/p1 IQ cells
+decode (6930/6930 cells clean); auto-derived ≡ explicit `SVTAV1_SB=64`
+byte-identical; VB-off cells byte-identical to pre-fix; forced
+`SVTAV1_SB=128`+VB (a port extension C cannot express) now emits a
+decodable stream rather than a corrupt one.
 
 ========================= 4. CAVEATS =========================
 
-- Operating point: 512² center-crops of 1–12 MP sources at qp 20–44 land
-  deep in ssim2's negative range (t1@q32 medians run −12.6 to −240 per
-  class). The metric functions (sanity anchors above) but Δssim2≈0 partly
-  reflects saturation; matched-qp BYTES are the reliable signal here. A
-  prior single-photo probe (complete scene at 512², q20) showed t3 beating
-  t1 (−8% bytes AND +0.3 ssim2) — the IQ bundle's value is
-  content/protocol-dependent, not universal.
-- Formal BD-rate was computed but discarded: on flat/saturated content the
-  ssim2-vs-rate curve is non-monotone and interpolation explodes (e.g.
-  renders showed +222% artifacts). Matched-qp deltas used instead.
-- enc_ms includes process spawn + PNG decode; ratios are fair, absolute
-  numbers are not codec-time-pure.
-- n=2 per class: per-class rows are indicative, pooled medians are the
-  claim.
-- Recipe pins are env-sweepable (`SVT_FORK_*` survives the tune override),
-  so the bundle remains tunable without a new enum version.
+- **Parser bug invalidated the first read.** The y4m→I420 converter sliced
+  frame bytes before skipping the `FRAME\n` marker (6-byte shift per
+  frame). Byte counts (read from the .obu) were unaffected, but every
+  decoded image was corrupted and ssim2 ran deep negative — the earlier
+  "oct8 = -13% bytes at Δssim2≈0, 108/0" headline measured a broken
+  reference. With the corrected parser the stone-texture cell scores
+  79.98 at q20 (was -471) and BD-rate is computable; the oct8 pin was
+  actually +0.6..+1.9% WORSE than plain IQ and was dropped.
+- BD-rate is piecewise-linear log-rate on 3 qp points, integrated over
+  the overlapping quality range — robust to the non-monotone flat-content
+  curves that made cubic BD explode earlier (renders +222% artifact).
+- Matched-qp bytes still mislead here: IQ buys +9..+12 ssim2 for +33%
+  bytes at q20 — at fixed qp it looks expensive; on the rate-quality
+  curve it wins at every zone. The honest baseline row is the BD table,
+  not matched-qp bytes.
+- wall_ms includes process spawn + PNG decode (~0.3s floor); cpu_ms is
+  child rusage user+sys (tile-parallel at slow presets → cpu >> wall).
+- n=2 per class: per-class rows are indicative; pooled medians + win/loss
+  counts are the claim.
+- s0/vs2 arms are vacuous by construction: an env-set value equal to the
+  mode default is indistinguishable from unset, so the recipe correctly
+  leaves IQ's value in place — they verify byte-identity, not the knob.

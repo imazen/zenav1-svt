@@ -90,67 +90,90 @@ impl ZenEnhancements {
 /// The [`ZenEnhancement::StillImageTune`] recipe, applied in
 /// `encode_frame_impl` in place of the plain `apply_tune_overrides` call.
 ///
-/// Base layer is C's tune-IQ bundle (QM on at still levels, sharpness 7,
-/// variance boost 3/curve 2, `max_tx_size` cap, `screen_content_mode = 3`),
-/// installed by `apply_tune_overrides`. The recipe layer then fills any
-/// bundle-covered knob the caller left at its mode default with the value
-/// the imazen-26 subset measured, while an explicitly-set extra (e.g. via
-/// `SVT_FORK_VARIANCE_OCTILE`) survives the tune override — which is also
-/// what makes the recipe sweepable through `identity_run` envs.
+/// Recipe v1 is C's tune-IQ bundle verbatim — QM on at still levels,
+/// sharpness 7, variance boost 3/curve 2, `max_tx_size` cap,
+/// `screen_content_mode = 3` — installed by `apply_tune_overrides`, plus
+/// ONE semantic delta vs a bare `with_tune(Iq)`: every knob the bundle
+/// rewrites is snapshotted first, and a value the caller set away from its
+/// mode default survives the bundle. That preserves explicit extras (e.g.
+/// `SVT_FORK_VARIANCE_OCTILE` through `identity_run`) and keeps the recipe
+/// sweepable. With no caller extras the emitted stream is byte-identical
+/// to tune IQ.
 ///
-/// Only mainline-live knobs belong here: `variance_boost_*`,
-/// `variance_octile`, the QM level bounds, `sharpness`, `max_tx_size`,
-/// `screen_content_mode`. `cdef_scaling`, `noise_norm_strength`, `tx_bias`,
-/// `complex_hvs`, `sharp_tx` and `alt_ssim_tuning` are `is_fork()`-gated and
-/// would be dead writes on this path. `ac_bias` measured neutral on the
-/// subset and is not pinned — the IQ overrides never touch it, so any
-/// caller/mode value flows through unchanged.
+/// Extras were measured on the 42-image imazen-26 subset before pinning
+/// (benchmarks/still_image_tune_v1_2026-09-19.meta): `variance_octile`
+/// 6–8, `variance_boost_strength` 4 and `ac_bias` 1.0 were all neutral or
+/// WORSE than plain IQ on ssim2-BD-rate, so v1 pins nothing beyond what IQ
+/// itself sets. `cdef_scaling`, `noise_norm_strength`, `tx_bias`,
+/// `complex_hvs`, `sharp_tx` and `alt_ssim_tuning` are `is_fork()`-gated
+/// and would be dead writes on this path; `ac_bias` is not bundle-covered
+/// at all, so any caller/mode value flows through unchanged.
 pub fn apply_still_image_tune(hdr: &mut crate::hdr_mode::HdrForkConfig, qp: u8) {
     // Snapshot every knob `apply_tune_overrides` rewrites BEFORE it runs —
     // a caller-set value always wins over the tune's own bundle, which is
     // also what makes the recipe sweepable through `identity_run`'s
     // SVT_FORK_* envs. "Caller-set" is judged against the ACTIVE mode's
-    // defaults: the fork config starts at `min_qm = 6` where mainline
-    // starts at `8`, and treating a fork default as an override would
-    // silently defeat the recipe pins.
-    let min_qm_d = if hdr.is_fork() { 6 } else { 8 };
-    let vb_strength = hdr.variance_boost_strength;
-    let octile = hdr.variance_octile;
-    let min_qm = hdr.min_qm_level;
+    // defaults: the fork config starts at `min_qm = 6`/`sharpness = 1`/
+    // `enable_qm = true` where mainline starts at `8`/`0`/`false`, and
+    // treating a fork default as an override would silently defeat the
+    // bundle there.
+    let fork = hdr.is_fork();
+    let snap = (
+        hdr.enable_qm,
+        hdr.min_qm_level,
+        hdr.max_qm_level,
+        hdr.min_chroma_qm_level,
+        hdr.max_chroma_qm_level,
+        hdr.sharpness,
+        hdr.enable_variance_boost,
+        hdr.variance_boost_strength,
+        hdr.variance_boost_curve,
+        hdr.max_tx_size,
+        hdr.screen_content_mode,
+    );
     hdr.tune = crate::tune::TUNE_IQ;
     hdr.apply_tune_overrides(qp);
-    // Recipe v1 pins — measured on the imazen-26 subset (benchmarks/
-    // still_image_tune_v1_2026-09-19.meta).
-    hdr.variance_boost_strength = if vb_strength == 2 {
-        STILL_TUNE_VB_STRENGTH
+    let d = if fork {
+        (true, 6u8, 10u8, 8u8, 15u8, 1i8, true, 2u8, 0u8, 64u8, None)
     } else {
-        vb_strength
+        (
+            false, 8u8, 15u8, 8u8, 15u8, 0i8, false, 2u8, 0u8, 64u8, None,
+        )
     };
-    hdr.variance_octile = if octile == 5 {
-        STILL_TUNE_OCTILE
-    } else {
-        octile
-    };
-    hdr.min_qm_level = if min_qm == min_qm_d {
-        STILL_TUNE_MIN_QM
-    } else {
-        min_qm
-    };
+    if snap.0 != d.0 {
+        hdr.enable_qm = snap.0;
+    }
+    if snap.1 != d.1 {
+        hdr.min_qm_level = snap.1;
+    }
+    if snap.2 != d.2 {
+        hdr.max_qm_level = snap.2;
+    }
+    if snap.3 != d.3 {
+        hdr.min_chroma_qm_level = snap.3;
+    }
+    if snap.4 != d.4 {
+        hdr.max_chroma_qm_level = snap.4;
+    }
+    if snap.5 != d.5 {
+        hdr.sharpness = snap.5;
+    }
+    if snap.6 != d.6 {
+        hdr.enable_variance_boost = snap.6;
+    }
+    if snap.7 != d.7 {
+        hdr.variance_boost_strength = snap.7;
+    }
+    if snap.8 != d.8 {
+        hdr.variance_boost_curve = snap.8;
+    }
+    if snap.9 != d.9 {
+        hdr.max_tx_size = snap.9;
+    }
+    if snap.10 != d.10 {
+        hdr.screen_content_mode = snap.10;
+    }
 }
-
-/// Recipe v1 keeps tune IQ's own strength 3 — strength 4 measured WORSE on
-/// the subset (+3.8% median bytes vs plain IQ at equal ssim2, 27 losing
-/// cells).
-const STILL_TUNE_VB_STRENGTH: u8 = 3;
-/// Recipe v1 pins octile 8: the variance boost anchors on the top-variance
-/// octile only, which trims IQ's matched-qp byte inflation by a −13.0%
-/// median (p25/p75 −20.7/−6.9) at Δssim2 +0.011 with 108 dominating and
-/// ZERO losing cells on the 42-image subset (benchmarks/
-/// still_image_tune_v1_2026-09-19.meta). Octile 6 (−4.5%) and 7 (−9.9%)
-/// are the same direction but smaller.
-const STILL_TUNE_OCTILE: u8 = 8;
-/// Recipe v1 keeps tune IQ's own `min_qm_level` 4.
-const STILL_TUNE_MIN_QM: u8 = 4;
 
 #[cfg(test)]
 mod tests {
@@ -191,36 +214,41 @@ mod tests {
 
     #[test]
     fn still_image_tune_recipe_preserves_caller_extras() {
-        // The recipe installs tune IQ's bundle then fills unset extras.
+        // The recipe installs tune IQ's bundle verbatim; v1 pins nothing
+        // beyond it (measured extras were neutral-or-worse on BD-rate).
         let mut hdr = crate::hdr_mode::HdrForkConfig::mainline();
         apply_still_image_tune(&mut hdr, 32);
         assert_eq!(hdr.tune, crate::tune::TUNE_IQ);
         assert!(hdr.enable_qm && hdr.enable_variance_boost);
         assert_eq!(hdr.sharpness, 7);
-        assert_eq!(hdr.variance_boost_strength, STILL_TUNE_VB_STRENGTH);
-        assert_eq!(hdr.variance_octile, STILL_TUNE_OCTILE);
-        assert_eq!(hdr.min_qm_level, STILL_TUNE_MIN_QM);
+        assert_eq!(hdr.variance_boost_strength, 3);
+        assert_eq!(hdr.variance_octile, 5); // IQ does not touch the octile
+        assert_eq!(hdr.min_qm_level, 4);
         assert_eq!(hdr.ac_bias, 0.0); // not pinned: mainline default flows through
         assert_eq!(hdr.max_tx_size, 32);
         assert_eq!(hdr.screen_content_mode, Some(3));
 
-        // Caller-set extras survive the tune override; recipe fills only the
-        // still-at-default fields. `ac_bias` is not recipe-covered at all —
-        // the IQ overrides never touch it.
+        // Caller-set values survive even where the bundle overrides them —
+        // this is the recipe's only delta vs a bare `with_tune(Iq)`.
+        // `ac_bias` is not bundle-covered at all — the IQ overrides never
+        // touch it.
         let mut hdr = crate::hdr_mode::HdrForkConfig::mainline();
         hdr.ac_bias = 1.0;
         hdr.variance_boost_strength = 4;
+        hdr.sharpness = 3;
         apply_still_image_tune(&mut hdr, 32);
         assert_eq!(hdr.ac_bias, 1.0);
         assert_eq!(hdr.variance_boost_strength, 4);
+        assert_eq!(hdr.sharpness, 3);
 
-        // A FORK-mode pipeline must not confuse its own `min_qm = 6`
-        // default for a caller override — the recipe pin still applies
-        // there, while its `ac_bias = 1.0` default flows through.
+        // A FORK-mode pipeline must not confuse its own `min_qm = 6` /
+        // `sharpness = 1` / `enable_qm = true` defaults for caller overrides —
+        // the bundle still applies there, while `ac_bias = 1.0` flows through.
         let mut hdr = crate::hdr_mode::HdrForkConfig::hdr_fork();
         apply_still_image_tune(&mut hdr, 32);
         assert_eq!(hdr.ac_bias, 1.0);
-        assert_eq!(hdr.min_qm_level, STILL_TUNE_MIN_QM);
-        assert_eq!(hdr.variance_octile, STILL_TUNE_OCTILE);
+        assert_eq!(hdr.min_qm_level, 4);
+        assert_eq!(hdr.sharpness, 7);
+        assert_eq!(hdr.variance_octile, 5);
     }
 }

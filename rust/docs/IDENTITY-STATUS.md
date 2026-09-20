@@ -36,14 +36,32 @@ Byte-parity vs C is per-variant, measured through `tools/issue9_knobs_gate.sh`
   is decoder-valid (aomdec-verified in the tune sweep).
 
 `ZenEnhancement::StillImageTune` ("still-image-tune-v1") is the opt-in Zen
-bundle: tune IQ's overrides with `variance_octile` pinned to 8. Requires
+bundle: tune IQ's overrides verbatim, with caller-set values on
+bundle-covered knobs surviving (its only delta vs `with_tune(Iq)` — with
+no caller extras the stream is byte-identical to tune IQ). Requires
 `EncodingPolicy::Zen` (SvtParity refuses all enhancements); validated for
-all-intra 4:2.0 at ordinary presets, NOT byte-pinned to C — verified by
-aomdec decode (2268/2268 cells clean) and the RD record in
-`benchmarks/still_image_tune_v1_2026-09-19.meta`: −13.0% median bytes vs
-tune IQ at equal ssim2, 108/0 dominating/losing cells, ~22% faster encode.
-Against default PSNR at matched qp it still spends +9–14% bytes on this
-corpus — a measured trade, hence opt-in rather than inferred.
+all-intra 4:2:0, NOT byte-pinned to C — verified by aomdec decode and the
+RD record in `benchmarks/still_image_tune_v1_2026-09-19.meta`. The
+extras candidates measured on the subset (variance_octile 6–8, vb
+strength/curve, ac_bias, min_qm, sharpness 3–6) were all neutral-or-worse
+than plain IQ on ssim2-BD-rate — the best, sharpness 5, buys −0.34%
+pooled median at p75 +0.55 (inside per-image noise) — so v1 pins nothing
+beyond IQ's own bundle.
+
+**Defect found and fixed in this work:** C's sb-size rule forces 64 when
+`enable_variance_boost` is on (enc_handle.c:4077), applied AFTER the tune
+overrides set it. The port derived `sb_size` in `new()` — before `hdr`
+mutations were visible — so tune IQ / `with_variance_boost` / the still
+recipe at sb128-deriving presets (-1..1 on large enough frames) emitted
+an sb128 stream with per-64 delta-q symbols: "Failed to decode tile
+data" under aomdec while C produced a valid sb64 stream. The derivation
+now re-runs inside `encode_frame_impl` after the tune overrides
+(matching C's `copy_api_from_app` → `set_param_based_on_input` order),
+and the delta-q emission gate uses the real `sb_size` — the forced
+`SVTAV1_SB=128`+VB combination (a port extension C cannot express) now
+also produces a decodable stream. Verified: t3/t4/still at preset -1 all
+decode; auto-derived ≡ explicit `SVTAV1_SB=64` byte-identical; VB-off
+paths (t1/t2 at preset -1) byte-identical to pre-fix.
 
 ## Still identity — 2026-09-08
 
