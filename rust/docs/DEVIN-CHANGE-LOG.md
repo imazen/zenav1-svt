@@ -23,6 +23,44 @@ Changes by other authors are not listed here.
 
 ---
 
+## 2026-09-21 — 4:4:4 inter frames on the decoder-verified envelope — `d61238517`
+
+- What: `RefFrameCtx` gains `uv_padded` + `ss_x`/`ss_y`;
+  `predict_inter_chroma_*` parameterized by subsampling; new
+  `partition::encode_chroma_block_pred` residual-codes chroma against the
+  block's own motion-compensated prediction (no `uv_mode`); the
+  `encode_frame_impl` envelope gate drops `!is_key`;
+  `EntropyCtx::inter_mvp_fields` now derives `overlappable_neighbors` and
+  `num_proj_ref` at write time; the recon-only walk keeps chroma TXB eobs;
+  the non-funnel inter leaf drops OBMC blending and stamps `DC_PRED` as
+  its committed intra_mode. New tooling: `examples/probe_444_dup.rs`,
+  `examples/probe_444_video.rs`, `tools/chroma_444_inter_gate.sh`.
+- Why: inter is the next cell of the 4:4:4 envelope — C refuses non-4:2:0
+  at `enc_settings.c:470`, so the oracle stays decoder reconstruction
+  equality. Two defects were found by decoding, not by reading code: the
+  decoder recomputes `overlappable_neighbors`/`num_proj_ref` per block
+  (decodemv.c `av1_findSamples` + `av1_count_overlappable_neighbors`) —
+  hardcoded 0 omitted a `WARPED_CAUSAL`-allowed `motion_mode` symbol on
+  every neighboured block and aomdec rejected frame-1 tiles; and the
+  recon walk's dropped chroma eobs recorded `skip=1` where the bit walk
+  wrote `skip=0`, desyncing the CDEF dlist (localized ±1-3 luma diffs,
+  U/V exact). The write-time derivation feeds BOTH funnel and non-funnel
+  paths — it is a shared correctness fix, not a 444 special case.
+- Verified by: `chroma_444_inter_gate.sh` 47/47 (dup/rand/shift x
+  64x64/128x64/64x128/128x128/256x128 x p{0,6,13} + 4-frame moving-content
+  + 6-frame inter-on-inter chain — every frame's Y/U/V byte-identical to
+  `aomdec`); `chroma_444_gate.sh` 13/13 stills; `cargo nextest` 3964/3964;
+  `video_selfcheck_gate.sh` 270/270 4:2:0 inter cells (funnel-path
+  regression check for the shared derivation); `refusal_inventory.sh
+  --check` + `portnote_index.sh --check` current.
+- Audit surface: the 444 envelope gate in `pipeline.rs` (8-bit, SB64, no
+  superres — now key AND inter; 10-bit/SB128/superres/IntraBC/film-grain
+  still refuse); `inter_mvp_fields`'s write-time derivations;
+  `encode_chroma_block_pred`'s lossless (FWHT) arm; chroma LF/CDEF-uv/LR
+  still signaled off; `REFUSED-CONFIGS.md` regenerated ("8-bit frames",
+  no longer "still/key frames"). No C-byte-parity claim exists or is made
+  for 4:4:4.
+
 ## 2026-09-21 — ZenEnhancement::DeepSearch ("deep-search-v1") — shipped, deepened + 8-bit envelope — `4283525f1` (delta; first wiring `370ee62cf`)
 
 - What: `enhancements.rs` gains `DeepSearch`. When armed on all-intra
