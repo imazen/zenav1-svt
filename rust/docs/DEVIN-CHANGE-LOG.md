@@ -23,6 +23,47 @@ Changes by other authors are not listed here.
 
 ---
 
+## 2026-09-21 — Global-motion gate re-pin + matrix correction; GM search verified shipped, not pending — `1861970e5`
+
+- What: `tools/global_motion_gate.sh` GLOBALMV-count pins re-measured
+  (256/z33-32: 24 -> 22, 512/z9-8: 4098 -> 2738) with the attribution and
+  evidence recorded in the header comment and the new
+  `benchmarks/global_motion_2026-09-21.meta`. `VIDEO-PARITY-MATRIX.md`
+  gains the real state: the "Global motion *search*" gap-list row claimed
+  `global_me.c:190` was unported/refused — it has been ported, wired and
+  gated since `05ade28e2`/`1c0c59eee` (09-10), with the (list, ref) PA
+  pyramid coverage completed by `b35e6ec74` (09-13) and compound-global
+  per-ref prediction by `15e5cade7` (09-15). The tool-row's "GM signaling
+  (not search)" description corrected to "GM coding+selection / GM
+  derivation+model join vs C".
+- Why: the gate went stale ~142 commits ago when the 09-16/09-17 inter-MD
+  C-parity deepening re-priced the candidate field the pin was measured
+  against — most directly `883f4a6a6` (skip-mode fast-cost charged rate +
+  NSQ-search dist_type lambda, itself verified 96/96 byte-identical vs C)
+  plus the light-PD1 lane, tx-shortcut, per-SB RDOQ, MDS0 cand_elimination,
+  chroma detector and i16-residual work. The pin is a wiring
+  anti-regression control, not an RD assertion; GM still wins thousands of
+  blocks on a ROTZOOM cell and zero on identity cells.
+- Verified by: `global_motion_gate.sh` 4/4 (non-identity models on both
+  zoom cells, GLOBALMV 22 + 2738 selections, recon == dav1d on every
+  frame); `gm_join_gate.sh` 10/10 cells, 0 mismatched fields — b64,
+  total_me_sad, avg_me_sad, total_gm_sbs, ds and is_gm_on all agree with
+  C's `GMFRAME`, and all four non-identity models join `wmmat`
+  field-for-field; stream sizes vs C on the join cells — shift cells
+  byte-equal, zoom cells +0.43%/+1.21%; an 8-frame p2 zoom sequence fits
+  ROTZOOM on every poc with no `MissingReference` (pa_slots covers every
+  DPB slot the RPS names).
+- Audit surface: the remaining `GmSearchError` refusal
+  (pipeline.rs:~1652) is defensive-only — `MissingReference` needs a PA
+  pyramid absent from `pa_slots`, which the refresh mirror keeps full for
+  every slot the RPS can name on the shipped low-delay envelope, and
+  `DownsampledUnported` is unreachable while `set_gm_controls` assigns
+  only `GM_FULL` (all enabled levels). GM is live only where
+  `derive_gm_level` is non-zero: presets -1..4 (`get_gm_core_level`,
+  leaf.rs:63) — video presets 5+ write C's all-identity models, matching
+  C. The mode-count pins are host-independent under the bit-exact-tier
+  contract; the join gate passing on this host is the check that counts.
+
 ## 2026-09-21 — 10-bit superres on stills (u16 downscale + u16 normative upscale) + bd10 chroma-stride fix — `156a387e2`
 
 - What: `EncodePipeline::hbd_superres_src` + `HbdSuperresSrc` stage the
