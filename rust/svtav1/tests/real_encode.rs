@@ -1046,6 +1046,76 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
     );
 }
 
+/// The `deep-search-v1` enhancement envelope: it is a measured all-intra
+/// 4:2:0 arm only. Still-4:2:0 encodes at any preset; a video pipeline
+/// (`intra_period > 1`, even on its key frame), monochrome and 4:4:4 must
+/// all be REFUSED at the `validate` choke point — never silently ignored.
+#[test]
+fn deep_search_refuses_everything_outside_still_420() {
+    use svtav1_encoder::enhancements::ZenEnhancement;
+    use svtav1_encoder::EncodeError;
+    let mk = |intra_period: u32| {
+        let mut p = svtav1_encoder::pipeline::EncodePipeline::new(
+            64,
+            64,
+            8,
+            svtav1_encoder::rate_control::RcConfig::default(),
+            4,
+            intra_period,
+        );
+        p.chroma_420 = true;
+        p.enhancements = p.enhancements.with(ZenEnhancement::DeepSearch);
+        p
+    };
+    let (y, u, v) = (
+        make_gradient(64, 64),
+        vec![128u8; 32 * 32],
+        vec![128u8; 32 * 32],
+    );
+    let expect_refusal = |r: svtav1_encoder::EncodeResult<Vec<u8>>, what: &str| {
+        let e = r.expect_err("expected a refusal");
+        let EncodeError::UnsupportedConfig(why) = e.error() else {
+            panic!("expected UnsupportedConfig for {what}, got {e:?}");
+        };
+        assert!(
+            why.contains("deep-search-v1"),
+            "the refusal must name the arm, got for {what}: {why}"
+        );
+    };
+
+    // Still 4:2:0: accepted at an ordinary preset and at the native -1 the
+    // arm collapses onto.
+    for preset in [8i8, -1] {
+        let mut p = mk(1);
+        p.speed_config.preset = preset;
+        let bytes = p
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .unwrap_or_else(|e| panic!("still 4:2:0 at preset {preset} refused: {e:?}"));
+        assert!(!bytes.is_empty());
+    }
+
+    // Video pipeline: refused on frame 0 already — a GOP pipeline is not a
+    // still even while its first frame happens to be intra.
+    expect_refusal(
+        mk(64).try_encode_frame_420(&y, &u, &v, 64),
+        "video",
+    );
+
+    // Monochrome: no chroma planes -> outside the measured envelope.
+    let mut mono = mk(1);
+    mono.chroma_420 = false;
+    mono.chroma_format = None;
+    expect_refusal(mono.try_encode_frame(&y, 64), "mono");
+
+    // 4:4:4: chroma is present but not 4:2:0 — the funnel the arm reconfigures
+    // does not run there.
+    let mut c444 = mk(1);
+    c444.chroma_format = Some(svtav1_types::chroma::ChromaFormat::Yuv444);
+    c444.chroma_420 = false;
+    let (u444, v444) = (vec![128u8; 64 * 64], vec![128u8; 64 * 64]);
+    expect_refusal(c444.try_encode_frame_444(&y, &u444, &v444, 64), "444");
+}
+
 // =============================================================================
 // Differential quality and speed tests (zenavif backend validation)
 // =============================================================================

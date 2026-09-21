@@ -2187,11 +2187,14 @@ impl EncodePipeline {
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        // `chroma_420` is the configured-format check (refuses 4:4:4 where
+        // `chroma.is_some()` would pass); `chroma.is_some()` is the per-frame
+        // check (refuses the mono entry on a chroma-configured pipeline).
         self.enhancements
             .validate(
                 self.speed_config.preset,
                 self.gop.intra_period <= 1,
-                chroma.is_some(),
+                self.chroma_420 && chroma.is_some(),
             )
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
         let zen_intra_edge_filter = self
@@ -2878,6 +2881,15 @@ impl EncodePipeline {
         // running the detector at a preset it is live for.
         let sc_preset = match self.hdr.screen_content_mode {
             Some(3) => self.speed_config.preset.min(7),
+            // ZenEnhancement::AomScreenTools: run detection at every preset
+            // (same min-7 clamp as an SCM-3 force) — C's own gate stops
+            // running the detector entirely above M7 on the allintra arm.
+            _ if self
+                .enhancements
+                .contains(crate::enhancements::ZenEnhancement::AomScreenTools) =>
+            {
+                self.speed_config.preset.min(7)
+            }
             _ => self.speed_config.preset,
         };
         // `sc_arm` is bound at frame level above; it matters HERE because C
@@ -2907,6 +2919,38 @@ impl EncodePipeline {
             }
             _ => crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h),
         };
+        // ZenEnhancement::AomScreenTools: libaom keeps palette and IntraBC
+        // ENABLED whenever the detector says screen — the allintra ladders
+        // switch them off by preset (palette at M8+, IntraBC at M5+). When
+        // the detector fires on the allintra arm, fill in ONLY the levels
+        // the allintra ladder left at 0, from the VIDEO arm's own ladder
+        // for the same preset index (clamped at its last nonzero row:
+        // palette holds the M10 level above it, IntraBC the M9 level).
+        // A level the allintra arm already set is never lowered — e.g. M4
+        // keeps IntraBC 7 rather than the video arm's 3.
+        if sc_arm == crate::sc_detect::ScArm::Allintra
+            && self
+                .enhancements
+                .contains(crate::enhancements::ZenEnhancement::AomScreenTools)
+            && sc_derivation.classes.sc_class5
+        {
+            use crate::port_enc_mode_config::multi_processes::{
+                intrabc_level_default, palette_level_default,
+            };
+            let preset = self.speed_config.preset;
+            if sc_derivation.palette_level == 0 {
+                sc_derivation.palette_level =
+                    palette_level_default(preset.min(10), true, true);
+            }
+            if sc_derivation.intrabc_level == 0 {
+                sc_derivation.intrabc_level =
+                    intrabc_level_default(preset.min(9), true, true, true);
+            }
+            sc_derivation.allow_intrabc =
+                crate::intrabc::IbcCtrls::for_level(sc_derivation.intrabc_level).enabled;
+            sc_derivation.allow_screen_content_tools =
+                sc_derivation.palette_level != 0 || sc_derivation.allow_intrabc;
+        }
         // 4:4:4 staged bring-up: IntraBC chroma prediction is not ported
         // (the IBC search is funnel-only and the funnel is 4:2:0-gated), so
         // the frame must NOT advertise the tool — `allow_intrabc=1` would
@@ -3681,7 +3725,25 @@ impl EncodePipeline {
                 let rdoq_level = if coded_lossless {
                     0
                 } else {
-                    crate::rate_arm::rdoq_level(sc_arm, eff_mode, coeff_lvl)
+                    // ZenEnhancement::DeepSearch (allintra 4:2:0 only —
+                    // `filter_chroma` keeps 4:4:4 and mono out of the arm):
+                    // the -1 tier's `rdoq_level = 1` — full RDOQ at every
+                    // preset, instead of the coeff-driven 0/2/3 ladder
+                    // above M5.
+                    crate::rate_arm::rdoq_level(
+                        sc_arm,
+                        if self
+                            .enhancements
+                            .contains(crate::enhancements::ZenEnhancement::DeepSearch)
+                            && matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                            && filter_chroma
+                        {
+                            -1
+                        } else {
+                            eff_mode
+                        },
+                        coeff_lvl,
+                    )
                 };
                 let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
                     base_qindex,
@@ -4148,6 +4210,30 @@ impl EncodePipeline {
             // (enc_handle.c:4975-4993). Unread on the still path, where those
             // bits are not written at all.
             t.hierarchical_levels = self.gop.hierarchical_levels;
+            // ZenEnhancement::DeepSearch (allintra 4:2:0 — `validate`
+            // refuses anything else): the funnel's filter-intra and
+            // intra-edge-filter search config evaluates at enc_mode -1,
+            // so the two symbol-gating sequence bits must take the -1
+            // values or the decoder's bit walk desyncs
+            // (`enable_filter_intra`) or its prediction semantics
+            // disagree with what MD priced (`enable_intra_edge_filter`).
+            // The other preset-derived bits — wn/sg/`enable_restoration`
+            // — stay at the caller's preset: they are post-filters the
+            // deep-search arm does not touch.
+            if self
+                .enhancements
+                .contains(crate::enhancements::ZenEnhancement::DeepSearch)
+                && self.gop.intra_period <= 1
+                && self.chroma_420
+            {
+                t.enable_filter_intra =
+                    crate::intra_arm::filter_intra_level(crate::sc_detect::ScArm::Allintra, -1)
+                        != 0;
+                t.enable_intra_edge_filter = crate::intra_arm::intra_edge_filter(
+                    crate::sc_detect::ScArm::Allintra,
+                    -1,
+                );
+            }
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
             // fork block hardcodes both flags true).
@@ -5403,6 +5489,8 @@ impl EncodePipeline {
             stale_vars.as_deref(),
             self.hdr.max_tx_size,
             coded_lossless,
+            self.enhancements
+                .contains(crate::enhancements::ZenEnhancement::DeepSearch),
             self.reference,
             zen_intra_edge_filter,
             self.thread_count,
@@ -13522,6 +13610,11 @@ fn encode_tile_rows(
     // funnel's lossless arms (`FunnelFrame::coded_lossless`,
     // `FunnelCfg::apply_coded_lossless`).
     coded_lossless: bool,
+    // ZenEnhancement::DeepSearch: on the allintra arm, evaluate the
+    // search-effort ladders below (intra/txs/funnel/nic/encdec/mds0 arms
+    // and `DrCtrls`) at `enc_mode -1` regardless of `speed_config.preset`.
+    // Byte-inert at preset -1 and on every video frame.
+    deep_search: bool,
     reference: crate::reference::SvtReference,
     zen_intra_edge_filter: bool,
     // Feature 4 (bounded threading): the maximum number of OS threads the
@@ -13678,7 +13771,23 @@ fn encode_tile_rows(
         // The detector has already run on this immutable source for the frame.
         // Copy its small result instead of scanning the full picture per tile.
         let tile_sc = frame_sc;
-        let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
+        // ZenEnhancement::DeepSearch (allintra arm only): the base bake,
+        // the six search-effort applies below (`intra_arm` … `mds0_arm`)
+        // and the depth-refinement ladder read `md_preset`/`md_eff_mode`
+        // — `enc_mode -1` (MR, the deepest C rows) at any caller preset.
+        // Lambda, quantizer, rate-estimation and frame-header derivations
+        // keep `speed_config.preset` — only WHAT IS SEARCHED changes.
+        // At preset -1 `md_preset` is -1 either way (byte-inert), and
+        // `deep_search` is never set on a video frame.
+        let md_preset = if deep_search
+            && matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+        {
+            -1
+        } else {
+            speed_config.preset
+        };
+        let md_eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, md_preset);
+        let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(md_preset);
         // `pcs->rate_est_level` -> `set_rate_est_ctrls` (enc_mode_config.c:6428),
         // for THIS arm. `for_preset` bakes the allintra ladder (1 through M6,
         // 4 at M7/M8, 0 above); the video arm assigns a flat 1 at every preset
@@ -13690,7 +13799,7 @@ fn encode_tile_rows(
         let (rate_est_coeff_lvl, rate_est_real_ctx) =
             crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(
                 sc_arm,
-                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                md_eff_mode,
             ));
         funnel_cfg.coeff_rate_est_lvl = rate_est_coeff_lvl;
         funnel_cfg.real_coeff_ctx = rate_est_real_ctx;
@@ -13719,7 +13828,7 @@ fn encode_tile_rows(
         crate::intra_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             temporal_layer == 0,
@@ -13744,7 +13853,7 @@ fn encode_tile_rows(
         crate::txs_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             temporal_layer == 0,
             u32::from(cli_qp),
         );
@@ -13753,7 +13862,7 @@ fn encode_tile_rows(
         crate::funnel_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             temporal_layer == 0,
@@ -13767,7 +13876,7 @@ fn encode_tile_rows(
         crate::nic_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             temporal_layer == 0,
         );
         // `uv_mode_nfl_count`'s base (product_coding_loop.c:7693-7696), for
@@ -13791,7 +13900,7 @@ fn encode_tile_rows(
         crate::encdec_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             temporal_layer == 0,
             pd0_det_frame.is_not_last_layer,
             bit_depth,
@@ -13805,7 +13914,7 @@ fn encode_tile_rows(
         crate::mds0_arm::apply(
             &mut funnel_cfg,
             sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            md_eff_mode,
             temporal_layer == 0,
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
@@ -13816,7 +13925,7 @@ fn encode_tile_rows(
         // `set_depth_early_exit_ctrls`, enc_mode_config.c:7229-7233).
         let pd0_pred_depth_only = crate::depth_refine::DrCtrls::for_arm(
             sc_arm,
-            speed_config.preset,
+            md_preset,
             tile_sc.classes.sc_class5,
             u32::from(cli_qp),
             c_quant
@@ -14058,7 +14167,7 @@ fn encode_tile_rows(
             // enc_handle.c:3841: all-intra MR disables this sequence flag;
             // the default/video arm keeps it enabled even at MR.
             let mesh_qp_scaling =
-                !matches!(sc_arm, crate::sc_detect::ScArm::Allintra) || speed_config.preset > -1;
+                !matches!(sc_arm, crate::sc_detect::ScArm::Allintra) || md_preset > -1;
             crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, mesh_qp_scaling, cli_qp as u32);
             let hash = crate::intrabc_hash::generate_ibc_data(
                 encode_input,
@@ -14069,7 +14178,7 @@ fn encode_tile_rows(
                 ctrls.max_cand_per_bucket,
                 // `pcs->pic_disallow_4x4` — arm-forked at M3
                 // (`part_arm::disallow_4x4`), not the flat `preset >= 4`.
-                crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
+                crate::part_arm::disallow_4x4(sc_arm, md_preset),
             );
             // svt_aom_get_sad_per_bit(base_q_idx, 0): init_me_luts_bd's
             // `(int)(0.0418*q + 2.4107)` with q = ac_qlookup/4.0
@@ -14098,7 +14207,7 @@ fn encode_tile_rows(
                 sb_mi_size: (sb_size / 4) as i32,
                 sb_size_log2_mi: (sb_size as u32 / 4).trailing_zeros(),
                 sb_size_px: sb_size as i32,
-                disallow_4x4: crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
+                disallow_4x4: crate::part_arm::disallow_4x4(sc_arm, md_preset),
             }))
         } else {
             None
@@ -14152,7 +14261,7 @@ fn encode_tile_rows(
         let funnel_chain = use_funnel
             && crate::rate_arm::update_cdf_level(
                 sc_arm,
-                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                md_eff_mode,
                 temporal_layer == 0,
             ) != 0
             && multi_sb;
@@ -15122,7 +15231,7 @@ fn encode_tile_rows(
                         && (bit_depth == 10
                             || !crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                 sc_arm,
-                                speed_config.preset,
+                                md_preset,
                                 u32::from(cli_qp),
                                 c_quant
                                     .as_ref()

@@ -61,6 +61,76 @@ use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 /// Grain controls are shared with the pinned C capture driver.
+/// SVTAV1_* enhancement flags -> `pipeline.enhancements`. Shared by the
+/// still-path and multi-frame pipelines so an armed flag can never be
+/// silently dropped by either entry point — on an out-of-envelope encode
+/// (video, mono) `ZenEnhancements::validate` refuses instead.
+fn apply_enhancement_env(pipeline: &mut EncodePipeline) {
+    if let Ok(value) = std::env::var("SVTAV1_ZEN_INTRA_EDGE_FILTER") {
+        match value.as_str() {
+            "0" => {}
+            "1" => {
+                pipeline.enhancements = pipeline
+                    .enhancements
+                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter);
+                eprintln!("SVTAV1_ENHANCEMENT=aom-intra-edge-filter-v1");
+            }
+            _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
+        }
+    }
+    if std::env::var("SVTAV1_STILL_TUNE").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::StillImageTune);
+        eprintln!("SVTAV1_ENHANCEMENT=still-image-tune-v1");
+    }
+    // The two libaom-derived adaptive experiments (CDEF_ADAPTIVE /
+    // enable_adaptive_sharpness semantics ported onto the SVT CDEF pick /
+    // LF sharpness path — ZenEnhancement::AomAdaptive*). Same gating
+    // shape as the rest: unset => the unadorned C path.
+    if std::env::var("SVTAV1_ADAPTIVE_CDEF").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveCdef);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-cdef-v1");
+    }
+    if std::env::var("SVTAV1_ADAPTIVE_SHARPNESS").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveSharpness);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-sharpness-v1");
+    }
+    // AOM delta_q_lf: per-SB loop-filter delta coded alongside the delta-q
+    // symbols. Only does anything when a per-SB delta-q plan is live
+    // (variance boost / deltaq) — the enhancement arms the syntax, the
+    // plan supplies the values.
+    if std::env::var("SVTAV1_DELTA_QLF").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomDeltaQLf);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-delta-q-lf-v1");
+    }
+    // AOM-style screen tools on stills: palette + IntraBC stay enabled at
+    // every preset when the detector says screen (the allintra ladders
+    // switch palette off at M8+ and IntraBC at M5+; the detector itself is
+    // gated at M7). Video-arm levels supply the search config.
+    if std::env::var("SVTAV1_SCREEN_TOOLS").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomScreenTools);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-screen-tools-v1");
+    }
+    // Deep-search tier: the leaf-funnel search ladders + depth refinement +
+    // RDOQ evaluate at enc_mode -1 at whatever preset was requested. Rate,
+    // lambda and frame headers keep the caller's preset.
+    if std::env::var("SVTAV1_DEEP_SEARCH").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::DeepSearch);
+        eprintln!("SVTAV1_ENHANCEMENT=deep-search-v1");
+    }
+}
+
 fn configure_grain(p: &mut EncodePipeline) {
     if std::env::var_os("SVT_GRAIN_TABLE").is_some() {
         let mut table = svtav1_encoder::entropy::obu::FilmGrainParams {
@@ -857,6 +927,7 @@ fn main() {
             pipeline = pipeline.with_recon_output(true);
         }
         configure_grain(&mut pipeline);
+        apply_enhancement_env(&mut pipeline);
         let frame_len = w * h + 2 * cw * ch;
         let mut all = Vec::new();
         for f in 0..n_frames {
@@ -1152,50 +1223,7 @@ fn main() {
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     configure_grain(&mut pipeline);
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
-    if let Ok(value) = std::env::var("SVTAV1_ZEN_INTRA_EDGE_FILTER") {
-        match value.as_str() {
-            "0" => {}
-            "1" => {
-                pipeline.enhancements = pipeline
-                    .enhancements
-                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter);
-                eprintln!("SVTAV1_ENHANCEMENT=aom-intra-edge-filter-v1");
-            }
-            _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
-        }
-    }
-    if std::env::var("SVTAV1_STILL_TUNE").as_deref() == Ok("1") {
-        pipeline.enhancements = pipeline
-            .enhancements
-            .with(svtav1_encoder::enhancements::ZenEnhancement::StillImageTune);
-        eprintln!("SVTAV1_ENHANCEMENT=still-image-tune-v1");
-    }
-    // The two libaom-derived adaptive experiments (CDEF_ADAPTIVE /
-    // enable_adaptive_sharpness semantics ported onto the SVT CDEF pick /
-    // LF sharpness path — ZenEnhancement::AomAdaptive*). Same gating
-    // shape as the rest: unset => the unadorned C path.
-    if std::env::var("SVTAV1_ADAPTIVE_CDEF").as_deref() == Ok("1") {
-        pipeline.enhancements = pipeline
-            .enhancements
-            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveCdef);
-        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-cdef-v1");
-    }
-    if std::env::var("SVTAV1_ADAPTIVE_SHARPNESS").as_deref() == Ok("1") {
-        pipeline.enhancements = pipeline
-            .enhancements
-            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveSharpness);
-        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-sharpness-v1");
-    }
-    // AOM delta_q_lf: per-SB loop-filter delta coded alongside the delta-q
-    // symbols. Only does anything when a per-SB delta-q plan is live
-    // (variance boost / deltaq) — the enhancement arms the syntax, the
-    // plan supplies the values.
-    if std::env::var("SVTAV1_DELTA_QLF").as_deref() == Ok("1") {
-        pipeline.enhancements = pipeline
-            .enhancements
-            .with(svtav1_encoder::enhancements::ZenEnhancement::AomDeltaQLf);
-        eprintln!("SVTAV1_ENHANCEMENT=aom-delta-q-lf-v1");
-    }
+    apply_enhancement_env(&mut pipeline);
     if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
         pipeline.reference = reference
             .parse()

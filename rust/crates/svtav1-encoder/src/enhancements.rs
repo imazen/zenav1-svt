@@ -56,6 +56,33 @@ pub enum ZenEnhancement {
     /// only when `delta_q_present` (spec 5.9.18 nests it inside); with
     /// variance boost off it signals nothing.
     AomDeltaQLf,
+    /// libaom-style screen-tool availability on stills: when the AA-aware
+    /// detector sets `sc_class5`, palette and IntraBC stay ENABLED at every
+    /// preset instead of following the allintra ladders that switch them
+    /// off (palette dies at M8+, IntraBC at M5+, detection itself is gated
+    /// at M7 — `sc_detect::derive_sc`). C's own VIDEO-arm ladders
+    /// (`palette_level_default`/`intrabc_level_default`) supply the level
+    /// at each preset, clamped so tools never die (palette holds the M10
+    /// level above it, IntraBC the M9 level). libaom does not gate these
+    /// tools on a speed ladder at all — it enables them whenever screen
+    /// content is detected and lets the search decide. Zen extension —
+    /// decoder-verified and RD-measured, never byte-claimed against C;
+    /// the frame header gains `allow_screen_content_tools`/`allow_intrabc`
+    /// bits a C-parity stream at the same preset would not carry.
+    AomScreenTools,
+    /// Deep-search tier for all-intra stills: the leaf-funnel search-effort
+    /// ladders (`intra_arm`, `txs_arm`, `funnel_arm`, `nic_arm`,
+    /// `encdec_arm`, `mds0_arm`) and the depth-refinement ladder
+    /// (`depth_refine::DrCtrls`) are evaluated at the deepest C tier —
+    /// `enc_mode -1` (MR) — at whatever preset the caller picked, so a
+    /// p8 encode searches with p-1's unbounded candidate counts, full
+    /// tx-size/tx-type search and unrestricted partition depth. Rate,
+    /// lambda, quantizer and frame-header derivations keep the caller's
+    /// preset; only WHAT IS SEARCHED changes. Byte-inert at preset -1
+    /// (the ladders already sit at -1) and on every non-allintra arm.
+    /// Zen extension — decoder-verified and RD-measured, never
+    /// byte-claimed against C; streams differ by design.
+    DeepSearch,
 }
 
 impl ZenEnhancement {
@@ -68,6 +95,8 @@ impl ZenEnhancement {
             Self::AomAdaptiveCdef => "aom-adaptive-cdef-v1",
             Self::AomAdaptiveSharpness => "aom-adaptive-sharpness-v1",
             Self::AomDeltaQLf => "aom-delta-q-lf-v1",
+            Self::AomScreenTools => "aom-screen-tools-v1",
+            Self::DeepSearch => "deep-search-v1",
         }
     }
 }
@@ -81,6 +110,8 @@ pub struct ZenEnhancements {
     adaptive_cdef: bool,
     adaptive_sharpness: bool,
     delta_q_lf: bool,
+    screen_tools: bool,
+    deep_search: bool,
 }
 
 impl ZenEnhancements {
@@ -93,6 +124,8 @@ impl ZenEnhancements {
             ZenEnhancement::AomAdaptiveCdef => self.adaptive_cdef = true,
             ZenEnhancement::AomAdaptiveSharpness => self.adaptive_sharpness = true,
             ZenEnhancement::AomDeltaQLf => self.delta_q_lf = true,
+            ZenEnhancement::AomScreenTools => self.screen_tools = true,
+            ZenEnhancement::DeepSearch => self.deep_search = true,
         }
         self
     }
@@ -106,6 +139,8 @@ impl ZenEnhancements {
             ZenEnhancement::AomAdaptiveCdef => self.adaptive_cdef,
             ZenEnhancement::AomAdaptiveSharpness => self.adaptive_sharpness,
             ZenEnhancement::AomDeltaQLf => self.delta_q_lf,
+            ZenEnhancement::AomScreenTools => self.screen_tools,
+            ZenEnhancement::DeepSearch => self.deep_search,
         }
     }
 
@@ -117,6 +152,8 @@ impl ZenEnhancements {
             && !self.adaptive_cdef
             && !self.adaptive_sharpness
             && !self.delta_q_lf
+            && !self.screen_tools
+            && !self.deep_search
     }
 
     /// Per-member envelopes. The two research members extend native −1 still
@@ -146,6 +183,12 @@ impl ZenEnhancements {
         }
         if self.delta_q_lf && (!allintra || !chroma_420) {
             return Err("aom-delta-q-lf-v1 is measured for all-intra 4:2:0 only");
+        }
+        if self.screen_tools && (!allintra || !chroma_420) {
+            return Err("aom-screen-tools-v1 is measured for all-intra 4:2:0 only");
+        }
+        if self.deep_search && (!allintra || !chroma_420) {
+            return Err("deep-search-v1 is measured for all-intra 4:2:0 only");
         }
         Ok(())
     }
@@ -333,5 +376,18 @@ mod tests {
         assert_eq!(hdr.min_qm_level, 4);
         assert_eq!(hdr.sharpness, 7);
         assert_eq!(hdr.variance_octile, 5);
+    }
+
+    #[test]
+    fn deep_search_is_allintra_420_scoped_and_inert_at_native_minus1() {
+        let on = ZenEnhancements::default().with(ZenEnhancement::DeepSearch);
+        assert!(on.contains(ZenEnhancement::DeepSearch));
+        // Any preset — including the native -1 the arm collapses onto — is
+        // accepted on a still 4:2:0; inter and non-420 (mono, 4:4:4) refuse.
+        for preset in [-1, 0, 2, 6, 9, 13] {
+            assert!(on.validate(preset, true, true).is_ok());
+            assert!(on.validate(preset, true, false).is_err());
+            assert!(on.validate(preset, false, true).is_err());
+        }
     }
 }
