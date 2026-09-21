@@ -105,18 +105,11 @@ pub struct EncoderConfig {
     pub use_128x128_sb: bool,
 }
 
-/// Chroma subsampling format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChromaFormat {
-    /// 4:2:0 subsampling (most common for video).
-    Yuv420,
-    /// 4:2:2 subsampling.
-    Yuv422,
-    /// 4:4:4 no subsampling.
-    Yuv444,
-    /// Monochrome (no chroma).
-    Yuv400,
-}
+/// Chroma subsampling format — the canonical enum lives in
+/// `svtav1_types::chroma` (C `EbColorFormat` numbering + the
+/// `subsampling_x/y` derivation). Re-exported here so `EncoderConfig`
+/// and the pipeline share ONE type.
+pub use svtav1_types::chroma::ChromaFormat;
 
 impl EncoderConfig {
     /// Create a new encoder configuration with the given preset.

@@ -397,13 +397,7 @@ where
     let mut sum: i64 = 0;
     let mut sse: u64 = 0;
     for i in 0..h {
-        h_row(
-            &a[a_base + (i + 1) * a_stride..],
-            w,
-            fx[0],
-            fx[1],
-            cur,
-        );
+        h_row(&a[a_base + (i + 1) * a_stride..], w, fx[0], fx[1], cur);
         let bo = b_base + i * b_stride;
         let (rs, rq) = v_accum(prev, cur, &b[bo..], w, fy[0], fy[1]);
         sum += i64::from(rs);

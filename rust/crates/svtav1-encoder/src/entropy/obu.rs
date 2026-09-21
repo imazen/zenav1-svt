@@ -215,6 +215,13 @@ pub struct SeqTools {
     /// written at all — so the default 0 keeps every existing cell
     /// byte-identical.
     pub hierarchical_levels: u8,
+    /// The coded chroma subsampling format (spec 5.5.2): selects
+    /// `seq_profile`, the subsampling bits (profiles 1/2), and whether
+    /// `chroma_sample_position` is written at all. Default `Yuv420` —
+    /// profile 0, subsampling implied 1,1 — byte-identical to every
+    /// existing cell. Non-420 formats are Zen extensions (C refuses
+    /// them); see `svtav1_types::chroma::ChromaFormat`.
+    pub chroma_format: svtav1_types::chroma::ChromaFormat,
 }
 
 impl Default for SeqTools {
@@ -246,6 +253,7 @@ impl Default for SeqTools {
             enable_order_hint: true,
             enable_dual_filter: false,
             hierarchical_levels: 0,
+            chroma_format: svtav1_types::chroma::ChromaFormat::Yuv420,
         }
     }
 }
@@ -741,9 +749,16 @@ fn write_sequence_header_inner(
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
-    // seq_profile: 0 = Main (8/10-bit 4:2:0), 2 = Professional (12-bit)
-    let profile = if bit_depth > 10 { 2 } else { 0 };
-    wb.write_bits(profile, 3);
+    // seq_profile: mono -> 0 (2 at 12-bit); chroma -> the profile the
+    // format requires (spec 6.4.1: 444 -> 1 at <=10-bit, 2 at 12-bit;
+    // 422 -> 2; 420 -> 0). C `verify_settings` couples them identically
+    // (enc_settings.c:475-490).
+    let profile = if monochrome {
+        if bit_depth > 10 { 2 } else { 0 }
+    } else {
+        tools.chroma_format.required_profile(bit_depth)
+    };
+    wb.write_bits(u32::from(profile), 3);
     wb.write_bit(still_picture);
     wb.write_bit(still_picture); // reduced_still_picture_header = still_picture
 
@@ -896,8 +911,11 @@ fn write_sequence_header_inner(
     }
 
     // mono_chrome: NumPlanes = mono_chrome ? 1 : 3
-    // (present for profile != 1)
-    wb.write_bit(monochrome);
+    // (spec 5.5.2: written iff seq_profile != 1 — profile 1 implies 0.
+    // C entropy_coding.c:2690-2694.)
+    if profile != 1 {
+        wb.write_bit(monochrome);
+    }
 
     // color_description_present_flag: 0 when cp/tc/mc are all
     // "unspecified" (2/2/2) — C write_color_config
@@ -916,31 +934,57 @@ fn write_sequence_header_inner(
         // stops: subsampling=1,1, chroma_sample_position=CSP_UNKNOWN, and
         // separate_uv_delta_q=0 are implicit — but color_range is NOT.
         wb.write_bit(color.full_range); // color_range
+    } else if color.color_primaries == 1
+        && color.transfer_characteristics == 13
+        && color.matrix_coefficients == 0
+    {
+        // sRGB-identity CICP (spec 5.5.2): implies 4:4:4 — the decoder
+        // skips color_range AND the subsampling bits entirely and derives
+        // subsampling_x = subsampling_y = 0. Requires profile 1 (or
+        // profile 2 at 12-bit); C asserts ss 0,0
+        // (entropy_coding.c:2736-2741).
+        debug_assert!(
+            profile != 0 && tools.chroma_format.subsampling_x() == 0,
+            "sRGB-identity CICP requires 4:4:4 subsampling (profile 1, or 2 at 12-bit)"
+        );
     } else {
-        // Non-mono, and (cp, tc, mc) != (BT709=1, SRGB=13, IDENTITY=0) —
-        // that RGB special case implies 4:4:4 and is rejected by the
-        // decoder for profile 0, so it must never be combined with 4:2:0.
-        // The decoder then reads color_range, derives subsampling 1,1 from
-        // seq_profile==0 (NO subsampling bits), reads chroma_sample_position
-        // (2 bits, because subsampling_x && subsampling_y), and finally
-        // separate_uv_delta_q. (libaom av1_read_color_config,
-        // decodeframe.c:4210-4243; C write_color_config writes the same
-        // fields for MAIN_PROFILE.)
-        debug_assert!(
-            !(color.color_primaries == 1
-                && color.transfer_characteristics == 13
-                && color.matrix_coefficients == 0),
-            "sRGB-identity CICP implies 4:4:4 — invalid with profile-0 4:2:0"
-        );
-        debug_assert!(
-            profile == 0,
-            "4:2:0 color_config is only implemented for seq_profile 0 (8/10-bit)"
-        );
+        // Non-mono, non-identity CICP: color_range, then subsampling per
+        // profile (C write_color_config, entropy_coding.c:2712-2744):
+        //   profile 0 -> 4:2:0 implied (no bits)
+        //   profile 1 -> 4:4:4 implied (no bits)
+        //   profile 2 -> 12-bit: subsampling_x bit, then subsampling_y
+        //     iff x==1; <=10-bit -> 4:2:2 implied (no bits).
         wb.write_bit(color.full_range); // color_range
-        // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
-        // chroma_sample_position (C entropy_coding.c:2743 writes
-        // static_config.chroma_sample_position; 0 = CSP_UNKNOWN default).
-        wb.write_bits(u32::from(tools.chroma_sample_position & 3), 2);
+        let (ss_x, ss_y) = (
+            tools.chroma_format.subsampling_x(),
+            tools.chroma_format.subsampling_y(),
+        );
+        match profile {
+            0 => debug_assert!(ss_x == 1 && ss_y == 1, "profile 0 is 4:2:0 only"),
+            1 => debug_assert!(ss_x == 0 && ss_y == 0, "profile 1 is 4:4:4 only"),
+            _ => {
+                if bit_depth == 12 {
+                    wb.write_bit(ss_x == 1); // subsampling_x
+                    if ss_x == 1 {
+                        wb.write_bit(ss_y == 1); // subsampling_y
+                    }
+                    debug_assert!(
+                        !(ss_x == 0 && ss_y == 1),
+                        "4:4:0 subsampling not allowed in AV1"
+                    );
+                } else {
+                    debug_assert!(
+                        ss_x == 1 && ss_y == 0,
+                        "profile 2 at <=10-bit is 4:2:2 only"
+                    );
+                }
+            }
+        }
+        // chroma_sample_position: 2 bits iff subsampling_x && subsampling_y
+        // (C entropy_coding.c:2743).
+        if ss_x == 1 && ss_y == 1 {
+            wb.write_bits(u32::from(tools.chroma_sample_position & 3), 2);
+        }
         wb.write_bit(tools.separate_uv_delta_q); // separate_uv_delta_q (fork: 1)
     }
 
@@ -1138,6 +1182,11 @@ pub fn write_frame_header_full_lr_sb(
     sc: ScSignal,
     chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
+    // `frm_hdr->delta_lf_params.delta_lf_present` — signaled only when
+    // `delta_q_res.is_some()` (spec 5.9.18 nests it inside delta_q_params);
+    // aom `--delta-lf-mode` via `ZenEnhancement::AomDeltaQLf`. C never
+    // sets it (resource_coordination_process.c:434-441).
+    delta_lf: bool,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
@@ -1165,6 +1214,7 @@ pub fn write_frame_header_full_lr_sb(
         sc,
         chroma_q,
         delta_q_res,
+        delta_lf,
         qm,
         fgs,
         tile_rows_log2,
@@ -1221,6 +1271,7 @@ pub fn write_key_frame_header_full_lr_sb(
         sc,
         chroma_q,
         delta_q_res,
+        false, // delta_lf: compat signature predates the extension
         qm,
         fgs,
         tile_rows_log2,
@@ -1311,13 +1362,14 @@ fn key_frame_header_bits(
         },
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
-        None, // chroma_q: mainline zero-delta bit pattern
-        None, // delta_q_res: no per-SB delta-q
-        None, // qm: quant matrices off
-        None, // fgs: no film grain
-        0,    // tile_rows_log2: test wrapper stays single-tile
-        0,    // tile_cols_log2: ditto
-        0,    // tile_size_bytes_minus_1: unused when NumTiles == 1
+        None,  // chroma_q: mainline zero-delta bit pattern
+        None,  // delta_q_res: no per-SB delta-q
+        false, // delta_lf: no delta-q -> delta_lf unsignaled
+        None,  // qm: quant matrices off
+        None,  // fgs: no film grain
+        0,     // tile_rows_log2: test wrapper stays single-tile
+        0,     // tile_cols_log2: ditto
+        0,     // tile_size_bytes_minus_1: unused when NumTiles == 1
         64,
         true, // tx_mode_select: the allintra arm's unconditional TX_MODE_SELECT
         None, // inter: this test wrapper is key-frame only
@@ -1432,6 +1484,9 @@ fn frame_header_bits_lr(
     sc: ScSignal,
     chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
+    // `frm_hdr->delta_lf_params.delta_lf_present` — only meaningful with
+    // `delta_q_res: Some` (the syntax nests inside delta_q_params).
+    delta_lf: bool,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
@@ -1703,9 +1758,16 @@ fn frame_header_bits_lr(
                 wb.write_bit(true); // delta_q_present = 1
                 wb.write_bits(res.trailing_zeros(), 2); // delta_q_res log2
                 // delta_lf_params(): read only when delta_q_present &&
-                // !allow_intrabc (spec 5.9.18).
+                // !allow_intrabc (spec 5.9.18). aom `--delta-lf-mode`
+                // signals present + delta_lf_res log2 (2 -> 1) +
+                // delta_lf_multi (0); C writes the same layout with
+                // present hardwired 0 (entropy_coding.c:3578-3588).
                 if !sc.allow_intrabc {
-                    wb.write_bit(false); // delta_lf_present = 0
+                    wb.write_bit(delta_lf); // delta_lf_present
+                    if delta_lf {
+                        wb.write_bits(1, 2); // delta_lf_res = 2 -> log2 = 1
+                        wb.write_bit(false); // delta_lf_multi = 0
+                    }
                 }
             }
         }

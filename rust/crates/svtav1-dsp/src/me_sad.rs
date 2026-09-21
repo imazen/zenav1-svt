@@ -388,8 +388,7 @@ pub fn block_sad_v4(
             if c + 8 <= w {
                 let a: &[u8; 8] = src[so + c..so + c + 8].try_into().unwrap();
                 let b: &[u8; 8] = rf[ro + c..ro + c + 8].try_into().unwrap();
-                acc128 =
-                    _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si64(a), _mm_loadu_si64(b)));
+                acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si64(a), _mm_loadu_si64(b)));
                 c += 8;
             }
             while c < w {
@@ -643,10 +642,7 @@ pub fn block_sum_sse_v4(
         }
     }
     let red256 = |v: __m256i| -> i32 {
-        let s = _mm_add_epi32(
-            _mm256_castsi256_si128(v),
-            _mm256_extracti128_si256::<1>(v),
-        );
+        let s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
         let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
         let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b00_01_00_01>(s));
         _mm_cvtsi128_si32(s)

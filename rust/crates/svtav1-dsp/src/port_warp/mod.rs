@@ -665,12 +665,7 @@ fn warp_affine_geom(
     sx4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
     sy4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
 
-    WarpGeom {
-        ix4,
-        iy4,
-        sx4,
-        sy4,
-    }
+    WarpGeom { ix4, iy4, sx4, sy4 }
 }
 
 /// The two separable filter passes of `svt_av1_warp_affine_c` for ONE 8x8
@@ -700,9 +695,7 @@ fn warp_affine_subblock(
     gamma: i16,
     delta: i16,
 ) {
-    let WarpGeom {
-        ix4, iy4, sx4, sy4,
-    } = g;
+    let WarpGeom { ix4, iy4, sx4, sy4 } = g;
     let mut tmp = [0i32; 15 * 8];
     let bd = 8i32;
     let reduce_bits_horiz = conv_params.round_0;
@@ -781,8 +774,7 @@ fn warp_affine_subblock(
                 }
             } else {
                 let sum = round_power_of_two(sum, reduce_bits_vert);
-                pred[out_row * p_stride + out_col] =
-                    clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
+                pred[out_row * p_stride + out_col] = clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
             }
             sy += i32::from(gamma);
         }
@@ -817,7 +809,17 @@ fn warp_affine_impl_scalar(
     while i < p_row + p_height {
         let mut j = p_col;
         while j < p_col + p_width {
-            let g = warp_affine_geom(mat, j, i, subsampling_x, subsampling_y, alpha, beta, gamma, delta);
+            let g = warp_affine_geom(
+                mat,
+                j,
+                i,
+                subsampling_x,
+                subsampling_y,
+                alpha,
+                beta,
+                gamma,
+                delta,
+            );
             warp_affine_subblock(
                 g,
                 i,
@@ -882,19 +884,39 @@ fn warp_affine_impl_v3(
     while i < p_row + p_height {
         let mut j = p_col;
         while j < p_col + p_width {
-            let g = warp_affine_geom(mat, j, i, subsampling_x, subsampling_y, alpha, beta, gamma, delta);
+            let g = warp_affine_geom(
+                mat,
+                j,
+                i,
+                subsampling_x,
+                subsampling_y,
+                alpha,
+                beta,
+                gamma,
+                delta,
+            );
             // The SIMD arm needs the full 8x8 output extent (the scalar loop's
             // `k_end`/`l_end` clip it at the window edge) and every input tap
             // inside the reference plane (the scalar loop clamps per sample).
             let full = i + 8 <= p_row + p_height && j + 8 <= p_col + p_width;
-            let interior = g.iy4 >= 7
-                && g.iy4 <= height - 8
-                && g.ix4 >= 7
-                && g.ix4 <= width - 8;
+            let interior = g.iy4 >= 7 && g.iy4 <= height - 8 && g.ix4 >= 7 && g.ix4 <= width - 8;
             if full && interior && !conv_params.is_compound {
                 warp_affine_subblock_v3(
-                    token, &g, i, j, reference, stride, pred, p_col, p_row, p_stride, conv_params,
-                    alpha, beta, gamma, delta,
+                    token,
+                    &g,
+                    i,
+                    j,
+                    reference,
+                    stride,
+                    pred,
+                    p_col,
+                    p_row,
+                    p_stride,
+                    conv_params,
+                    alpha,
+                    beta,
+                    gamma,
+                    delta,
                 );
             } else {
                 warp_affine_subblock(
@@ -960,9 +982,7 @@ fn warp_affine_subblock_v3(
     delta: i16,
 ) {
     use magetypes::simd::generic::{i16x8, i32x4, u8x16};
-    let WarpGeom {
-        ix4, iy4, sx4, sy4,
-    } = *g;
+    let WarpGeom { ix4, iy4, sx4, sy4 } = *g;
     let bd = 8i32;
     let reduce_bits_horiz = conv_params.round_0;
     let reduce_bits_vert = 2 * FILTER_BITS - reduce_bits_horiz;
@@ -1007,8 +1027,7 @@ fn warp_affine_subblock_v3(
                 reduce_bits_vert,
             );
             let out_col = (j - p_col + l as i32) as usize;
-            pred[out_row * p_stride + out_col] =
-                clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
+            pred[out_row * p_stride + out_col] = clip_pixel(sum - (1 << (bd - 1)) - (1 << bd));
             sy += i32::from(gamma);
         }
     }

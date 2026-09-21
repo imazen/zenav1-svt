@@ -469,6 +469,11 @@ pub(crate) fn evaluate_leaf(
         true_h: frame.frame_h_px,
         aligned_w: frame.frame_w_px,
         aligned_h: frame.frame_h_px,
+        // 4:2:0 — the funnel's chroma-tx crop convention
+        // (`ROUND_UV(luma) >> 1`) is only defined for ss=1; the
+        // non-420 formats refuse before reaching the funnel.
+        ss_x: 1,
+        ss_y: 1,
     };
     // The CHROMA crop is candidate-independent (one chroma txb per block:
     // `tu_count` is 1 at every tx_depth on the chroma path, full_loop.c:2221,

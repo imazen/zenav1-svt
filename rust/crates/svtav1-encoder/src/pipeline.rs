@@ -190,7 +190,22 @@ pub struct EncodePipeline {
     /// partition search is clamped to min luma dim 8 so chroma blocks are
     /// exactly (w/2, h/2) >= 4x4 (sub-8x8 chroma-ref rules deferred).
     /// Still/key frames only.
+    ///
+    /// Superseded view: [`Self::chroma_format`]. `chroma_420` remains the
+    /// "chroma planes present AND 4:2:0" predicate every existing gate
+    /// checks — `self.chroma_format == Some(ChromaFormat::Yuv420)`. Any
+    /// OTHER format must keep hitting those gates' refusals until its
+    /// path is proven decoder-exact, which is the port's extension
+    /// contract (C refuses non-420 outright: `verify_settings`,
+    /// `Globals/enc_settings.c:470`).
     pub chroma_420: bool,
+    /// The chroma subsampling format the pipeline is configured for, or
+    /// `None` when chroma planes are not consumed at all. `Some(Yuv420)`
+    /// is exactly `chroma_420 = true`; `with_chroma_420` writes both
+    /// fields so existing callers are byte-unchanged. `Some(Yuv422)` /
+    /// `Some(Yuv444)` are the Zen-extension arms — see
+    /// [`Self::with_chroma_format`] for the parity contract.
+    pub chroma_format: Option<svtav1_types::chroma::ChromaFormat>,
     /// Reconstruction of the most recently encoded frame (Y, U, V planes;
     /// U/V empty in mono mode). This is what a conforming decoder must
     /// reproduce BIT-EXACTLY — the recon-parity gate compares it against
@@ -538,6 +553,7 @@ impl EncodePipeline {
             color_description: crate::entropy::obu::ColorDescription::default(),
             chroma_sample_position: 0,
             chroma_420: false,
+            chroma_format: None,
             recon_output: false,
             last_recon: None,
             last_recon_unfiltered: None,
@@ -878,9 +894,47 @@ impl EncodePipeline {
     }
 
     /// Enable/disable the opt-in 4:2:0 chroma mode (see `chroma_420` field).
+    /// `true` is exactly `with_chroma_format(Yuv420)`; `false` withdraws
+    /// chroma entirely (mono entry points only).
     pub fn with_chroma_420(mut self, enabled: bool) -> Self {
         self.chroma_420 = enabled;
+        self.chroma_format = enabled.then_some(svtav1_types::chroma::ChromaFormat::Yuv420);
         self
+    }
+
+    /// Configure the chroma subsampling format directly.
+    ///
+    /// # Parity contract (measured, not aspirational)
+    ///
+    /// * [`ChromaFormat::Yuv420`] — the byte-parity surface; identical to
+    ///   `with_chroma_420(true)`.
+    /// * [`ChromaFormat::Yuv422`] / [`ChromaFormat::Yuv444`] — Zen
+    ///   extensions: C v4.2.0 REFUSES them
+    ///   (`Globals/enc_settings.c:470`), so no byte oracle exists. The
+    ///   path is staged: entry points that are not yet proven
+    ///   decoder-exact keep refusing; the oracle for what ships is
+    ///   `aomdec`/`dav1d` + `zenav1-aom` behavior, never a claim of C
+    ///   parity.
+    /// * [`ChromaFormat::Yuv400`] — the existing monochrome extension
+    ///   (`encode_frame_mono_core`), same no-oracle tier.
+    ///
+    /// `None` withdraws chroma (same as `with_chroma_420(false)`).
+    pub fn with_chroma_format(
+        mut self,
+        format: Option<svtav1_types::chroma::ChromaFormat>,
+    ) -> Self {
+        self.chroma_format = format;
+        self.chroma_420 = format == Some(svtav1_types::chroma::ChromaFormat::Yuv420);
+        self
+    }
+
+    /// C `subsampling_x`/`subsampling_y` pair for the configured format
+    /// (`enc_handle.c:4636-4637`); `(1, 1)` when chroma is absent — the
+    /// value C's own geometry helpers produce on the mono path.
+    pub fn subsampling(&self) -> (u8, u8) {
+        self.chroma_format
+            .map(|f| (f.subsampling_x(), f.subsampling_y()))
+            .unwrap_or((1, 1))
     }
 
     /// Feature 4: bound the tile-parallel encode to at most `n` concurrent OS
@@ -1210,6 +1264,9 @@ impl EncodePipeline {
         // byte-exact vs C) after grain preprocessing, then the existing
         // TRUE->ALIGNED padding and the whole pipeline operate on the coded
         // planes. No-op when superres is off.
+        if let Some(why) = self.chroma_format_support_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
         self.validate_film_grain()?;
         self.prepared_grain = None;
         let prepared = self.prepare_film_grain(y, u, v, y_stride)?;
@@ -1251,8 +1308,12 @@ impl EncodePipeline {
                 && ah % crate::frame_geom::MIN_BLOCK_SIZE == 0,
             "aligned dims must be 8-aligned; got {aw}x{ah} for true {tw}x{th}"
         );
-        // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
-        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
+        // TRUE chroma dims — format-derived (ChromaFormat's ceiling);
+        // at Yuv420 this is exactly `div_ceil(2)`, byte-identical.
+        let fmt = self
+            .chroma_format
+            .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420);
+        let (tcw, tch) = (fmt.chroma_width(tw), fmt.chroma_height(th));
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // the pre-#95 path).
@@ -1261,11 +1322,45 @@ impl EncodePipeline {
         // Pad TRUE -> ALIGNED. C replicates the last valid column, then the
         // last valid row (incl. the new right pad); the per-pixel min-clamp
         // in `pad_plane_replicate` is equivalent for a rectangular region.
-        let (acw, ach) = (aw / 2, ah / 2);
+        let (acw, ach) = (fmt.chroma_width(aw), fmt.chroma_height(ah));
         let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
         let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach)?;
         let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach)?;
         self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)))
+    }
+
+    /// Whether the configured [`Self::chroma_format`] is consumable by
+    /// this build. The staged-444 contract: `Some(Yuv420)` is the only
+    /// C-parity surface; every other format refuses HERE, at the entry
+    /// choke point, until its path is proven decoder-exact — C refuses
+    /// all of them anyway (`verify_settings`, enc_settings.c:470), so a
+    /// refusal is both the honest answer and the C-matching one.
+    fn chroma_format_support_error(&self) -> Option<&'static str> {
+        match self.chroma_format {
+            None | Some(svtav1_types::chroma::ChromaFormat::Yuv420) => None,
+            Some(svtav1_types::chroma::ChromaFormat::Yuv400) => Some(
+                "ChromaFormat::Yuv400 is the monochrome extension — use the mono \
+                 entry points (try_encode_frame / encode_y8), which carry no \
+                 chroma planes",
+            ),
+            Some(f) => Some(match f {
+                svtav1_types::chroma::ChromaFormat::Yuv422 => {
+                    "ChromaFormat::Yuv422 is not yet ported: chroma geometry is \
+                     still derived for 4:2:0 (C itself refuses it at \
+                     verify_settings, enc_settings.c:470 — no byte oracle)"
+                }
+                svtav1_types::chroma::ChromaFormat::Yuv444 => {
+                    "ChromaFormat::Yuv444 is not yet ported: the staged path \
+                     still codes chroma at 4:2:0 geometry — a bring-up probe \
+                     produced a stream aomdec reports 'Corrupt frame / \
+                     Failed to decode tile data' (2026-09-19). The refusal \
+                     stays until the geometry pass below `encode_frame_impl` \
+                     is complete and decoder-verified (C itself refuses 444 \
+                     at verify_settings, enc_settings.c:470 — no byte oracle)"
+                }
+                _ => unreachable!(),
+            }),
+        }
     }
 
     /// Fallible twin of [`Self::encode_frame`] (Feature 1 + 2).
@@ -1929,6 +2024,86 @@ impl EncodePipeline {
         out
     }
 
+    /// 4:4:4 chroma entry point — Zen extension (C refuses non-420 at
+    /// `verify_settings`, `enc_settings.c:470`; no byte oracle).
+    ///
+    /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`, `y`
+    /// at `y_stride`). Requires `with_chroma_format(Some(Yuv444))`.
+    ///
+    /// Staged: the path currently refuses at the chroma-format gate —
+    /// chroma geometry is still derived for 4:2:0 internally. Landing a
+    /// working arm means flipping `chroma_format_support_error`'s
+    /// `Yuv444` arm once the geometry is proven decoder-exact; this
+    /// signature is the stable contract that arm will serve.
+    ///
+    /// # Errors
+    /// [`EncodeError::UnsupportedConfig`] until the arm is ungated;
+    /// [`EncodeError::InvalidDimensions`] on short planes.
+    pub fn try_encode_frame_444(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        if self.chroma_format != Some(svtav1_types::chroma::ChromaFormat::Yuv444) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_444 requires the pipeline to be built with \
+                 with_chroma_format(Some(ChromaFormat::Yuv444))",
+            )));
+        }
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let n = tw * th;
+        if y.len() < (th - 1) * y_stride + tw || u.len() < n || v.len() < n {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "4:4:4 planes must each cover the true dims (u/v full-resolution)",
+            }));
+        }
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        self.encode_frame_420_core(y, u, v, y_stride)
+    }
+
+    /// 4:2:2 chroma entry point — Zen extension, same staging contract
+    /// as [`Self::try_encode_frame_444`]. `u`/`v` are `true_w/2 × true_h`
+    /// (horizontally subsampled only).
+    ///
+    /// # Errors
+    /// As [`Self::try_encode_frame_444`].
+    pub fn try_encode_frame_422(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        if self.chroma_format != Some(svtav1_types::chroma::ChromaFormat::Yuv422) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_422 requires the pipeline to be built with \
+                 with_chroma_format(Some(ChromaFormat::Yuv422))",
+            )));
+        }
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (tcw, n) = (tw.div_ceil(2), tw.div_ceil(2) * th);
+        if y.len() < (th - 1) * y_stride + tw || u.len() < n || v.len() < n {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "4:2:2 planes: y at y_stride over true dims, u/v at (true_w+1)/2 x true_h",
+            }));
+        }
+        let _ = tcw;
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        self.encode_frame_420_core(y, u, v, y_stride)
+    }
+
     /// Native 10-bit (u16) monochrome entry point — the mono twin of
     /// [`Self::try_encode_frame_420_hbd`] (task #6 chunk 1).
     ///
@@ -2021,6 +2196,12 @@ impl EncodePipeline {
         let zen_intra_edge_filter = self
             .enhancements
             .contains(crate::enhancements::ZenEnhancement::AomIntraEdgeFilter);
+        let zen_adaptive_cdef = self
+            .enhancements
+            .contains(crate::enhancements::ZenEnhancement::AomAdaptiveCdef);
+        let zen_adaptive_sharpness = self
+            .enhancements
+            .contains(crate::enhancements::ZenEnhancement::AomAdaptiveSharpness);
         self.reference
             .validate_hdr_config(&self.hdr)
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
@@ -3720,6 +3901,31 @@ impl EncodePipeline {
             let _ = std::fs::write(path, txt);
         }
         let delta_q_res_signal = delta_q_plan.map(|p| p.delta_q_res);
+        // aom `--delta-lf-mode=1` (ZenEnhancement::AomDeltaQLf): per-SB
+        // delta_lf_from_base = ((delta_qindex/4 + res/2) & ~(res-1))
+        // clamped to +-MAX_LOOP_FILTER, res=2, single — derived off the
+        // SAME sb_qindex plan the delta-q symbols code (aom
+        // encodeframe.c:377-399). Nested inside delta_q_present, so it
+        // exists exactly when a plan is live.
+        let delta_q_lf_armed = delta_q_plan.is_some()
+            && self
+                .enhancements
+                .contains(crate::enhancements::ZenEnhancement::AomDeltaQLf);
+        let sb_delta_lf: Option<alloc::vec::Vec<i8>> = delta_q_lf_armed.then(|| {
+            let plan = delta_q_plan.expect("checked by delta_q_lf_armed");
+            let base = i32::from(base_qindex);
+            plan.sb_qindex
+                .iter()
+                .map(|&q| (((i32::from(q) - base) / 4 + 1) & !1).clamp(-63, 63) as i8)
+                .collect()
+        });
+        // The same map the walk codes per-SB is what the recon deblock
+        // applies — signal and application share ONE derivation.
+        let sb_dlf = sb_delta_lf.as_ref().map(|map| crate::deblock::SbDeltaLf {
+            map,
+            sb_cols,
+            sb_size,
+        });
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
         // [SVT_HDR_MODE] tune SSIM/IQ/MS_SSIM: per-16x16 SSIM rdmult
@@ -3748,15 +3954,33 @@ impl EncodePipeline {
         // application consistently (one effective value).
         let lf_sharp_eff: u8 = {
             let base = self.hdr.sharpness.clamp(0, 7) as u8;
-            if !is_key
+            let c_derived = if !is_key
                 && matches!(
                     self.hdr.tune,
                     crate::tune::TUNE_VQ | crate::tune::TUNE_FILM_GRAIN
-                )
-            {
+                ) {
                 base
             } else {
                 crate::tune::lf_sharpness_for_tune(base, self.hdr.tune, base_qindex)
+            };
+            // libaom `enable_adaptive_sharpness` (aom-encode lf_search
+            // `frame_lf_sharpness`): on an all-intra frame `level` starts
+            // at `sharpness_cfg` and the adaptive arm caps it by the
+            // qindex ladder — `<= 112 -> 7, <= 160 -> 1, else 0` — at
+            // ANY tune. Identical arithmetic to C's IQ/MS_SSIM arm of
+            // `lf_sharpness_for_tune`, so under those tunes this is a
+            // no-op; it exists to apply the cap elsewhere.
+            if zen_adaptive_sharpness {
+                let max = if base_qindex <= 112 {
+                    7
+                } else if base_qindex <= 160 {
+                    1
+                } else {
+                    0
+                };
+                base.min(max)
+            } else {
+                c_derived
             }
         };
         let sharp_tx_active =
@@ -5947,6 +6171,13 @@ impl EncodePipeline {
                     ectx.delta_q_state = Some((res, i32::from(base_qindex), sb_size));
                     ectx.delta_q_sb_qindex = i32::from(base_qindex);
                 }
+                // aom `--delta-lf-mode`: prev_delta_lf_from_base resets to 0
+                // per tile (aom start_tile / C SVT's dead twin at
+                // entropy_coding.c:3584), exactly like prev_qindex.
+                if delta_q_lf_armed {
+                    ectx.delta_lf_state = Some(0);
+                    ectx.delta_lf_sb = 0;
+                }
                 let mut chroma_pass = sb_chroma_owned.as_ref().map(|(u_src, v_src)| ChromaPass {
                     u_src: u_src.as_slice(),
                     v_src: v_src.as_slice(),
@@ -5983,6 +6214,10 @@ impl EncodePipeline {
                         if let Some(plan) = delta_q_plan {
                             let sbq = i32::from(plan.sb_qindex[sb_idx]);
                             ectx.delta_q_sb_qindex = sbq;
+                            if delta_q_lf_armed {
+                                ectx.delta_lf_sb =
+                                    i32::from(sb_delta_lf.as_ref().expect("armed above")[sb_idx]);
+                            }
                             if let Some(cp) = chroma_pass.as_mut() {
                                 cp.qindex_u =
                                     (sbq + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
@@ -6604,6 +6839,7 @@ impl EncodePipeline {
                 &lf_levels,
                 lf_sharp_eff,
                 self.bit_depth,
+                sb_dlf.as_ref(),
                 &stop,
             )?;
         }
@@ -6628,6 +6864,7 @@ impl EncodePipeline {
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
+                sb_dlf.as_ref(),
                 &stop,
             )?;
             // C `dlf_process.c:114-117`: the FILTERED SSE, measured after
@@ -6959,7 +7196,21 @@ impl EncodePipeline {
             // path for now: still self-consistent (signal == apply),
             // but their signaled strengths diverge from C's searched
             // ones (gap 2a, narrowed to the non-all-skip case).
-            if cdef_ctrls.enabled != 0 && !cdef_ctrls.use_qp_strength {
+            // libaom CDEF_ADAPTIVE arm 1 (pickcdef.c:846-857): the
+            // AomAdaptiveCdef experiment turns CDEF off before any pick
+            // once the mapped qindex (which IS `base_qindex` here —
+            // aom's `cq_level` is the same quantizer_to_qindex domain)
+            // drops to <= 32. SVT C has no equivalent knob; gated on
+            // `cdef_ctrls.enabled != 0` so a level-0 CDEF-off frame keeps
+            // its C damping quirk instead of aom's.
+            if zen_adaptive_cdef && cdef_ctrls.enabled != 0 && base_qindex <= 32 {
+                (
+                    crate::cdef::aom_adaptive_cdef_off_pick(base_qindex),
+                    // No finish_cdef_search ran — same "no search" value
+                    // the from_qp arm carries.
+                    -1,
+                )
+            } else if cdef_ctrls.enabled != 0 && !cdef_ctrls.use_qp_strength {
                 if deblock_geom.cdef_frame_all_skip() {
                     (
                         crate::cdef::CdefPick::single(
@@ -7047,6 +7298,13 @@ impl EncodePipeline {
                             if self.hdr.is_fork() {
                                 crate::cdef::scale_strengths(&mut p, self.hdr.cdef_scaling);
                             }
+                            // libaom CDEF_ADAPTIVE arm 2 (pickcdef.c:
+                            // 1032-1091): halve picked strengths at
+                            // qindex <= 220, zero the halved-low ones at
+                            // <= 140. Post-pick so signal == apply.
+                            if zen_adaptive_cdef {
+                                crate::cdef::aom_adaptive_cdef_reduce(&mut p, base_qindex);
+                            }
                             (p, dist_dev)
                         }
                         crate::cdef::CdefSearchPick::AllSkip => (
@@ -7075,11 +7333,22 @@ impl EncodePipeline {
                 // (enc_cdef.c:912-926), before `cdef_dist_dev` is computed —
                 // it keeps the -1 seed.
                 (
-                    crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
-                        base_qindex,
-                        self.bit_depth,
-                        sc_derivation.classes.sc_class5,
-                    )),
+                    {
+                        let mut p =
+                            crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
+                                base_qindex,
+                                self.bit_depth,
+                                sc_derivation.classes.sc_class5,
+                            ));
+                        // libaom CDEF_ADAPTIVE `avoid_uv_cdef`
+                        // (pickcdef.c:822-832/:1287): the qp-pick's chroma
+                        // strength is forced to 0 — luma keeps the
+                        // polynomial value, chroma is unfiltered.
+                        if zen_adaptive_cdef {
+                            crate::cdef::aom_adaptive_cdef_avoid_uv(&mut p);
+                        }
+                        p
+                    },
                     -1,
                 )
             } else {
@@ -7893,7 +8162,16 @@ impl EncodePipeline {
                     chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
                     // seq_level_idx auto-derivation input (C: scs->frame_rate).
                     self.rc_config.framerate,
-                    seq_tools,
+                    {
+                        let mut t = seq_tools;
+                        // The coded chroma format selects seq_profile +
+                        // subsampling bits (spec 5.5.2); at Yuv420 this is
+                        // profile 0, identical to every existing cell.
+                        t.chroma_format = self
+                            .chroma_format
+                            .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420);
+                        t
+                    },
                 ));
             }
             // Frame header (raw bytes) + tile group with proper header.
@@ -7961,6 +8239,10 @@ impl EncodePipeline {
                 // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
                 // same value gates the walk's per-SB delta symbols.
                 delta_q_res_signal,
+                // aom `--delta-lf-mode` (ZenEnhancement::AomDeltaQLf):
+                // nested inside delta_q_present, so it signals exactly
+                // when a per-SB plan is live AND the extension is on.
+                delta_q_lf_armed,
                 // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
                 // mainline mode. The quantizers used the SAME levels.
                 if qm_levels == [15; 3] {
@@ -8021,7 +8303,7 @@ impl EncodePipeline {
                 ($input:expr, $deblock:path, $cdef:path $(, $depth:expr)?) => {{
                     let (mut y, mut u, mut v) = $input;
                     $deblock(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
-                        &lf_levels, lf_sharp_eff $(, $depth)?);
+                        &lf_levels, lf_sharp_eff $(, $depth)?, sb_dlf.as_ref());
                     let before_cdef = output_restoration.as_ref().map(|_| (y.clone(), u.clone(), v.clone()));
                     $cdef(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
                         &cdef_params $(, $depth)?);
@@ -8807,6 +9089,19 @@ pub(crate) struct EntropyCtx {
     pub delta_q_state: Option<(u8, i32, usize)>,
     /// The current SB's target qindex, set by the walk at SB start.
     pub delta_q_sb_qindex: i32,
+    /// aom `--delta-lf-mode` emission state (C SVT's dead twin:
+    /// `pcs->prev_delta_lf_from_base`, entropy_coding.c:3584): `Some`
+    /// carries the per-TILE prev delta_lf (reset to 0 at tile start,
+    /// like `prev_qindex[tile_idx]`) when the FH signaled
+    /// `delta_lf_present`. The value the walk codes is
+    /// [`Self::delta_lf_sb`] — the SB's `delta_lf_from_base` — reduced
+    /// by `delta_lf_res` (2) exactly like the delta-qindex symbol.
+    pub delta_lf_state: Option<i32>,
+    /// The current SB's `delta_lf_from_base`, set by the walk at SB
+    /// start off the same `sb_qindex` plan entry the delta-q symbol
+    /// codes (aom `setup_delta_q`, encodeframe.c:380:
+    /// `((delta_qindex/4 + res/2) & ~(res-1))` clamped, res = 2).
+    pub delta_lf_sb: i32,
     /// Pending `cdef_idx` emission for the CURRENT superblock — C
     /// `write_cdef` (entropy_coding.c:3986-4017). Set at SB start by the
     /// walk when `cdef_bits > 0`, `None` otherwise.
@@ -9343,6 +9638,8 @@ impl EntropyCtx {
             allow_intrabc: false,
             delta_q_state: None,
             delta_q_sb_qindex: 0,
+            delta_lf_state: None,
+            delta_lf_sb: 0,
             cdef_sb: None,
             tile_top_px: 0,
             tile_left_px: 0,
@@ -10884,6 +11181,20 @@ fn encode_block_syntax(
                 reduced,
             );
             ectx.delta_q_state = Some((res, cur, sb_sz));
+            // aom `--delta-lf-mode` (spec 5.11.41 tail): nested in the SAME
+            // SB-origin gate, immediately after the delta-qindex — one
+            // reduced delta_lf symbol (single, not multi) over
+            // `delta_lf_cdf`, value (cur_lf - prev_lf) / delta_lf_res.
+            if let Some(prev_lf) = ectx.delta_lf_state {
+                let cur_lf = ectx.delta_lf_sb;
+                let reduced_lf = (cur_lf - prev_lf) / 2; // delta_lf_res = 2
+                crate::entropy::mv_coding::write_delta_q_index(
+                    writer,
+                    &mut frame_ctx.delta_lf_cdf,
+                    reduced_lf,
+                );
+                ectx.delta_lf_state = Some(cur_lf);
+            }
         }
     }
 
@@ -16967,6 +17278,225 @@ mod tests {
             p.sb_size, 64,
             "variance boost (via tune IQ) must force SB64 — C never emits a VB+SB128 stream"
         );
+    }
+
+    /// `ZenEnhancement::AomAdaptiveCdef` reaches the CDEF pick: at qindex
+    /// <= 220 the searched strengths halve (libaom pickcdef.c:1032-1091),
+    /// and the signaled triple — which [`Self::last_cdef_signaled`]
+    /// captures — shows it. Zen extension: the bytes MUST differ from
+    /// the unadorned encode, and the encode must still be valid.
+    #[test]
+    fn aom_adaptive_cdef_reaches_the_pick() {
+        // Non-flat content so the unadorned search picks nonzero CDEF
+        // strengths — a flat image is all-skip either way and the
+        // witness would be vacuous.
+        let (w, h) = (128usize, 128usize);
+        let mut y = vec![0u8; w * h];
+        let mut u = vec![128u8; w * h / 4];
+        let mut v = vec![128u8; w * h / 4];
+        for r in 0..h {
+            for c in 0..w {
+                y[r * w + c] = ((c * 2 + r * 3) % 256) as u8;
+            }
+        }
+        for r in 0..h / 2 {
+            for c in 0..w / 2 {
+                u[r * w / 2 + c] = ((c * 5 + r) % 256) as u8;
+                v[r * w / 2 + c] = ((200 + c * 3 + r * 2) % 256) as u8;
+            }
+        }
+        let mk = |enh: bool| {
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                6,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 30,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true);
+            if enh {
+                p.enhancements = crate::enhancements::ZenEnhancements::default()
+                    .with(crate::enhancements::ZenEnhancement::AomAdaptiveCdef);
+            }
+            p
+        };
+        let mut p0 = mk(false);
+        let mut p1 = mk(true);
+        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        let s0 = p0.last_cdef_signaled.expect("CDEF pick ran");
+        let s1 = p1.last_cdef_signaled.expect("CDEF pick ran");
+        // The qp-30 qindex sits in the <= 220 halving band: a nonzero
+        // unadorned luma pick must halve (or zero under <= 140 zero_low).
+        assert!(
+            s0.y_strength == 0 || s1.y_strength <= s0.y_strength,
+            "adaptive CDEF must not strengthen luma: {s0:?} -> {s1:?}"
+        );
+        assert!(
+            s0.uv_strength == 0 || s1.uv_strength <= s0.uv_strength,
+            "adaptive CDEF must not strengthen chroma: {s0:?} -> {s1:?}"
+        );
+        // The pick really changed — a no-op transform would be invisible.
+        assert_ne!(
+            (s0.y_strength, s0.uv_strength),
+            (s1.y_strength, s1.uv_strength),
+            "expected the adaptive transform to alter the pick: {s0:?}"
+        );
+        assert_ne!(b0, b1, "the changed pick must reach the bitstream");
+    }
+
+    /// `ZenEnhancement::AomAdaptiveSharpness` caps the LF sharpness by the
+    /// aom qindex ladder at ANY tune — at `base_qindex > 160` the cap is
+    /// 0 while the default (tune PSNR) leaves `hdr.sharpness` alone.
+    #[test]
+    fn aom_adaptive_sharpness_caps_by_qindex() {
+        let (w, h) = (64usize, 64usize);
+        let mut y = vec![0u8; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                y[r * w + c] = ((c * 3 + r * 5) % 256) as u8;
+            }
+        }
+        let u = vec![128u8; w * h / 4];
+        let v = vec![128u8; w * h / 4];
+        let mk = |enh: bool| {
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                6,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 55, // mapped qindex > 160 -> cap is 0
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true);
+            p.hdr.sharpness = 4;
+            if enh {
+                p.enhancements = crate::enhancements::ZenEnhancements::default()
+                    .with(crate::enhancements::ZenEnhancement::AomAdaptiveSharpness);
+            }
+            p
+        };
+        let mut p0 = mk(false);
+        let mut p1 = mk(true);
+        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        // sharpness lands in the frame header (3-bit literal): capping 4
+        // to 0 changes the bytes.
+        assert_ne!(b0, b1, "qindex > 160 must cap signaled sharpness 4 -> 0");
+    }
+
+    /// `ZenEnhancement::AomDeltaQLf` (aom `--delta-lf-mode`): with
+    /// variance boost live the FH signals `delta_lf_present` and the walk
+    /// codes one delta-lf symbol per SB after the delta-qindex — the
+    /// stream MUST differ from the delta-q-only encode, and the encoder's
+    /// own recon must shift with it (the same `sb_delta_lf` map feeds
+    /// both, so signal == application). Decoder-verified separately with
+    /// aomdec (2026-09-20: bd8/bd10, sb64/sb128, multi-tile — all
+    /// `dec == recon`).
+    #[test]
+    fn aom_delta_q_lf_reaches_stream_and_recon() {
+        let (w, h) = (128usize, 128usize);
+        let mut y = vec![0u8; w * h];
+        let mut u = vec![128u8; w * h / 4];
+        let mut v = vec![128u8; w * h / 4];
+        for r in 0..h {
+            for c in 0..w {
+                y[r * w + c] = ((c * 2 + r * 3 + (c / 16) * 40) % 256) as u8;
+            }
+        }
+        for r in 0..h / 2 {
+            for c in 0..w / 2 {
+                u[r * w / 2 + c] = ((c * 5 + r) % 256) as u8;
+                v[r * w / 2 + c] = ((200 + c * 3 + r * 2) % 256) as u8;
+            }
+        }
+        let mk = |dlf: bool| {
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                6,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 30,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_recon_output(true);
+            p.hdr.enable_variance_boost = true;
+            if dlf {
+                p.enhancements = crate::enhancements::ZenEnhancements::default()
+                    .with(crate::enhancements::ZenEnhancement::AomDeltaQLf);
+            }
+            p
+        };
+        let mut p0 = mk(false);
+        let mut p1 = mk(true);
+        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        assert_ne!(
+            b0, b1,
+            "delta_lf_present + per-SB delta-lf symbols must reach the bitstream"
+        );
+        let r0 = p0.last_recon.as_ref().expect("recon exists");
+        let r1 = p1.last_recon.as_ref().expect("recon exists");
+        assert_ne!(
+            r0.0, r1.0,
+            "the signaled per-SB delta-lf must reach the encoder recon"
+        );
+    }
+
+    /// The flip side: `AomDeltaQLf` is NESTED inside `delta_q_present`
+    /// (spec 5.9.18) — armed without a per-SB delta-q plan it must emit
+    /// exactly the disarmed bitstream (no stray header bit, no symbols).
+    #[test]
+    fn aom_delta_q_lf_inert_without_delta_q() {
+        let (w, h) = (64usize, 64usize);
+        let mut y = vec![0u8; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                y[r * w + c] = ((c * 3 + r * 5) % 256) as u8;
+            }
+        }
+        let u = vec![128u8; w * h / 4];
+        let v = vec![128u8; w * h / 4];
+        let mk = |dlf: bool| {
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                6,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 30,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true);
+            // NO enable_variance_boost -> no delta_q_plan -> unarmed.
+            if dlf {
+                p.enhancements = crate::enhancements::ZenEnhancements::default()
+                    .with(crate::enhancements::ZenEnhancement::AomDeltaQLf);
+            }
+            p
+        };
+        let mut p0 = mk(false);
+        let mut p1 = mk(true);
+        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
+        assert_eq!(b0, b1, "delta-lf armed without delta_q must be byte-inert");
     }
 
     /// Task #91: the b64 coding units of one superblock, in C's coding

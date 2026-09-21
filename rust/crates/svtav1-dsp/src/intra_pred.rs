@@ -1533,8 +1533,7 @@ fn dr_z1_edged_core_impl<const UA: bool>(
         // test is decided once per row: interpolate the first `interp`
         // columns, fill the rest with the edge sample.
         let row = &mut dst[r * dst_stride..r * dst_stride + bw];
-        let interp =
-            ((max_base_x - base0 + base_inc - 1) / base_inc).min(bw as i32) as usize;
+        let interp = ((max_base_x - base0 + base_inc - 1) / base_inc).min(bw as i32) as usize;
         if interp > 0 {
             let begin = origin + base0 as usize;
             let end = begin + (interp - 1) * base_inc as usize + 2;
@@ -1546,17 +1545,15 @@ fn dr_z1_edged_core_impl<const UA: bool>(
                     .iter_mut()
                     .zip(a.iter().step_by(2).zip(b.iter().step_by(2)))
                 {
-                    *out =
-                        ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255) as u8;
+                    *out = ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255)
+                        as u8;
                 }
             } else {
                 // `base_inc == 1`: contiguous taps, a plain zip LLVM can
                 // vectorize.
-                for (out, (&p, &q)) in
-                    row[..interp].iter_mut().zip(a.iter().zip(b.iter()))
-                {
-                    *out =
-                        ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255) as u8;
+                for (out, (&p, &q)) in row[..interp].iter_mut().zip(a.iter().zip(b.iter())) {
+                    *out = ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5).clamp(0, 255)
+                        as u8;
                 }
             }
         }
@@ -1772,9 +1769,7 @@ fn dr_z2_edged_split_core<const UA: bool, const UL: bool>(
                 }
             } else {
                 // `step == 1`: contiguous taps, a plain zip LLVM can vectorize.
-                for (out, (&p, &q)) in
-                    row[first..].iter_mut().zip(a.iter().zip(b.iter()))
-                {
+                for (out, (&p, &q)) in row[first..].iter_mut().zip(a.iter().zip(b.iter())) {
                     *out = ((i32::from(p) * keep + i32::from(q) * shift + 16) >> 5) as u8;
                 }
             }
@@ -2719,8 +2714,7 @@ fn dr_z3_edged_core_impl<const UL: bool>(
         // `base` climbs by `base_inc` per row, so the `base < max_base_y`
         // test is decided once per column: interpolate the first `interp`
         // rows, fill the rest with the edge sample.
-        let interp =
-            ((max_base_y - base0 + base_inc - 1) / base_inc).clamp(0, bh as i32) as usize;
+        let interp = ((max_base_y - base0 + base_inc - 1) / base_inc).clamp(0, bh as i32) as usize;
         let keep = 32 - shift;
         let mut base = base0;
         for r in 0..interp {

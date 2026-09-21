@@ -287,9 +287,8 @@ fn residual_i16_impl_v3(
                 for k in 0..4 {
                     a[k * 4..k * 4 + 4]
                         .copy_from_slice(&src[s0 + k * src_stride..s0 + k * src_stride + 4]);
-                    b[k * 4..k * 4 + 4].copy_from_slice(
-                        &pred[p0 + k * pred_stride..p0 + k * pred_stride + 4],
-                    );
+                    b[k * 4..k * 4 + 4]
+                        .copy_from_slice(&pred[p0 + k * pred_stride..p0 + k * pred_stride + 4]);
                 }
                 sub16(&a, &b, &mut out[r * 4..r * 4 + 16]);
             }
@@ -319,7 +318,9 @@ fn residual_i16_impl_v3(
                         << 64))
                     .to_le_bytes();
                 let b: [u8; 16] = (u64::from_le_bytes(
-                    pred[r * pred_stride..r * pred_stride + 8].try_into().unwrap(),
+                    pred[r * pred_stride..r * pred_stride + 8]
+                        .try_into()
+                        .unwrap(),
                 ) as u128
                     | ((u64::from_le_bytes(
                         pred[(r + 1) * pred_stride..(r + 1) * pred_stride + 8]

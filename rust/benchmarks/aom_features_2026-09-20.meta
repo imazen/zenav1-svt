@@ -1,0 +1,120 @@
+**AOM-inspired `ZenEnhancement` variants — combination validation and
+vs-`zenav1-aom` BD comparison.** Two new opt-in variants:
+`AomAdaptiveCdef` (libaom `CDEF_ADAPTIVE` semantics: CDEF off at
+mapped-q ≤ 32, all strengths halved at ≤ 220, low strengths zeroed at
+base_qindex ≤ 140, chroma zeroed on the from_qp path — applied as a
+post-pick transform so signaling and application stay consistent) and
+`AomAdaptiveSharpness` (libaom `adaptive_sharpness` ladder: base_qindex
+≤112 → cap 7, ≤160 → cap 1, else 0) and `AomDeltaQLf` (libaom
+`delta_q_lf`: per-SB loopfilter delta signalled alongside delta-q,
+`((sb_q − base_q)/4 + 1) & !1` at resolution 2, single-delta mode,
+per-tile prev reset, two-sided edge levels in deblock — curr side wins
+unless 0, matching `set_lpf_parameters`).
+
+date:   2026-09-20 (dlf arms re-run 2026-09-20, same binary as final HEAD)
+host:   r7900x — AMD Ryzen 9 7900X (Zen 4); wall clock, spawn overhead
+        included identically in every arm.
+port:   working tree post `ed9183347` (ChromaFormat enum + FrameDims
+        ss_x/ss_y + SH profile-1/2 groundwork + the two variants).
+aom:    `zenav1-aom` workspace build, `encode_key_frame` all-intra,
+        `KeyFrameConfig::allintra_speed0` + `apply_tune(Iq)` for the
+        iq rows (bundles `cdef_adaptive` inside aom); cpu_used 6 and 8.
+data:   benchmarks/aom_features_sweep_2026-09-20.csv (2268 unique cells;
+        forced re-runs append, so dedupe on (img,arm,preset,qp))
+        benchmarks/aom_features_sweep_2026-09-20.py (harness)
+        benchmarks/still_image_tune_v1_zones_2026-09-19.tsv (t1–t4
+        baselines merged in for BD comparison)
+
+===================== 1. SWEEP DESIGN =====================
+
+Same 42-image k-means imazen-26 subset and cell protocol as
+`still_image_tune_v1_2026-09-19.meta`: `identity_run "crop:<png>" 512 512
+<qp> <preset>`, qp ∈ {20,32,44}, aomdec decode, fast-ssim2 on the
+inverse-BT.601 PNG.
+
+Port arms (env-driven through `identity_run`'s new
+`SVTAV1_ENHANCEMENTS` hook):
+
+  adef      default tune + AomAdaptiveCdef
+  asharp    default tune + AomAdaptiveSharpness
+  iq_adef   tune IQ    + AomAdaptiveCdef
+  iq_asharp tune IQ    + AomAdaptiveSharpness
+  iq_both   tune IQ    + both variants
+  iq_dlf    tune IQ    + AomDeltaQLf
+  iq_all    tune IQ    + all three variants
+
+AOM reference arms: `aom_psnr` (default tune) and `aom_iq` (tune IQ,
+which inside aom already enables CDEF_ADAPTIVE), cpu_used ∈ {6,8}.
+
+1764 cells total: 1260 port + 504 aom. **0 port decode/encode errors —
+every enhancement combination on every image decoded clean under
+aomdec.** The 30 errors in the file are all `aom_iq` cells on 10
+screen/grayscale document images (nps gray scans, EPA/NOAA report
+pages, plots, mobile/web screenshots) where the zenav1-aom encoder
+itself produced undecodable output at all three qps — a reference-side
+limitation, counted and excluded, never coerced to a score.
+
+===================== 2. VERDICTS (BD-rate, ssim2 axis) =================
+
+vs `t3` (plain tune IQ), same preset, n=42:
+
+  arm         p6        p10
+  iq_asharp   +0.00%    +0.00%   byte-identical in 252/252 cells —
+                                 documented no-op: SVT's own IQ
+                                 sharpness ladder applies the same cap
+  iq_adef     +0.40%    +0.85%   53/252 cells differ; small consistent
+  iq_both     +0.40%    +0.85%   ssim2 regression vs SVT's pick
+  iq_dlf      −0.01%    +0.24%   RD-neutral at these qps — correct
+                                 signaling path, not an RD lever
+  iq_all      +0.61%    +1.27%   dominated by the adef cost
+
+vs `t1` (default tune): `adef`/`asharp` are neutral (−0.03%/+0.00% at
+p6; +0.38%/0.00% at p10) — the transform barely binds where default
+tune already runs weak CDEF / sharpness 0.
+
+vs `zenav1-aom` (matched tune family + speed zone):
+
+  port t1@p6  vs aom-psnr@cpu6   +1.75%   (n=42)
+  port t1@p10 vs aom-psnr@cpu8   +5.65%
+  port t3@p6  vs aom-iq@cpu6     +2.23%   (n=32 — the 10 aom DEC-ERR
+  port t3@p8  vs aom-iq@cpu8     −1.45%    images drop out)
+  port t3@p10 vs aom-iq@cpu8     +1.52%
+  port t4@p6  vs aom-iq@cpu6     +4.51%
+  port iq_both@p10 vs aom-iq@cpu8 +1.78%
+
+===================== 3. READ =====================
+
+- **Tune IQ is within ~1.5–2.2% BD of libaom's IQ tune at matched
+  zones, and beats it at p8-vs-cpu8 (−1.45%).** "Approaches libaom
+  usefully" holds on the photographic subset; on screen/grayscale docs
+  the port additionally *encodes* where aom-iq produced invalid output.
+- **`AomAdaptiveSharpness` is a proven no-op under tune IQ** (SVT's IQ
+  ladder IS the aom ladder). It exists for explicit parity-of-knob with
+  aom callers and for non-IQ tunes where a caller sets sharpness high —
+  it is not an RD lever here.
+- **`AomAdaptiveCdef` works and combines cleanly** (0 decode errors,
+  consistent signal/apply), but on ssim2 it is a small net *negative*
+  vs SVT's own strength selection (+0.4–0.9% BD). libaom's halving rule
+  is tuned for its own pick heuristics/perceptual metrics; it does not
+  transfer as an ssim2 win. Kept as an opt-in experiment, not
+  recommended on ssim2 grounds — exactly why it lives behind the enum
+  rather than inside the recipe.
+- **`AomDeltaQLf` is decoder-verified and RD-neutral.** Encoder recon ==
+  `aomdec` output on 8-bit SB64/SB128/multi-tile and 10-bit cells; the
+  disarmed path is byte-identical to pre-change HEAD (the earlier 30815
+  cell was a stale mid-session binary, not a regression). On ssim2 it
+  is a wash (−0.01%/+0.24% vs t3): like aom's own `delta_q_lf`, it is a
+  consistency tool for decoder-matched per-SB filtering, not a rate
+  lever at qp 20–44. The LF *search* still evaluates uniform levels —
+  aom also does not thread delta_lf into its trial deblock.
+- Chroma delta-Q needed no new work: the pipeline already derives,
+  quantizes, QMs and signals it (module doc was stale; fixed).
+
+===================== 4. HONEST LIMITS =====================
+
+- ssim2 axis only. aom's CDEF_ADAPTIVE may pay off on butteraugli/cvvdp
+  where it is normally evaluated; not measured here.
+- The aom comparisons use `zenav1-aom` (the safe-Rust libaom port), not
+  C libaom; qp scales are both 0–63 but aom's qp→qindex mapping differs,
+  which is why 10/42 iq@cpu6 images had no overlapping ssim2 range.
+- All-intra 512² crops at qp 20/32/44; no inter claims.

@@ -162,6 +162,7 @@ fn deblock_apply_and_level_search_cancel_within_frame_at_both_depths() {
             &geom,
             &levels,
             0,
+            None,
             stop,
         )
     });
@@ -177,6 +178,7 @@ fn deblock_apply_and_level_search_cancel_within_frame_at_both_depths() {
             &levels,
             0,
             10,
+            None,
             stop,
         )
     });

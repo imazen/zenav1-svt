@@ -34,9 +34,10 @@ use svtav1_encoder::port_frame_cdf::FrameCdfs;
 /// disappears from the port without landing here, or a new C field nobody
 /// noticed, fails `the_port_carries_every_c_field_except_the_named_gaps`.
 const KNOWN_ABSENT: &[&str] = &[
-    // `delta_lf_present` is never signalled by this encoder, so nothing ever
-    // codes a delta_lf symbol and both tables stay at their defaults.
-    "delta_lf",
+    // `delta_lf` IS carried now (`ZenEnhancement::AomDeltaQLf` signals
+    // `delta_lf_present` in single-delta mode). `delta_lf_multi` stays absent:
+    // `delta_lf_multi` is hardwired 0, so the per-plane multi-delta tables are
+    // never coded and remain at their defaults.
     "delta_lf_multi",
     // The port codes `palette_uv_mode` (the flag) but never a UV palette, so
     // it never codes a UV palette SIZE or COLOR INDEX symbol.

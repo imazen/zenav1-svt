@@ -284,6 +284,13 @@ pub struct FrameContext {
     // --- Delta Q ---
     /// Delta Q CDFs [DELTA_Q_PROBS+1+1]
     pub delta_q_cdf: [AomCdfProb; DELTA_Q_PROBS + 2],
+    /// Delta-LF CDFs [DELTA_LF_PROBS+1+1] — spec `default_delta_lf_cdf` is
+    /// `default_delta_q_cdf` verbatim; coded only when the frame header
+    /// signals `delta_lf_present` (`ZenEnhancement::AomDeltaQLf`; C never
+    /// sets it — resource_coordination_process.c:434-441).
+    /// `delta_lf_multi_cdf` stays absent while `delta_lf_multi` is never
+    /// signaled.
+    pub delta_lf_cdf: [AomCdfProb; DELTA_Q_PROBS + 2],
 
     // --- IntraBC (intra block copy, screen content) ---
     /// `use_intrabc` flag CDF — C FRAME_CONTEXT.intrabc_cdf
@@ -668,6 +675,8 @@ impl FrameContext {
             // AV1 default_delta_q_cdf = AOM_CDF4(28160, 32120, 32677)
             // (cabac_context_model.c:637) in ICDF form: 32768 - cum.
             delta_q_cdf: [4608, 648, 91, 0, 0],
+            // AV1 default_delta_lf_cdf = default_delta_q_cdf verbatim.
+            delta_lf_cdf: [4608, 648, 91, 0, 0],
             // C default_intrabc_cdf = AOM_CDF2(30531) (cabac_context_model.c:
             // 610-612); the generated table is drift-tested vs FcTable::IntraBc
             // in tests/c_parity.rs.

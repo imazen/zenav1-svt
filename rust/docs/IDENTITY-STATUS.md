@@ -48,6 +48,57 @@ than plain IQ on ssim2-BD-rate — the best, sharpness 5, buys −0.34%
 pooled median at p75 +0.55 (inside per-image noise) — so v1 pins nothing
 beyond IQ's own bundle.
 
+`ZenEnhancement::AomAdaptiveCdef` ("aom-adaptive-cdef-v1") and
+`ZenEnhancement::AomAdaptiveSharpness` ("aom-adaptive-sharpness-v1") are
+libaom-semantics experiments SVT C does not carry (`--enable-cdef=3` /
+`--enable-adaptive-sharpness`): adaptive CDEF turns the pick off at
+`base_qindex <= 32`, halves every picked strength at `<= 220` and zeroes
+the halved-low ones at `<= 140`, and zeroes the qp-path chroma strength;
+adaptive sharpness applies the `<=112 -> 7 / <=160 -> 1 / else 0` LF
+cap at any tune (identical arithmetic to C's IQ/MS_SSIM ladder — a no-op
+under those tunes, by construction). Both are applied post-pick so
+signal and application stay in agreement, are validated all-intra 4:2:0,
+and are decoder-verified, never byte-claimed against C. Measured on the
+42-image subset (`benchmarks/aom_features_2026-09-20.meta`, 1260 port
+cells, zero decode errors): adaptive sharpness under IQ is byte-identical
+in 252/252 cells (the no-op is proven, not just derived); adaptive CDEF
+fires in 53/252 IQ cells and is a small consistent ssim2-BD *regression*
+vs SVT's own pick (+0.4% @p6, +0.9% @p10) — opt-in experiment, not
+recommended on ssim2 grounds. Against `zenav1-aom`, port tune IQ lands
+within +1.5–2.2% BD at matched zones and beats aom-iq at p8-vs-cpu8
+(−1.45%); the 30 aom-side DEC-ERR cells (screen/grayscale documents)
+count against the reference, not the port.
+
+`ZenEnhancement::AomDeltaQLf` ("aom-delta-q-lf-v1") is libaom's
+`delta_q_lf` semantics SVT C ships dead (`delta_lf_present` hardwired 0
+in C): when a per-SB delta-q plan exists it signals
+`delta_lf_present`/`delta_lf_res=2`/`delta_lf_multi=0`, codes one
+delta-lf symbol `((sb_q − base_q)/4 + 1) & !1` immediately after each
+per-SB delta-q symbol on `delta_lf_cdf` (new `FrameContext` field,
+save/restored through `FrameCdfs`), resets prev per tile, and applies
+the same map in encoder deblock with libaom's two-sided edge rule
+(filter if either side's level is nonzero; use the current side unless
+it is 0). Byte-inert when no delta-q plan exists or the enhancement is
+off; decoder-verified — encoder recon == `aomdec` on 8-bit SB64/SB128/
+multi-tile and 10-bit cells — never byte-claimed against C. Measured
+RD-neutral on the subset (−0.01% @p6, +0.24% @p10 vs tune IQ,
+`benchmarks/aom_features_2026-09-20.meta`): a consistency tool, not an
+RD lever.
+
+`ChromaFormat` (types crate, C `EbColorFormat` numbering) now carries
+`Yuv400/420/422/444` on `EncodePipeline` plus `subsampling_x/y`,
+`required_profile(bit_depth)` and chroma-dim derivation; `SeqTools` and
+`FrameDims` take a format so the sequence header writes the profile-1/2
+`color_config` branches per C `write_color_config` and the geometry seam
+is format-derived. **Only `Some(Yuv420)` encodes** — the C-parity
+surface, byte-identical as ever (spotcheck 145/145). 4:2:2 and 4:4:4
+have stable `try_encode_frame_{422,444}` signatures that REFUSE: the
+chroma geometry below `encode_frame_impl` is still 4:2:0-derived (a
+2026-09-19 bring-up probe produced a stream aomdec reports "Corrupt
+frame / Failed to decode tile data"), and C itself refuses both formats
+at `verify_settings` (enc_settings.c:470) — extension work with no byte
+oracle, decoder-correctness gated when it lands.
+
 **Defect found and fixed in this work:** C's sb-size rule forces 64 when
 `enable_variance_boost` is on (enc_handle.c:4077), applied AFTER the tune
 overrides set it. The port derived `sb_size` in `new()` — before `hdr`

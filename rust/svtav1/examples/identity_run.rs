@@ -1170,6 +1170,32 @@ fn main() {
             .with(svtav1_encoder::enhancements::ZenEnhancement::StillImageTune);
         eprintln!("SVTAV1_ENHANCEMENT=still-image-tune-v1");
     }
+    // The two libaom-derived adaptive experiments (CDEF_ADAPTIVE /
+    // enable_adaptive_sharpness semantics ported onto the SVT CDEF pick /
+    // LF sharpness path — ZenEnhancement::AomAdaptive*). Same gating
+    // shape as the rest: unset => the unadorned C path.
+    if std::env::var("SVTAV1_ADAPTIVE_CDEF").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveCdef);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-cdef-v1");
+    }
+    if std::env::var("SVTAV1_ADAPTIVE_SHARPNESS").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomAdaptiveSharpness);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-adaptive-sharpness-v1");
+    }
+    // AOM delta_q_lf: per-SB loop-filter delta coded alongside the delta-q
+    // symbols. Only does anything when a per-SB delta-q plan is live
+    // (variance boost / deltaq) — the enhancement arms the syntax, the
+    // plan supplies the values.
+    if std::env::var("SVTAV1_DELTA_QLF").as_deref() == Ok("1") {
+        pipeline.enhancements = pipeline
+            .enhancements
+            .with(svtav1_encoder::enhancements::ZenEnhancement::AomDeltaQLf);
+        eprintln!("SVTAV1_ENHANCEMENT=aom-delta-q-lf-v1");
+    }
     if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
         pipeline.reference = reference
             .parse()

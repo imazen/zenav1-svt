@@ -36,6 +36,12 @@ pub struct FrameDims {
     /// ALIGNED luma dims (multiple of 8; == true dims when 8-aligned).
     pub aligned_w: usize,
     pub aligned_h: usize,
+    /// C `subsampling_x`/`subsampling_y` (EbColorFormat ->
+    /// set_color_format): chroma dims = `dim >> ss`. Defaults to 4:2:0
+    /// (1,1); 4:4:4 carries (0,0), 4:2:2 (1,0), mono (1,1 with the
+    /// chroma planes absent — C's EB_YUV400 arm).
+    pub ss_x: usize,
+    pub ss_y: usize,
 }
 
 impl FrameDims {
@@ -58,7 +64,23 @@ impl FrameDims {
             true_h,
             aligned_w: true_w + pad_r,
             aligned_h: true_h + pad_b,
+            ss_x: 1,
+            ss_y: 1,
         }
+    }
+
+    /// The same geometry under an explicit [`svtav1_types::chroma::
+    /// ChromaFormat`] — the 4:4:4/4:2:2 staging surface. At `Yuv420`
+    /// this is IDENTICAL to [`Self::new`].
+    pub fn new_with_format(
+        true_w: usize,
+        true_h: usize,
+        fmt: svtav1_types::chroma::ChromaFormat,
+    ) -> Self {
+        let mut d = Self::new(true_w, true_h);
+        d.ss_x = fmt.subsampling_x() as usize;
+        d.ss_y = fmt.subsampling_y() as usize;
+        d
     }
 
     /// Right/bottom pad amounts (ALIGNED - TRUE).
@@ -73,7 +95,10 @@ impl FrameDims {
     /// pic_buffer_desc.c:567/:619, restoration.c:1534/:1579/:1604 and the
     /// recon output crop (app_context.c:123). (w+1)>>1 at 4:2:0.
     pub fn true_chroma_ceil(&self) -> (usize, usize) {
-        ((self.true_w + 1) >> 1, (self.true_h + 1) >> 1)
+        (
+            self.true_w.div_ceil(1usize << self.ss_x),
+            self.true_h.div_ceil(1usize << self.ss_y),
+        )
     }
 
     /// TRUE chroma dims, FLOOR rounding — DLF's convention
@@ -84,12 +109,15 @@ impl FrameDims {
     /// per-consumer; verify with the 65x65 odd-width differential vs
     /// SvtAv1EncApp before trusting either convention at odd dims.
     pub fn true_chroma_floor_dlf(&self) -> (usize, usize) {
-        (self.true_w >> 1, self.true_h >> 1)
+        (self.true_w >> self.ss_x, self.true_h >> self.ss_y)
     }
 
-    /// ALIGNED chroma dims (aligned dims are even — no ambiguity).
+    /// ALIGNED chroma dims. At 4:2:0 aligned dims are even so the
+    /// shift is unambiguous; at 4:4:4 chroma == luma, and at 4:2:2 the
+    /// vertical axis is unshifted — all exact because alignment pads
+    /// to 8, which is divisible by every subsampling factor.
     pub fn aligned_chroma(&self) -> (usize, usize) {
-        (self.aligned_w >> 1, self.aligned_h >> 1)
+        (self.aligned_w >> self.ss_x, self.aligned_h >> self.ss_y)
     }
 
     /// mi grid extent in 4x4 units (ALIGNED-based, spec MiCols/MiRows).

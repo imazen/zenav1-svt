@@ -18,6 +18,44 @@ pub enum ZenEnhancement {
     /// (see [`apply_still_image_tune`]). Not byte-pinned to C — verified by
     /// decoder + RD measurement, not `cmp`.
     StillImageTune,
+    /// libaom's `CDEF_ADAPTIVE` (`--enable-cdef=3`, the IQ/ssimulacra2 tune
+    /// bundle) semantics applied to the SVT CDEF pick — SVT C v4.2.0 has no
+    /// equivalent knob, so this is a Zen extension verified by decoder + RD
+    /// measurement, never byte-claimed against C: CDEF off entirely at
+    /// `base_qindex <= 32` (aom's `cq_level <= 32` arm — the mapped qindex,
+    /// which IS `base_qindex` here), every picked primary/secondary
+    /// strength halved at `<= 220`, halved-low entries zeroed at
+    /// `base_qindex <= 140` (aom `zero_low_cdef_strengths`), and the
+    /// chroma strength forced to 0 on the `use_qp_strength` fast path
+    /// (aom `avoid_uv_cdef`, pickcdef.c:841-1091). Applied AFTER the C-exact
+    /// search so the pick, the signaled strengths and the applied filter
+    /// stay in agreement.
+    AomAdaptiveCdef,
+    /// libaom's `enable_adaptive_sharpness` (lf_search /
+    /// `av1_pick_filter_level` setup): the frame LF sharpness is capped
+    /// by the qindex ladder — `base_qindex <= 112 -> 7, <= 160 -> 1,
+    /// else 0` — regardless of the configured tune. SVT C carries the
+    /// IDENTICAL ladder but only fires it under `--tune 3`/`--tune 4`
+    /// (`lf_sharpness_for_tune`, deblocking_filter.c:1143-1160), so under
+    /// tune IQ/MS-SSIM this experiment is a no-op; its content is
+    /// applying the aom cap at every OTHER tune. Zen extension —
+    /// decoder-verified, never byte-claimed against C.
+    AomAdaptiveSharpness,
+    /// libaom's `--delta-lf-mode=1` (`enable_deltalf_mode`, av1_cx_iface.c
+    /// :1326): when per-SB delta-q is on (variance boost), each SB also
+    /// codes `delta_lf_from_base = ((delta_qindex/4 + res/2) & ~(res-1))`
+    /// clamped to `[-MAX_LOOP_FILTER, MAX_LOOP_FILTER]` with
+    /// `delta_lf_res = 2` and `delta_lf_multi = 0` (encodeframe.c:377-399)
+    /// — the SB's loop-filter level shifts with its qindex. C SVT v4.2.0
+    /// hardwires `delta_lf_present = 0` (resource_coordination_process.c
+    /// :434-441) while carrying the full syntax writer
+    /// (entropy_coding.c:3578-3588) and the per-edge consumer
+    /// (`svt_aom_get_filter_level_delta_lf`, deblocking_filter.c:270-293)
+    /// — dead machinery, no C knob, so this is a Zen extension verified
+    /// by decoder + recon equality, never byte-claimed against C. Fires
+    /// only when `delta_q_present` (spec 5.9.18 nests it inside); with
+    /// variance boost off it signals nothing.
+    AomDeltaQLf,
 }
 
 impl ZenEnhancement {
@@ -27,6 +65,9 @@ impl ZenEnhancement {
             Self::AomIntraEdgeFilter => "aom-intra-edge-filter-v1",
             Self::AomRestorationUnitSearch => "aom-restoration-unit-search-v1",
             Self::StillImageTune => "still-image-tune-v1",
+            Self::AomAdaptiveCdef => "aom-adaptive-cdef-v1",
+            Self::AomAdaptiveSharpness => "aom-adaptive-sharpness-v1",
+            Self::AomDeltaQLf => "aom-delta-q-lf-v1",
         }
     }
 }
@@ -37,6 +78,9 @@ pub struct ZenEnhancements {
     intra_edge_filter: bool,
     restoration_unit_search: bool,
     still_image_tune: bool,
+    adaptive_cdef: bool,
+    adaptive_sharpness: bool,
+    delta_q_lf: bool,
 }
 
 impl ZenEnhancements {
@@ -46,6 +90,9 @@ impl ZenEnhancements {
             ZenEnhancement::AomIntraEdgeFilter => self.intra_edge_filter = true,
             ZenEnhancement::AomRestorationUnitSearch => self.restoration_unit_search = true,
             ZenEnhancement::StillImageTune => self.still_image_tune = true,
+            ZenEnhancement::AomAdaptiveCdef => self.adaptive_cdef = true,
+            ZenEnhancement::AomAdaptiveSharpness => self.adaptive_sharpness = true,
+            ZenEnhancement::AomDeltaQLf => self.delta_q_lf = true,
         }
         self
     }
@@ -56,12 +103,20 @@ impl ZenEnhancements {
             ZenEnhancement::AomIntraEdgeFilter => self.intra_edge_filter,
             ZenEnhancement::AomRestorationUnitSearch => self.restoration_unit_search,
             ZenEnhancement::StillImageTune => self.still_image_tune,
+            ZenEnhancement::AomAdaptiveCdef => self.adaptive_cdef,
+            ZenEnhancement::AomAdaptiveSharpness => self.adaptive_sharpness,
+            ZenEnhancement::AomDeltaQLf => self.delta_q_lf,
         }
     }
 
     /// Whether every experiment is disabled.
     pub const fn is_empty(self) -> bool {
-        !self.intra_edge_filter && !self.restoration_unit_search && !self.still_image_tune
+        !self.intra_edge_filter
+            && !self.restoration_unit_search
+            && !self.still_image_tune
+            && !self.adaptive_cdef
+            && !self.adaptive_sharpness
+            && !self.delta_q_lf
     }
 
     /// Per-member envelopes. The two research members extend native −1 still
@@ -82,6 +137,15 @@ impl ZenEnhancements {
         }
         if self.still_image_tune && (!allintra || !chroma_420) {
             return Err("still-image-tune-v1 is measured for all-intra 4:2:0 only");
+        }
+        if self.adaptive_cdef && (!allintra || !chroma_420) {
+            return Err("aom-adaptive-cdef-v1 is measured for all-intra 4:2:0 only");
+        }
+        if self.adaptive_sharpness && (!allintra || !chroma_420) {
+            return Err("aom-adaptive-sharpness-v1 is measured for all-intra 4:2:0 only");
+        }
+        if self.delta_q_lf && (!allintra || !chroma_420) {
+            return Err("aom-delta-q-lf-v1 is measured for all-intra 4:2:0 only");
         }
         Ok(())
     }
@@ -209,6 +273,25 @@ mod tests {
             assert!(on.validate(preset, true, true).is_ok());
             assert!(on.validate(preset, true, false).is_err());
             assert!(on.validate(preset, false, true).is_err());
+        }
+    }
+
+    #[test]
+    fn aom_adaptive_members_are_allintra_420_scoped() {
+        for e in [
+            ZenEnhancement::AomAdaptiveCdef,
+            ZenEnhancement::AomAdaptiveSharpness,
+        ] {
+            let on = ZenEnhancements::default().with(e);
+            assert!(on.contains(e));
+            for preset in [-1, 0, 2, 6, 9, 13] {
+                assert!(on.validate(preset, true, true).is_ok());
+                assert!(on.validate(preset, true, false).is_err());
+                assert!(on.validate(preset, false, true).is_err());
+            }
+            // Combine freely — each is opt-in and orthogonal.
+            let both = on.with(ZenEnhancement::StillImageTune);
+            assert!(both.validate(6, true, true).is_ok());
         }
     }
 

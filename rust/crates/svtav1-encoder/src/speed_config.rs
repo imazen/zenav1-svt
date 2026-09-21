@@ -225,6 +225,7 @@ pub fn seq_tools_for_preset(
         // its own `gop.hierarchical_levels`. Only the non-reduced (video)
         // sequence header reads it.
         hierarchical_levels: 0,
+        chroma_format: svtav1_types::chroma::ChromaFormat::Yuv420,
     }
 }
 
@@ -318,6 +319,7 @@ pub fn seq_tools_video(preset: i8, luma_pixels: usize) -> crate::entropy::obu::S
         enable_dual_filter: false,
         // Overwritten by the pipeline from `gop.hierarchical_levels`.
         hierarchical_levels: 0,
+        chroma_format: svtav1_types::chroma::ChromaFormat::Yuv420,
     }
 }
 

@@ -149,8 +149,11 @@ impl DlfPixel for u8 {
         sharpness: u8,
         _bit_depth: u8,
     ) {
+        // The DLF search's trial deblock takes no delta_lf map — aom's
+        // `stamp_lf_delta_lf`+`get_filter_level` threading is follow-on
+        // RD tuning; signal/application stay consistent regardless.
         filter_plane(
-            buf, stride, plane_w, plane_h, plane, ss, level_vert, level_horz, geom, sharpness,
+            buf, stride, plane_w, plane_h, plane, ss, level_vert, level_horz, geom, sharpness, None,
         );
     }
 
@@ -180,7 +183,7 @@ impl DlfPixel for u16 {
     ) {
         filter_plane_hbd(
             buf, stride, plane_w, plane_h, plane, ss, level_vert, level_horz, geom, sharpness,
-            bit_depth,
+            bit_depth, None,
         );
     }
 
@@ -747,14 +750,19 @@ enum EdgeDir {
 
 /// Port of the decoder's `set_lpf_parameters` (libaom
 /// av1/common/av1_loopfilter.c:224; SVT deblocking_filter.c:217),
-/// specialized to our signaled configuration: delta_lf_present=0,
-/// segmentation off, mode_ref_delta_enabled=0 — so the filter level is
-/// UNIFORM per (plane, direction) and `get_filter_level` returns `level`
-/// for every block (av1_loop_filter_frame_init memsets lfi->lvl).
+/// specialized to our signaled configuration: segmentation off,
+/// mode_ref_delta_enabled=0 — so `get_filter_level` reduces to
+/// `clamp(base_level + delta_lf_from_base)` per block
+/// (av1_loopfilter.c:366-390); without `SbDeltaLf` every delta is 0 and
+/// the level is UNIFORM per (plane, direction) as before.
 ///
-/// (x, y) are PLANE-pixel coords of the 4x4 being visited; `level` is that
-/// uniform level. Returns (advance in plane-mi units, Some(filter_length)
-/// when this edge filters).
+/// (x, y) are PLANE-pixel coords of the 4x4 being visited; `levels` is
+/// `(curr_level, pv_level)` — the filter level on each side of the edge
+/// (equal unless `SbDeltaLf` places an SB boundary between them, aom
+/// `set_lpf_parameters` av1_loopfilter.c:450-490). Returns (advance in
+/// plane-mi units, Some((filter_length, level)) when this edge filters)
+/// where `level` is `curr != 0 ? curr : pv` — the decoder's "use the
+/// not-skipped side's level" rule.
 #[allow(clippy::too_many_arguments)]
 fn lpf_params(
     geom: &DeblockGeom,
@@ -763,8 +771,8 @@ fn lpf_params(
     y: usize,
     plane: usize,
     ss: usize,
-    level: u8,
-) -> (usize, Option<u8>) {
+    levels: (u8, u8),
+) -> (usize, Option<(u8, u8)>) {
     // Spec 7.14.5 `onScreen`: nothing is filtered at or past the TRUE frame
     // extent. C's identical guard is `set_lpf_parameters`
     // (deblocking_filter.c:225-230) reading `plane_ptr->dst.width/height`,
@@ -840,8 +848,11 @@ fn lpf_params(
     let pu_edge = geom.block_id[prev_idx] != geom.block_id[idx];
 
     // "if the current and the previous blocks are skipped, deblock the
-    // edge if the edge belongs to a PU's edge only."
-    if level != 0 && (!pv_skip || !curr_skipped || pu_edge) {
+    // edge if the edge belongs to a PU's edge only." With delta_lf the
+    // two sides can carry different levels (aom set_lpf_parameters:
+    // `(curr_level || pv_lvl) && skip-gate`, filtered at the current
+    // side's level unless it is 0).
+    if (levels.0 != 0 || levels.1 != 0) && (!pv_skip || !curr_skipped || pu_edge) {
         let min_dim = ts_dim.min(pv_dim);
         // C: TX_4X4 >= min_ts -> 4; plane != 0 -> 6; TX_8X8 -> 8; else 14
         // (equivalently libaom tx_dim_to_filter_length {4,8,14,14,14}).
@@ -854,7 +865,8 @@ fn lpf_params(
         } else {
             14
         };
-        (advance, Some(len))
+        let level = if levels.0 != 0 { levels.0 } else { levels.1 };
+        (advance, Some((len, level)))
     } else {
         (advance, None)
     }
@@ -872,6 +884,60 @@ fn lpf_params(
 /// adjacent TX dims). Within a pass the orders coincide: vertical edges
 /// left-to-right per row band, horizontal edges top-to-bottom per column
 /// band, bands independent.
+/// Per-SB `delta_lf_from_base` map for aom `--delta-lf-mode` semantics
+/// (`ZenEnhancement::AomDeltaQLf`): `map[sb_row * sb_cols + sb_col]`
+/// shifts that SB's loop-filter level (aom `setup_delta_q`,
+/// encodeframe.c:380). C SVT's twin is `pcs->ppcs->curr_delta_lf` in
+/// `svt_aom_loop_filter_sb` — the SB being filtered contributes its own
+/// delta to BOTH sides of each of its edges (deblocking_filter.c:270-293),
+/// so under this port's signaled config (no segmentation,
+/// `mode_ref_delta_enabled = 0` — `svt_aom_get_filter_level_delta_lf`
+/// reduces to `clamp(base_level + delta_lf)` exactly) the edge's
+/// effective level is `clamp(level + map[sb_of_edge])`.
+pub struct SbDeltaLf<'a> {
+    /// `delta_lf_from_base` per superblock, raster order over the LUMA
+    /// superblock grid (`sb_cols` entries per row).
+    pub map: &'a [i8],
+    /// Superblock grid width in luma units.
+    pub sb_cols: usize,
+    /// Superblock size in LUMA pixels (64 or 128).
+    pub sb_size: usize,
+}
+
+impl SbDeltaLf<'_> {
+    /// The delta_lf of the SB containing LUMA pixel `(lx, ly)`.
+    fn at_luma(&self, lx: usize, ly: usize) -> i32 {
+        i32::from(self.map[(ly / self.sb_size) * self.sb_cols + lx / self.sb_size])
+    }
+
+    /// `(curr_level, pv_level)` for the edge at PLANE-pixel `(x, y)`
+    /// (`(x << ss, y << ss)` maps chroma coords onto the luma SB grid,
+    /// the same mapping `lpf_params` uses for mi indices). `pv` is the
+    /// block ACROSS the edge — one luma pixel back along `dir`. Both
+    /// sides matter: aom's `set_lpf_parameters` (av1_loopfilter.c:
+    /// 450-490) gates on `curr_level != 0 || pv_lvl != 0` and filters at
+    /// `curr != 0 ? curr : pv`. Within an SB the two are always equal;
+    /// they differ only at SB boundaries.
+    fn edge_levels(&self, base: u8, x: usize, y: usize, ss: usize, dir: EdgeDir) -> (u8, u8) {
+        let (lx, ly) = (x << ss, y << ss);
+        let curr = sb_level(base, self.at_luma(lx, ly));
+        let pv = match dir {
+            EdgeDir::Vert if lx > 0 => sb_level(base, self.at_luma(lx - 1, ly)),
+            EdgeDir::Horz if ly > 0 => sb_level(base, self.at_luma(lx, ly - 1)),
+            // Frame edge: lpf_params returns before reading pv.
+            _ => curr,
+        };
+        (curr, pv)
+    }
+}
+
+/// `clamp(level + dlf)` to `[0, MAX_LOOP_FILTER]` — C
+/// `svt_aom_get_filter_level_delta_lf` under this port's signaled
+/// config (identity segmentation, `mode_ref_delta_enabled = 0`).
+fn sb_level(base: u8, dlf: i32) -> u8 {
+    (i32::from(base) + dlf).clamp(0, 63) as u8
+}
+
 #[allow(clippy::too_many_arguments)]
 fn filter_plane(
     buf: &mut [u8],
@@ -884,19 +950,26 @@ fn filter_plane(
     level_horz: u8,
     geom: &DeblockGeom,
     sharpness: u8,
+    dlf: Option<&SbDeltaLf>,
 ) {
     let mi_cols_p = plane_w / 4;
     let mi_rows_p = plane_h / 4;
 
     // Vertical edges (svt_av1_filter_block_plane_vert / libaom
-    // av1_filter_block_plane_vert, full-frame extent).
-    let tv = lf::lf_thresholds(level_vert, sharpness);
+    // av1_filter_block_plane_vert, full-frame extent). With a delta-lf
+    // map each edge's level/thresholds come from the SB it belongs to —
+    // computed per edge (lf_thresholds is ~10 int ops).
     for my in 0..mi_rows_p {
         let mut mx = 0;
         while mx < mi_cols_p {
+            let levels_v = match dlf {
+                Some(d) => d.edge_levels(level_vert, mx * 4, my * 4, ss, EdgeDir::Vert),
+                None => (level_vert, level_vert),
+            };
             let (adv, filter) =
-                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, level_vert);
-            if let Some(len) = filter {
+                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, levels_v);
+            if let Some((len, level)) = filter {
+                let tv = lf::lf_thresholds(level, sharpness);
                 let off = (my * 4) * stride + mx * 4;
                 match len {
                     4 => lf::lpf_vertical_4(buf, off, stride, tv),
@@ -910,13 +983,17 @@ fn filter_plane(
     }
 
     // Horizontal edges.
-    let th = lf::lf_thresholds(level_horz, sharpness);
     for mx in 0..mi_cols_p {
         let mut my = 0;
         while my < mi_rows_p {
+            let levels_h = match dlf {
+                Some(d) => d.edge_levels(level_horz, mx * 4, my * 4, ss, EdgeDir::Horz),
+                None => (level_horz, level_horz),
+            };
             let (adv, filter) =
-                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, level_horz);
-            if let Some(len) = filter {
+                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, levels_h);
+            if let Some((len, level)) = filter {
+                let th = lf::lf_thresholds(level, sharpness);
                 let off = (my * 4) * stride + mx * 4;
                 match len {
                     4 => lf::lpf_horizontal_4(buf, off, stride, th),
@@ -949,17 +1026,22 @@ fn filter_plane_hbd(
     geom: &DeblockGeom,
     sharpness: u8,
     bd: u8,
+    dlf: Option<&SbDeltaLf>,
 ) {
     let mi_cols_p = plane_w / 4;
     let mi_rows_p = plane_h / 4;
 
-    let tv = lf::lf_thresholds(level_vert, sharpness);
     for my in 0..mi_rows_p {
         let mut mx = 0;
         while mx < mi_cols_p {
+            let levels_v = match dlf {
+                Some(d) => d.edge_levels(level_vert, mx * 4, my * 4, ss, EdgeDir::Vert),
+                None => (level_vert, level_vert),
+            };
             let (adv, filter) =
-                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, level_vert);
-            if let Some(len) = filter {
+                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, levels_v);
+            if let Some((len, level)) = filter {
+                let tv = lf::lf_thresholds(level, sharpness);
                 let off = (my * 4) * stride + mx * 4;
                 match len {
                     4 => svtav1_dsp::hbd::lpf_vertical_4_hbd(buf, off, stride, tv, bd),
@@ -972,13 +1054,17 @@ fn filter_plane_hbd(
         }
     }
 
-    let th = lf::lf_thresholds(level_horz, sharpness);
     for mx in 0..mi_cols_p {
         let mut my = 0;
         while my < mi_rows_p {
+            let levels_h = match dlf {
+                Some(d) => d.edge_levels(level_horz, mx * 4, my * 4, ss, EdgeDir::Horz),
+                None => (level_horz, level_horz),
+            };
             let (adv, filter) =
-                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, level_horz);
-            if let Some(len) = filter {
+                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, levels_h);
+            if let Some((len, level)) = filter {
+                let th = lf::lf_thresholds(level, sharpness);
                 let off = (my * 4) * stride + mx * 4;
                 match len {
                     4 => svtav1_dsp::hbd::lpf_horizontal_4_hbd(buf, off, stride, th, bd),
@@ -1010,6 +1096,7 @@ pub fn apply_deblock_frame(
     geom: &DeblockGeom,
     lv: &LfLevels,
     sharpness: u8,
+    dlf: Option<&SbDeltaLf>,
 ) {
     apply_deblock_frame_with_stop(
         y,
@@ -1021,6 +1108,7 @@ pub fn apply_deblock_frame(
         geom,
         lv,
         sharpness,
+        dlf,
         &enough::Unstoppable,
     )
     .expect("Unstoppable cannot cancel")
@@ -1036,6 +1124,7 @@ pub(crate) fn apply_deblock_frame_with_stop(
     geom: &DeblockGeom,
     lv: &LfLevels,
     sharpness: u8,
+    dlf: Option<&SbDeltaLf>,
     stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<()> {
     crate::stop_check(stop)?;
@@ -1049,16 +1138,18 @@ pub(crate) fn apply_deblock_frame_with_stop(
         return Ok(());
     }
     crate::stop_check(stop)?;
-    filter_plane(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness);
+    filter_plane(
+        y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, dlf,
+    );
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
             crate::stop_check(stop)?;
-            filter_plane(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness);
+            filter_plane(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, dlf);
         }
         if l[3] != 0 {
             crate::stop_check(stop)?;
-            filter_plane(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness);
+            filter_plane(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, dlf);
         }
     }
 
@@ -1082,6 +1173,7 @@ pub fn apply_deblock_frame_hbd(
     lv: &LfLevels,
     sharpness: u8,
     bd: u8,
+    dlf: Option<&SbDeltaLf>,
 ) {
     apply_deblock_frame_hbd_with_stop(
         y,
@@ -1094,6 +1186,7 @@ pub fn apply_deblock_frame_hbd(
         lv,
         sharpness,
         bd,
+        dlf,
         &enough::Unstoppable,
     )
     .expect("Unstoppable cannot cancel")
@@ -1110,6 +1203,7 @@ pub(crate) fn apply_deblock_frame_hbd_with_stop(
     lv: &LfLevels,
     sharpness: u8,
     bd: u8,
+    dlf: Option<&SbDeltaLf>,
     stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<()> {
     crate::stop_check(stop)?;
@@ -1121,17 +1215,17 @@ pub(crate) fn apply_deblock_frame_hbd_with_stop(
     }
     crate::stop_check(stop)?;
     filter_plane_hbd(
-        y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd,
+        y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd, dlf,
     );
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
             crate::stop_check(stop)?;
-            filter_plane_hbd(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, bd);
+            filter_plane_hbd(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, bd, dlf);
         }
         if l[3] != 0 {
             crate::stop_check(stop)?;
-            filter_plane_hbd(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, bd);
+            filter_plane_hbd(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, bd, dlf);
         }
     }
 
@@ -1154,7 +1248,7 @@ mod tests {
             }
         }
         let mut buf = unfiltered_plane();
-        filter_plane(&mut buf, W, W, H, 0, 0, 32, 32, &geom, 0);
+        filter_plane(&mut buf, W, W, H, 0, 0, 32, 32, &geom, 0, None);
         buf
     }
 
@@ -1243,6 +1337,128 @@ mod tests {
             .filter(|&(r, c)| clamped[r * W + c] != unfiltered[r * W + c])
             .count();
         assert_eq!(bad, 0, "filtered {bad} pixels past the true frame height");
+    }
+
+    /// `SbDeltaLf::edge_levels` — the per-side lookup for aom
+    /// `set_lpf_parameters`. A vertical edge at an SB boundary takes its
+    /// `curr` from the SB on the RIGHT (the block that owns its left
+    /// edge) and `pv` from the LEFT; inside an SB both sides read the
+    /// same value. 192-wide frame / sb_size 64 -> sb_cols = 3.
+    #[test]
+    fn sb_delta_lf_edge_levels_split_at_sb_boundaries() {
+        // sb_col 0 -> -8, sb_col 1 -> +10, sb_col 2 -> 0 (sb_rows 4 rows
+        // of the same pattern; sb_size 64 over a 192x256 luma grid).
+        let mut map = [0i8; 3 * 4];
+        for r in 0..4 {
+            map[r * 3] = -8;
+            map[r * 3 + 1] = 10;
+        }
+        let d = SbDeltaLf {
+            map: &map,
+            sb_cols: 3,
+            sb_size: 64,
+        };
+        // Vertical edge at luma x = 64: curr = SB1 (+10 -> clamp(30+10)=40),
+        // pv = SB0 (-8 -> 22).
+        let (c, p) = d.edge_levels(30, 64, 8, 0, EdgeDir::Vert);
+        assert_eq!((c, p), (40, 22));
+        // Same edge mid-SB1 (x = 96): both sides SB1.
+        assert_eq!(d.edge_levels(30, 96, 8, 0, EdgeDir::Vert), (40, 40));
+        // Horizontal edge at luma y = 64, x inside SB1 (x = 100): curr =
+        // the SB BELOW (row 1, col 1: +10), pv = row 0, col 1: +10 —
+        // same value since the map is row-uniform. Give row 1 a
+        // different col-1 value and retest.
+        let mut map2 = map;
+        map2[3 + 1] = -20; // row 1, col 1
+        let d2 = SbDeltaLf {
+            map: &map2,
+            sb_cols: 3,
+            sb_size: 64,
+        };
+        // y = 64: curr -> row 1 col 1 (-20 -> 10), pv -> row 0 col 1 (+10 -> 40).
+        let (c, p) = d2.edge_levels(30, 100, 64, 0, EdgeDir::Horz);
+        assert_eq!((c, p), (10, 40));
+        // Chroma (ss = 1): plane x = 32 -> luma 64 — same boundary.
+        assert_eq!(d.edge_levels(30, 32, 4, 1, EdgeDir::Vert), (40, 22));
+    }
+
+    /// `sb_level` clamps to `[0, MAX_LOOP_FILTER]` — a large negative
+    /// delta can shut the filter off (level 0 = no edge), a large
+    /// positive one saturates at 63.
+    #[test]
+    fn sb_level_clamps() {
+        assert_eq!(sb_level(30, 0), 30);
+        assert_eq!(sb_level(30, -40), 0);
+        assert_eq!(sb_level(30, 40), 63);
+        assert_eq!(sb_level(0, -63), 0);
+    }
+
+    /// A nonzero `SbDeltaLf` map changes the filtered output — and a map
+    /// that drives every level to 0 filters NOTHING. The aom `delta-lf`
+    /// contract (signal -> application) hangs on this: the SB containing
+    /// the edge contributes the shift, and a positive delta re-enables
+    /// edges the base level had switched off.
+    #[test]
+    fn delta_lf_map_shifts_filtered_output() {
+        const W: usize = 192;
+        const H: usize = 256;
+        let mut geom = DeblockGeom::new(W, H, W, H);
+        for by in (0..H).step_by(8) {
+            for bx in (0..W).step_by(8) {
+                geom.record_block(bx, by, 8, 8, false, false);
+            }
+        }
+        // Base level 0: every edge's gate (`curr != 0 || pv != 0`) fails,
+        // so the unfiltered plane passes through — until a positive
+        // delta in SB col 1 re-enables filtering there. That exercises
+        // the level-0 re-enable arm of `set_lpf_parameters` directly.
+        let mut map = [0i8; 12];
+        for r in 0..4 {
+            map[r * 3 + 1] = 24;
+        }
+        let dlf = SbDeltaLf {
+            map: &map,
+            sb_cols: 3,
+            sb_size: 64,
+        };
+        let base = || unfiltered_plane();
+        let mut with = base();
+        let mut without = base();
+        filter_plane(&mut with, W, W, H, 0, 0, 0, 0, &geom, 0, Some(&dlf));
+        filter_plane(&mut without, W, W, H, 0, 0, 0, 0, &geom, 0, None);
+        assert_eq!(
+            without,
+            base(),
+            "level 0 with no delta-lf map must filter nothing"
+        );
+        assert_ne!(
+            with, without,
+            "a positive delta must re-enable filtering inside its SB"
+        );
+        // The lift is confined to SB col 1's span plus the 7-pixel filter
+        // reach across its left boundary (the edge at x = 64 belongs to
+        // SB1; the x = 128 edge's CURR side is SB2 -> stays level 0).
+        for r in 0..H {
+            for c in 0..W {
+                if !(56..136).contains(&c) {
+                    assert_eq!(
+                        with[r * W + c],
+                        without[r * W + c],
+                        "delta-lf leaked outside its SB column at ({r}, {c})"
+                    );
+                }
+            }
+        }
+        // A map that clamps every edge's level to 0 filters nothing.
+        let off = [-63i8; 12];
+        let dlf_off = SbDeltaLf {
+            map: &off,
+            sb_cols: 3,
+            sb_size: 64,
+        };
+        let mut zeroed = base();
+        filter_plane(&mut zeroed, W, W, H, 0, 0, 24, 24, &geom, 0, Some(&dlf_off));
+        assert_eq!(zeroed, base(), "level-0 edges must filter nothing");
     }
 
     /// Hand-computed values of the C closed form (AC step table x the

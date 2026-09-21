@@ -337,9 +337,7 @@ fn variance_diff_parts_impl_v4(
     use magetypes::simd::generic::{i16x32, i32x16, u8x64};
     let ones = i16x32::splat(token, 1);
     let mut acc = (i32x16::splat(token, 0), i32x16::splat(token, 0));
-    let fold = |acc: (i32x16<X64V4Token>, i32x16<X64V4Token>),
-                av: &[u8; 64],
-                bv: &[u8; 64]| {
+    let fold = |acc: (i32x16<X64V4Token>, i32x16<X64V4Token>), av: &[u8; 64], bv: &[u8; 64]| {
         let a = u8x64::load(token, av);
         let b = u8x64::load(token, bv);
         let d_lo = a.widen_low().bitcast_i16x32() - b.widen_low().bitcast_i16x32();

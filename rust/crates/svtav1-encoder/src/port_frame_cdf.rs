@@ -39,13 +39,12 @@
 //!
 //! # Two things this module does NOT carry, named rather than dropped
 //!
-//! * **`delta_lf_cdf` / `delta_lf_multi_cdf`.** C's `FRAME_CONTEXT` has them;
-//!   [`crate::entropy::context::FrameContext`] does not, because nothing in
-//!   this port ever sets `delta_lf_present`. They are therefore at their
-//!   defaults on both sides for every frame this encoder can produce, and a
-//!   saved state that omits them is indistinguishable from one that carries
-//!   them — until `delta_lf_present` is implemented, at which point they must
-//!   be added here in the same change.
+//! * **`delta_lf_cdf` is carried; `delta_lf_multi_cdf` is not.** The single
+//!   table landed with `ZenEnhancement::AomDeltaQLf` (the frame header may
+//!   now signal `delta_lf_present`); C's four-slot `delta_lf_multi_cdf`
+//!   stays absent because `delta_lf_multi` is never signalled — a saved
+//!   state that omits it is indistinguishable from one that carries it at
+//!   its defaults.
 //! * **The duplicated inter tables.** `FrameContext` carries `newmv_cdf`,
 //!   `refmv_cdf`, `globalmv_cdf`, `drl_cdf`, `skip_mode_cdf`,
 //!   `inter_compound_mode_cdf` and `interp_filter_cdf` as *placeholders*
@@ -252,8 +251,9 @@ impl FrameCdfs {
             reset_counter(self.fc.tx_size_cdf[cat].as_flattened_mut(), 3);
         }
         reset_counter(&mut self.fc.delta_q_cdf, 4);
-        // delta_lf_cdf / delta_lf_multi_cdf: see the module docs — absent from
-        // this port's FrameContext because delta_lf_present is never signalled.
+        reset_counter(&mut self.fc.delta_lf_cdf, 4);
+        // delta_lf_multi_cdf: see the module docs — absent because
+        // delta_lf_multi is never signalled.
         let c = &mut *self.coeff;
         // C `intra_ext_tx_cdf[set]`: set 1 has 7 symbols, set 2 has 5, both in
         // a stride of CDF_SIZE(TX_TYPES) = 17. Set 0 is never coded.
@@ -408,6 +408,7 @@ impl FrameCdfs {
             fc.tx_size_cdf.as_flattened_mut().as_flattened_mut(),
         );
         f("delta_q", &mut fc.delta_q_cdf);
+        f("delta_lf", &mut fc.delta_lf_cdf);
         f("intra_ext_tx", c.intra_ext_tx_cdf.as_flattened_mut());
         f("inter_ext_tx", c.inter_ext_tx_cdf.as_flattened_mut());
         f("cfl_sign", &mut fc.cfl_sign_cdf);

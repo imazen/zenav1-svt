@@ -14,6 +14,7 @@ pub mod alloc_util;
 pub mod bitstream;
 pub mod block;
 pub mod block_mode;
+pub mod chroma;
 pub mod constants;
 pub mod error;
 pub mod frame;

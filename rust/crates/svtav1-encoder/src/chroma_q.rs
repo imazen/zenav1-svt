@@ -18,12 +18,18 @@
 //! in this port's envelope (no tune config; C default tune=1/PSNR hits no
 //! case) and are intentionally not carried — revisit if tune lands.
 //!
-//! ACTIVATION STATUS: derivation + SH/FH syntax are capability-complete and
-//! unit-tested; the pipeline does NOT yet signal them because the chroma
-//! QUANT path still consumes a single qindex for both planes. Signaling
-//! deltas the quantizer doesn't apply would desync every decoder, so the
-//! switch-on happens together with the per-plane quant threading (task #3
-//! remainder; see docs/HDR-ON-4.2.md).
+//! ACTIVATION STATUS: LIVE. The pipeline derives the deltas on every
+//! encode (`encode_frame_impl`), builds per-plane chroma qindexes
+//! (`base + delta`) for BOTH the quantizer and the QM-level derivation,
+//! and signals them through the FH (`ChromaQSignal::Shared` in mainline —
+//! `separate_uv_delta_q = 0`, one (dc, ac) pair reused for V;
+//! `ChromaQSignal::Separate` in the fork, which signals
+//! `separate_uv_delta_q = 1` + `diff_uv_delta` + all four). Signal and
+//! application agree by construction — the same `ChromaQDeltas` feed
+//! both. Remaining gap is upstream, not here: the three tune-IQ cells in
+//! `tools/issue9_knobs_gate.sh` still differ by single bytes from the
+//! SSIM-rdmult `pow`/`log`/`exp` near-tie flips, not from the delta-q
+//! block (its tile payloads are already byte-matched in size).
 
 use crate::entropy::obu::ColorDescription;
 

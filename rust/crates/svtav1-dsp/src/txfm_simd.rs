@@ -1275,13 +1275,9 @@ mod v4 {
     /// `[[A^T,C^T],[B^T,D^T]]`.
     #[rite]
     pub(super) fn transpose16(t: X64V4Token, inp: &[__m512i; 16]) -> [__m512i; 16] {
-        let lo: [__m256i; 16] =
-            core::array::from_fn(|i| _mm512_castsi512_si256(inp[i]));
-        let hi: [__m256i; 16] =
-            core::array::from_fn(|i| _mm512_extracti64x4_epi64::<1>(inp[i]));
-        let join = |a: __m256i, b: __m256i| {
-            _mm512_inserti64x4::<1>(_mm512_castsi256_si512(a), b)
-        };
+        let lo: [__m256i; 16] = core::array::from_fn(|i| _mm512_castsi512_si256(inp[i]));
+        let hi: [__m256i; 16] = core::array::from_fn(|i| _mm512_extracti64x4_epi64::<1>(inp[i]));
+        let join = |a: __m256i, b: __m256i| _mm512_inserti64x4::<1>(_mm512_castsi256_si512(a), b);
         let a = transpose8(t, &lo[..8].try_into().unwrap()); // rows 0-7,  cols 0-7
         let b = transpose8(t, &hi[..8].try_into().unwrap()); // rows 0-7,  cols 8-15
         let c = transpose8(t, &lo[8..].try_into().unwrap()); // rows 8-15, cols 0-7
