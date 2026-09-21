@@ -23,7 +23,7 @@ Changes by other authors are not listed here.
 
 ---
 
-## 2026-09-21 — ZenEnhancement::DeepSearch ("deep-search-v1") — shipped, deepened + 8-bit envelope — `8a47b3bfc` (delta; first wiring `370ee62cf`)
+## 2026-09-21 — ZenEnhancement::DeepSearch ("deep-search-v1") — shipped, deepened + 8-bit envelope — `4283525f1` (delta; first wiring `370ee62cf`)
 
 - What: `enhancements.rs` gains `DeepSearch`. When armed on all-intra
   4:2:0 8-bit, a single `md_preset = -1` binding inside `encode_tile_rows`
