@@ -166,6 +166,7 @@ impl ZenEnhancements {
         preset: i8,
         allintra: bool,
         chroma_420: bool,
+        bit_depth: u8,
     ) -> Result<(), &'static str> {
         if (self.intra_edge_filter || self.restoration_unit_search)
             && (preset != -1 || !allintra || !chroma_420)
@@ -187,8 +188,8 @@ impl ZenEnhancements {
         if self.screen_tools && (!allintra || !chroma_420) {
             return Err("aom-screen-tools-v1 is measured for all-intra 4:2:0 only");
         }
-        if self.deep_search && (!allintra || !chroma_420) {
-            return Err("deep-search-v1 is measured for all-intra 4:2:0 only");
+        if self.deep_search && (!allintra || !chroma_420 || bit_depth != 8) {
+            return Err("deep-search-v1 is measured for all-intra 4:2:0 8-bit only");
         }
         Ok(())
     }
@@ -297,12 +298,12 @@ mod tests {
             let on = off.with(enhancement);
             assert_eq!(on.with(enhancement), on);
             assert!(on.contains(enhancement));
-            assert!(on.validate(-1, true, true).is_ok());
+            assert!(on.validate(-1, true, true, 8).is_ok());
             for preset in [-3, -2, 0, 5, 9, 13] {
-                assert!(on.validate(preset, true, true).is_err());
+                assert!(on.validate(preset, true, true, 8).is_err());
             }
-            assert!(on.validate(-1, false, true).is_err());
-            assert!(on.validate(-1, true, false).is_err());
+            assert!(on.validate(-1, false, true, 8).is_err());
+            assert!(on.validate(-1, true, false, 8).is_err());
         }
     }
 
@@ -313,9 +314,9 @@ mod tests {
         assert!(!on.is_empty());
         // Any preset is fine on a still 4:2:0; inter and non-420 are refused.
         for preset in [-1, 0, 2, 6, 9, 13] {
-            assert!(on.validate(preset, true, true).is_ok());
-            assert!(on.validate(preset, true, false).is_err());
-            assert!(on.validate(preset, false, true).is_err());
+            assert!(on.validate(preset, true, true, 8).is_ok());
+            assert!(on.validate(preset, true, false, 8).is_err());
+            assert!(on.validate(preset, false, true, 8).is_err());
         }
     }
 
@@ -328,13 +329,13 @@ mod tests {
             let on = ZenEnhancements::default().with(e);
             assert!(on.contains(e));
             for preset in [-1, 0, 2, 6, 9, 13] {
-                assert!(on.validate(preset, true, true).is_ok());
-                assert!(on.validate(preset, true, false).is_err());
-                assert!(on.validate(preset, false, true).is_err());
+                assert!(on.validate(preset, true, true, 8).is_ok());
+                assert!(on.validate(preset, true, false, 8).is_err());
+                assert!(on.validate(preset, false, true, 8).is_err());
             }
             // Combine freely — each is opt-in and orthogonal.
             let both = on.with(ZenEnhancement::StillImageTune);
-            assert!(both.validate(6, true, true).is_ok());
+            assert!(both.validate(6, true, true, 8).is_ok());
         }
     }
 
@@ -379,15 +380,18 @@ mod tests {
     }
 
     #[test]
-    fn deep_search_is_allintra_420_scoped_and_inert_at_native_minus1() {
+    fn deep_search_is_allintra_420_8bit_scoped_and_inert_at_native_minus1() {
         let on = ZenEnhancements::default().with(ZenEnhancement::DeepSearch);
         assert!(on.contains(ZenEnhancement::DeepSearch));
         // Any preset — including the native -1 the arm collapses onto — is
-        // accepted on a still 4:2:0; inter and non-420 (mono, 4:4:4) refuse.
+        // accepted on a still 4:2:0 8-bit; inter, non-420 (mono, 4:4:4)
+        // and 10-bit (the bd10 MD post-pass knobs stay native there —
+        // unmeasured) refuse.
         for preset in [-1, 0, 2, 6, 9, 13] {
-            assert!(on.validate(preset, true, true).is_ok());
-            assert!(on.validate(preset, true, false).is_err());
-            assert!(on.validate(preset, false, true).is_err());
+            assert!(on.validate(preset, true, true, 8).is_ok());
+            assert!(on.validate(preset, true, false, 8).is_err());
+            assert!(on.validate(preset, false, true, 8).is_err());
+            assert!(on.validate(preset, true, true, 10).is_err());
         }
     }
 }

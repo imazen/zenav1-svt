@@ -2195,6 +2195,7 @@ impl EncodePipeline {
                 self.speed_config.preset,
                 self.gop.intra_period <= 1,
                 self.chroma_420 && chroma.is_some(),
+                self.bit_depth,
             )
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
         let zen_intra_edge_filter = self
@@ -2922,30 +2923,30 @@ impl EncodePipeline {
         // ZenEnhancement::AomScreenTools: libaom keeps palette and IntraBC
         // ENABLED whenever the detector says screen — the allintra ladders
         // switch them off by preset (palette at M8+, IntraBC at M5+). When
-        // the detector fires on the allintra arm, fill in ONLY the levels
-        // the allintra ladder left at 0, from the VIDEO arm's own ladder
-        // for the same preset index (clamped at its last nonzero row:
-        // palette holds the M10 level above it, IntraBC the M9 level).
-        // A level the allintra arm already set is never lowered — e.g. M4
-        // keeps IntraBC 7 rather than the video arm's 3.
+        // the detector fires on the allintra arm AND the ladder left BOTH
+        // tools dead, the arm substitutes the VIDEO ladder's levels for the
+        // same preset index (clamped at its last nonzero row: palette holds
+        // M10's, IntraBC M9's). The fill is deliberately all-or-nothing:
+        // the measured wins are the M8+ zone where C signals no screen
+        // tools at all, while the M5-M7 partial zone (palette live, only
+        // IntraBC dead) regressed on the imazen-26 frontier cells
+        // (+1.95% mean BD at p6 — IBC-5 costs on content palette-7 already
+        // handles). A level the allintra arm already set is never lowered.
         if sc_arm == crate::sc_detect::ScArm::Allintra
             && self
                 .enhancements
                 .contains(crate::enhancements::ZenEnhancement::AomScreenTools)
             && sc_derivation.classes.sc_class5
+            && sc_derivation.palette_level == 0
+            && sc_derivation.intrabc_level == 0
         {
             use crate::port_enc_mode_config::multi_processes::{
                 intrabc_level_default, palette_level_default,
             };
             let preset = self.speed_config.preset;
-            if sc_derivation.palette_level == 0 {
-                sc_derivation.palette_level =
-                    palette_level_default(preset.min(10), true, true);
-            }
-            if sc_derivation.intrabc_level == 0 {
-                sc_derivation.intrabc_level =
-                    intrabc_level_default(preset.min(9), true, true, true);
-            }
+            sc_derivation.palette_level = palette_level_default(preset.min(10), true, true);
+            sc_derivation.intrabc_level =
+                intrabc_level_default(preset.min(9), true, true, true);
             sc_derivation.allow_intrabc =
                 crate::intrabc::IbcCtrls::for_level(sc_derivation.intrabc_level).enabled;
             sc_derivation.allow_screen_content_tools =
@@ -14371,7 +14372,7 @@ fn encode_tile_rows(
         let bd10_full_rd = bd10_full_rd_supported(
             coded_lossless,
             bit_depth,
-            speed_config.preset,
+            md_preset,
             chroma_420,
             // C `pcs->slice_type == I_SLICE`. `inter_md` is `Some` on exactly
             // the frames that carry a reference, so its absence IS the I-slice
@@ -14388,7 +14389,7 @@ fn encode_tile_rows(
         // Running the u16 funnel there computed a 10-bit canvas C never
         // builds.
         let bd10_luma_funnel =
-            bd10_canvas_ok && (bd10_full_rd || (speed_config.preset >= 9 && inter_md.is_none()));
+            bd10_canvas_ok && (bd10_full_rd || (md_preset >= 9 && inter_md.is_none()));
         // C's bypass-encdec MDS3 `hbd_md = 2` bump (product_coding_loop.c:9649):
         // `encoder_bit_depth > 8 && bypass_encdec && !hbd_md &&
         // pd_pass == PD_PASS_1 && perform_md_recon`. On a bd10 video frame the
@@ -14485,7 +14486,7 @@ fn encode_tile_rows(
         // with the C edge filter) routes this preset, D45..D203 candidates
         // must not be emitted — V (exactly 90) and H (exactly 180) are
         // skipped by the decoder's filter and stay recon-exact.
-        if speed_config.preset == 5 && chroma_420 && ref_frame_data.is_none() {
+        if md_preset == 5 && chroma_420 && ref_frame_data.is_none() {
             part_config.enable_directional = false;
         }
         // Frame-level C-exact coding quantizer (still path — quant.rs).
@@ -14677,8 +14678,8 @@ fn encode_tile_rows(
                 // recursion — the code every video-KEY chunk of this campaign
                 // was built to replace. They are gone; the funnel's inter
                 // candidate (item 1b) is what makes taking them off pay.
-                let use_pd0 = speed_config.preset >= 6
-                    || (matches!(speed_config.preset, -1..=5) && use_funnel);
+                let use_pd0 = md_preset >= 6
+                    || (matches!(md_preset, -1..=5) && use_funnel);
                 // CLI-qp-calibrated lambda via the exact inverse mapping
                 // (see qp_to_lambda's domain note). On the PD0 fixed-tree
                 // path the leaf funnel must be preset-INDEPENDENT like
@@ -14834,7 +14835,7 @@ fn encode_tile_rows(
                         // value (`get_disallow_4x4_default`).
                         let sb_dr = pd0_dr_res.and_then(|v| v.get(sb_index).copied());
                         crate::part_arm::video_pd0_params(
-                            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                            md_eff_mode,
                             u32::from(cli_qp),
                             w * h,
                             // C `pcs->coeff_lvl` — `derive_inter_coeff_level`'s
@@ -14864,7 +14865,7 @@ fn encode_tile_rows(
                                 is_not_last_layer: pd0_det_frame.is_not_last_layer,
                                 pic_pred_depth_only: pd0_pred_depth_only,
                                 disallow_4x4: sb_dr.map_or_else(
-                                    || crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
+                                    || crate::part_arm::disallow_4x4(sc_arm, md_preset),
                                     |r| r.disallow_4x4,
                                 ),
                                 disallow_8x8:
@@ -15227,7 +15228,7 @@ fn encode_tile_rows(
                     // `pd0_pick_sb_partition_lvl0` (C forces PD0_LVL_0 at
                     // `hbd_md`) and nothing has dumped C's bd10 video tree, so
                     // widening it blind would trade a green gate for a guess.
-                    let p9_fixed_partition = speed_config.preset >= 9
+                    let p9_fixed_partition = md_preset >= 9
                         && (bit_depth == 10
                             || !crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                 sc_arm,
@@ -15266,7 +15267,7 @@ fn encode_tile_rows(
                     } else if use_pd0 {
                         // At presets 0..3 C permits 4x4 blocks and runs PD1
                         // even for lossless. Higher presets have only 8x8 leaves.
-                        if (coded_lossless && speed_config.preset >= 4) || p9_fixed_partition {
+                        if (coded_lossless && md_preset >= 4) || p9_fixed_partition {
                             // C `md_encode_block`'s Light-PD1 per-SB dispatch:
                             // `resolve_sb_lpd1` reads the PD0 root eval the
                             // video arm below produces, so the Option is
@@ -15363,7 +15364,7 @@ fn encode_tile_rows(
                                     pic_pd0_lvl,
                                     pd0_coeff_rate_est_lvl,
                                     accurate_part_ctx,
-                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
+                                    crate::part_arm::nsq_geom_enabled(sc_arm, md_preset),
                                     // This branch IS C's `pic_pred_depth_only`
                                     // case: `depth_refinement_ctrls.mode ==
                                     // PD0_DEPTH_PRED_PART_ONLY` is what makes
@@ -15580,7 +15581,7 @@ fn encode_tile_rows(
                             } else {
                                 crate::depth_refine::DrCtrls::for_arm(
                                     sc_arm,
-                                    speed_config.preset,
+                                    md_preset,
                                     tile_sc.classes.sc_class5,
                                     cli_qp as u32,
                                     c_quant
@@ -15603,7 +15604,7 @@ fn encode_tile_rows(
                             // an H/V/4-way shape at the same depth.
                             let nsq_search_on = crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                 sc_arm,
-                                speed_config.preset,
+                                md_preset,
                                 cli_qp as u32,
                                 c_quant
                                     .as_ref()
@@ -15615,7 +15616,7 @@ fn encode_tile_rows(
                             .enabled;
                             let mut refined = use_funnel && (dr.adaptive || nsq_search_on);
                             let nsq_geom_enabled = !coded_lossless
-                                && crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset);
+                                && crate::part_arm::nsq_geom_enabled(sc_arm, md_preset);
                             // C md_config_process.c forces lossless PD0 level 0,
                             // but its resolved cost model uses QP offset 0 and
                             // fast coefficient estimation 2: Rust's Lvl1 model.

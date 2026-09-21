@@ -876,7 +876,7 @@ impl AvifEncoder {
                 ));
             }
             self.enhancements
-                .validate(self.resolved_native_preset().value(), true, false)
+                .validate(self.resolved_native_preset().value(), true, false, self.bit_depth)
                 .map_err(EncodeError::UnsupportedConfig)?;
         }
         Ok(())
@@ -914,6 +914,7 @@ impl AvifEncoder {
                 self.resolved_native_preset().value(),
                 true,
                 self.chroma_subsampling == ChromaSubsampling::Yuv420,
+                self.bit_depth,
             )
             .map_err(EncodeError::UnsupportedConfig)?;
         self.validate_inert_knobs(true)

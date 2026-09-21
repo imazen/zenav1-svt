@@ -1114,6 +1114,17 @@ fn deep_search_refuses_everything_outside_still_420() {
     c444.chroma_420 = false;
     let (u444, v444) = (vec![128u8; 64 * 64], vec![128u8; 64 * 64]);
     expect_refusal(c444.try_encode_frame_444(&y, &u444, &v444, 64), "444");
+
+    // 10-bit still: the arm's bd10 post-pass knobs are unmeasured — the
+    // whole encode refuses rather than partially arming.
+    let mut bd10 = mk(1);
+    bd10.bit_depth = 10;
+    let y10: Vec<u16> = y.iter().map(|&s| (s as u16) << 2).collect();
+    let c10 = vec![512u16; 32 * 32];
+    expect_refusal(
+        bd10.try_encode_frame_420_hbd(&y10, &c10, &c10, 64),
+        "10-bit still",
+    );
 }
 
 // =============================================================================
