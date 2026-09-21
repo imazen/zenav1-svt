@@ -24,9 +24,10 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
   to native buckets; fractional adaptive search is not implemented.
 - Grain modeling/denoising/tables/synthesis and named Zen intra-edge/restoration
   experiments are wired in their documented envelopes. Experiments stay opt-in.
-- 4:4:4 chroma ships on a measured decoder-verified envelope (8-bit key/still,
-  SB64, no superres) as a Zen extension — C refuses it, so the oracle is the
-  decoder, never byte parity. 4:2:2 and 12-bit remain rejected, matching C.
+- 4:4:4 chroma ships on a measured decoder-verified envelope (8-bit key AND
+  inter frames, SB64, no superres) as a Zen extension — C refuses it, so the
+  oracle is the decoder, never byte parity. 4:2:2 and 12-bit remain rejected,
+  matching C.
 
 At implementation main **`0cbd1279`**, the latest native workspace gate passed
 **2631/2631 tests, zero skips**. PR #20 uses published archmage/magetypes
@@ -141,7 +142,7 @@ content. Both claims are measured below; neither is inferred from the other.
 | QP 0 (coded-lossless) on inter | **Not supported** | Refused; still-image lossless IS supported |
 | 10-bit OBMC | **Not supported** | `bd10_tree_supported` drops such a frame back to the 8-bit output rather than miscoding it |
 | Monochrome inter | **Not supported** | Refused. Every inter gate here is 4:2:0, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
-| **4:4:4 chroma, 8-bit key/still** | **Validated** | Zen extension — C refuses non-4:2:0 (`enc_settings.c:470`), so there is no byte oracle. Envelope: 8-bit, key/still frame, `sb_size 64`, no superres; inter/10-bit/SB128/superres/IntraBC/film-grain refuse. Reconstruction byte-identical to `aomdec` AND `dav1d` on 10/10 cells (36..200 px, qp 0/20/30/35/45, incl. coded-lossless) — the probes are `examples/probe_444*.rs`. Chroma loop filters signal off until ported. RD quality measured, not assumed: `tools/rd_ext_sweep.sh` (SSIMULACRA2 + per-plane PSNR vs `aomenc --i444 --profile=1`) — 396 cells, 0 failures, monotonic RD everywhere; chroma earns its bits (U/V PSNR +1.3..+15.3 dB vs own 4:2:0 at matched qp); frontier x1.74 vs libaom vs the 4:2:0 baseline's x1.46 |
+| **4:4:4 chroma, 8-bit key/inter** | **Validated** | Zen extension — C refuses non-4:2:0 (`enc_settings.c:470`), so there is no byte oracle. Envelope: 8-bit, `sb_size 64`, no superres; 10-bit/SB128/superres/IntraBC/film-grain refuse. Stills: byte-identical to `aomdec` AND `dav1d` on 10/10 cells (36..200 px, qp 0/20/30/35/45, incl. coded-lossless). Inter (non-funnel arm: luma-ME MV + motion-compensated chroma prediction, no `uv_mode`): byte-identical to `aomdec` on 45/45 matrix cells (dup/rand/shift × 64x64..256x128 × p{0,6,13}) + 4/4 moving-content + 6/6 inter-chain frames, all planes — `tools/chroma_444_inter_gate.sh` over `examples/probe_444*.rs`. Chroma loop filters signal off until ported. RD quality measured, not assumed: `tools/rd_ext_sweep.sh` (SSIMULACRA2 + per-plane PSNR vs `aomenc --i444 --profile=1`) — 396 cells, 0 failures, monotonic RD everywhere; chroma earns its bits (U/V PSNR +1.3..+15.3 dB vs own 4:2:0 at matched qp); frontier x1.74 vs libaom vs the 4:2:0 baseline's x1.46 |
 
 ### Outside the envelope by design
 

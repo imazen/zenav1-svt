@@ -2029,8 +2029,10 @@ impl EncodePipeline {
     ///
     /// Support envelope (decoder-verified — C refuses non-4:2:0 at
     /// `verify_settings`, enc_settings.c:470, so no byte oracle exists):
-    /// 8-bit, key/still frame, `sb_size 64`, no superres. Everything else
-    /// (inter, 10-bit, sb128, superres, IntraBC) takes the honest refusal
+    /// 8-bit, `sb_size 64`, no superres — key AND inter frames (the
+    /// non-funnel inter arm predicts chroma by motion compensation and
+    /// residual-codes against it; no `uv_mode` is signalled). Everything
+    /// else (10-bit, sb128, superres, IntraBC) takes the honest refusal
     /// at `encode_frame_impl`'s envelope gate. Chroma loop filters are
     /// signalled off (lf levels 0 / CDEF uv 0 / LR RESTORE_NONE) until the
     /// filter kernels are ported — decoder-consistent by construction.
@@ -2684,24 +2686,22 @@ impl EncodePipeline {
         // Aligned-extent chroma dims — the internal planes' stride/height.
         let (acw, ach) = (fmt.chroma_width(w), fmt.chroma_height(h));
         // Non-4:2:0 formats ship only where the generalized path is proven.
-        // 4:4:4 is decoder-verified on the intra/still arm at sb64 (the
-        // interleaved multi-cell chroma walk sb128 needs is not yet ported,
-        // and the inter/IBC chroma prediction arm is 4:2:0-only) — a 444
-        // inter frame or sb128 stream takes the honest refusal rather than a
-        // mis-shaped stream.
+        // 4:4:4 is decoder-verified on the still arm at sb64 AND on the
+        // non-funnel inter arm (motion-compensated chroma prediction +
+        // residual, no `uv_mode` — the funnel stays 4:2:0-only, so inter
+        // decisions come from `RefFrameCtx`'s luma-ME + explicit chroma
+        // MC). sb128's interleaved multi-cell chroma walk, 10-bit 444
+        // planes, IntraBC-on-444 and chroma superres remain unported — a
+        // 444 stream outside the envelope takes the honest refusal.
         if fmt == svtav1_types::chroma::ChromaFormat::Yuv444
-            && (!is_key
-                || self.sb_size != 64
-                || self.bit_depth != 8
-                || self.superres_denom.is_some())
+            && (self.sb_size != 64 || self.bit_depth != 8 || self.superres_denom.is_some())
         {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "ChromaFormat::Yuv444 is decoder-verified only for 8-bit \
-                 still/key frames at sb_size 64 without superres: the sb128 \
-                 multi-cell chroma walk, 10-bit 444 planes, inter/IntraBC \
-                 chroma prediction and chroma superres are not yet ported \
-                 (C itself refuses 444 at verify_settings, \
-                 enc_settings.c:470 — no byte oracle)",
+                 frames at sb_size 64 without superres: the sb128 multi-cell \
+                 chroma walk, 10-bit 444 planes, IntraBC chroma prediction \
+                 and chroma superres are not yet ported (C itself refuses \
+                 444 at verify_settings, enc_settings.c:470 — no byte oracle)",
             )));
         }
         // 4:4:4 staged bring-up: the chroma loop-filter KERNELS are still
@@ -5447,7 +5447,7 @@ impl EncodePipeline {
             crate::port_picstruct::is_highest_layer(temporal_layer, self.gop.hierarchical_levels),
             temporal_layer,
             // The padded twin of the plane above, from the SAME DPB slot.
-            ref_padded_luma.map(|p| &p.y),
+            ref_padded_luma,
             inter_md_frame.as_ref(),
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
@@ -6330,6 +6330,12 @@ impl EncodePipeline {
                     qm_u: qm_levels[1],
                     qm_v: qm_levels[2],
                     c_quant: c_quant.as_deref(),
+                    ref_uv: ref_padded_luma
+                        .and_then(|p| p.uv.as_ref())
+                        .map(|(u, v)| (u, v)),
+                    sb_size,
+                    frame_w: w,
+                    frame_h: h,
                 });
                 // LR tap references reset at the tile start (C
                 // svt_av1_reset_loop_restoration, ec_process.c:199).
@@ -9725,6 +9731,18 @@ struct ChromaPass<'a> {
     /// Frame-level C-exact coding quantizer (still path) — C's MDS3 RDOQ
     /// covers chroma too (skip_uv cleared when enc-dec is bypassed).
     c_quant: Option<&'a crate::quant::CodingQuantCfg>,
+    /// The reference's padded chroma planes — `Some` exactly when the frame
+    /// can code inter chroma (a non-key frame whose DPB slot carries chroma).
+    /// An inter leaf with no `chroma_dec` residual-codes against the MC
+    /// prediction built from these; `None` only where inter cannot occur.
+    ref_uv: Option<(&'a crate::picture::PaddedPlane, &'a crate::picture::PaddedPlane)>,
+    /// `scs->super_block_size` for `clamp_mv_to_umv_border_sb` — the MV's
+    /// out-of-frame bound is against the SB, not the block.
+    sb_size: usize,
+    /// LUMA frame dims (coded extent) — `mb_edges`/`RefGeometry` are
+    /// luma-domain; the chroma plane dims follow from `ss_x`/`ss_y`.
+    frame_w: usize,
+    frame_h: usize,
 }
 
 /// One coded block's chroma coefficient work: the chroma plane block at
@@ -9906,6 +9924,8 @@ impl EntropyCtx {
         [svtav1_types::motion::Mv; 2],
         i16,
         crate::port_entropy_inter::modes::DrlBlock,
+        u32,
+        u16,
     )> {
         let env = self.mvp_env.as_ref()?;
         let (mi_row, mi_col) = ((y / 4) as i32, (x / 4) as i32);
@@ -9959,6 +9979,32 @@ impl EntropyCtx {
         // `drl_contexts`.
         let (drl_ctx, drl_ctx_near) =
             crate::port_md_winner::drl_contexts_for(d.mode as u8, stack.count, &stack.stack);
+        // `motion_mode_allowed`'s two data inputs, derived HERE from the same
+        // committed grid for exactly the reason `predmv`/`drl_ctx` are: the
+        // DECODER recomputes both per block (decodemv.c:1448-1455 —
+        // `av1_findSamples` + `av1_count_overlappable_neighbors`), and an
+        // MD-carried count that went stale — or a hardcoded 0 on a path that
+        // never computed them — writes the wrong motion-mode ALPHABET and
+        // desyncs the tile. MEASURED: the 4:4:4 non-funnel inter path stamped
+        // `overlappable_neighbors = 0`, so a `WARPED_CAUSAL`-allowed
+        // three-symbol `motion_mode` went uncoded on every neighboured block
+        // and aomdec rejected the tile.
+        let overlappable_neighbors =
+            crate::inter_mvp::count_overlappable_neighbors(&grid, &ctx, bsize);
+        // C's gate on the findSamples call (decodemv.c:1448): the count is 0
+        // for a skip-mode or second-ref block regardless of neighbours, and
+        // the bsize gate lives inside `count_overlappable_neighbors` already
+        // — mirror all three so a compound/interintra future block cannot
+        // silently inherit a nonzero count.
+        let num_proj_ref = if !d.skip_mode
+            && d.ref_frame[1] <= crate::inter_mvp::INTRA_FRAME
+            && crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx(
+                bsize,
+            ) {
+            crate::inter_mvp::find_warp_samples(&grid, &ctx, d.ref_frame[0]).0 as u16
+        } else {
+            0
+        };
         Some((
             pred.ref_mv,
             stack.mode_context,
@@ -9967,6 +10013,8 @@ impl EntropyCtx {
                 drl_ctx_near,
                 drl_index: d.drl_index,
             },
+            overlappable_neighbors,
+            num_proj_ref,
         ))
     }
 
@@ -11285,6 +11333,71 @@ fn encode_block_syntax(
                 .max(0) as usize;
             let units_h = ((ch as i64 + if edge_b < 0 { edge_b >> (3 + ss_y) } else { 0 }) >> 2)
                 .max(0) as usize;
+            // A genuinely inter block codes no `uv_mode`: its chroma
+            // prediction is the block's own motion compensation (the
+            // decoder's inter chroma arm of `av1_inter_prediction`), so the
+            // residual must be against that prediction — the intra-DC arm
+            // below would reconstruct to pixels the decoder never produces.
+            // Predict the whole plane block once per block; each TXB then
+            // residual-codes against its own corner, exactly as the decoder
+            // composes pred + inverse-quantized residual per TXB. An
+            // all-zero residual reproduces the prediction — which IS a
+            // skipped inter block's chroma recon.
+            let inter_chroma_pred = if decision.is_inter {
+                let ic = decision
+                    .inter
+                    .as_deref()
+                    .expect("is_inter leaf without its InterDecision payload");
+                let (uref, vref) = cp
+                    .ref_uv
+                    .expect("inter leaf on a frame with no chroma reference");
+                let mut u_pred = alloc::vec![0u8; cw * ch];
+                let mut v_pred = alloc::vec![0u8; cw * ch];
+                crate::inter_pred_arm::predict_inter_chroma_whole(
+                    uref,
+                    vref,
+                    block_x,
+                    block_y,
+                    bw_px,
+                    bh_px,
+                    ic.mv[0],
+                    ic.interp_filters,
+                    cp.sb_size,
+                    cp.frame_w,
+                    cp.frame_h,
+                    &mut u_pred,
+                    &mut v_pred,
+                    cw,
+                    ss_x,
+                    ss_y,
+                );
+                Some((u_pred, v_pred))
+            } else {
+                None
+            };
+            // The decoder-derived chroma tx type — the same `uv_tt` the
+            // emission arm below computes. Only covering-luma-txb index 0
+            // matters here: a multi-TXB-covering decision (tx_depth > 0)
+            // comes from the funnel, which always carries `chroma_dec`.
+            let inter_uv_tt = if decision.is_inter {
+                let (cover_eob, cover_tt) = if decision.tx_depth == 0 {
+                    (decision.eob, decision.tx_type)
+                } else {
+                    (
+                        decision.txb_eobs.first().copied().unwrap_or(0),
+                        decision.txb_tx_types.first().copied().unwrap_or(0),
+                    )
+                };
+                crate::leaf_funnel::inter_uv_tx_type(
+                    cover_eob,
+                    cover_tt,
+                    base_q_idx == 0,
+                    txw,
+                    txh,
+                )
+            } else {
+                0
+            };
             let mut u_txbs = alloc::vec::Vec::new();
             let mut v_txbs = alloc::vec::Vec::new();
             for uv in 0..2usize {
@@ -11297,28 +11410,60 @@ fn encode_block_syntax(
                 while row < units_h {
                     let mut col = 0usize;
                     while col < units_w {
-                        let (q, eob) = crate::partition::encode_chroma_block_dc(
-                            src,
-                            recon,
-                            cp.stride,
-                            cx + col * 4,
-                            cy + row * 4,
-                            txw,
-                            txh,
-                            qindex,
-                            cp.c_quant,
-                            qm,
-                            chroma_tile_top,
-                            chroma_tile_left,
-                            chroma_plane_w,
-                            chroma_plane_h,
-                        );
-                        if !recon_only {
-                            if uv == 0 {
-                                u_txbs.push((q, eob));
-                            } else {
-                                v_txbs.push((q, eob));
-                            }
+                        let (q, eob) = if let Some((u_pred, v_pred)) = &inter_chroma_pred {
+                            let pred = if uv == 0 { u_pred } else { v_pred };
+                            // `inter_uv_tx_type`'s usize is the C TxType
+                            // index — `TxType`'s repr(u8) order.
+                            let tt = match inter_uv_tt {
+                                1 => svtav1_types::transform::TxType::AdstDct,
+                                2 => svtav1_types::transform::TxType::DctAdst,
+                                3 => svtav1_types::transform::TxType::AdstAdst,
+                                9 => svtav1_types::transform::TxType::Idtx,
+                                _ => svtav1_types::transform::TxType::DctDct,
+                            };
+                            crate::partition::encode_chroma_block_pred(
+                                src,
+                                recon,
+                                cp.stride,
+                                cx + col * 4,
+                                cy + row * 4,
+                                txw,
+                                txh,
+                                &pred[(row * 4) * cw + col * 4..],
+                                cw,
+                                qindex,
+                                cp.c_quant,
+                                qm,
+                                tt,
+                            )
+                        } else {
+                            crate::partition::encode_chroma_block_dc(
+                                src,
+                                recon,
+                                cp.stride,
+                                cx + col * 4,
+                                cy + row * 4,
+                                txw,
+                                txh,
+                                qindex,
+                                cp.c_quant,
+                                qm,
+                                chroma_tile_top,
+                                chroma_tile_left,
+                                chroma_plane_w,
+                                chroma_plane_h,
+                            )
+                        };
+                        // The eob must survive recon mode: `skip` below is
+                        // the signaled `skip_txfm` — it folds in chroma eobs —
+                        // and the recon walk's copy feeds CDEF's skip-all
+                        // dlist. Empting only the coeff vec (write_chroma_txb
+                        // is unreachable here) mirrors the funnel arm above.
+                        let q_ship = if recon_only { Vec::new() } else { q };
+                        if uv == 0 {
+                            u_txbs.push((q_ship, eob));
+                        } else {
+                            v_txbs.push((q_ship, eob));
                         }
                         col += txw / 4;
                     }
@@ -11617,7 +11762,7 @@ fn encode_block_syntax(
         // `predmv` / `inter_mode_ctx` / `drl_ctx` are DERIVED from the
         // committed mode-info map here rather than carried from MD — see
         // `crate::partition::InterDecision`.
-        let (pred_mv, inter_mode_ctx, drl) = ectx
+        let (pred_mv, inter_mode_ctx, drl, overlappable_neighbors, num_proj_ref) = ectx
             .inter_mvp_fields(
                 block_x,
                 block_y,
@@ -11645,8 +11790,8 @@ fn encode_block_syntax(
             // `InterDecision` rather than have them defaulted here.
             interintra: None,
             motion_mode: blk.motion_mode,
-            num_proj_ref: blk.num_proj_ref,
-            overlappable_neighbors: blk.overlappable_neighbors,
+            num_proj_ref,
+            overlappable_neighbors,
             // `write_inter_mode_info` step 9 is gated on `has_second_ref`;
             // a single-reference block takes `None` and skips the whole
             // compound group, exactly as C's gate does.
@@ -13508,10 +13653,12 @@ fn encode_tile_rows(
     // below stamp comes from THIS value; on a flat GOP it is 0 for every
     // picture, which is what the previous literal `true` encoded.
     temporal_layer: u8,
-    // The same reference luma plane with C's replicated margin
-    // (docs/INTER-ENCODE-PLAN.md §1s item 4). `Some` exactly when
-    // `ref_frame_data` is; the inter arm cannot predict without it.
-    ref_padded_y: Option<&crate::picture::PaddedPlane>,
+    // The same reference picture with C's replicated margin
+    // (docs/INTER-ENCODE-PLAN.md §1s item 4), all three planes — the
+    // chroma pair is at the frame's chroma resolution (full-res at 4:4:4).
+    // `Some` exactly when `ref_frame_data` is; the inter arm cannot
+    // predict without it.
+    ref_padded: Option<&crate::picture::PaddedRef>,
     // The INTER branch of mode decision (`docs/INTER-ENCODE-PLAN.md` §1s
     // items 1b/2/3/6): the padded DPB reference, this frame's open-loop
     // motion search, the inter rate tables and the MVP environment. `None`
@@ -14609,7 +14756,10 @@ fn encode_tile_rows(
                 }
 
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {
-                    y_padded: ref_padded_y,
+                    y_padded: ref_padded.map(|p| &p.y),
+                    uv_padded: ref_padded.and_then(|p| p.uv.as_ref()),
+                    ss_x: chroma_format.subsampling_x() as usize,
+                    ss_y: chroma_format.subsampling_y() as usize,
                     sb_size,
                     y_plane: rf,
                     stride: w,
@@ -15533,6 +15683,7 @@ fn encode_tile_rows(
                                 &sb_vars,
                                 (x0, y0),
                                 funnel_ctx.as_mut(),
+                                ref_ctx.as_ref(),
                             )
                         } else {
                             // Per-SB PD0 rate tables from the chain (C rebuilds
@@ -16567,6 +16718,7 @@ fn encode_tile_rows(
                                     &sb_vars,
                                     (x0, y0),
                                     funnel_ctx.as_mut(),
+                                    ref_ctx.as_ref(),
                                 )
                             }
                         }
@@ -16669,6 +16821,12 @@ fn encode_tile_rows(
                             qm_u: qm_levels[1],
                             qm_v: qm_levels[2],
                             c_quant: None,
+                            ref_uv: ref_padded
+                                .and_then(|p| p.uv.as_ref())
+                                .map(|(u, v)| (u, v)),
+                            sb_size,
+                            frame_w: w,
+                            frame_h: h,
                         });
                         encode_partition_tree(
                             tree,
@@ -19027,6 +19185,9 @@ mod inter_decision_probe {
             mv_map: None,
             mv_map_stride: 0,
             y_padded: Some(&padded.y),
+            uv_padded: padded.uv.as_ref(),
+            ss_x: 1,
+            ss_y: 1,
             sb_size: 64,
         };
         // A FULL-PEL MV takes the convolve's COPY corner, so the prediction

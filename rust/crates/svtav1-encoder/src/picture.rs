@@ -239,7 +239,8 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
 #[derive(Debug, Clone)]
 pub struct PaddedRef {
     pub y: PaddedPlane,
-    /// 4:2:0 chroma. `None` on a monochrome encode, where there is none.
+    /// Chroma at the frame's chroma resolution (half at 4:2:0, full at
+    /// 4:4:4). `None` on a monochrome encode, where there is none.
     pub uv: Option<(PaddedPlane, PaddedPlane)>,
     /// THE SAME PICTURE AT TRUE 10 BITS, when the encode reconstructed one.
     ///

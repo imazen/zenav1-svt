@@ -149,6 +149,14 @@ pub struct RefFrameCtx<'a> {
     /// because a legal MV puts the predicted block partly OUTSIDE the frame
     /// and the samples there are the replicated edge, not a constant.
     pub y_padded: Option<&'a crate::picture::PaddedPlane>,
+    /// The reference's padded CHROMA planes (u, v) at the frame's chroma
+    /// resolution — full-resolution at 4:4:4. `None` on monochrome and on
+    /// every encode whose chroma never became a reference.
+    pub uv_padded: Option<&'a (crate::picture::PaddedPlane, crate::picture::PaddedPlane)>,
+    /// The frame's chroma subsampling (`ChromaFormat::subsampling_x/y`) —
+    /// 1/1 at 4:2:0, 0/0 at 4:4:4. The chroma MC geometry derives from it.
+    pub ss_x: usize,
+    pub ss_y: usize,
     /// `scs->super_block_size` — read by `compute_subpel_params`'s MV clamp
     /// (`clamp_mv_to_umv_border_sb`), which bounds the MV against the SB, not
     /// the block.
@@ -2196,6 +2204,11 @@ pub(crate) fn encode_fixed_tree(
     sb_vars: &crate::pd0::SbVariance,
     sb_org: (usize, usize),
     mut funnel: Option<&mut crate::leaf_funnel::FunnelCtx<'_>>,
+    // The reference context the non-funnel leaf arm's inter candidate reads.
+    // `None` on every key frame (still/mono) — the leaf is intra-only then.
+    // On a 4:4:4 inter frame the funnel never arms (`use_funnel` is
+    // 4:2:0-only), so this is the arm that carries inter there.
+    ref_ctx: Option<&RefFrameCtx>,
 ) -> PartitionResult {
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
@@ -2314,8 +2327,10 @@ pub(crate) fn encode_fixed_tree(
             // variance-map gate `is_dc_only_safe` (mode_decision.c:845)
             // fires for the block. The fixed tree is exactly the C
             // context for the gate: PART_N squares 8..64, 64x64 SB.
-            let dc_only =
-                crate::pd0::is_dc_only_safe(sb_vars, size, abs_x - sb_org.0, abs_y - sb_org.1);
+            // Allintra semantics only — an inter frame (ref_ctx present)
+            // keeps the full intra set beside its inter candidates.
+            let dc_only = ref_ctx.is_none()
+                && crate::pd0::is_dc_only_safe(sb_vars, size, abs_x - sb_org.0, abs_y - sb_org.1);
             // The same spec-5.11.4 single-edge rule as the funnel arm above,
             // for the MONOCHROME fixed-tree path (no funnel). A PD0 leaf that
             // is a one-false node (the M6 PD0 keeps NSQ geometry on, so it
@@ -2362,7 +2377,7 @@ pub(crate) fn encode_fixed_tree(
                     config,
                     abs_x,
                     abs_y,
-                    None,
+                    ref_ctx,
                     tptype,
                     dc_only,
                 );
@@ -2393,7 +2408,7 @@ pub(crate) fn encode_fixed_tree(
                 config,
                 abs_x,
                 abs_y,
-                None,
+                ref_ctx,
                 svtav1_types::partition::PartitionType::None,
                 dc_only,
             )
@@ -2438,6 +2453,7 @@ pub(crate) fn encode_fixed_tree(
                     sb_vars,
                     sb_org,
                     funnel.as_deref_mut(),
+                    ref_ctx,
                 );
                 result.distortion += sub.distortion;
                 result.rate += sub.rate;
@@ -2575,6 +2591,96 @@ pub fn encode_chroma_block_dc(
         ch,
         qindex,
         svtav1_types::transform::TxType::DctDct,
+        cq,
+        1,
+        qm_level,
+    );
+
+    for r in 0..ch {
+        let dst = (cy + r) * stride + cx;
+        recon[dst..dst + cw].copy_from_slice(&enc.recon[r * cw..r * cw + cw]);
+    }
+
+    (enc.qcoeffs, enc.eob)
+}
+
+/// Inter-block chroma TXB: residual against an EXPLICIT predictor — the
+/// block's motion-compensated chroma — the `decision.is_inter` twin of
+/// [`encode_chroma_block_dc`]. The decoder codes no `uv_mode` for an inter
+/// block: its chroma prediction is the block's own motion, so the residual
+/// must be against that prediction or the streams disagree on every nonzero
+/// coefficient. A skipped inter block's chroma recon is the prediction
+/// itself, which eob==0 reproduces.
+///
+/// `pred` is the TXB's top-left sample inside a `pred_stride`-wide buffer
+/// (the caller predicts the whole chroma plane block once and hands each
+/// TXB its origin). `tx_type` is the decoder-derived chroma type
+/// (`inter_uv_tx_type`: the covering luma txb's coded type filtered by the
+/// chroma inter ext-tx set) — the forward transform must match the basis
+/// the decoder inverts.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_chroma_block_pred(
+    src: &[u8],
+    recon: &mut [u8],
+    stride: usize,
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    qindex: u8,
+    cq: Option<&crate::quant::CodingQuantCfg>,
+    qm_level: u8,
+    tx_type: svtav1_types::transform::TxType,
+) -> (alloc::vec::Vec<i32>, u16) {
+    if qindex == 0 {
+        // Coded-lossless preempts EVERY plane's transform to the 4x4
+        // Walsh-Hadamard pair — the same arm as `encode_chroma_block_dc`,
+        // against the explicit predictor.
+        debug_assert_eq!((cw, ch), (4, 4), "lossless TXBs are TX_4X4");
+        let mut residual = [0i16; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                residual[r * 4 + c] =
+                    src[(cy + r) * stride + cx + c] as i16 - pred[r * pred_stride + c] as i16;
+            }
+        }
+        let mut wht = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&residual, &mut wht, 4);
+        let mut coeffs = [0i32; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                coeffs[c * 4 + r] = wht[r * 4 + c];
+            }
+        }
+        let qt = crate::quant::build_quant_table(0);
+        let scan = crate::entropy::scan_tables::scan(crate::entropy::coeff_c::TX_4X4, 0);
+        let mut q = alloc::vec![0i32; 16];
+        let mut dq = [0i32; 16];
+        let eob = crate::quant::quantize_b(&coeffs, scan, &qt, 0, &mut q, &mut dq);
+        let pred16: [u16; 16] =
+            core::array::from_fn(|i| u16::from(pred[(i / 4) * pred_stride + i % 4]));
+        let mut decoded = [0u16; 16];
+        svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(&dq, &pred16, 4, &mut decoded, 4, 8);
+        for r in 0..4 {
+            let dst = (cy + r) * stride + cx;
+            for c in 0..4 {
+                recon[dst + c] = decoded[r * 4 + c] as u8;
+            }
+        }
+        return (q, eob);
+    }
+
+    let enc = crate::encode_loop::encode_block_tx_cq(
+        &src[cy * stride + cx..],
+        stride,
+        pred,
+        pred_stride,
+        cw,
+        ch,
+        qindex,
+        tx_type,
         cq,
         1,
         qm_level,
@@ -3038,55 +3144,12 @@ fn encode_single_block(
             center_mv,
         );
 
-        // Generate inter prediction from reference + MV
-        let mut inter_pred = generate_inter_pred(rfc, me_result.mv, abs_x, abs_y, width, height);
-
-        // Apply OBMC blending with above/left neighbor predictions.
-        // Uses neighbor MVs from the MV map to generate overlap predictions.
-        // (Spec 06: OBMC blends current prediction with neighbor predictions)
-        if let Some(mv_map) = rfc.mv_map {
-            let bx = abs_x / 8;
-            let by = abs_y / 8;
-            let stride = rfc.mv_map_stride;
-            let overlap_h = (height / 2).clamp(1, 4);
-            let overlap_w = (width / 2).clamp(1, 4);
-
-            // Above neighbor OBMC
-            if by > 0 && stride > 0 {
-                let above_mv = mv_map[(by - 1) * stride + bx];
-                if above_mv != me_result.mv {
-                    let above_pred =
-                        generate_inter_pred(rfc, above_mv, abs_x, abs_y, width, overlap_h);
-                    svtav1_dsp::obmc::obmc_blend_above(
-                        &mut inter_pred,
-                        width,
-                        &above_pred,
-                        width,
-                        width,
-                        height,
-                        overlap_h,
-                    );
-                }
-            }
-
-            // Left neighbor OBMC
-            if bx > 0 && stride > 0 {
-                let left_mv = mv_map[by * stride + bx - 1];
-                if left_mv != me_result.mv {
-                    let left_pred =
-                        generate_inter_pred(rfc, left_mv, abs_x, abs_y, overlap_w, height);
-                    svtav1_dsp::obmc::obmc_blend_left(
-                        &mut inter_pred,
-                        width,
-                        &left_pred,
-                        overlap_w,
-                        width,
-                        height,
-                        overlap_w,
-                    );
-                }
-            }
-        }
+        // Generate inter prediction from reference + MV. NO OBMC blending:
+        // the block signals `motion_mode = SimpleTranslation`, for which the
+        // decoder never blends — a blended prediction here would be a
+        // recon-vs-decode divergence wherever it fired (this path lights up
+        // on the 4:4:4 inter arm; on 4:2:0 the funnel decides inter instead).
+        let inter_pred = generate_inter_pred(rfc, me_result.mv, abs_x, abs_y, width, height);
 
         let enc_inter = crate::encode_loop::encode_block(
             src,
@@ -3154,7 +3217,13 @@ fn encode_single_block(
     let decision = BlockDecision {
         partition_type: PartitionType::None,
         is_inter: chose_inter,
-        intra_mode: chosen_mode,
+        // An inter leaf codes no intra y_mode — stamp DC_PRED, matching
+        // the funnel's inter-winner convention (leaf_funnel/types.rs:602)
+        // and the decoder's `av1_get_intra_mode_context`, which reads
+        // DC_PRED for an inter NEIGHBOUR. Stamping the losing intra
+        // candidate's mode would move the next intra block's mode ctx
+        // onto a CDF row the decoder never selected — a tile desync.
+        intra_mode: if chose_inter { 0 } else { chosen_mode },
         tx_type: if chose_inter { 0 } else { chosen_tx },
         mv: chosen_mv,
         // What this homegrown search actually decided, in the form the pack

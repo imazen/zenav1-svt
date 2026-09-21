@@ -117,13 +117,42 @@ paths (t1/t2 at preset -1) byte-identical to pre-fix.
 ## 4:4:4 chroma — 2026-09-21
 
 `ChromaFormat::Yuv444` ships as a Zen extension on a measured envelope:
-**8-bit, key/still frame, `sb_size 64`, no superres**. Everything outside
-refuses at `encode_frame_impl`'s envelope gate — inter, 10-bit, SB128,
+**8-bit, key AND inter frames, `sb_size 64`, no superres**. Everything
+outside refuses at `encode_frame_impl`'s envelope gate — 10-bit, SB128,
 superres, IntraBC (sequence flag forced off), film grain (the 4:2:0-shaped
 `validate_film_grain` refusal covers it). C v4.2.0 refuses non-4:2:0 at
 `verify_settings` (`enc_settings.c:470`), so **there is no byte oracle and
 none is claimed** — the property asserted is decoder reconstruction
 equality plus measured RD sanity.
+
+**Inter frames (added 2026-09-21, second commit):** the funnel stays
+4:2:0-only, so 4:4:4 inter decisions come from the non-funnel leaf arm —
+`RefFrameCtx` carries the reference's padded chroma planes and the frame's
+subsampling, `hierarchical_me_centered` finds a luma MV per leaf, and the
+walk predicts inter chroma by motion compensation (`predict_inter_chroma_*`
+parameterized by `(ss_x, ss_y)`) and residual-codes against it; a genuine
+inter block codes no `uv_mode`. Two write-time defects were found by
+decoding, not by reading code:
+
+- `overlappable_neighbors`/`num_proj_ref` were hardcoded 0 on this path.
+  The decoder recomputes both per block (decodemv.c `av1_findSamples` +
+  `av1_count_overlappable_neighbors`), so a `WARPED_CAUSAL`-allowed
+  three-symbol `motion_mode` went uncoded on every neighboured block and
+  aomdec rejected frame-1 tiles. Both are now derived from the committed
+  mode-info map inside `inter_mvp_fields`, like `pred_mv`/`drl_ctx`.
+- The recon-only entropy walk dropped chroma TXB eobs entirely
+  (`if !recon_only` skipped the `(q, eob)` push), so the recon-mode `skip`
+  derivation saw "all chroma eob == 0" and recorded `skip = 1` into the
+  deblock geometry while the bit-producing walk wrote `skip = 0` — the
+  decoder's CDEF dlist included blocks ours excluded, producing small
+  localized luma differences with U/V exact. The recon walk now keeps the
+  real eobs and empties only the coefficient vectors.
+
+Decoder verification (aomdec, `tools/chroma_444_inter_gate.sh` driving
+`examples/probe_444_{dup,video}.rs` — duplicate, random, integer-shift and
+moving-content streams at 64x64..256x128, presets {0,6,13}, qp 30,
+2..6 frame chains): **45/45 matrix cells + 4/4 moving-content frames +
+6/6 chain frames byte-identical on all three planes** (47/47 gate cells).
 
 Decoder verification (aomdec AND dav1d, `examples/probe_444*.rs`):
 10/10 cells — 36/44/60/64/100/120/128/200 px square, qp {0,20,30,35,45} —

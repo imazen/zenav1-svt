@@ -61,7 +61,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | 4:2:2 planes: y at y_stride over true dims, u/v at (true_w+1)/2 x true_h |
 | `crates/svtav1-encoder/src/pipeline.rs` | 4:4:4 planes must each cover the true dims (u/v full-resolution) |
 | `crates/svtav1-encoder/src/pipeline.rs` | C film grain requires 8/10-bit 4:2:0 |
-| `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit still/key frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, inter/IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
+| `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |

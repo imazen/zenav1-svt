@@ -1454,6 +1454,8 @@ pub(crate) fn predict_inter_chroma_sub8(
             u_out,
             v_out,
             uv_stride,
+            1,
+            1,
         );
     }
 }
@@ -1555,6 +1557,8 @@ pub(crate) fn predict_inter_chroma_sub8_hbd(
             u_out,
             v_out,
             uv_stride,
+            1,
+            1,
         );
     }
 }

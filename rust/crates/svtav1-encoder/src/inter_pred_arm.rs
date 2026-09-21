@@ -1227,6 +1227,8 @@ fn chroma_unit(
     conv_buf: &mut [u16],
     dst: &mut [u8],
     dst_stride: usize,
+    ss_x: i32,
+    ss_y: i32,
 ) {
     use svtav1_dsp::port_convolve::ConvolveParams;
     use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
@@ -1251,8 +1253,8 @@ fn chroma_unit(
         cheight,
         edges,
         plane,
-        1,
-        1,
+        ss_y,
+        ss_x,
         8,
         false,
         false,
@@ -1280,6 +1282,8 @@ fn chroma_unit_hbd(
     dst: &mut [u16],
     dst_stride: usize,
     bit_depth: u8,
+    ss_x: i32,
+    ss_y: i32,
 ) {
     use svtav1_dsp::port_convolve::ConvolveParams;
     use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
@@ -1304,8 +1308,8 @@ fn chroma_unit_hbd(
         cheight,
         edges,
         plane,
-        1,
-        1,
+        ss_y,
+        ss_x,
         i32::from(bit_depth),
         false,
         false,
@@ -1400,6 +1404,8 @@ pub fn predict_inter_chroma_sub8x8_hbd(
                     &mut dst[y * uv_stride + x..],
                     uv_stride,
                     bit_depth,
+                    1,
+                    1,
                 );
             }
             col += 1;
@@ -1430,9 +1436,14 @@ pub fn predict_inter_chroma_whole_hbd(
     u_out: &mut [u16],
     v_out: &mut [u16],
     uv_stride: usize,
+    ss_x: usize,
+    ss_y: usize,
 ) {
-    let (cw, chh) = (bw.max(8) >> 1, bh.max(8) >> 1);
-    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+    let (cw, chh) = ((bw >> ss_x).max(4), (bh >> ss_y).max(4));
+    let (cx, cy) = (
+        if ss_x == 0 { org_x } else { round_uv_half(org_x) },
+        if ss_y == 0 { org_y } else { round_uv_half(org_y) },
+    );
     let sf = ScaleFactors::setup_for_frame(
         frame_w as i32,
         frame_h as i32,
@@ -1466,6 +1477,8 @@ pub fn predict_inter_chroma_whole_hbd(
             dst,
             uv_stride,
             bit_depth,
+            ss_x as i32,
+            ss_y as i32,
         );
     }
 }
@@ -1576,6 +1589,8 @@ pub fn predict_inter_chroma_sub8x8(
                     &mut conv_buf,
                     &mut dst[y * uv_stride + x..],
                     uv_stride,
+                    1,
+                    1,
                 );
             }
             col += 1;
@@ -1592,6 +1607,11 @@ pub fn predict_inter_chroma_sub8x8(
 /// own MV. For a block 8x8 or larger this is just "the block's chroma"; for a
 /// sub-8 one it is the parent 8x8's chroma predicted from one MV, which is
 /// what C falls back to when a covered cell is intra.
+///
+/// `ss_x`/`ss_y` are the frame's chroma subsampling — 1/1 at 4:2:0 (C's only
+/// surface), 0/0 at 4:4:4 where the chroma plane block IS the luma block at
+/// full resolution: `bwidth_uv = MAX(4, bw >> ss)` and the origin is the
+/// unshifted block origin (spec `get_plane_block_size` / `mv_plane`).
 #[allow(clippy::too_many_arguments)]
 pub fn predict_inter_chroma_whole(
     uref: &PaddedPlane,
@@ -1608,9 +1628,14 @@ pub fn predict_inter_chroma_whole(
     u_out: &mut [u8],
     v_out: &mut [u8],
     uv_stride: usize,
+    ss_x: usize,
+    ss_y: usize,
 ) {
-    let (cw, chh) = (bw.max(8) >> 1, bh.max(8) >> 1);
-    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+    let (cw, chh) = ((bw >> ss_x).max(4), (bh >> ss_y).max(4));
+    let (cx, cy) = (
+        if ss_x == 0 { org_x } else { round_uv_half(org_x) },
+        if ss_y == 0 { org_y } else { round_uv_half(org_y) },
+    );
     let sf = ScaleFactors::setup_for_frame(
         frame_w as i32,
         frame_h as i32,
@@ -1643,6 +1668,8 @@ pub fn predict_inter_chroma_whole(
             &mut conv_buf,
             dst,
             uv_stride,
+            ss_x as i32,
+            ss_y as i32,
         );
     }
 }
