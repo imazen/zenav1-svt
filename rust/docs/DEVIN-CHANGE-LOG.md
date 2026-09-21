@@ -23,6 +23,68 @@ Changes by other authors are not listed here.
 
 ---
 
+## 2026-09-21 — qp0 coded-lossless inter (8-bit 4:2:0) + monochrome inter — `561267534`
+
+- What: `lossless_config_error` admits inter frames at 8-bit 4:2:0 only —
+  keyed on `self.chroma_420` (mono `None` and 4:4:4 `Some(Yuv444)` both
+  fail it); `mds3::eval_candidate` no longer excludes `coded_lossless`
+  from computing prediction dists (C `svt_aom_full_cost` arbitrates
+  skip-MODE whenever `skip_mode_present`, and `expect`s the dists — a qp0
+  multi-frame encode panicked); the broad `chroma.is_none()` mono-inter
+  refusal is removed with its measurement rewritten into the comment;
+  `animation_keyframes` drops its `chroma_420` term so 8-bit
+  non-lossless mono animations inter-code (lossless stays all-intra as
+  product pacing, alpha stays all-intra, >8-bit stays all-intra pending
+  animation-specific measurement); `identity_run`'s bd10 final-recon
+  dump gains the same `!ru.is_empty()` chroma guard the u8 arm already
+  had (mono bd10 recon has no chroma planes — the gate's bd10 leg
+  caught the panic). New gates: `tools/qp0_inter_gate.sh`,
+  `tools/mono_inter_gate.sh`. Stale tests updated:
+  `inter_frames_are_refused_not_corrupted` →
+  `mono_inter_frames_decode_identically_to_recon` (encodes a mono inter
+  frame and asserts aomdec output == `last_recon`, the property the
+  refusal guarded, now decoder-witnessed);
+  `pipeline_encode_sequence` keeps its counters-don't-advance-on-refusal
+  half via the qp0-mono refusal.
+- Why: C accepts coded-lossless inter (`[C: accepts]`) and the funnel
+  already emitted real inter blocks with WHT residuals — 355 IDBG
+  decisions incl. NearestMv/NewMv/skip-mode/WarpedCausal on one sweep.
+  The mono refusal's corrupt-stream measurement predated the
+  format-agnostic inter correctness landings (write-time
+  `overlappable_neighbors`/`num_proj_ref` derivation, recon-only eob
+  preservation, OBMC on `SimpleTranslation`); with them in place both
+  decoders reconstruct mono inter byte-identically to our recon.
+  Refusals kept where measurement showed real defects: 10-bit qp0 inter
+  predicts intra per-BLOCK where the decoder predicts per-TXB (encoder
+  recon == source but aomdec diverges — a correctness defect, not
+  efficiency), and mono/4:4:4 qp0 inter has no inter WHT residual arm
+  (legal but silently all-intra streams — the mono gate pins the refusal
+  so it can't silently un-refuse).
+- Verified by: `tools/qp0_inter_gate.sh` 7/7 (4-frame encodes decode
+  byte-identical to SOURCE via aomdec — the lossless oracle — presets
+  {0,6,13}, sb64+sb128, 128x128+256x256, IDBG anti-vacuity leg, bd10 +
+  4:4:4 refusal legs); `tools/mono_inter_gate.sh` 12/12 (recon ==
+  aomdec == dav1d on every frame — two independent decoders — 13-px-shift
+  synthetic legs x p{0,6,8,13} x 64x64..256x128, sb64+sb128, 6-frame
+  inter chain, bd10 leg, fourpeople real-clip leg, nonzero-MV +
+  inter-usage anti-vacuity, qp0 mono refusal leg); mono AVIF animation
+  end-to-end (dav1d decodes all 3 samples, each matching its own source,
+  `stss` marks only sample 1 — real inter coding through the product
+  path); `cargo nextest` 3964/3964; `video_selfcheck_gate.sh` 270/270
+  (4:2:0 funnel regression for the mds3 pred-dist change);
+  `refusal_inventory.sh --check` (63 refusals; qp0 refusal classified
+  CAPABILITY/`[C: accepts]`, broad mono-inter refusal gone) +
+  `portnote_index.sh --check` current.
+- Audit surface: the `lossless_config_error` qp0 envelope in
+  `pipeline.rs` (the `chroma_420` boolean, not `chroma_format` — mono's
+  `None` must fail it); the `mds3` pred-dist predicate (identical
+  evaluation for non-lossless frames — the added arm only fires for
+  coded-lossless inter candidates); the removed mono-inter refusal site
+  (comment now carries the 2026-09-21 measurement); both gate scripts'
+  anti-vacuity legs; `REFUSED-CONFIGS.md` regenerated. No C-byte-parity
+  claim for mono (C cannot encode mono — decoder-verified extension);
+  qp0 inter claims decoder-verified source-exactness, not C parity.
+
 ## 2026-09-21 — 4:4:4 inter frames on the decoder-verified envelope — `d61238517`
 
 - What: `RefFrameCtx` gains `uv_padded` + `ss_x`/`ss_y`;
