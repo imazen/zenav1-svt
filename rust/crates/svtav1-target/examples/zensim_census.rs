@@ -15,7 +15,7 @@
 
 use std::io::Write;
 
-use svtav1_target::{TargetOptions, encode_to_target};
+use svtav1_target::{MetricKind, TargetOptions, TargetSpec, TrialRecon, encode_to_target_10bit};
 
 const KR: f64 = 0.2627;
 const KB: f64 = 0.0593;
@@ -239,54 +239,47 @@ fn main() {
             let recon_png_s = recon_png.to_str().unwrap().to_string();
             let ref_path2 = ref_path.clone();
             let zm = zm_bin.clone();
-            let judge = |outp: &svtav1_target::TrialOutput| -> Result<f64, String> {
-                let rgbr = yuv420_bd10_to_rgb16(
-                    &outp.recon10.0,
-                    &outp.recon10.1,
-                    &outp.recon10.2,
-                    w,
-                    h,
-                    outp.aligned_w,
-                );
-                write_png16(&recon_png_s, &rgbr, w, h);
-                let o = std::process::Command::new(&zm)
-                    .args([
-                        "score",
-                        "--metric",
-                        "zensim",
-                        "--hdr",
-                        "--reference",
-                        &ref_path2,
-                        "--distorted",
-                        &recon_png_s,
-                    ])
-                    .output()
-                    .map_err(|e| format!("spawn: {e}"))?;
-                if !o.status.success() {
-                    return Err(format!(
-                        "judge rc={:?}: {}",
-                        o.status.code(),
-                        String::from_utf8_lossy(&o.stderr)
-                            .chars()
-                            .take(200)
-                            .collect::<String>()
-                    ));
-                }
-                let s = String::from_utf8_lossy(&o.stdout);
-                s.split("zensim=")
-                    .nth(1)
-                    .and_then(|x| x.trim().parse::<f64>().ok())
-                    .ok_or_else(|| format!("unparsable judge output: {s}"))
-            };
-            let (res, outp) = encode_to_target(
-                &sy,
-                &su,
-                &sv,
-                w,
-                h,
-                6,
-                t,
-                &TargetOptions {
+            let judge =
+                |outp: &svtav1_target::TrialOutput| -> Result<Vec<(MetricKind, f64)>, String> {
+                    let TrialRecon::Bd10 { y, u, v } = &outp.recon else {
+                        return Err("expected bd10 recon".into());
+                    };
+                    let rgbr = yuv420_bd10_to_rgb16(y, u, v, w, h, outp.aligned_w);
+                    write_png16(&recon_png_s, &rgbr, w, h);
+                    let o = std::process::Command::new(&zm)
+                        .args([
+                            "score",
+                            "--metric",
+                            "zensim",
+                            "--hdr",
+                            "--reference",
+                            &ref_path2,
+                            "--distorted",
+                            &recon_png_s,
+                        ])
+                        .output()
+                        .map_err(|e| format!("spawn: {e}"))?;
+                    if !o.status.success() {
+                        return Err(format!(
+                            "judge rc={:?}: {}",
+                            o.status.code(),
+                            String::from_utf8_lossy(&o.stderr)
+                                .chars()
+                                .take(200)
+                                .collect::<String>()
+                        ));
+                    }
+                    let s = String::from_utf8_lossy(&o.stdout);
+                    s.split("zensim=")
+                        .nth(1)
+                        .and_then(|x| x.trim().parse::<f64>().ok())
+                        .map(|s| vec![(MetricKind::Zensim, s)])
+                        .ok_or_else(|| format!("unparsable judge output: {s}"))
+                };
+            let spec = TargetSpec {
+                metric: MetricKind::Zensim,
+                value: t,
+                options: TargetOptions {
                     tolerance: 0.0,
                     max_encodes,
                     qp_start: seed
@@ -295,9 +288,10 @@ fn main() {
                         .copied(),
                     ..Default::default()
                 },
-                judge,
-            )
-            .unwrap_or_else(|e| panic!("{scene} t{t}: {e:?}"));
+            };
+            let out = encode_to_target_10bit(&sy, &su, &sv, w, h, 6, &spec, judge, |_pipe| {})
+                .unwrap_or_else(|e| panic!("{scene} t{t}: {e:?}"));
+            let res = &out.search;
             let secs = t0.elapsed().as_secs_f64();
             writeln!(
                 tsv,
@@ -306,7 +300,7 @@ fn main() {
                 res.encodes_used,
                 res.score,
                 (res.score - t).abs(),
-                outp.bytes.len(),
+                out.bytes.len(),
             )
             .unwrap();
             eprintln!(
