@@ -24,8 +24,9 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
   to native buckets; fractional adaptive search is not implemented.
 - Grain modeling/denoising/tables/synthesis and named Zen intra-edge/restoration
   experiments are wired in their documented envelopes. Experiments stay opt-in.
-- Wider chroma and 12-bit are rejected by C SVT and this backend. They are useful
-  alternate-backend work, not missing shipping-C translations.
+- 4:4:4 chroma ships on a measured decoder-verified envelope (8-bit key/still,
+  SB64, no superres) as a Zen extension — C refuses it, so the oracle is the
+  decoder, never byte parity. 4:2:2 and 12-bit remain rejected, matching C.
 
 At implementation main **`0cbd1279`**, the latest native workspace gate passed
 **2631/2631 tests, zero skips**. PR #20 uses published archmage/magetypes
@@ -140,12 +141,13 @@ content. Both claims are measured below; neither is inferred from the other.
 | QP 0 (coded-lossless) on inter | **Not supported** | Refused; still-image lossless IS supported |
 | 10-bit OBMC | **Not supported** | `bd10_tree_supported` drops such a frame back to the 8-bit output rather than miscoding it |
 | Monochrome inter | **Not supported** | Refused. Every inter gate here is 4:2:0, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
+| **4:4:4 chroma, 8-bit key/still** | **Validated** | Zen extension — C refuses non-4:2:0 (`enc_settings.c:470`), so there is no byte oracle. Envelope: 8-bit, key/still frame, `sb_size 64`, no superres; inter/10-bit/SB128/superres/IntraBC/film-grain refuse. Reconstruction byte-identical to `aomdec` AND `dav1d` on 10/10 cells (36..200 px, qp 0/20/30/35/45, incl. coded-lossless) — the probes are `examples/probe_444*.rs`. Chroma loop filters signal off until ported. RD quality measured, not assumed: `tools/rd_ext_sweep.sh` (SSIMULACRA2 + per-plane PSNR vs `aomenc --i444 --profile=1`) — 396 cells, 0 failures, monotonic RD everywhere; chroma earns its bits (U/V PSNR +1.3..+15.3 dB vs own 4:2:0 at matched qp); frontier x1.74 vs libaom vs the 4:2:0 baseline's x1.46 |
 
 ### Outside the envelope by design
 
-4:2:2 / 4:4:4 and 12-bit are rejected by C SVT v4.2.0 itself, so they are not
-missing translations — they are alternate-backend work. Wider chroma, 12-bit
-and fractional adaptive effort are all rejected at the API.
+4:2:2 and 12-bit are rejected by C SVT v4.2.0 itself, so they are not missing
+translations — they are alternate-backend work. 4:2:2, 12-bit and fractional
+adaptive effort are all rejected at the API.
 
 ### How to read a "Validated" row
 

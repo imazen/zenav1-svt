@@ -2521,7 +2521,50 @@ pub fn encode_chroma_block_dc(
     let (above, left, _top_left, has_above, has_left) = nb.parts();
 
     let mut pred = alloc::vec![0u8; cw * ch];
-    svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
+    svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, above, left, cw, ch, has_above, has_left);
+
+    if qindex == 0 {
+        // Coded-lossless: the decoder preempts EVERY plane's transform to
+        // the 4x4 Walsh-Hadamard pair (`av1_get_tx_size` -> TX_4X4 at
+        // xd->lossless; `av1_inverse_transform_block` -> iwht4x4), still
+        // dequantizing with the qindex-0 table. `encode_block_tx_cq`'s DCT
+        // arm would emit DCT-domain levels the decoder IWHTs into the
+        // wrong pixels. Mirror `lossless_mono`'s
+        // fwht -> transpose -> quantize_b -> iwht arm.
+        debug_assert_eq!((cw, ch), (4, 4), "lossless TXBs are TX_4X4");
+        let mut residual = [0i16; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                residual[r * 4 + c] =
+                    src[(cy + r) * stride + cx + c] as i16 - pred[r * 4 + c] as i16;
+            }
+        }
+        let mut wht = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&residual, &mut wht, 4);
+        // Transpose — the scan convention of C `svt_av1_estimate_transform`'s
+        // lossless arm (the WHT output is emitted transposed).
+        let mut coeffs = [0i32; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                coeffs[c * 4 + r] = wht[r * 4 + c];
+            }
+        }
+        let qt = crate::quant::build_quant_table(0);
+        let scan = crate::entropy::scan_tables::scan(crate::entropy::coeff_c::TX_4X4, 0);
+        let mut q = alloc::vec![0i32; 16];
+        let mut dq = [0i32; 16];
+        let eob = crate::quant::quantize_b(&coeffs, scan, &qt, 0, &mut q, &mut dq);
+        let pred16: [u16; 16] = core::array::from_fn(|i| u16::from(pred[i]));
+        let mut decoded = [0u16; 16];
+        svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(&dq, &pred16, 4, &mut decoded, 4, 8);
+        for r in 0..4 {
+            let dst = (cy + r) * stride + cx;
+            for c in 0..4 {
+                recon[dst + c] = decoded[r * 4 + c] as u8;
+            }
+        }
+        return (q, eob);
+    }
 
     let enc = crate::encode_loop::encode_block_tx_cq(
         &src[cy * stride + cx..],
@@ -2596,8 +2639,8 @@ fn encode_with_neighbors(
         height,
         qindex,
         config,
-        &above,
-        &left,
+        above,
+        left,
         top_left,
         has_above,
         has_left,

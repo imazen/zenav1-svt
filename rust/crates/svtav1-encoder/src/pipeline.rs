@@ -908,13 +908,15 @@ impl EncodePipeline {
     ///
     /// * [`ChromaFormat::Yuv420`] — the byte-parity surface; identical to
     ///   `with_chroma_420(true)`.
-    /// * [`ChromaFormat::Yuv422`] / [`ChromaFormat::Yuv444`] — Zen
-    ///   extensions: C v4.2.0 REFUSES them
-    ///   (`Globals/enc_settings.c:470`), so no byte oracle exists. The
-    ///   path is staged: entry points that are not yet proven
-    ///   decoder-exact keep refusing; the oracle for what ships is
-    ///   `aomdec`/`dav1d` + `zenav1-aom` behavior, never a claim of C
-    ///   parity.
+    /// * [`ChromaFormat::Yuv444`] — Zen extension, SHIPPING on the
+    ///   8-bit key/still + `sb_size 64` + no-superres envelope:
+    ///   decoder-verified (`aomdec`/`dav1d` reconstruction equality,
+    ///   `tools/rd_ext_sweep.sh` for the SSIM2/RD oracle), never a
+    ///   claim of C parity — C v4.2.0 REFUSES it
+    ///   (`Globals/enc_settings.c:470`).
+    /// * [`ChromaFormat::Yuv422`] — Zen extension, still staged:
+    ///   `try_encode_frame_422` keeps refusing until the arm is proven
+    ///   decoder-exact.
     /// * [`ChromaFormat::Yuv400`] — the existing monochrome extension
     ///   (`encode_frame_mono_core`), same no-oracle tier.
     ///
@@ -1343,20 +1345,15 @@ impl EncodePipeline {
                  entry points (try_encode_frame / encode_y8), which carry no \
                  chroma planes",
             ),
+            // 4:4:4 is ungated at the entry — `encode_frame_impl` carries the
+            // real envelope gate (8-bit key/still, SB64, no superres) with the
+            // refusal text naming each unported piece.
+            Some(svtav1_types::chroma::ChromaFormat::Yuv444) => None,
             Some(f) => Some(match f {
                 svtav1_types::chroma::ChromaFormat::Yuv422 => {
                     "ChromaFormat::Yuv422 is not yet ported: chroma geometry is \
                      still derived for 4:2:0 (C itself refuses it at \
                      verify_settings, enc_settings.c:470 — no byte oracle)"
-                }
-                svtav1_types::chroma::ChromaFormat::Yuv444 => {
-                    "ChromaFormat::Yuv444 is not yet ported: the staged path \
-                     still codes chroma at 4:2:0 geometry — a bring-up probe \
-                     produced a stream aomdec reports 'Corrupt frame / \
-                     Failed to decode tile data' (2026-09-19). The refusal \
-                     stays until the geometry pass below `encode_frame_impl` \
-                     is complete and decoder-verified (C itself refuses 444 \
-                     at verify_settings, enc_settings.c:470 — no byte oracle)"
                 }
                 _ => unreachable!(),
             }),
@@ -2030,14 +2027,18 @@ impl EncodePipeline {
     /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`, `y`
     /// at `y_stride`). Requires `with_chroma_format(Some(Yuv444))`.
     ///
-    /// Staged: the path currently refuses at the chroma-format gate —
-    /// chroma geometry is still derived for 4:2:0 internally. Landing a
-    /// working arm means flipping `chroma_format_support_error`'s
-    /// `Yuv444` arm once the geometry is proven decoder-exact; this
-    /// signature is the stable contract that arm will serve.
+    /// Support envelope (decoder-verified — C refuses non-4:2:0 at
+    /// `verify_settings`, enc_settings.c:470, so no byte oracle exists):
+    /// 8-bit, key/still frame, `sb_size 64`, no superres. Everything else
+    /// (inter, 10-bit, sb128, superres, IntraBC) takes the honest refusal
+    /// at `encode_frame_impl`'s envelope gate. Chroma loop filters are
+    /// signalled off (lf levels 0 / CDEF uv 0 / LR RESTORE_NONE) until the
+    /// filter kernels are ported — decoder-consistent by construction.
+    /// Quality oracle: `tools/rd_ext_sweep.sh` (SSIMULACRA2 + per-plane
+    /// PSNR against aomenc `--i444 --profile=1`).
     ///
     /// # Errors
-    /// [`EncodeError::UnsupportedConfig`] until the arm is ungated;
+    /// [`EncodeError::UnsupportedConfig`] outside the envelope;
     /// [`EncodeError::InvalidDimensions`] on short planes.
     pub fn try_encode_frame_444(
         &mut self,
@@ -2669,6 +2670,44 @@ impl EncodePipeline {
         let w = self.width as usize;
         let h = self.height as usize;
         let n = w * h;
+        // The frame's chroma format drives EVERY chroma-geometry derivation
+        // below — `ChromaFormat::{chroma_width,chroma_height}` are the C
+        // `>> subsampling` rules generalized, never a local `/2`.
+        let fmt = self
+            .chroma_format
+            .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420);
+        let (ss_x, ss_y) = (fmt.subsampling_x() as usize, fmt.subsampling_y() as usize);
+        // Aligned-extent chroma dims — the internal planes' stride/height.
+        let (acw, ach) = (fmt.chroma_width(w), fmt.chroma_height(h));
+        // Non-4:2:0 formats ship only where the generalized path is proven.
+        // 4:4:4 is decoder-verified on the intra/still arm at sb64 (the
+        // interleaved multi-cell chroma walk sb128 needs is not yet ported,
+        // and the inter/IBC chroma prediction arm is 4:2:0-only) — a 444
+        // inter frame or sb128 stream takes the honest refusal rather than a
+        // mis-shaped stream.
+        if fmt == svtav1_types::chroma::ChromaFormat::Yuv444
+            && (!is_key
+                || self.sb_size != 64
+                || self.bit_depth != 8
+                || self.superres_denom.is_some())
+        {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "ChromaFormat::Yuv444 is decoder-verified only for 8-bit \
+                 still/key frames at sb_size 64 without superres: the sb128 \
+                 multi-cell chroma walk, 10-bit 444 planes, inter/IntraBC \
+                 chroma prediction and chroma superres are not yet ported \
+                 (C itself refuses 444 at verify_settings, \
+                 enc_settings.c:470 — no byte oracle)",
+            )));
+        }
+        // 4:4:4 staged bring-up: the chroma loop-filter KERNELS are still
+        // 4:2:0-shaped, so at 444 every chroma filter arm is skipped and the
+        // header signals chroma off (lf levels 0 / CDEF uv strengths 0 /
+        // LR planes RESTORE_NONE) — decoder-consistent by construction.
+        // `filter_chroma` is the apply-side "chroma arm runs" flag; at
+        // 4:2:0 it is exactly `chroma.is_some()`.
+        let filter_chroma = chroma.is_some()
+            && fmt == svtav1_types::chroma::ChromaFormat::Yuv420;
         let encode_input = if c_tf_enabled
             && self.speed_config.enable_temporal_filter
             && !is_key
@@ -2742,8 +2781,7 @@ impl EncodePipeline {
         let sb_chroma_owned: Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = chroma
             .map(
                 |(u, v)| -> crate::EncodeResult<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
-                    let (acw, ach) = (w / 2, h / 2);
-                    let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
+                    let (ext_cw, ext_ch_h) = (fmt.chroma_width(ext_w), fmt.chroma_height(ext_h));
                     Ok(if ext_ch_h == ach && ext_cw == acw {
                         // Full-SB (or 64-aligned) frame: exact aligned chroma,
                         // byte-identical to the pre-#95 source.
@@ -2798,8 +2836,7 @@ impl EncodePipeline {
                 let (u, v) = if hbd.u.is_empty() {
                     (alloc::vec::Vec::new(), alloc::vec::Vec::new())
                 } else {
-                    let (acw, ach) = (w / 2, h / 2);
-                    let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
+                    let (ext_cw, ext_ch_h) = (fmt.chroma_width(ext_w), fmt.chroma_height(ext_h));
                     let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
                     let mut up = svtav1_types::try_vec![0u16; n_rows * acw]?;
                     let mut vp = svtav1_types::try_vec![0u16; n_rows * acw]?;
@@ -2850,7 +2887,7 @@ impl EncodePipeline {
         // allintra one (:2346-2369) — which is what makes a video-mode
         // screen-content key frame set `frm_hdr->allow_intrabc` at M6, where
         // the still arm leaves it clear.
-        let sc_derivation = match self.hdr.screen_content_mode {
+        let mut sc_derivation = match self.hdr.screen_content_mode {
             Some(mode @ 0..=1) => {
                 // C forces every classification, not just the header flag.
                 // Keep the real preset for palette/IntraBC tool selection.
@@ -2870,6 +2907,14 @@ impl EncodePipeline {
             }
             _ => crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h),
         };
+        // 4:4:4 staged bring-up: IntraBC chroma prediction is not ported
+        // (the IBC search is funnel-only and the funnel is 4:2:0-gated), so
+        // the frame must NOT advertise the tool — `allow_intrabc=1` would
+        // also suppress the LF/CDEF/LR FH param blocks (spec 5.9.11/19/20)
+        // that this stream still needs to signal.
+        if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
+            sc_derivation.allow_intrabc = false;
+        }
         // Hoisted out of the walk: `&self` is borrowed across the pack loop, and
         // this is a frame-constant. One value for the header writer and the
         // walk (see `EntropyCtx::tx_mode_select`).
@@ -5332,7 +5377,11 @@ impl EncodePipeline {
             &mv_map,
             mv_map_stride,
             &sb_qp_offsets,
-            chroma.is_some(),
+            // "chroma present AND the C-parity surface" — `filter_chroma`,
+            // so the 4:2:0-only funnel never arms at 4:4:4.
+            filter_chroma,
+            self.chroma_format
+                .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420),
             c_quant.clone(),
             sb_chroma_owned
                 .as_ref()
@@ -5408,8 +5457,8 @@ impl EncodePipeline {
             .map(|_| -> crate::EncodeResult<(Vec<u16>, Vec<u16>, Vec<u16>)> {
                 Ok((
                     svtav1_types::try_vec![0u16; w * h]?,
-                    svtav1_types::try_vec![0u16; (w / 2) * (h / 2)]?,
-                    svtav1_types::try_vec![0u16; (w / 2) * (h / 2)]?,
+                    svtav1_types::try_vec![0u16; acw * ach]?,
+                    svtav1_types::try_vec![0u16; acw * ach]?,
                 ))
             })
             .transpose()?;
@@ -5425,9 +5474,9 @@ impl EncodePipeline {
                 for r in y0..y1 {
                     cy[r * w + x0..r * w + x1].copy_from_slice(&ty[r * w + x0..r * w + x1]);
                 }
-                let (cw, cxs, cxe) = (w / 2, x0 / 2, x1 / 2);
+                let (cw, cxs, cxe) = (acw, x0 >> ss_x, x1 >> ss_x);
                 let cst = cw;
-                for r in y0 / 2..y1 / 2 {
+                for r in (y0 >> ss_y)..(y1 >> ss_y) {
                     cu[r * cw + cxs..r * cw + cxe]
                         .copy_from_slice(&tu[r * cst + cxs..r * cst + cxe]);
                     cv[r * cw + cxs..r * cw + cxe]
@@ -5849,7 +5898,7 @@ impl EncodePipeline {
                         h,
                         &u10,
                         &v10,
-                        w / 2,
+                        acw,
                         // The 10-bit LUMA recon the pass above just produced —
                         // the CfL AC source for UV_CFL_PRED leaves. C reads the
                         // same thing (`cfl_temp_luma_recon16bit`), and it is
@@ -5880,9 +5929,9 @@ impl EncodePipeline {
                     // Crop the SB-extent canvases to the in-frame planes every
                     // downstream consumer expects (the bd10 deblock-level /
                     // CDEF-strength / Wiener-LR searches compare them against
-                    // `w*h` and `(w/2)*(h/2)` sources at the ALIGNED stride).
+                    // `w*h` and `(w>>ss_x)*(h>>ss_y)` sources at the ALIGNED stride).
                     // Both are already aligned-strided, so the crop is a prefix.
-                    let cn = (w / 2) * (h / 2);
+                    let cn = acw * ach;
                     self.last_recon10_uv = Some((uv10.0[..cn].to_vec(), uv10.1[..cn].to_vec()));
                 }
                 self.last_recon10_y = Some(recon10[..w * h].to_vec());
@@ -5929,14 +5978,15 @@ impl EncodePipeline {
         // chroma coding order is structurally identical to the decoder's
         // parse order — the UV_DC prediction reads exactly the chroma
         // neighbors the decoder will have reconstructed.
-        let cw = w / 2;
+        let cw = acw;
         // SB-extent chroma buffer (task #95 chunk 2): the pack reconstructs a
         // straddling boundary block's chroma past the aligned chroma extent, so
         // size u_recon/v_recon to the extent PRODUCT (aligned stride `cw`, a
         // right-straddle write wraps down into the slack). `ext == aligned` on a
         // 64-aligned frame → no-op. The final-recon crop + deblock/CDEF read
         // only the in-frame region at stride `cw`, unaffected by the slack.
-        let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
+        let ext_cbuf = fmt.chroma_width(w.div_ceil(sb_size) * sb_size)
+            * fmt.chroma_height(h.div_ceil(sb_size) * sb_size);
         // Debug aid: SVTAV1_DUMP_TREE=1 prints every winning leaf
         // (abs rect, mode, tx_type, eob) in coding order — the fastest way
         // to correlate a recon-parity diff position with the block that
@@ -6102,6 +6152,8 @@ impl EncodePipeline {
                     frame_tx_mode_select,
                     sc_derivation.allow_screen_content_tools,
                     self.bit_depth,
+                    self.chroma_format
+                        .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420),
                 );
                 // IBC chunk 1: arm the per-block use_intrabc flag coding
                 // (C write_intrabc_info gate) from the same sc derivation
@@ -6451,7 +6503,9 @@ impl EncodePipeline {
                 &v_recon,
                 w,
                 h,
-                chroma.is_some(),
+                // Debug dump assumes 4:2:0 dims internally (`width/2`) —
+                // dump luma only at 4:4:4 rather than mis-shape chroma.
+                filter_chroma,
             );
         }
         #[cfg(feature = "std")]
@@ -6754,7 +6808,7 @@ impl EncodePipeline {
                             v_recon: v10,
                             width: w,
                             height: h,
-                            chroma_420: chroma.is_some(),
+                            chroma_420: filter_chroma,
                             geom: &deblock_geom,
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
@@ -6776,7 +6830,7 @@ impl EncodePipeline {
                             v_recon: &v_recon,
                             width: w,
                             height: h,
-                            chroma_420: chroma.is_some(),
+                            chroma_420: filter_chroma,
                             geom: &deblock_geom,
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
@@ -6824,6 +6878,14 @@ impl EncodePipeline {
                 lf_levels = crate::deblock::LfLevels::default();
             }
         }
+        // 4:4:4 staged bring-up (`filter_chroma` above): signal chroma
+        // loop-filter levels 0 so the decoder skips chroma filtering — the
+        // ss=0 edge kernels are not yet ported. Luma is untouched; a level-0
+        // chroma entry is identity in every `lpf_params` gate.
+        if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
+            lf_levels.levels[2] = 0;
+            lf_levels.levels[3] = 0;
+        }
         if let Some((y10, u10, v10)) = recon10.as_mut()
             && lf_levels.any()
             && postfilter_consumed
@@ -6834,7 +6896,7 @@ impl EncodePipeline {
                 v10,
                 w,
                 h,
-                chroma.is_some(),
+                filter_chroma,
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff,
@@ -6860,7 +6922,7 @@ impl EncodePipeline {
                 &mut v_recon,
                 w,
                 h,
-                chroma.is_some(),
+                filter_chroma,
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
@@ -7265,7 +7327,7 @@ impl EncodePipeline {
                                 &sv10,
                                 w,
                                 h,
-                                chroma.is_some(),
+                                filter_chroma,
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
@@ -7282,7 +7344,7 @@ impl EncodePipeline {
                             sv,
                             w,
                             h,
-                            chroma.is_some(),
+                            filter_chroma,
                             &deblock_geom,
                             base_qindex,
                             &stop,
@@ -7365,6 +7427,15 @@ impl EncodePipeline {
                 )
             }
         };
+        // 4:4:4 staged bring-up (`filter_chroma`): chroma CDEF is signaled
+        // OFF — zero every uv strength so the header declares "chroma
+        // unfiltered" and the apply call below skips the ss=0 kernels.
+        let mut cdef_params = cdef_params;
+        if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
+            for s in cdef_params.strengths.iter_mut() {
+                s.1 = 0;
+            }
+        }
         // C `cdef_process.c:699-702`: whatever the pick left, a frame whose
         // signalled strengths are all zero (and `nb_cdef_strengths == 1`)
         // records `cdef_dist_dev = 0` — "no filtering happened" — which is
@@ -7403,7 +7474,7 @@ impl EncodePipeline {
                 &mut v_recon,
                 w,
                 h,
-                chroma.is_some(),
+                filter_chroma,
                 &deblock_geom,
                 &cdef_params,
                 &stop,
@@ -7431,7 +7502,7 @@ impl EncodePipeline {
                 v10,
                 w,
                 h,
-                chroma.is_some(),
+                filter_chroma,
                 &deblock_geom,
                 &cdef_params,
                 self.bit_depth,
@@ -7462,7 +7533,8 @@ impl EncodePipeline {
         let mut walk_rest_info: Option<crate::restoration::FrameRestInfo> = None;
         let decoder_chroma_recon = self.recon_output
             && chroma.is_some()
-            && (!self.true_width.is_multiple_of(2) || !self.true_height.is_multiple_of(2));
+            && (!(self.true_width as usize).is_multiple_of(1 << ss_x)
+                || !(self.true_height as usize).is_multiple_of(1 << ss_y));
         let mut output_restoration = None;
         // IBC (chunk 1): unlike DLF/CDEF, C suppresses loop restoration at
         // PIPELINE EXECUTION, not signal-derivation — `if (ppcs->
@@ -7584,7 +7656,10 @@ impl EncodePipeline {
                 // tight true/ceil buffers from the aligned-strided recon +
                 // source (luma stride `w`, chroma stride `cw`); on an 8-aligned
                 // frame true == aligned, so these are byte-neutral copies.
-                let (lr_tcw, lr_tch) = (lr_true_w.div_ceil(2), lr_true_h.div_ceil(2));
+                let (lr_tcw, lr_tch) = (
+                    fmt.chroma_width(lr_true_w),
+                    fmt.chroma_height(lr_true_h),
+                );
                 let extract_tight = |src: &[u8], src_stride: usize, pw: usize, ph: usize| {
                     let mut out = alloc::vec![0u8; pw * ph];
                     for r in 0..ph {
@@ -7687,11 +7762,11 @@ impl EncodePipeline {
                             &lr_su10,
                             &lr_sv10,
                             &tight10(y10, w, lr_true_w, lr_true_h),
-                            &tight10(u10, w / 2, lr_tcw, lr_tch),
-                            &tight10(v10, w / 2, lr_tcw, lr_tch),
+                            &tight10(u10, acw, lr_tcw, lr_tch),
+                            &tight10(v10, acw, lr_tcw, lr_tch),
                             lr_true_w,
                             lr_true_h,
-                            chroma.is_some(),
+                            filter_chroma,
                             rdmult,
                             self.bit_depth,
                             self.enhancements.contains(
@@ -7713,7 +7788,7 @@ impl EncodePipeline {
                             &lr_rec_v,
                             lr_true_w,
                             lr_true_h,
-                            chroma.is_some(),
+                            filter_chroma,
                             rdmult,
                             8,
                             self.enhancements.contains(
@@ -7767,7 +7842,7 @@ impl EncodePipeline {
                         lr_true_h,
                         w,
                         cw,
-                        chroma.is_some(),
+                        filter_chroma,
                     );
                     crate::restoration::apply_restoration_frame_bd_with_stop(
                         &mut recon,
@@ -7777,7 +7852,7 @@ impl EncodePipeline {
                         lr_true_h,
                         w,
                         cw,
-                        chroma.is_some(),
+                        filter_chroma,
                         &rest_info,
                         &bounds,
                         8,
@@ -7806,8 +7881,8 @@ impl EncodePipeline {
                             lr_true_w,
                             lr_true_h,
                             w,
-                            w / 2,
-                            chroma.is_some(),
+                            acw,
+                            filter_chroma,
                         );
                         crate::restoration::apply_restoration_frame_bd_with_stop::<u16>(
                             y10,
@@ -7816,8 +7891,8 @@ impl EncodePipeline {
                             lr_true_w,
                             lr_true_h,
                             w,
-                            w / 2,
-                            chroma.is_some(),
+                            acw,
+                            filter_chroma,
                             &rest_info,
                             &bounds10,
                             self.bit_depth,
@@ -8302,18 +8377,18 @@ impl EncodePipeline {
             macro_rules! decoder_recon {
                 ($input:expr, $deblock:path, $cdef:path $(, $depth:expr)?) => {{
                     let (mut y, mut u, mut v) = $input;
-                    $deblock(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
+                    $deblock(&mut y, &mut u, &mut v, w, h, filter_chroma, &deblock_geom,
                         &lf_levels, lf_sharp_eff $(, $depth)?, sb_dlf.as_ref());
                     let before_cdef = output_restoration.as_ref().map(|_| (y.clone(), u.clone(), v.clone()));
-                    $cdef(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
+                    $cdef(&mut y, &mut u, &mut v, w, h, filter_chroma, &deblock_geom,
                         &cdef_params $(, $depth)?);
                     if let (Some(info), Some((py, pu, pv))) = (output_restoration.as_ref(), before_cdef) {
                         let bounds = crate::restoration::save_lr_boundaries_bd(
                             &py, &pu, &pv, &y, &u, &v, self.true_width as usize,
-                            self.true_height as usize, w, w / 2, true);
+                            self.true_height as usize, w, acw, filter_chroma);
                         crate::restoration::apply_restoration_frame_bd(
                             &mut y, &mut u, &mut v, self.true_width as usize,
-                            self.true_height as usize, w, w / 2, true, info, &bounds, self.bit_depth);
+                            self.true_height as usize, w, acw, filter_chroma, info, &bounds, self.bit_depth);
                     }
                     (y, u, v)
                 }};
@@ -8385,8 +8460,12 @@ impl EncodePipeline {
                     upscale(y, cw, self.true_width as usize, &mut y_up, uw, hh);
                     *y = y_up;
                     if chroma.is_some() {
-                        let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
-                        let coded = (self.true_width as usize).div_ceil(2);
+                        let (ccw, cuw, chh) = (
+                            fmt.chroma_width(cw),
+                            fmt.chroma_width(uw),
+                            fmt.chroma_height(hh),
+                        );
+                        let coded = fmt.chroma_width(self.true_width as usize);
                         let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
                         let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
                         upscale(u, ccw, coded, &mut u_up, cuw, chh);
@@ -8413,9 +8492,9 @@ impl EncodePipeline {
             let rb = crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
             let y = crate::picture::PaddedPlaneHbd::from_plane(y10, w, h, rb);
             let uv = if chroma.is_some() {
-                let cb = (rb + 1) >> 1;
-                let mut cv = crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb);
-                let mut cu = crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb);
+                let cb = rb.div_ceil(1 << ss_x);
+                let mut cv = crate::picture::PaddedPlaneHbd::from_plane(v10, acw, ach, cb);
+                let mut cu = crate::picture::PaddedPlaneHbd::from_plane(u10, acw, ach, cb);
                 // Same contiguous `[u][v]` layout as the 8-bit reference —
                 // see the `padded_ref` block below.
                 cu.extend_tail(&cv.buf);
@@ -8456,7 +8535,7 @@ impl EncodePipeline {
                     p[..n].iter().map(|&s| (s >> 2) as u8).collect()
                 }
             };
-            let cn = (w / 2) * (h / 2);
+            let cn = acw * ach;
             (down(y10, w * h), down(u10, cn), down(v10, cn))
         });
 
@@ -8482,7 +8561,7 @@ impl EncodePipeline {
                         crate::film_grain_synthesis::add_grain_for_output(
                             fg,
                             [y, u, v],
-                            [stride, stride / 2, stride / 2],
+                            [stride, stride >> ss_x, stride >> ss_x],
                             stride,
                             h,
                             10,
@@ -8498,7 +8577,7 @@ impl EncodePipeline {
                     crate::film_grain_synthesis::add_grain_for_output(
                         fg,
                         [gy, gu, gv],
-                        [stride, stride / 2, stride / 2],
+                        [stride, stride >> ss_x, stride >> ss_x],
                         stride,
                         h,
                         8,
@@ -8530,10 +8609,12 @@ impl EncodePipeline {
             };
             let y = crate::picture::PaddedPlane::from_plane(y8, rw, rh, rb);
             let uv = if chroma.is_some() {
-                // C `(border + ss_x) >> ss_x` at 4:2:0 (:1102-1112).
-                let cb = (rb + 1) >> 1;
-                let mut cv = crate::picture::PaddedPlane::from_plane(v8r, rw / 2, rh / 2, cb);
-                let mut cu = crate::picture::PaddedPlane::from_plane(u8r, rw / 2, rh / 2, cb);
+                // C `(border + (1 << ss_x) - 1) >> ss_x` (:1102-1112).
+                let cb = rb.div_ceil(1 << ss_x);
+                let mut cv =
+                    crate::picture::PaddedPlane::from_plane(v8r, rw >> ss_x, rh >> ss_y, cb);
+                let mut cu =
+                    crate::picture::PaddedPlane::from_plane(u8r, rw >> ss_x, rh >> ss_y, cb);
                 // C's recon `buffer_alloc` is `[y][u][v]` contiguous: a
                 // maximally UMV-clamped chroma read past `u`'s region
                 // answers with `v`'s margin bytes. `v` is the last
@@ -8990,13 +9071,23 @@ pub(crate) struct EntropyCtx {
     left_coeff: Vec<u8>,
     /// Above coefficient neighbor bytes for the chroma planes (U = 0,
     /// V = 1), in CHROMA-plane 4x4 units (each unit covers 8x8 luma
-    /// pixels). Same encoding and INVALID convention as the luma arrays;
-    /// the decoder keeps per-plane entropy context arrays exactly like
-    /// this (libaom pd->above/left_entropy_context, zeroed per tile;
-    /// 0xFF-skip == zero contribution, matching svt_aom_get_txb_ctx).
+    /// pixels at 4:2:0; 4x4 at 4:4:4). Same encoding and INVALID
+    /// convention as the luma arrays; the decoder keeps per-plane
+    /// entropy context arrays exactly like this (libaom
+    /// pd->above/left_entropy_context, zeroed per tile; 0xFF-skip ==
+    /// zero contribution, matching svt_aom_get_txb_ctx).
     above_coeff_uv: [Vec<u8>; 2],
     /// Left coefficient neighbor bytes for the chroma planes.
     left_coeff_uv: [Vec<u8>; 2],
+    /// C `subsampling_x`/`subsampling_y` of the frame's chroma format
+    /// (`ChromaFormat::subsampling_x/y`) — 1/1 at 4:2:0, 0/0 at 4:4:4.
+    /// Sizing base for the chroma context arrays and the chroma
+    /// reference/origin rules in `record_block` / `filt_type_uv` /
+    /// the residual walk. MONO callers pass a format with ss=(1,1);
+    /// the chroma arrays are then sized but never read (chroma is
+    /// `None` on that arm).
+    ss_x: usize,
+    ss_y: usize,
     /// Above TXFM context at 4x4 granularity: the WIDTH in pixels of the
     /// last coded TX in each mi column (C TXFM_CONTEXT / txfm_context_array
     /// top array, maintained by set_txfm_ctxs, entropy_coding.c:4614).
@@ -9547,6 +9638,31 @@ struct ChromaPass<'a> {
     c_quant: Option<&'a crate::quant::CodingQuantCfg>,
 }
 
+/// One coded block's chroma coefficient work: the chroma plane block at
+/// (`cx`,`cy`) chroma px of `cw`x`ch`, emitted as a clipped grid of
+/// `txw`x`txh` TXBs in decoder `residual()` order (plane-major, raster).
+/// `u`/`v` carry one `(qcoeffs, eob)` per TXB in that order.
+struct ChromaBlock {
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    /// Per-TXB dims in chroma px (== `cw`x`ch` when one TXB covers the
+    /// plane block — the whole 4:2:0 surface and most of 4:4:4).
+    txw: usize,
+    txh: usize,
+    /// In-frame TXB grid bounds in chroma 4x4 units (`max_block_units_ss`
+    /// clip) — the `u`/`v` vecs hold `ceil(bw_units/txw4) *
+    /// ceil(bh_units/txh4)` entries in raster order.
+    bw_units: usize,
+    bh_units: usize,
+    /// `num_pels(plane_bsize) > num_pels(txb)` — the +10 vs +7 chroma
+    /// `txb_skip_ctx` offset (libaom `get_txb_ctx` plane > 0 arm).
+    larger: bool,
+    u: alloc::vec::Vec<(alloc::vec::Vec<i32>, u16)>,
+    v: alloc::vec::Vec<(alloc::vec::Vec<i32>, u16)>,
+}
+
 /// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
 ///
 /// Indexed as `AL_PART_CTX[direction][block_level][partition_type]`.
@@ -9582,13 +9698,17 @@ impl EntropyCtx {
         tx_mode_select: bool,
         allow_sct: bool,
         bit_depth: u8,
+        chroma_format: svtav1_types::chroma::ChromaFormat,
     ) -> Self {
         let width_8x8 = width_4x4.div_ceil(2);
         let height_8x8 = height_4x4.div_ceil(2);
-        // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
-        // 64-aligned so this divides exactly; div_ceil for safety).
-        let width_c4 = width_4x4.div_ceil(2);
-        let height_c4 = height_4x4.div_ceil(2);
+        let ss_x = chroma_format.subsampling_x() as usize;
+        let ss_y = chroma_format.subsampling_y() as usize;
+        // Chroma-plane 4x4 units: chroma px = aligned >> ss, so units =
+        // width_4x4 >> ss (frames are 8-aligned so the 420 halving divides
+        // exactly; div_ceil for safety on the general axis).
+        let width_c4 = width_4x4.div_ceil(1 << ss_x);
+        let height_c4 = height_4x4.div_ceil(1 << ss_y);
         Self {
             aligned_w_px: width_4x4 * 4,
             aligned_h_px: height_4x4 * 4,
@@ -9635,6 +9755,8 @@ impl EntropyCtx {
             tx_mode_select,
             allow_sct,
             bit_depth,
+            ss_x,
+            ss_y,
             allow_intrabc: false,
             delta_q_state: None,
             delta_q_sb_qindex: 0,
@@ -10043,14 +10165,21 @@ impl EntropyCtx {
         // Keep chroma ownership separately from the luma mode maps. Three
         // luma-only children of a split 8x8 must not overwrite the previous
         // group's coded UV mode while the fourth child is predicting chroma.
-        let chroma_ref = (x4 & 1 != 0 || w4 & 1 == 0) && (y4 & 1 != 0 || h4 & 1 == 0);
+        // C `is_chroma_reference` (common_utils.h:315), generalized by
+        // `ss_x`/`ss_y`: at 4:4:4 the `ss == 0` arms make EVERY block a
+        // chroma reference and the unit masks are 0 — the stamp covers
+        // exactly the block's own span.
+        let chroma_ref = (x4 & 1 != 0 || w4 & 1 == 0 || self.ss_x == 0)
+            && (y4 & 1 != 0 || h4 & 1 == 0 || self.ss_y == 0);
         if chroma_ref {
-            let cx = x4 & !1;
-            let cy = y4 & !1;
-            for i in cx..(cx + w4.max(2)).min(self.above_uv_mode.len()) {
+            let mx = (1usize << self.ss_x) - 1;
+            let my = (1usize << self.ss_y) - 1;
+            let cx = x4 & !mx;
+            let cy = y4 & !my;
+            for i in cx..(cx + w4.max(1 << self.ss_x)).min(self.above_uv_mode.len()) {
                 self.above_uv_mode[i] = uv_mode;
             }
-            for i in cy..(cy + h4.max(2)).min(self.left_uv_mode.len()) {
+            for i in cy..(cy + h4.max(1 << self.ss_y)).min(self.left_uv_mode.len()) {
                 self.left_uv_mode[i] = uv_mode;
             }
         }
@@ -10164,12 +10293,18 @@ impl EntropyCtx {
 
     /// C `get_filt_type(xd, plane > 0)` reads the CHROMA reference
     /// neighbours selected by `svt_aom_init_xd`: round to the 8x8 luma
-    /// group, then choose its bottom-right 4x4 owner. An adjacent 4x4
-    /// luma-only block can carry a different, uncoded UV mode.
+    /// group, then choose its bottom-right 4x4 owner — `| (1<<ss)-1`
+    /// picks that owner at 4:2:0 and is a no-op at 4:4:4 (ss == 0, the
+    /// block IS its own chroma owner). An adjacent 4x4 luma-only block
+    /// can carry a different, uncoded UV mode.
     pub(crate) fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
         let smooth = |m: u8| matches!(m, 9..=11);
-        let ab = (y & !7) > self.tile_top_px && smooth(self.above_uv_mode[(x / 4) | 1]);
-        let le = (x & !7) > self.tile_left_px && smooth(self.left_uv_mode[(y / 4) | 1]);
+        let gy = 4usize << self.ss_y; // chroma-unit luma height (8 at 420)
+        let gx = 4usize << self.ss_x; // chroma-unit luma width
+        let ab = (y & !(gy - 1)) > self.tile_top_px
+            && smooth(self.above_uv_mode[(x / 4) | ((1 << self.ss_x) - 1)]);
+        let le = (x & !(gx - 1)) > self.tile_left_px
+            && smooth(self.left_uv_mode[(y / 4) | ((1 << self.ss_y) - 1)]);
         i32::from(ab || le)
     }
 
@@ -10622,16 +10757,18 @@ fn write_chroma_txb(
     qcoeffs: &[i32],
     base_q_idx: u8,
     uv_tx_type: usize,
+    is_chroma_larger: bool,
 ) {
     use crate::entropy::coeff_c;
     let tx_size = coeff_c::tx_size_from_dims(cw, ch);
     let (above, left) = ectx.coeff_neighbors_uv(uv, cx, cy, cw, ch);
     // plane != 0: txb_skip_ctx = (above nonzero) + (left nonzero) + 7,
-    // because the chroma plane bsize equals the (full-block) chroma tx
-    // size here — never "chroma larger" (C svt_aom_get_txb_ctx else-branch;
-    // libaom get_txb_ctx num_pels comparison). The 4th arg is the luma-only
-    // fast-path flag, unused for plane != 0.
-    let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(1, above, left, true, false);
+    // or +10 when the chroma plane block is larger than this txb
+    // (C svt_aom_get_txb_ctx else-branch; libaom get_txb_ctx num_pels
+    // comparison). The 4th arg is the luma-only fast-path flag, unused
+    // for plane != 0.
+    let (txb_skip_ctx, dc_sign_ctx) =
+        coeff_c::get_txb_ctx(1, above, left, true, is_chroma_larger);
     // eob relative to the scan of the DERIVED chroma tx type (the decoder
     // computes it from UVMode via Mode_To_Txfm — spec compute_tx_type,
     // plane > 0 intra: UV_DC -> DCT_DCT, UV_V -> ADST_DCT,
@@ -10940,43 +11077,55 @@ fn encode_block_syntax(
     // live chroma recon written by previous blocks in coding order). The
     // min-8x8 luma policy guarantees the chroma block is exactly
     // (w/2, h/2) >= 4x4 and every block is a chroma reference.
-    // C `is_chroma_reference` (common_utils.h:315): sub-8 blocks carry
-    // chroma only at odd mi in the sub-8 dimension; the chroma unit is
-    // then the PAIR block (bsize_uv dims max(dim,8)/2 at the ROUND_UV
-    // origin). Non-ref blocks code NO chroma txbs and leave the chroma
-    // entropy contexts untouched (spec residual(): the chroma loop is
-    // skipped entirely).
+    // C `is_chroma_reference` (common_utils.h:315), generalized by the
+    // frame's subsampling: a sub-8x8 block on a subsampled axis carries
+    // chroma only for the bottom/right member of the shared group; at
+    // 4:4:4 (`ss == 0`) the `!ss` arms degenerate the rule to ALWAYS true —
+    // every block is its own chroma reference. Non-ref blocks code NO
+    // chroma txbs and leave the chroma entropy contexts untouched (spec
+    // residual(): the chroma loop is skipped entirely).
     let blk_has_uv = {
         let bw_mi = decision.width as usize / 4;
         let bh_mi = decision.height as usize / 4;
-        ((block_y / 4) % 2 == 1 || bh_mi.is_multiple_of(2))
-            && ((block_x / 4) % 2 == 1 || bw_mi.is_multiple_of(2))
+        ((block_y / 4) % 2 == 1 || bh_mi.is_multiple_of(2) || ectx.ss_y == 0)
+            && ((block_x / 4) % 2 == 1 || bw_mi.is_multiple_of(2) || ectx.ss_x == 0)
     };
-    // Task #86: chroma-plane tile-row origin (exact halving — see
-    // encode_chroma_block_dc's doc comment). Copied out of `ectx` before
-    // the closure below so the closure doesn't need to borrow `ectx` too.
-    let chroma_tile_top = ectx.tile_top_px / 2;
-    let chroma_tile_left = ectx.tile_left_px / 2; // task #96, same halving rule
+    // Task #86: chroma-plane tile-row origin (`>> ss` — exact halving at
+    // 4:2:0, identity at 4:4:4). Copied out of `ectx` before the closure
+    // below so the closure doesn't need to borrow `ectx` too.
+    let chroma_tile_top = ectx.tile_top_px >> ectx.ss_y;
+    let chroma_tile_left = ectx.tile_left_px >> ectx.ss_x; // task #96, same rule
     // The chroma plane's ALIGNED extent, for the reference-sample clamp
     // (`extract_neighbors_tiled`'s `plane_w`/`plane_h`). Same copy-out-of-ectx
     // reason as the tile origins above.
-    let chroma_plane_w = ectx.aligned_w_px / 2;
-    let chroma_plane_h = ectx.aligned_h_px / 2;
+    let chroma_plane_w = ectx.aligned_w_px >> ectx.ss_x;
+    let chroma_plane_h = ectx.aligned_h_px >> ectx.ss_y;
     let chroma_blocks = chroma.as_mut().filter(|_| blk_has_uv).map(|cp| {
-        let cw = (decision.width as usize).max(8) / 2;
-        let ch = (decision.height as usize).max(8) / 2;
-        let cx = ((block_x >> 3) << 3) / 2
-            + if decision.width >= 8 {
-                (block_x % 8) / 2
-            } else {
-                0
-            };
-        let cy = ((block_y >> 3) << 3) / 2
-            + if decision.height >= 8 {
-                (block_y % 8) / 2
-            } else {
-                0
-            };
+        let (ss_x, ss_y) = (ectx.ss_x, ectx.ss_y);
+        let (bw_px, bh_px) = (decision.width as usize, decision.height as usize);
+        let (bw_mi, bh_mi) = (bw_px / 4, bh_px / 4);
+        let (mi_row, mi_col) = (block_y / 4, block_x / 4);
+        // Decoder `adj_row`/`adj_col` (decodeframe.c `set_mi_row_col`): a
+        // sub-8x8 dimension at an odd mi position on a SUBSAMPLED axis
+        // shifts the chroma group origin back one mi to the pair base.
+        // At 4:4:4 `ss == 0` so the adjustment never fires — the chroma
+        // block is the block itself.
+        let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && bw_mi == 1 {
+            mi_col - 1
+        } else {
+            mi_col
+        };
+        let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && bh_mi == 1 {
+            mi_row - 1
+        } else {
+            mi_row
+        };
+        // Chroma plane block origin/dims in chroma px (C
+        // `get_plane_block_size`, `bwidth_uv = MAX(4, w >> ss)`).
+        let cx = (adj_col * 4) >> ss_x;
+        let cy = (adj_row * 4) >> ss_y;
+        let cw = (bw_px >> ss_x).max(4);
+        let ch = (bh_px >> ss_y).max(4);
         if let Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec)) = decision.chroma_dec.as_ref() {
             // Funnel-decided chroma (M6 leaf funnel): the decision phase
             // already predicted (per the decided uv_mode), quantized and
@@ -10993,47 +11142,113 @@ fn encode_block_syntax(
                 cp.u_recon[dst..dst + copy_w].copy_from_slice(&u_rec[r * cw..r * cw + copy_w]);
                 cp.v_recon[dst..dst + copy_w].copy_from_slice(&v_rec[r * cw..r * cw + copy_w]);
             }
-            if recon_only {
+            let (uq, vq) = if recon_only {
                 // The coefficient vecs only feed `write_chroma_txb` below —
                 // skipped in recon mode, so the clones are dead work.
-                (Vec::new(), *u_eob, Vec::new(), *v_eob)
+                (Vec::new(), Vec::new())
             } else {
-                (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
+                (u_q.clone(), v_q.clone())
+            };
+            ChromaBlock {
+                cx,
+                cy,
+                cw,
+                ch,
+                txw: cw,
+                txh: ch,
+                bw_units: cw / 4,
+                bh_units: ch / 4,
+                larger: false,
+                u: alloc::vec![(uq, *u_eob)],
+                v: alloc::vec![(vq, *v_eob)],
             }
         } else {
-            let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-                cp.u_src,
-                cp.u_recon,
-                cp.stride,
+            // Decoder `residual()` order (av1 decodeframe.c): per plane the
+            // chroma plane block is tiled by `av1_get_max_uv_txsize` TXBs
+            // (TX_4X4 at coded_lossless), TXB start positions clipped to
+            // the plane block's in-frame 4x4-unit span (`max_block_wide/
+            // high` = `mb_to_edge >> (3 + ss)` folded in). Each TXB is
+            // predicted from the already-reconstructed neighbors, quantized
+            // and reconstructed inside this walk — a later TXB of the same
+            // block reads the earlier ones' recon, exactly as the decoder.
+            // Chroma TXB size: `av1_get_uv_tx_size` = adjusted max rect of
+            // the plane block — except at coded_lossless, where the intra
+            // residual loop's `av1_get_tx_size(plane>0)` preempts to
+            // TX_4X4 for EVERY plane (decodeframe.c:941 -> blockd.h:1147;
+            // the `max_uv_txsize` arm at :291 is the INTER path only).
+            let uv_tx = if base_q_idx == 0 {
+                crate::entropy::coeff_c::TX_4X4
+            } else {
+                crate::entropy::coeff_c::adjusted_tx_size(
+                    crate::entropy::coeff_c::tx_size_from_dims(cw.min(64), ch.min(64)),
+                )
+            };
+            let txw = crate::entropy::coeff_c::TX_SIZE_WIDE[uv_tx];
+            let txh = crate::entropy::coeff_c::TX_SIZE_HIGH[uv_tx];
+            // `mb_to_right/bottom_edge`: the luma block's overshoot of the
+            // aligned (mi-padded) frame edge in 1/8 luma px — negative when
+            // the block straddles.
+            let edge_r = (ectx.aligned_w_px as i64 - (block_x + bw_px) as i64) * 8;
+            let edge_b = (ectx.aligned_h_px as i64 - (block_y + bh_px) as i64) * 8;
+            // `max_block_units_ss`: in-frame 4x4-unit span of the plane
+            // block; TXB start positions beyond it are dropped.
+            let units_w = ((cw as i64 + if edge_r < 0 { edge_r >> (3 + ss_x) } else { 0 }) >> 2)
+                .max(0) as usize;
+            let units_h = ((ch as i64 + if edge_b < 0 { edge_b >> (3 + ss_y) } else { 0 }) >> 2)
+                .max(0) as usize;
+            let mut u_txbs = alloc::vec::Vec::new();
+            let mut v_txbs = alloc::vec::Vec::new();
+            for uv in 0..2usize {
+                let (src, recon, qindex, qm) = if uv == 0 {
+                    (cp.u_src, &mut *cp.u_recon, cp.qindex_u, cp.qm_u)
+                } else {
+                    (cp.v_src, &mut *cp.v_recon, cp.qindex_v, cp.qm_v)
+                };
+                let mut row = 0usize;
+                while row < units_h {
+                    let mut col = 0usize;
+                    while col < units_w {
+                        let (q, eob) = crate::partition::encode_chroma_block_dc(
+                            src,
+                            recon,
+                            cp.stride,
+                            cx + col * 4,
+                            cy + row * 4,
+                            txw,
+                            txh,
+                            qindex,
+                            cp.c_quant,
+                            qm,
+                            chroma_tile_top,
+                            chroma_tile_left,
+                            chroma_plane_w,
+                            chroma_plane_h,
+                        );
+                        if !recon_only {
+                            if uv == 0 {
+                                u_txbs.push((q, eob));
+                            } else {
+                                v_txbs.push((q, eob));
+                            }
+                        }
+                        col += txw / 4;
+                    }
+                    row += txh / 4;
+                }
+            }
+            ChromaBlock {
                 cx,
                 cy,
                 cw,
                 ch,
-                cp.qindex_u,
-                cp.c_quant,
-                cp.qm_u,
-                chroma_tile_top,
-                chroma_tile_left,
-                chroma_plane_w,
-                chroma_plane_h,
-            );
-            let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-                cp.v_src,
-                cp.v_recon,
-                cp.stride,
-                cx,
-                cy,
-                cw,
-                ch,
-                cp.qindex_v,
-                cp.c_quant,
-                cp.qm_v,
-                chroma_tile_top,
-                chroma_tile_left,
-                chroma_plane_w,
-                chroma_plane_h,
-            );
-            (u_q, u_eob, v_q, v_eob)
+                txw,
+                txh,
+                bw_units: units_w,
+                bh_units: units_h,
+                larger: cw * ch > txw * txh,
+                u: u_txbs,
+                v: v_txbs,
+            }
         }
     });
 
@@ -11045,7 +11260,7 @@ fn encode_block_syntax(
     let skip = decision.eob == 0
         && chroma_blocks
             .as_ref()
-            .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
+            .is_none_or(|cb| cb.u.iter().all(|t| t.1 == 0) && cb.v.iter().all(|t| t.1 == 0));
     if recon_only {
         // Recon-only walk: every symbol write, CDF update, context track and
         // coded-area sum below is walk-local state — the only survivors of a
@@ -11496,7 +11711,18 @@ fn encode_block_syntax(
     // SILENTLY. FOUND by decoding the experimental 2-frame stream (`aomdec`:
     // "Failed to decode tile data"), not by any byte count.
     if chroma_blocks.is_some() && !use_intrabc && !decision.is_inter {
-        let cfl_allowed = decision.width <= 32 && decision.height <= 32;
+        // is_cfl_allowed (cfl.h): non-lossless -> LUMA block <= 32x32;
+        // lossless -> the chroma PLANE block must be exactly 4x4. At
+        // 4:2:0 lossless that reduces to "luma leaf is 8x8" (the only
+        // leaf lossless produces); at 4:4:4 it narrows the CDF row and
+        // alphabet for every larger leaf.
+        let cfl_allowed = if base_q_idx == 0 {
+            chroma_blocks
+                .as_ref()
+                .is_some_and(|cb| cb.cw == 4 && cb.ch == 4)
+        } else {
+            decision.width <= 32 && decision.height <= 32
+        };
         crate::entropy::context::write_uv_mode(
             writer,
             frame_ctx,
@@ -11925,14 +12151,13 @@ fn encode_block_syntax(
             }
         }
 
-        // Chroma txbs: plane 1 (U) then plane 2 (V), each one full-size
-        // (bsize_uv) transform with its own neighbor context state —
-        // PAIR dims/origin for sub-8 chroma-ref blocks.
-        if let Some((u_q, _u_eob, v_q, _v_eob)) = chroma_blocks.as_ref() {
-            let cw = w.max(8) / 2;
-            let ch = h.max(8) / 2;
-            let cx = ((block_x >> 3) << 3) / 2 + if w >= 8 { (block_x % 8) / 2 } else { 0 };
-            let cy = ((block_y >> 3) << 3) / 2 + if h >= 8 { (block_y % 8) / 2 } else { 0 };
+        // Chroma txbs: plane 1 (U) then plane 2 (V), raster over the
+        // plane block's (frame-edge clipped) TXB grid — decoder
+        // `residual()` order. One TXB when `txw x txh` covers the plane
+        // block (all of 4:2:0 at sb<=64), multi-TXB when it exceeds
+        // `max_uv_txsize` (4:4:4 blocks > 32, lossless > 4).
+        if let Some(cb) = chroma_blocks.as_ref() {
+            let (cw, ch, cx, cy) = (cb.cw, cb.ch, cb.cx, cb.cy);
             // IBC chunk 9: on an INTER-classified (IntraBC) block the
             // decoder DERIVES the chroma tx type from the co-located luma
             // type (av1_get_tx_type plane>0 inter arm) — the same
@@ -11964,13 +12189,19 @@ fn encode_block_syntax(
                         decision.txb_tx_types.first().copied().unwrap_or(0),
                     )
                 };
-                crate::leaf_funnel::inter_uv_tx_type(cover_eob, cover_tt, base_q_idx == 0, cw, ch)
+                crate::leaf_funnel::inter_uv_tx_type(
+                    cover_eob,
+                    cover_tt,
+                    base_q_idx == 0,
+                    cb.txw,
+                    cb.txh,
+                )
             } else {
-                crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch)
+                crate::leaf_funnel::uv_tx_type(decision.uv_mode, cb.txw, cb.txh)
             };
             #[cfg(feature = "std")]
             if crate::dbgenv::coded_eob() {
-                let uv_ts = crate::entropy::coeff_c::tx_size_from_dims(cw, ch);
+                let uv_ts = crate::entropy::coeff_c::tx_size_from_dims(cb.txw, cb.txh);
                 let sidx = crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tt] as usize;
                 let uv_scan = crate::entropy::scan_tables::scan(uv_ts, sidx);
                 let eob_of = |q: &[i32]| {
@@ -11984,27 +12215,42 @@ fn encode_block_syntax(
                 };
                 let sum_of = |q: &[i32]| q.iter().map(|c| c.unsigned_abs() as u64).sum::<u64>();
                 eprintln!(
-                    "CODEDUV x{block_x} y{block_y} cw{cw} ch{ch} u_eob={} v_eob={} u_sum={} v_sum={} tt={uv_tt} u_nz={:?} v_nz={:?}",
-                    eob_of(u_q),
-                    eob_of(v_q),
-                    sum_of(u_q),
-                    sum_of(v_q),
-                    u_q.iter()
-                        .enumerate()
-                        .filter(|(_, c)| **c != 0)
-                        .collect::<Vec<_>>(),
-                    v_q.iter()
-                        .enumerate()
-                        .filter(|(_, c)| **c != 0)
-                        .collect::<Vec<_>>(),
+                    "CODEDUV x{block_x} y{block_y} cw{cw} ch{ch} ntxb={}+{} tt={uv_tt} u_eob={:?} v_eob={:?} u_sum={:?} v_sum={:?}",
+                    cb.u.len(),
+                    cb.v.len(),
+                    cb.u.iter().map(|(q, _)| eob_of(q)).collect::<Vec<_>>(),
+                    cb.v.iter().map(|(q, _)| eob_of(q)).collect::<Vec<_>>(),
+                    cb.u.iter().map(|(q, _)| sum_of(q)).collect::<Vec<_>>(),
+                    cb.v.iter().map(|(q, _)| sum_of(q)).collect::<Vec<_>>(),
                 );
             }
-            write_chroma_txb(
-                writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx, uv_tt,
-            );
-            write_chroma_txb(
-                writer, coeff_fc, ectx, 1, cx, cy, cw, ch, v_q, base_q_idx, uv_tt,
-            );
+            for (uv, txbs) in [&cb.u, &cb.v].into_iter().enumerate() {
+                let mut it = txbs.iter();
+                let mut row = 0usize;
+                while row < cb.bh_units {
+                    let mut col = 0usize;
+                    while col < cb.bw_units {
+                        let (q, _eob) = it.next().expect("emission grid == production grid");
+                        write_chroma_txb(
+                            writer,
+                            coeff_fc,
+                            ectx,
+                            uv,
+                            cx + col * 4,
+                            cy + row * 4,
+                            cb.txw,
+                            cb.txh,
+                            q,
+                            base_q_idx,
+                            uv_tt,
+                            cb.larger,
+                        );
+                        col += cb.txw / 4;
+                    }
+                    row += cb.txh / 4;
+                }
+                debug_assert!(it.next().is_none());
+            }
         }
     } else {
         // Skipped blocks contribute zero cul_level neighbors (C writes the
@@ -12019,23 +12265,11 @@ fn encode_block_syntax(
             decision.height as usize,
             0,
         );
-        if chroma_blocks.is_some() {
-            let cw = (decision.width as usize).max(8) / 2;
-            let ch = (decision.height as usize).max(8) / 2;
-            let cx = ((block_x >> 3) << 3) / 2
-                + if decision.width >= 8 {
-                    (block_x % 8) / 2
-                } else {
-                    0
-                };
-            let cy = ((block_y >> 3) << 3) / 2
-                + if decision.height >= 8 {
-                    (block_y % 8) / 2
-                } else {
-                    0
-                };
-            ectx.record_coeff_uv(0, cx, cy, cw, ch, 0);
-            ectx.record_coeff_uv(1, cx, cy, cw, ch, 0);
+        if let Some(cb) = chroma_blocks.as_ref() {
+            // reset_block_context covers the whole PLANE BLOCK span (not
+            // per-txb) — `bw_uv x bh_uv`, clipped inside `record_coeff_uv`.
+            ectx.record_coeff_uv(0, cb.cx, cb.cy, cb.cw, cb.ch, 0);
+            ectx.record_coeff_uv(1, cb.cx, cb.cy, cb.cw, cb.ch, 0);
         }
     }
 
@@ -13249,6 +13483,13 @@ fn encode_tile_rows(
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
     chroma_420: bool,
+    // The frame's chroma format — the `ss_x`/`ss_y` base for every
+    // chroma-geometry derivation below (chroma canvas dims, tile-clip
+    // origins, EntropyCtx sizing). `chroma_420` stays as the "chroma
+    // planes are present AND this is the C-parity surface" flag; a
+    // non-420 format threads through here while `chroma_420` stays
+    // false so the funnel (which is 4:2:0-only) never arms.
+    chroma_format: svtav1_types::chroma::ChromaFormat,
     c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
     chroma_src: Option<(&[u8], &[u8])>,
     // Encode bit depth (8 or 10). At bd10 the partition search runs C's
@@ -13331,14 +13572,19 @@ fn encode_tile_rows(
     // Mode-decision chroma blocks can cross the aligned right edge. Give
     // sources and reconstruction canvases a real SB-wide stride; extra rows
     // alone let right-edge reads wrap into unrelated samples in the next row.
-    let md_cw = w.div_ceil(sb_size) * sb_size / 2;
-    let md_ch = h.div_ceil(sb_size) * sb_size / 2;
+    // All chroma dims derive from `chroma_format` (`>> ss`), never a local /2.
+    let (acw, ach) = (
+        chroma_format.chroma_width(w),
+        chroma_format.chroma_height(h),
+    );
+    let md_cw = chroma_format.chroma_width(w.div_ceil(sb_size) * sb_size);
+    let md_ch = chroma_format.chroma_height(h.div_ceil(sb_size) * sb_size);
     let padded_chroma = chroma_src
-        .filter(|_| md_cw != w / 2)
+        .filter(|_| md_cw != acw)
         .map(|(u, v)| {
             Ok::<_, whereat::At<crate::EncodeError>>((
-                pad_plane_replicate(u, w / 2, w / 2, h / 2, md_cw, md_ch)?,
-                pad_plane_replicate(v, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+                pad_plane_replicate(u, acw, acw, ach, md_cw, md_ch)?,
+                pad_plane_replicate(v, acw, acw, ach, md_cw, md_ch)?,
             ))
         })
         .transpose()?;
@@ -13347,11 +13593,11 @@ fn encode_tile_rows(
         .map(|(u, v)| (u.as_slice(), v.as_slice()))
         .or(chroma_src);
     let padded_chroma10 = hbd_src
-        .filter(|(_, u, _)| md_cw != w / 2 && !u.is_empty())
+        .filter(|(_, u, _)| md_cw != acw && !u.is_empty())
         .map(|(_, u, v)| {
             Ok::<_, whereat::At<crate::EncodeError>>((
-                pad_plane_replicate_u16(u, w / 2, w / 2, h / 2, md_cw, md_ch)?,
-                pad_plane_replicate_u16(v, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+                pad_plane_replicate_u16(u, acw, acw, ach, md_cw, md_ch)?,
+                pad_plane_replicate_u16(v, acw, acw, ach, md_cw, md_ch)?,
             ))
         })
         .transpose()?;
@@ -13664,7 +13910,8 @@ fn encode_tile_rows(
         // aligned-stride canvas layout.
         let ext_w = w.div_ceil(sb_size) * sb_size;
         let ext_h = h.div_ceil(sb_size) * sb_size;
-        let ext_cbuf = (ext_w / 2) * (ext_h / 2); // chroma buffer capacity at `cwid` stride
+        // chroma buffer capacity at `cwid` stride
+        let ext_cbuf = chroma_format.chroma_width(ext_w) * chroma_format.chroma_height(ext_h);
         let mut fun_u_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_v_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_ectx = if use_funnel || coded_lossless {
@@ -13675,6 +13922,7 @@ fn encode_tile_rows(
                 walk_tx_mode_select,
                 tile_sc.allow_screen_content_tools,
                 bit_depth,
+                chroma_format,
             );
             // Task #86: consistent with the other EntropyCtx instances
             // this tile constructs — see the real pack walk's identical
@@ -13923,6 +14171,7 @@ fn encode_tile_rows(
                 walk_tx_mode_select,
                 tile_sc.allow_screen_content_tools,
                 bit_depth,
+                chroma_format,
             );
             // IBC chunk 1: same use_intrabc flag coding as the real pack —
             // the chain's intrabc_cdf must evolve identically (the C
@@ -14086,7 +14335,7 @@ fn encode_tile_rows(
             alloc::vec::Vec<u16>,
             alloc::vec::Vec<u16>,
         ) = if bd10_full_rd || bd10_mds3_bump {
-            let n = (ext_w / 2) * (ext_h / 2);
+            let n = chroma_format.chroma_width(ext_w) * chroma_format.chroma_height(ext_h);
             (
                 svtav1_types::try_vec![512u16; n]?,
                 svtav1_types::try_vec![512u16; n]?,
@@ -16363,10 +16612,10 @@ fn encode_tile_rows(
         let tile_canvas10 = if bd10_full_rd {
             // The frame merger consumes aligned-stride canvases. Compact
             // only visible chroma rows after all mode decisions are complete.
-            if cwid != w / 2 {
+            if cwid != acw {
                 for plane in [&mut tile_frame_u_recon10, &mut tile_frame_v_recon10] {
-                    for row in 0..h / 2 {
-                        plane.copy_within(row * cwid..row * cwid + w / 2, row * (w / 2));
+                    for row in 0..ach {
+                        plane.copy_within(row * cwid..row * cwid + acw, row * acw);
                     }
                 }
             }
@@ -16442,7 +16691,15 @@ fn encode_tile_rows(
 mod tests {
     #[test]
     fn chroma_edge_filter_keeps_group_owner_across_luma_only_children() {
-        let mut above = super::EntropyCtx::new(8, 8, false, true, false, 8);
+        let mut above = super::EntropyCtx::new(
+            8,
+            8,
+            false,
+            true,
+            false,
+            8,
+            svtav1_types::chroma::ChromaFormat::Yuv420,
+        );
         above.record_block(0, 0, 8, 8, 0, 9, false);
         for (x, y) in [(0, 8), (4, 8), (0, 12)] {
             above.record_block(x, y, 4, 4, 0, 0, false);
@@ -16454,7 +16711,15 @@ mod tests {
         above.record_block(4, 12, 4, 4, 0, 0, false);
         assert_eq!(above.filt_type_uv(0, 16), 0);
 
-        let mut left = super::EntropyCtx::new(8, 8, false, true, false, 8);
+        let mut left = super::EntropyCtx::new(
+            8,
+            8,
+            false,
+            true,
+            false,
+            8,
+            svtav1_types::chroma::ChromaFormat::Yuv420,
+        );
         left.record_block(0, 0, 8, 8, 0, 10, false);
         for (x, y) in [(8, 0), (12, 0), (8, 4)] {
             left.record_block(x, y, 4, 4, 0, 0, false);
@@ -17151,7 +17416,15 @@ mod tests {
     /// the 64 level and returned 10 symbols against the 64x64 CDF row.
     #[test]
     fn partition_ctx_alphabet_matches_c_rule_at_every_square_size() {
-        let ectx = EntropyCtx::new(64, 64, true, true, false, 8);
+        let ectx = EntropyCtx::new(
+            64,
+            64,
+            true,
+            true,
+            false,
+            8,
+            svtav1_types::chroma::ChromaFormat::Yuv420,
+        );
         for sq in [8usize, 16, 32, 64, 128] {
             let (ctx, nsymbs) = ectx.partition_ctx(0, 0, sq);
             assert_eq!(
@@ -17767,7 +18040,15 @@ mod inter_tile_byte_gate {
     ) -> Vec<u8> {
         let mut fc = cdfs.fc.clone();
         let mut w_ = AomWriter::new(256);
-        let ectx = EntropyCtx::new(16, 16, false, true, false, 8);
+        let ectx = EntropyCtx::new(
+            16,
+            16,
+            false,
+            true,
+            false,
+            8,
+            svtav1_types::chroma::ChromaFormat::Yuv420,
+        );
         let (part_ctx, nsymbs) = ectx.partition_ctx(0, 0, 64);
         crate::entropy::context::write_partition_edge(
             &mut w_, &mut fc, part_ctx, 0, nsymbs, false, true, true,
@@ -18304,7 +18585,15 @@ mod inter_decision_probe {
         let mut fc = saved.fc.clone();
         let mut coeff_fc = saved.coeff.clone();
         let mut writer = AomWriter::new(256);
-        let mut ectx = EntropyCtx::new(w / 4, h / 4, false, true, false, 8);
+        let mut ectx = EntropyCtx::new(
+            w / 4,
+            h / 4,
+            false,
+            true,
+            false,
+            8,
+            svtav1_types::chroma::ChromaFormat::Yuv420,
+        );
         // The frame-1 header the port already writes byte-identically
         // (tools/inter_fh_gate.sh): reference_select 1, SWITCHABLE interp,
         // allow_high_precision_mv 0, use_ref_frame_mvs 1, order_hint 1.

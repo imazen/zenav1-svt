@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **48
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **53
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **10** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -58,7 +58,10 @@ itself and verified by `tools/c_envelope_probe.sh`:
 |---|---|
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too large to tile: MAX_TILE_AREA forces more tiles than MAX_TILE_ROWS (64) tile rows can supply at this width |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |
+| `crates/svtav1-encoder/src/pipeline.rs` | 4:2:2 planes: y at y_stride over true dims, u/v at (true_w+1)/2 x true_h |
+| `crates/svtav1-encoder/src/pipeline.rs` | 4:4:4 planes must each cover the true dims (u/v full-resolution) |
 | `crates/svtav1-encoder/src/pipeline.rs` | C film grain requires 8/10-bit 4:2:0 |
+| `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit still/key frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, inter/IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
@@ -85,6 +88,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | the frame header names a primary_ref_frame, but the DPB slot it resolves to carries no saved CDF state — the referenced frame's entropy walk never ran (crate::port_frame_cdf) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use encode_frame_420; 12-bit is outside C's shipping envelope) |
+| `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_422 requires the pipeline to be built with with_chroma_format(Some(ChromaFormat::Yuv422)) |
+| `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_444 requires the pipeline to be built with with_chroma_format(Some(ChromaFormat::Yuv444)) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |

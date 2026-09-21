@@ -114,6 +114,39 @@ also produces a decodable stream. Verified: t3/t4/still at preset -1 all
 decode; auto-derived ≡ explicit `SVTAV1_SB=64` byte-identical; VB-off
 paths (t1/t2 at preset -1) byte-identical to pre-fix.
 
+## 4:4:4 chroma — 2026-09-21
+
+`ChromaFormat::Yuv444` ships as a Zen extension on a measured envelope:
+**8-bit, key/still frame, `sb_size 64`, no superres**. Everything outside
+refuses at `encode_frame_impl`'s envelope gate — inter, 10-bit, SB128,
+superres, IntraBC (sequence flag forced off), film grain (the 4:2:0-shaped
+`validate_film_grain` refusal covers it). C v4.2.0 refuses non-4:2:0 at
+`verify_settings` (`enc_settings.c:470`), so **there is no byte oracle and
+none is claimed** — the property asserted is decoder reconstruction
+equality plus measured RD sanity.
+
+Decoder verification (aomdec AND dav1d, `examples/probe_444*.rs`):
+10/10 cells — 36/44/60/64/100/120/128/200 px square, qp {0,20,30,35,45} —
+encoder reconstruction byte-identical to decoded output on all planes,
+including coded-lossless (qindex 0 goes through the FWHT/transpose/
+`quantize_b`/IWHT path mirroring `lossless_mono.rs`, because AV1's
+lossless transform is Walsh-Hadamard, not DCT). Sequence header signals
+profile 1 via `chroma_format.required_profile`. Chroma loop filters are
+signalled off (lf 0 / CDEF uv 0 / LR NONE) until their kernels are ported
+— decoder-consistent by construction.
+
+Quality (the surface byte-parity cannot see), `tools/rd_ext_sweep.sh` —
+396 cells over 11 codec-corpus images x qp {10..60} x {ours, aomenc
+`--i444 --profile=1`, aomenc `--monochrome`, ours-4:2:0, aomenc-4:2:0}:
+0 failures, monotonic rate/SSIMULACRA2 on every curve. Chroma earns its
+bits: U/V PSNR +1.3..+15.3 dB vs the port's own 4:2:0 at matched qp.
+Frontier honesty: ours-444 costs x1.74 libaom bytes at matched SSIM2 vs
+x1.46 for ours-420 (the byte-exact SVT baseline) — the residual is named:
+DC-only chroma prediction and refused screen-content tools (palette /
+IntraBC), concentrated in screen content (x1.93..x3.13) while photos sit
+at x1.07..x1.40. Mono carries the same shape (x1.59) where chroma does
+not exist at all, so the gap is generic intra-search, not the format.
+
 ## Still identity — 2026-09-08
 
 Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old

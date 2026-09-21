@@ -102,7 +102,64 @@ impl ChromaFormat {
     pub const fn chroma_format_idc(self) -> u8 {
         self as u8
     }
+
+    /// The chroma-plane block size for a luma `BlockSize` — C
+    /// `get_plane_block_size` (`common_utils.h:135`) over
+    /// `svt_aom_ss_size_lookup` (`common_utils.c:239`). `None` is C's
+    /// `BLOCK_INVALID` (the subsampled size does not exist — e.g.
+    /// BLOCK_4X8 at ss_x=1,ss_y=0).
+    #[must_use]
+    pub const fn plane_block_size(
+        self,
+        bsize: crate::block::BlockSize,
+    ) -> Option<crate::block::BlockSize> {
+        SS_SIZE_LOOKUP[bsize as usize][self.subsampling_x() as usize]
+            [self.subsampling_y() as usize]
+    }
+
+    /// C `is_chroma_reference` (`common_utils.h:315`): a luma block codes
+    /// chroma when it is not strictly a sub-8-by-mi half of a subsampled
+    /// pair. At 4:4:4 (`ss_x == ss_y == 0`) every block is a chroma
+    /// reference — the `!ss_*` arms degenerate the rule to `true`.
+    /// `mi_row`/`mi_col` are the block's 4x4-unit origin.
+    #[must_use]
+    pub const fn is_chroma_reference(self, mi_row: usize, mi_col: usize, bw_mi: usize, bh_mi: usize) -> bool {
+        (mi_row % 2 == 1 || bh_mi.is_multiple_of(2) || self.subsampling_y() == 0)
+            && (mi_col % 2 == 1 || bw_mi.is_multiple_of(2) || self.subsampling_x() == 0)
+    }
 }
+
+/// C `svt_aom_ss_size_lookup` (`common_utils.c:239`), verbatim.
+/// Indexed `[bsize][ss_x][ss_y]`; `None` is C's `BLOCK_INVALID`.
+#[rustfmt::skip]
+const SS_SIZE_LOOKUP: [[[Option<crate::block::BlockSize>; 2]; 2]; 22] = {
+    use crate::block::BlockSize as B;
+    [
+        //  {ss0/ss0, ss0/ss1}  {ss1/ss0, ss1/ss1}
+        [[Some(B::Block4x4),   Some(B::Block4x4)],   [Some(B::Block4x4),   Some(B::Block4x4)]],
+        [[Some(B::Block4x8),   Some(B::Block4x4)],   [None,                Some(B::Block4x4)]],
+        [[Some(B::Block8x4),   None],                [Some(B::Block4x4),   Some(B::Block4x4)]],
+        [[Some(B::Block8x8),   Some(B::Block8x4)],   [Some(B::Block4x8),   Some(B::Block4x4)]],
+        [[Some(B::Block8x16),  Some(B::Block8x8)],   [None,                Some(B::Block4x8)]],
+        [[Some(B::Block16x8),  None],                [Some(B::Block8x8),   Some(B::Block8x4)]],
+        [[Some(B::Block16x16), Some(B::Block16x8)],  [Some(B::Block8x16),  Some(B::Block8x8)]],
+        [[Some(B::Block16x32), Some(B::Block16x16)], [None,                Some(B::Block8x16)]],
+        [[Some(B::Block32x16), None],                [Some(B::Block16x16), Some(B::Block16x8)]],
+        [[Some(B::Block32x32), Some(B::Block32x16)], [Some(B::Block16x32), Some(B::Block16x16)]],
+        [[Some(B::Block32x64), Some(B::Block32x32)], [None,                Some(B::Block16x32)]],
+        [[Some(B::Block64x32), None],                [Some(B::Block32x32), Some(B::Block32x16)]],
+        [[Some(B::Block64x64), Some(B::Block64x32)], [Some(B::Block32x64), Some(B::Block32x32)]],
+        [[Some(B::Block64x128),Some(B::Block64x64)], [None,                Some(B::Block32x64)]],
+        [[Some(B::Block128x64),None],                [Some(B::Block64x64), Some(B::Block64x32)]],
+        [[Some(B::Block128x128),Some(B::Block128x64)],[Some(B::Block64x128),Some(B::Block64x64)]],
+        [[Some(B::Block4x16),  Some(B::Block4x8)],   [None,                Some(B::Block4x8)]],
+        [[Some(B::Block16x4),  None],                [Some(B::Block8x4),   Some(B::Block8x4)]],
+        [[Some(B::Block8x32),  Some(B::Block8x16)],  [None,                Some(B::Block4x16)]],
+        [[Some(B::Block32x8),  None],                [Some(B::Block16x8),  Some(B::Block16x4)]],
+        [[Some(B::Block16x64), Some(B::Block16x32)], [None,                Some(B::Block8x32)]],
+        [[Some(B::Block64x16), None],                [Some(B::Block32x16), Some(B::Block32x8)]],
+    ]
+};
 
 #[cfg(test)]
 mod tests {
@@ -142,5 +199,55 @@ mod tests {
         // 12-bit is always profile 2 — profiles 0/1 are 8/10-bit only.
         assert_eq!(ChromaFormat::Yuv420.required_profile(12), 2);
         assert_eq!(ChromaFormat::Yuv400.required_profile(12), 2);
+    }
+
+    #[test]
+    fn ss_size_lookup_matches_c() {
+        use crate::block::BlockSize as B;
+        // Spot-checks across every shape class against common_utils.c:239.
+        // 420 subsamples both axes.
+        assert_eq!(
+            ChromaFormat::Yuv420.plane_block_size(B::Block16x16),
+            Some(B::Block8x8)
+        );
+        assert_eq!(
+            ChromaFormat::Yuv420.plane_block_size(B::Block16x32),
+            Some(B::Block8x16)
+        );
+        // 444 is the identity — every block is its own chroma block.
+        for bs in B::ALL {
+            assert_eq!(ChromaFormat::Yuv444.plane_block_size(bs), Some(bs));
+        }
+        // 422 subsamples only horizontally.
+        assert_eq!(
+            ChromaFormat::Yuv422.plane_block_size(B::Block16x16),
+            Some(B::Block8x16)
+        );
+        // Vertically-tall blocks have no 4:2:2/4:2:0 chroma twin.
+        assert_eq!(
+            ChromaFormat::Yuv422.plane_block_size(B::Block8x16),
+            None
+        );
+    }
+
+    #[test]
+    fn chroma_reference_rule() {
+        // 444: every block is a chroma reference.
+        for mi_r in 0..4 {
+            for mi_c in 0..4 {
+                for bw in [1usize, 2] {
+                    for bh in [1usize, 2] {
+                        assert!(ChromaFormat::Yuv444.is_chroma_reference(mi_r, mi_c, bw, bh));
+                    }
+                }
+            }
+        }
+        // 420: only the bottom-right mi of a 2x2 pair of 1-mi blocks is
+        // the chroma reference; even-sized blocks always cover the pair.
+        assert!(!ChromaFormat::Yuv420.is_chroma_reference(0, 0, 1, 1));
+        assert!(!ChromaFormat::Yuv420.is_chroma_reference(0, 1, 1, 1));
+        assert!(!ChromaFormat::Yuv420.is_chroma_reference(1, 0, 1, 1));
+        assert!(ChromaFormat::Yuv420.is_chroma_reference(1, 1, 1, 1));
+        assert!(ChromaFormat::Yuv420.is_chroma_reference(0, 0, 2, 2));
     }
 }
