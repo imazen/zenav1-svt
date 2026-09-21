@@ -46,8 +46,11 @@ detail, and they are regenerated or gated rather than narrated.
   bits**, verified against a DECODER rather than against C's bytes
   (`tools/video_selfcheck_gate.sh`, 270/270 cells at bd8;
   `tools/bd10_video_selfcheck_gate.sh`, 396/396 cells at bd10 — 2026-09-18).
-  Monochrome inter is still REFUSED, with its measurement in the refusal
-  text. Do not report video as either "working" or "missing".
+  Monochrome inter ships too (`tools/mono_inter_gate.sh`, 12/12 recon ==
+  aomdec == dav1d, 2026-09-21); mono qp0 inter still refuses — no inter
+  WHT arm. qp0 coded-lossless inter ships at 8-bit 4:2:0 only
+  (`tools/qp0_inter_gate.sh`, 7/7). Do not report video as either
+  "working" or "missing".
 - **10-bit inter video is supported** (the `hbd_md` question is resolved).
   C derives `hbd_md = 2` at `bd10 && bypass_encdec && perform_md_recon`
   (product_coding_loop.c:9649 area — wraps all of MDS3 + winner select +

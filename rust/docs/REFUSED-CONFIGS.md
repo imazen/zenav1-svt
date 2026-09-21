@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **53
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **52
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **10** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -41,7 +41,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | where | C? | refusal |
 |---|---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | ? | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) is not implemented for inter frames — encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) inter frames are not implemented outside 8-bit 4:2:0: the 10-bit path mis-predicts intra per-block vs the decoder's per-TXB rule and the monochrome / 4:4:4 arms have no inter WHT residual path — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
@@ -94,7 +94,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
-| `crates/svtav1-encoder/src/pipeline.rs` | inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage. Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh, video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh, global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously produced a stream aomdec and dav1d both rejected. Encode monochrome as still/key frames, or use the 4:2:0 entry points for video |
 | `crates/svtav1-encoder/src/pipeline.rs` | hierarchical_levels > 5 is outside C's own supported range (enc_settings.c:275, \"Hierarchical Levels supported: [0-5]\") and the pred-struct tables end at level 5. Use hierarchical_levels <= 5 |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |

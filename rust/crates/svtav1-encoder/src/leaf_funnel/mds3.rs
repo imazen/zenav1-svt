@@ -3160,8 +3160,12 @@ fn eval_candidate(
     // for it too.
     let sm_allowed = cand.inter.as_deref().is_some_and(|ic| ic.skip_mode_allowed);
     let mut pred_dists: Option<(u64, u64)> = None;
-    if cand.inter.is_some() && !frame.coded_lossless && ((block_has_coeff && has_uv) || sm_allowed)
-    {
+    // No `coded_lossless` exclusion: the skip-MODE arbitration below is not
+    // gated on lossless either (C `svt_aom_full_cost`, rd_cost.c:1423-1452 —
+    // `skip_mode_present` is a ref-config property, so a qp0 inter frame
+    // still evaluates it), and it `expect`s these dists to exist whenever
+    // `sm_allowed` is true. MEASURED: a 4-frame qp0 encode panicked here.
+    if cand.inter.is_some() && ((block_has_coeff && has_uv) || sm_allowed) {
         // `y_distortion[DIST_SSD][1]` — the distortion with NO residual
         // coded, i.e. the prediction against the source, in the same
         // `sse << 4` domain the spatial arm of `tx_unit` produces.

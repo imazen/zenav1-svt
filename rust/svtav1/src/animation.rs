@@ -6,10 +6,10 @@
 //! smaller than the same frames as separate stills -- MEASURED on an 8-frame
 //! 256x256 clip, see that field's docs.
 //!
-//! An ALPHA track, when present, stays all-intra. The monochrome entry point
-//! refuses inter frames (no gate in this repo covers mono inter), and an
-//! all-sync alpha track is strictly more seekable than the colour track it
-//! accompanies, so nothing a player can do is lost.
+//! An ALPHA track, when present, stays all-intra; an all-sync alpha track is
+//! strictly more seekable than the colour track it accompanies, so nothing a
+//! player can do is lost. Monochrome tracks inter-code on the same terms as
+//! colour since 2026-09-21 (`mono_inter_gate.sh`).
 use super::{AvifEncoder, EncodeError};
 use zenavif_serialize::{
     Av1CBox,
@@ -170,13 +170,18 @@ impl AvifEncoder {
     /// the OBMC neighbour-prediction stale-cache fix swept the whole preset
     /// ladder clean against aomdec.)
     ///
-    /// LOSSLESS is all-intra for a different and permanent reason: QP 0 is
-    /// `CodedLossless`, and `lossless_config_error` refuses it on an inter
-    /// frame exactly as C's own configuration does. A lossless animation is
-    /// a sequence of lossless stills, which is what a caller asking for
-    /// lossless wants anyway.
-    fn animation_keyframes(&self, chroma_420: bool, options: &AnimationOptions) -> Keyframes {
-        if chroma_420 && !self.lossless && self.bit_depth <= 8 {
+    /// LOSSLESS is all-intra as a product choice: a lossless animation is a
+    /// sequence of lossless stills, which is what a caller asking for
+    /// lossless wants anyway. (QP 0 inter frames are implemented at 8-bit
+    /// since 2026-09-21 — `qp0_inter_gate.sh` — so this is pacing policy,
+    /// not a refusal.)
+    ///
+    /// MONOCHROME is inter-eligible at 8 bits since 2026-09-21 —
+    /// `mono_inter_gate.sh` pins encoder-recon == aomdec == dav1d with real
+    /// nonzero MVs. The chroma-free inter path is the same funnel; mono
+    /// simply has no chroma planes to predict, code or filter.
+    fn animation_keyframes(&self, options: &AnimationOptions) -> Keyframes {
+        if !self.lossless && self.bit_depth <= 8 {
             options.keyframes
         } else {
             Keyframes::EveryFrame
@@ -462,12 +467,11 @@ impl AvifEncoder {
                 });
             }
         }
-        // MONOCHROME animations stay all-intra whatever the caller asked
-        // for: `encode_frame_impl` refuses an inter frame on the mono arm,
-        // because every inter gate in this repo is 4:2:0. Silently coding
-        // them as key frames is the right answer here rather than an error --
-        // the default `keyframes` is not something the caller chose.
-        let keyframes = self.animation_keyframes(chroma_420, options);
+        // Monochrome animations inter-code on the same eligibility terms as
+        // colour since 2026-09-21 (`mono_inter_gate.sh`): the funnel has no
+        // chroma planes to predict or code, and both aomdec and dav1d
+        // reconstruct mono inter frames byte-identically to our recon.
+        let keyframes = self.animation_keyframes(options);
         // ABOVE 8 BITS the colour track is all-intra too — now a DELIBERATE
         // policy, not a correctness fallback: `encode_frame_impl` accepts a
         // 10-bit inter frame since 2026-09-18 (the `hbd_md = 2` MDS3 bump
@@ -982,7 +986,7 @@ mod tests {
                 .build_pipeline_gop(
                     w as u32,
                     h as u32,
-                    enc.animation_keyframes(true, &AnimationOptions::default())
+                    enc.animation_keyframes(&AnimationOptions::default())
                         .intra_period(),
                 )
                 .with_chroma_420(true)
@@ -1109,7 +1113,7 @@ mod tests {
                     // recon-is-byte-inert check keeps its own pipeline and has
                     // to walk the same frames to stay in step.
                     let gop = enc
-                        .animation_keyframes(true, &AnimationOptions::default())
+                        .animation_keyframes(&AnimationOptions::default())
                         .intra_period();
                     let mut pipe = enc
                         .build_pipeline_gop(w as u32, w as u32, gop)

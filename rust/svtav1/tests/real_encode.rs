@@ -927,45 +927,77 @@ fn speed_presets_affect_output_size() {
 /// 5-frame 64x64 gradient through the public `encode_frame` API:
 ///   aomdec: "Corrupt frame detected: Failed to decode tile data" at frame 1
 ///   dav1d:  "Overrun in OBU bit buffer" ... "No data decoded"
-/// The inter path emits a malformed sequence header (spec-5.5.1 field order,
-/// `initial_display_delay_present_flag`, an illegal 8-bit `refresh_frame_flags`
-/// on a shown key frame, a missing `disable_frame_end_update_cdf`) and codes
-/// MVs against fresh per-block CDFs. The tests passed because not one of them
-/// ever ran a decoder — they asserted sizes and OBU framing only.
+/// The inter path emitted a malformed sequence header and coded MVs against
+/// fresh per-block CDFs; the tests passed because none of them ever ran a
+/// decoder. For years the mono arm therefore REFUSED inter frames with a
+/// typed error.
 ///
-/// `encode_frame_impl` now REFUSES an inter frame with a typed error rather
-/// than emitting those bytes, so this asserts the contract that replaced them.
-/// That is a STRONGER assertion than the ones removed: it cannot be satisfied
-/// by a corrupt stream. Restore real multi-frame tests when the inter path is
-/// ported — and gate them on a decoder, which is what would have caught this.
+/// 2026-09-21: mono inter is decoder-verified (`tools/mono_inter_gate.sh` —
+/// recon == aomdec == dav1d on every frame), so this test now asserts the
+/// property the refusal guarded, the way the comment above demanded: the
+/// stream must be encodable AND decode to exactly our reconstruction under
+/// an independent decoder. `ZENAV1_SKIP_DECODER_TESTS` opts out on hosts
+/// without aomdec, matching `odd_frame_recon.rs`.
 #[test]
-fn inter_frames_are_refused_not_corrupted() {
-    use svtav1_encoder::EncodeError;
+fn mono_inter_frames_decode_identically_to_recon() {
+    let (w, h) = (64usize, 64usize);
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        64,
-        64,
+        w as u32,
+        h as u32,
         8,
         svtav1_encoder::rate_control::RcConfig::default(),
         4,
         64,
-    );
-    let y_plane = make_gradient(64, 64);
+    )
+    .with_chroma_420(false)
+    .with_recon_output(true);
+    let y_plane = make_gradient(w, h);
 
-    // Frame 0 is the KEY frame: a valid still, and it must keep working.
-    let key = pipeline
-        .try_encode_frame(&y_plane, 64)
-        .expect("the key frame of a GOP is a valid still and must still encode");
-    assert!(!key.is_empty(), "key frame must produce bytes");
+    let mut stream = Vec::new();
+    let mut recons = Vec::new();
+    for f in 0..2 {
+        stream.extend_from_slice(
+            &pipeline
+                .try_encode_frame(&y_plane, w)
+                .unwrap_or_else(|e| panic!("frame {f} must encode: {e:?}")),
+        );
+        let (ry, _, _) = pipeline.last_recon.as_ref().expect("recon enabled");
+        recons.push(
+            ry.chunks_exact(pipeline.width as usize)
+                .take(h)
+                .flat_map(|row| row[..w].iter().copied())
+                .collect::<Vec<u8>>(),
+        );
+    }
 
-    // Frame 1 is an INTER frame: refused, with a typed error rather than the
-    // undecodable bytes it used to return.
-    let err = pipeline
-        .try_encode_frame(&y_plane, 64)
-        .expect_err("an inter frame must be refused, not encoded");
+    if std::env::var_os("ZENAV1_SKIP_DECODER_TESTS").is_some() {
+        eprintln!("mono-inter-decode: skipped by ZENAV1_SKIP_DECODER_TESTS");
+        return;
+    }
+    let dir =
+        std::env::temp_dir().join(format!("mono-inter-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("frames.obu"), &stream).unwrap();
+    let output = std::process::Command::new(
+        std::env::var_os("AOMDEC").unwrap_or_else(|| "aomdec".into()),
+    )
+    .args(["--rawvideo", "-o"])
+    .arg(dir.join("decoded.yuv"))
+    .arg(dir.join("frames.obu"))
+    .output()
+    .expect("aomdec is required for the decoder-equality assertion");
     assert!(
-        matches!(err.error(), EncodeError::UnsupportedConfig(_)),
-        "expected UnsupportedConfig, got {err:?}"
+        output.status.success(),
+        "aomdec rejected the mono inter stream: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let decoded = std::fs::read(dir.join("decoded.yuv")).unwrap();
+    let expected: Vec<u8> = recons.concat();
+    assert_eq!(
+        decoded, expected,
+        "aomdec's reconstruction of the mono inter stream differs from ours"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// The hierarchical-GOP envelope: levels <= 5 are C's own supported range and

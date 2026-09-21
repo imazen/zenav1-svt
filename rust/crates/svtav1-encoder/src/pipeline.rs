@@ -1802,10 +1802,25 @@ impl EncodePipeline {
             );
         }
         if !is_key || self.gop.intra_period > 1 {
-            return Some(
-                "QP 0 (coded-lossless) is not implemented for inter frames — encode a single \
-                 key frame [C: accepts]",
-            );
+            // The encode can contain INTER frames. Coded-lossless inter is
+            // decoder-verified only on the 8-bit 4:2:0 funnel arm: real
+            // inter-coded blocks emit WHT residuals aomdec reconstructs
+            // byte-exactly (qp0-inter sweep 2026-09-21: sb64+sb128). At
+            // 10 bits the inter-frame lossless path predicts intra
+            // per-BLOCK while the decoder predicts per-TXB (measured:
+            // encoder recon == source but aomdec diverges), and the
+            // monochrome / 4:4:4 arms have no inter WHT residual path at
+            // all — their qp0 streams are legal but silently all-intra
+            // (measured 2026-09-21: zero inter block decisions). Refuse
+            // rather than emit them.
+            if self.bit_depth != 8 || !self.chroma_420 {
+                return Some(
+                    "QP 0 (coded-lossless) inter frames are not implemented outside \
+                     8-bit 4:2:0: the 10-bit path mis-predicts intra per-block vs \
+                     the decoder's per-TXB rule and the monochrome / 4:4:4 arms \
+                     have no inter WHT residual path [C: accepts] — use QP >= 1",
+                );
+            }
         }
         if self.superres_denom.is_some() {
             return Some(
@@ -2462,12 +2477,19 @@ impl EncodePipeline {
         // on every frame. Re-measure those numbers in the SAME change whenever
         // `tools/inter_byte_matrix.sh` moves.
         //
-        // THE MONOCHROME ARM STILL REFUSES. It is the one that shipped a
-        // corrupt stream (see the measured aomdec/dav1d failures at the
-        // `bit_depth_config_error` call site above), it has no DPB chroma to
-        // be wrong about but also no gate of its own, and every inter gate in
-        // this repo is 4:2:0. A caller mistake must never become a decoder's
-        // problem, so it takes the same typed `Err` it always did.
+        // THE MONOCHROME ARM SHIPS INTER — measured 2026-09-21. The corrupt
+        // stream this refusal once cited was produced before the inter
+        // correctness landings (write-time `overlappable_neighbors` /
+        // `num_proj_ref` derivation, recon-only eob preservation, OBMC on
+        // `SimpleTranslation`), all of which are format-agnostic: with them
+        // in place a mono inter frame is byte-identical between this
+        // encoder's reconstruction, `aomdec` AND `dav1d` across presets
+        // {0,6,8,13}, sizes 64x64..256x128, sb64+sb128, qp0-lossless and
+        // 10-bit, with real nonzero MVs — `tools/mono_inter_gate.sh` is the
+        // standing witness. `chroma.is_none()` simply means the frame has
+        // no chroma planes to predict, code or filter: the seq header
+        // already signals mono_chrome, and the decoder derives a single
+        // plane throughout.
         //
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
@@ -2478,13 +2500,7 @@ impl EncodePipeline {
         // `bd10_video_selfcheck_gate.sh` pins the replacement measurement:
         // 396/396 cells x 8 frames reconstruct identically to `aomdec`
         // (presets -1..13 at 256x256, -1..5 at 128x128, qp {20,40,55}, six
-        // derf clips). The monochrome arm keeps its own refusal below —
-        // every inter gate is 4:2:0.
-        if !is_key && chroma.is_none() {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage.                  Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh,                  video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh,                  global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously                  produced a stream aomdec and dav1d both rejected. Encode monochrome as                  still/key frames, or use the 4:2:0 entry points for video [C: accepts]",
-            )));
-        }
+        // derf clips).
         // Step 1b: C's PICTURE DECISION — the reference structure.
         //
         // `picture_decision_per_picture` fills `rps.ref_dpb_index[]` (the
@@ -17597,25 +17613,42 @@ mod tests {
         assert!(!bitstream.is_empty(), "key frame should produce output");
         assert_eq!(pipeline.frame_count, 1);
         assert_eq!(pipeline.rc_state.total_frames, 1);
-        // Every following frame is an INTER frame, which `encode_frame_impl`
-        // now refuses rather than emitting the undecodable bytes this loop used
-        // to collect (measured: aomdec "Corrupt frame detected", dav1d "No data
-        // decoded" -- see the refusal's comment). The counters must NOT advance
-        // on a refusal, so the caller can retry a supported config.
+        // Following frames are INTER frames. They used to refuse here (the
+        // mono arm emitted undecodable streams); since 2026-09-21 mono inter
+        // is decoder-verified (`tools/mono_inter_gate.sh`), so they encode
+        // and the state machine advances per frame.
         for i in 1..5 {
-            let err = pipeline
+            let bytes = pipeline
                 .try_encode_frame(&y_plane, 64)
-                .expect_err("inter frame {i} must be refused");
-            assert!(
-                matches!(err.error(), crate::EncodeError::UnsupportedConfig(_)),
-                "frame {i}: expected UnsupportedConfig, got {err:?}"
-            );
+                .unwrap_or_else(|e| panic!("inter frame {i} must encode: {e:?}"));
+            assert!(!bytes.is_empty(), "inter frame {i} should produce output");
+            assert_eq!(pipeline.frame_count, 1 + i as u64);
         }
-        assert_eq!(
-            pipeline.frame_count, 1,
-            "a refused frame must not advance the counter"
+        assert_eq!(pipeline.rc_state.total_frames, 5);
+        // A REFUSED frame must not advance the counters — qp0 mono inter is
+        // still refused (no inter WHT residual arm), so a qp0 mono pipeline
+        // refuses its key frame because the GOP could produce inter frames.
+        let mut refused = EncodePipeline::new(
+            64,
+            64,
+            10,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 0,
+                ..RcConfig::default()
+            },
+            3,
+            16,
         );
-        assert_eq!(pipeline.rc_state.total_frames, 1);
+        let err = refused
+            .try_encode_frame(&y_plane, 64)
+            .expect_err("qp0 mono with a GOP must refuse");
+        assert!(
+            matches!(err.error(), crate::EncodeError::UnsupportedConfig(_)),
+            "expected UnsupportedConfig, got {err:?}"
+        );
+        assert_eq!(refused.frame_count, 0);
+        assert_eq!(refused.rc_state.total_frames, 0);
     }
 
     #[test]

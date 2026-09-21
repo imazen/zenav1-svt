@@ -1003,8 +1003,12 @@ fn main() {
                                  refusing to write the u8 chain's recon in its place",
                             );
                             let mut s = crop(ry, aw, tw2, th2);
-                            s.extend_from_slice(&crop(ru, acw, tcw2, tch2));
-                            s.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+                            // Mono bd10 carries no chroma planes — same
+                            // guard the u8 arm below already has.
+                            if !ru.is_empty() {
+                                s.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+                                s.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+                            }
                             s.iter().flat_map(|v| v.to_le_bytes()).collect()
                         } else {
                             let (ry, ru, rv) = pipeline

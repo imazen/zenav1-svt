@@ -176,6 +176,31 @@ IntraBC), concentrated in screen content (x1.93..x3.13) while photos sit
 at x1.07..x1.40. Mono carries the same shape (x1.59) where chroma does
 not exist at all, so the gap is generic intra-search, not the format.
 
+## QP 0 coded-lossless inter — 2026-09-21
+
+8-bit 4:2:0 inter frames at `base_q_idx` 0 are supported: the funnel runs
+its normal inter candidates (NearestMv/NewMv/skip-mode incl. WarpedCausal)
+with the coded-lossless structure already used on stills — forced 8x8
+leaves, TX_4X4 WHT residuals, no tx symbols, filters off.
+`tools/qp0_inter_gate.sh` is **7/7**: fourpeople 128x128 presets {0,6,13},
+128x128 at sb128, and 256x256 — every frame of each 4-frame encode
+byte-identical to the SOURCE in `aomdec` (the lossless oracle, stronger
+than recon==dec), with a `SVTAV1_INTERDBG` anti-vacuity leg requiring real
+inter block decisions in every run.
+
+Two defects found enabling it, both fixed in the landing: the skip-MODE
+arbitration (`svt_aom_full_cost`) expects prediction dists that
+coded_lossless had suppressed — a qp0 encode panicked — so the pred-dists
+predicate no longer excludes lossless frames; and the pre-existing
+`!is_key || intra_period > 1` refusal was the only other gate.
+
+Outside that envelope the refusal is narrowed, not removed: **10-bit**
+qp0 inter mis-predicts intra per-BLOCK where the decoder predicts per-TXB
+(measured: encoder recon == source but `aomdec` disagrees), and **4:4:4**
+qp0 inter has no inter WHT arm — its stream is legal but silently
+all-intra. Both refuse with `[C: accepts]` capability text; qp0 stills
+remain supported at 8 and 10 bits.
+
 ## Still identity — 2026-09-08
 
 Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old
@@ -299,13 +324,14 @@ same cache; a 2026-09-15 MFMV_OFF re-sweep of presets -1..5 is 126/126 clean.
 Outside the envelope an inter frame is refused, not approximated, and each
 refusal carries its measurement:
 
-| Refused | What was measured, 2026-09-11 |
+| Refused | What was measured |
 |---|---|
-| bit depth > 8 | three clips x qp {20,40} x presets {6,8,10} x 4 frames: 8 of 18 cells reconstruct as `aomdec` does, the rest drifting from frame 1, 2 or 3. `bd10_video_gate.sh` does NOT cover this — its decode leg asserts only that the stream parses |
-| monochrome | no inter gate in this repo is monochrome, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
+| bit depth > 8 | SUPERSEDED — 10-bit inter ships since 2026-09-18 (`bd10_video_selfcheck_gate.sh` 396/396, recon == `aomdec`). The 2026-09-11 refusal row measured 8/18 cells clean before the `hbd_md = 2` MDS3 mirror landed |
+| monochrome | SUPERSEDED 2026-09-21 — `tools/mono_inter_gate.sh` 12/12: encoder recon == `aomdec` == `dav1d` on every frame across synthetic 13-px-shift legs x presets {0,6,8,13} x 64x64..256x128, sb64+sb128, a 6-frame inter chain, a bd10 leg and the fourpeople clip, with anti-vacuity legs requiring real inter blocks + nonzero MVs. The corrupt stream the refusal cited predated the format-agnostic inter landings. Mono qp0 inter still refuses — the mono lossless arm has no inter WHT residual path, so a qp0 "inter" stream is legal but silently all-intra (the gate pins the refusal) |
+| qp0 (coded-lossless) inter outside 8-bit 4:2:0 | measured 2026-09-21: 10-bit inter lossless predicts intra per-BLOCK while the decoder predicts per-TXB — encoder recon == source yet `aomdec` diverges; 4:4:4/mono qp0 inter streams are legal but silently all-intra (no inter WHT residual arm). 8-bit 4:2:0 qp0 inter SHIPS — `tools/qp0_inter_gate.sh` 7/7 |
 
-`SVTAV1_INTER_EXPERIMENTAL` lifts the bit-depth floor for the harnesses that
-must measure a 10-bit inter frame. It is not a feature flag.
+`SVTAV1_INTER_EXPERIMENTAL` is RETIRED — the bit-depth refusal it lifted
+was removed when 10-bit inter shipped (2026-09-18).
 
 ## How the envelope came to be (2026-09-11)
 
@@ -316,8 +342,8 @@ lifted them — `EncodePipeline`'s 4:2:0 entry points encode inter frames for
 every caller. The standing guard is `tools/video_selfcheck_gate.sh`: the port's
 own final reconstruction is byte-identical to `aomdec`'s on EVERY frame of an
 8-frame encode, for all six public-domain derf clips at qp {20,40,55} — 18 of
-18 cells. The monochrome arm still refuses inter, because no gate in this repo
-covers it.
+18 cells. The monochrome arm shipped inter on 2026-09-21 — the gate is
+`tools/mono_inter_gate.sh` (see the superseded refusal row above).
 
 Byte-identity to C on the inter path is a separate, narrower claim and it is
 NOT universal. MEASURED 2026-09-13 on the 96-cell frontier grid at frames=4

@@ -19,6 +19,8 @@ is the honest baseline; "we are" is measured state, not intent.
 | Screen tools on video | `screen_ibc_gate.sh`, `screen_ibc_byte_gate.sh`, `screen_palette_gate.sh`, `screen_ibc_fh_gate.sh` | IntraBC + palette on screen-content video frames, incl. byte parity. |
 | Inter encodability | `inter_completion_scan.sh` (SCAN_GATE) | sizes 64..2048 x p{6,8,10,13}: floor MIN_OK=52, cap MAX_REFUSED=12 — the frontier inventory of where inter encodes at all. |
 | Inter byte matrix | `inter_byte_matrix.sh` | q{20,40,55} x p{6,8} configurable. |
+| qp0 coded-lossless inter, 8-bit 4:2:0 | `qp0_inter_gate.sh` | 7 cells: 4-frame encodes decode byte-identical to SOURCE via aomdec at p{0,6,13}, sb64+sb128, 128x128+256x256, with an inter-usage anti-vacuity leg. |
+| Monochrome inter | `mono_inter_gate.sh` | 12 cells: recon == aomdec == dav1d (TWO independent decoders) on every frame — 13-px-shift synthetic legs x p{0,6,8,13} x 64x64..256x128, sb64+sb128, 6-frame chain, bd10 leg, fourpeople clip; anti-vacuity legs require real inter blocks + nonzero MVs. Extension surface — no C oracle (C cannot encode mono). |
 | Tool-specific | `warped_motion_gate.sh`, `obmc_gate.sh`, `global_motion_gate.sh`, `gm_join_gate.sh`, `inter_me_join_gate.sh`, `ifs_join_gate.sh` | warped motion, OBMC, GM *signaling* (not search), ME join, IFS. |
 
 ## Where C works but we refuse or diverge — the video gap list
@@ -29,9 +31,9 @@ is the honest baseline; "we are" is measured state, not intent.
 | TPL (temporal dependency) | structurally off — `aq_mode` forced 0; `use_ref_frame_mvs` at mfmv>=2 needs TPL r0 | port TPL + r0 plumbing; unblocks aq_mode != 0 and MFMV>=2 |
 | VBR/CBR rate control | refused — `target_bitrate` read nowhere; C ports exist unwired (`port_rc_vbr_cbr*`, `port_rc_rtc_cbr`, `port_pass2_gop`) | wire the ported RC stack + lookahead |
 | Global motion *search* | refused — `global_me.c:190` search unported; FH writer IS ported (`write_global_motion`) | port `svt_aom_global_motion_estimation` + the picture-analysis reference it reads |
-| qp0 coded-lossless on inter | refused (C accepts) | inter-path lossless arm (the WHT path now exists for chroma/luma stills) |
-| Mono inter | refused — a mono inter stream previously decoded invalid in BOTH aomdec and dav1d | real defect fix: chroma-free inter path |
-| 4:4:4 inter | refused — IBC chroma pred + chroma filters + sb128 chroma walk unported | build on the 4:4:4 stills generalization |
+| qp0 coded-lossless on inter | DONE at 8-bit 4:2:0 (`qp0_inter_gate.sh`); still refused at 10-bit (per-block vs per-TXB intra pred divergence) and 4:4:4 (no inter WHT arm) | 10-bit: per-TXB intra pred on the inter-frame lossless path; 4:4:4: inter WHT residual arm on the non-funnel path |
+| Mono inter | DONE on the measured envelope (`mono_inter_gate.sh` 12/12: recon == aomdec == dav1d, presets {0,6,8,13}, sb64+sb128, bd10 leg, 6-frame chain, nonzero-MV + inter-usage anti-vacuity). The invalid-stream defect predated the format-agnostic inter landings. Mono qp0 inter still refused | mono qp0 inter needs an inter WHT residual arm on the lossless path |
+| 4:4:4 inter | DONE on the measured envelope (`chroma_444_inter_gate.sh`, 47/47 vs aomdec — no C oracle); refused at qp0 / sb128 / 10-bit / IntraBC / film-grain | qp0 needs the inter WHT arm; the rest needs their kernels |
 | 10-bit superres | refused — u16 source downscale unported | port the u16 resample |
 | Partial-SB inter | `inter_completion_scan` frontier — some (size,preset) cells refuse; cap is 12 | cell-by-cell, driven by the scan's refused list |
 | Sequence length | selfcheck runs 8 frames; longer GOP chains and scenecut-driven key insertion untested vs C | long-run differential gate |
