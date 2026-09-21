@@ -44,10 +44,17 @@ PHOTO="$PHOTO_DIR/3571065.png"
 [[ -r "$PHOTO" ]] || { echo "FATAL: corpus image missing: $PHOTO" >&2; exit 2; }
 
 # content w h qp preset shift zoom_num zoom_den want_nonidentity min_globalmv
-# MEASURED 2026-09-10; see benchmarks/global_motion_2026-09-10.meta.
+# MEASURED 2026-09-10 (24 / 4098), RE-MEASURED 2026-09-21 (22 / 2738) after the
+# 09-16/09-17 inter-MD C-parity deepening re-priced the candidate field the
+# pin was set against — most directly 883f4a6a6 (skip-mode fast-cost charged
+# rate + NSQ-search lambda) and the light-PD1/tx-shortcut/per-SB-RDOQ/MDS0
+# work. The models themselves are unchanged: gm_join_gate joins all four
+# non-identity (list, ref) models field-for-field with C on the same cells,
+# and the port's zoom-cell streams are within +1.2% of C's size. See
+# benchmarks/global_motion_2026-09-21.meta.
 CELLS=(
-    "crop:$PHOTO 256 256 40 2 0 33 32 1 24"
-    "crop:$PHOTO 512 512 40 2 0  9  8 1 4098"
+    "crop:$PHOTO 256 256 40 2 0 33 32 1 22"
+    "crop:$PHOTO 512 512 40 2 0  9  8 1 2738"
     "crop:$PHOTO 256 256 40 2 3  1  1 0 0"
     "crop:$PHOTO 128 128 40 2 3  1  1 0 0"
 )

@@ -1,0 +1,49 @@
+# GLOBAL MOTION — GLOBALMV selection-count re-pin (2026-09-21)
+#
+# host        lilith (WSL, 23 GiB ceiling; pin host for the 09-10 numbers was
+#             i265 — selection counts are host-independent by the bit-exact-tier
+#             contract, and the join gate below passed on this host)
+# gate        rust/tools/global_motion_gate.sh
+# join        rust/tools/gm_join_gate.sh — 10/10 cells, 0 mismatched fields,
+#             4 non-identity (list, ref) models joined field-for-field vs C
+# content     codec-corpus/CID22/CID22-512/training/3571065.png, cropped
+# encoder     SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0,
+#             cli_qp 40, preset 2
+#
+# WHAT CHANGED. The 2026-09-10 pin (24 / 4098 GLOBALMV commits on the two zoom
+# cells) measured the candidate field BEFORE the 09-16/09-17 inter-MD C-parity
+# deepening. Since then the funnel prices skip-mode-eligible candidates at
+# C's charged rate (883f4a6a6), the NSQ motion search runs at C's dist_type
+# lambda (same commit), the light-PD1 lane / tx-shortcut / per-SB RDOQ / MDS0
+# cand_elimination / chroma-detector / i16-residual stack landed, and
+# compound-global prediction went per-ref (15e5cade7, the last commit that
+# verified this gate). Every one of those re-prices the competition GLOBALMV
+# wins against, so the count moved WITHOUT the GM path changing:
+#
+# size      preset  zoom    was (09-10)   now (09-21)   recon vs dav1d
+# 256x256   2       33/32   24            22            2/2
+# 512x512   2       9/8     4098          2738          2/2
+#
+# On the 512 cell the committed modes are GlobalMv 2528 + GlobalGlobalMv 210
+# = 2738 of 8020 mode lines, losing mostly to NewMv (2800) / NearestMv (1278)
+# / NearMv (1150) — ordinary single-ref modes whose predictions the deepened
+# search prices better, exactly the direction C's own field pushes.
+#
+# EVIDENCE THE GM PATH ITSELF IS UNCHANGED:
+#   * gm_join_gate: 10 cells joined, 0 mismatch — b64, total_me_sad,
+#     avg_me_sad, total_gm_sbs, ds and is_gm_on all agree with C's GMFRAME
+#     lines, and the four non-identity models the two zoom cells produce join
+#     wmtype + wmmat field-for-field.
+#   * Stream sizes vs C on the join cells: shift cells byte-equal
+#     (977==977, 28812==28812); zoom cells port +0.43% (30383 vs 30252 on
+#     256/z33-32) and +1.21% (132219 vs 130637 on 512/z9-8) — competitive,
+#     not a quality collapse.
+#   * An 8-frame p2 zoom sequence fits ROTZOOM on every poc (models searched
+#     on poc1..poc7, no MissingReference, no refusal) — the pa_slots mirror
+#     covers every DPB slot the RPS names.
+#
+# THE PIN'S PURPOSE IS UNCHANGED: it is a wiring anti-regression control —
+# GLOBALMV must still be selected strongly on a ROTZOOM cell and never on an
+# identity cell — not an RD-quality assertion. Exact re-measured values keep
+# it the tightest such control; the next legitimate MD shift re-measures it
+# again in its own change.
