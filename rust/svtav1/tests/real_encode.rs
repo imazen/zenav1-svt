@@ -974,18 +974,16 @@ fn mono_inter_frames_decode_identically_to_recon() {
         eprintln!("mono-inter-decode: skipped by ZENAV1_SKIP_DECODER_TESTS");
         return;
     }
-    let dir =
-        std::env::temp_dir().join(format!("mono-inter-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("mono-inter-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("frames.obu"), &stream).unwrap();
-    let output = std::process::Command::new(
-        std::env::var_os("AOMDEC").unwrap_or_else(|| "aomdec".into()),
-    )
-    .args(["--rawvideo", "-o"])
-    .arg(dir.join("decoded.yuv"))
-    .arg(dir.join("frames.obu"))
-    .output()
-    .expect("aomdec is required for the decoder-equality assertion");
+    let output =
+        std::process::Command::new(std::env::var_os("AOMDEC").unwrap_or_else(|| "aomdec".into()))
+            .args(["--rawvideo", "-o"])
+            .arg(dir.join("decoded.yuv"))
+            .arg(dir.join("frames.obu"))
+            .output()
+            .expect("aomdec is required for the decoder-equality assertion");
     assert!(
         output.status.success(),
         "aomdec rejected the mono inter stream: {}",
@@ -1084,8 +1082,8 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
 /// all be REFUSED at the `validate` choke point — never silently ignored.
 #[test]
 fn deep_search_refuses_everything_outside_still_420() {
-    use svtav1_encoder::enhancements::ZenEnhancement;
     use svtav1_encoder::EncodeError;
+    use svtav1_encoder::enhancements::ZenEnhancement;
     let mk = |intra_period: u32| {
         let mut p = svtav1_encoder::pipeline::EncodePipeline::new(
             64,
@@ -1128,10 +1126,7 @@ fn deep_search_refuses_everything_outside_still_420() {
 
     // Video pipeline: refused on frame 0 already — a GOP pipeline is not a
     // still even while its first frame happens to be intra.
-    expect_refusal(
-        mk(64).try_encode_frame_420(&y, &u, &v, 64),
-        "video",
-    );
+    expect_refusal(mk(64).try_encode_frame_420(&y, &u, &v, 64), "video");
 
     // Monochrome: no chroma planes -> outside the measured envelope.
     let mut mono = mk(1);

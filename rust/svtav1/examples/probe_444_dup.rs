@@ -33,8 +33,7 @@ fn main() {
                     let sr = (r as i32 + 3 * i as i32).clamp(0, h as i32 - 1) as usize;
                     let sc = (c as i32 + 5 * i as i32).clamp(0, w as i32 - 1) as usize;
                     y[r * w + c] = ((sr * 255) / h.max(1)) as u8 ^ ((sc * 3) & 0x3F) as u8;
-                    u[r * w + c] =
-                        (((sr * 3) & 0x7F) + 64) as u8 ^ (((sc / 4) & 1) as u8 * 40);
+                    u[r * w + c] = (((sr * 3) & 0x7F) + 64) as u8 ^ (((sc / 4) & 1) as u8 * 40);
                     v[r * w + c] = (((sc * 5) & 0x7F) + 64) as u8;
                 } else {
                     y[r * w + c] = ((r * 255) / h.max(1)) as u8 ^ ((c * 3) & 0x3F) as u8;
@@ -54,7 +53,10 @@ fn main() {
         .with_chroma_format(Some(ChromaFormat::Yuv444))
         .with_recon_output(true);
     let mut stream = Vec::new();
-    let nframes: usize = std::env::var("N444").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let nframes: usize = std::env::var("N444")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
     let (aw, ah) = (w.div_ceil(8) * 8, h.div_ceil(8) * 8);
     for i in 0..nframes {
         let (y, u, v) = mk(i);

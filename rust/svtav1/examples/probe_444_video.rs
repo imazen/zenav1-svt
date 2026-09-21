@@ -46,7 +46,9 @@ fn frame_planes(w: usize, h: usize, i: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let outdir = args.next().unwrap_or_else(|| "target/probe_444_video".to_string());
+    let outdir = args
+        .next()
+        .unwrap_or_else(|| "target/probe_444_video".to_string());
     let size: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(128);
     let qp: u8 = args.next().and_then(|s| s.parse().ok()).unwrap_or(30);
     let preset: u8 = args.next().and_then(|s| s.parse().ok()).unwrap_or(6);

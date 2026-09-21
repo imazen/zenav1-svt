@@ -69,10 +69,7 @@ fn main() {
     // The final (deblock -> CDEF -> LR) reconstruction, cropped to the true
     // dims — `last_recon` chroma planes are aligned-stride at 4:4:4.
     if let Some((ry, ru, rv)) = pipeline.last_recon.as_ref() {
-        let (aw, ah) = (
-            w.div_ceil(8) * 8,
-            h.div_ceil(8) * 8,
-        );
+        let (aw, ah) = (w.div_ceil(8) * 8, h.div_ceil(8) * 8);
         let mut dump = Vec::with_capacity(w * h * 3);
         for r in 0..h {
             dump.extend_from_slice(&ry[r * aw..r * aw + w]);
@@ -89,7 +86,10 @@ fn main() {
         out.extend_from_slice(&dump[..w * h]);
         out.extend_from_slice(&dump[w * h..]);
         std::fs::write(format!("{outdir}/recon.raw"), &out).unwrap();
-        println!("recon: luma {}x{} + chroma 2x{}x{} (aligned stride)", w, h, aw, ah);
+        println!(
+            "recon: luma {}x{} + chroma 2x{}x{} (aligned stride)",
+            w, h, aw, ah
+        );
     }
 
     println!(

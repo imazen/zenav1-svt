@@ -876,7 +876,12 @@ impl AvifEncoder {
                 ));
             }
             self.enhancements
-                .validate(self.resolved_native_preset().value(), true, false, self.bit_depth)
+                .validate(
+                    self.resolved_native_preset().value(),
+                    true,
+                    false,
+                    self.bit_depth,
+                )
                 .map_err(EncodeError::UnsupportedConfig)?;
         }
         Ok(())

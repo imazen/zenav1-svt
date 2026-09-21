@@ -113,8 +113,7 @@ impl ChromaFormat {
         self,
         bsize: crate::block::BlockSize,
     ) -> Option<crate::block::BlockSize> {
-        SS_SIZE_LOOKUP[bsize as usize][self.subsampling_x() as usize]
-            [self.subsampling_y() as usize]
+        SS_SIZE_LOOKUP[bsize as usize][self.subsampling_x() as usize][self.subsampling_y() as usize]
     }
 
     /// C `is_chroma_reference` (`common_utils.h:315`): a luma block codes
@@ -123,7 +122,13 @@ impl ChromaFormat {
     /// reference — the `!ss_*` arms degenerate the rule to `true`.
     /// `mi_row`/`mi_col` are the block's 4x4-unit origin.
     #[must_use]
-    pub const fn is_chroma_reference(self, mi_row: usize, mi_col: usize, bw_mi: usize, bh_mi: usize) -> bool {
+    pub const fn is_chroma_reference(
+        self,
+        mi_row: usize,
+        mi_col: usize,
+        bw_mi: usize,
+        bh_mi: usize,
+    ) -> bool {
         (mi_row % 2 == 1 || bh_mi.is_multiple_of(2) || self.subsampling_y() == 0)
             && (mi_col % 2 == 1 || bw_mi.is_multiple_of(2) || self.subsampling_x() == 0)
     }
@@ -224,10 +229,7 @@ mod tests {
             Some(B::Block8x16)
         );
         // Vertically-tall blocks have no 4:2:2/4:2:0 chroma twin.
-        assert_eq!(
-            ChromaFormat::Yuv422.plane_block_size(B::Block8x16),
-            None
-        );
+        assert_eq!(ChromaFormat::Yuv422.plane_block_size(B::Block8x16), None);
     }
 
     #[test]

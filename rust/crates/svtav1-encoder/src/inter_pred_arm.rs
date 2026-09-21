@@ -1441,8 +1441,16 @@ pub fn predict_inter_chroma_whole_hbd(
 ) {
     let (cw, chh) = ((bw >> ss_x).max(4), (bh >> ss_y).max(4));
     let (cx, cy) = (
-        if ss_x == 0 { org_x } else { round_uv_half(org_x) },
-        if ss_y == 0 { org_y } else { round_uv_half(org_y) },
+        if ss_x == 0 {
+            org_x
+        } else {
+            round_uv_half(org_x)
+        },
+        if ss_y == 0 {
+            org_y
+        } else {
+            round_uv_half(org_y)
+        },
     );
     let sf = ScaleFactors::setup_for_frame(
         frame_w as i32,
@@ -1633,8 +1641,16 @@ pub fn predict_inter_chroma_whole(
 ) {
     let (cw, chh) = ((bw >> ss_x).max(4), (bh >> ss_y).max(4));
     let (cx, cy) = (
-        if ss_x == 0 { org_x } else { round_uv_half(org_x) },
-        if ss_y == 0 { org_y } else { round_uv_half(org_y) },
+        if ss_x == 0 {
+            org_x
+        } else {
+            round_uv_half(org_x)
+        },
+        if ss_y == 0 {
+            org_y
+        } else {
+            round_uv_half(org_y)
+        },
     );
     let sf = ScaleFactors::setup_for_frame(
         frame_w as i32,
