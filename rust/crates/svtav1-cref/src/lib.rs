@@ -2937,6 +2937,13 @@ unsafe extern "C" {
     );
     fn ref_superres_filter_normative(phase: i32, out8: *mut i16);
     fn ref_superres_upscale_row(input: *const u8, in_width: i32, output: *mut u8, out_width: i32);
+    fn ref_superres_upscale_row_hbd(
+        input: *mut u16,
+        in_width: i32,
+        output: *mut u16,
+        out_width: i32,
+        bd: i32,
+    );
     fn ref_resize_plane_horizontal(
         input: *const u8,
         height: i32,
@@ -3112,6 +3119,33 @@ pub fn superres_upscale_row(
             in_width as i32,
             output.as_mut_ptr(),
             out_width as i32,
+        );
+    }
+}
+
+/// Reference `highbd_upscale_normative_rect` ->
+/// `av1_highbd_convolve_horiz_rs_c` (transcribed in the shim — both are
+/// `static` in super_res.c). `input` indexes the first sample of a u16 row
+/// that has >= 5 border samples on each side; the rect replicates the edge
+/// samples into them and restores them in place, so the row content is
+/// preserved across the call.
+pub fn superres_upscale_row_hbd(
+    input: &mut [u16],
+    input_origin: usize,
+    in_width: usize,
+    output: &mut [u16],
+    out_width: usize,
+    bd: i32,
+) {
+    assert!(input_origin >= 5 && input_origin + in_width + 5 <= input.len());
+    assert!(output.len() >= out_width);
+    unsafe {
+        ref_superres_upscale_row_hbd(
+            input.as_mut_ptr().add(input_origin),
+            in_width as i32,
+            output.as_mut_ptr(),
+            out_width as i32,
+            bd,
         );
     }
 }

@@ -850,6 +850,15 @@ jobs:
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_gate.sh
 
+      - name: superres bd10 identity + conformance + recon
+        if: matrix.shard == 3
+        working-directory: rust
+        # The 10-bit arm: u16 source downscale (C's pack->highbd_resize->
+        # unpack order) + byte-parity + decode + last_recon10_final ==
+        # aomdec at the upscaled size (the u16 normative upscale).
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_bd10_gate.sh
+
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
         if: matrix.shard == 5
         working-directory: rust

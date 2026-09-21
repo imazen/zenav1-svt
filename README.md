@@ -97,7 +97,7 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 | Palette (screen content) | **Validated** | `screen_palette_gate.sh` 50/50, `screen_palette_bd_gate.sh` |
 | Intra block copy | **Validated** | `screen_ibc_byte_gate.sh` 152/152 |
 | Tiles, SB128, lossless | **Validated** | `tile_gate.sh`, `sb128_gate.sh`, `lossless_gate.sh` |
-| Superres | **Partial** | 8-bit only — the u16 source downscale is unported; `superres_gate.sh` |
+| Superres | **Validated** | 8-bit: `superres_gate.sh`. 10-bit: `superres_bd10_gate.sh` — byte-identical to C AND `last_recon10_final` == `aomdec` at the upscaled size (u16 downscale + u16 normative upscale, both C-pinned). Stills/KEY frames only: mono, inter frames and bd10+film-grain-denoise refuse |
 | Film grain | **Supported** | 8/10-bit 4:2:0 only (C's own limit) |
 | Animated AVIF, inter-coded | **Validated** | `AnimationOptions::keyframes` defaults to one key frame every 120 pictures; only key frames are marked `stss`. MEASURED on eight 256x256 frames of `fourpeople` at quality 70: 58,823 B all-intra against 21,104 B as one closed GOP. Monochrome, lossless and 10-bit animations fall back to all-intra rather than failing |
 | All-intra animated AVIF | **Validated** | CI `animation` job with a PINNED decoder (libavif 1.3.0): 9 in-module tests plus `tests/animation_e2e.rs`, which re-parses the written file with an independent container parser and checks frame count, per-frame durations, the alpha-track decision and that frames differ |

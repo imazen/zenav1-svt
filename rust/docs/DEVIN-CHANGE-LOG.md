@@ -23,6 +23,59 @@ Changes by other authors are not listed here.
 
 ---
 
+## 2026-09-21 — 10-bit superres on stills (u16 downscale + u16 normative upscale) + bd10 chroma-stride fix — `<pending>`
+
+- What: `EncodePipeline::hbd_superres_src` + `HbdSuperresSrc` stage the
+  full-width u16 planes; `superres_downscale_420_hbd` runs C's
+  pack -> `highbd_resize` -> unpack order (u16 filtered first, u8 canvas =
+  `filtered >> 2`); `superres.rs` gains the u16 normative upscale twins
+  (`av1_highbd_convolve_horiz_rs_c` / `highbd_upscale_normative_rect`
+  ports) with the C shim + `c_parity_superres` leg; the recon-upscale
+  block produces separate OUTPUT planes instead of overwriting `recon`
+  (keeps the DPB's `padded_ref` at coded geometry — fixes a latent 8-bit
+  diagonal-smear defect); three new refusals (inter+superres,
+  mono+superres, bd10+film-grain-denoise); new gate
+  `tools/superres_bd10_gate.sh` wired into `rust-gates.yml` shard 3;
+  `c_parity_resize_hbd` gains a real-`scaled_size`-dims leg
+  (128->102, 64->51 — the dims the earlier `div_ceil` sweep never hit).
+- Chroma-stride fix (same commit): `bd10_reencode_chroma`'s source planes
+  are now `pad_plane_replicate_u16`-padded to the SB-extent chroma stride
+  (`ext_w/2`) and the pass reads them at that stride. Previously the
+  `acw`-strided staging buffer's "extra rows" let a right-straddle TU's
+  residual gather WRAP into the next row's real samples, where C's
+  wide-stride buffer holds the replicated right edge
+  (`svt_aom_generate_padding16_bit`, resize.c:1064). The funnel already
+  solves this internally (`padded_chroma10`, pipeline.rs:~14106 — its
+  comment names the bug); the post-pass bypassed it. MEASURED root cause
+  of the 3/512 divergence (`uniform_128_q20` d10 at p9/p10/p13): C coded
+  a right-edge chroma txb the wrapped read quantized to eob 0 — a 27B vs
+  28B OBU plus a ±1 chroma-LSB recon band at cols 40-63. RESIDUAL GAP,
+  unfixed on purpose: the u8 `chroma_pass` (`cp.stride = acw`,
+  `encode_chroma_block_dc/pred` gathers) has the same wrap shape on
+  partial-SB frames; its recon canvas shares the stride with the source,
+  so the fix needs a stride split, not this line — no gate cell has ever
+  tripped it.
+- Why: the gate claimed byte parity over a surface it had never measured
+  at these dims; the wrap only shows on content whose low 2 bits differ
+  row-to-row enough to flip a coefficient — the `uniform` generator's
+  `512 | (3r+5c)%4` pattern is exactly that.
+- Verified by: `superres_bd10_gate.sh` 512/512 (was 509/512 — the three
+  cells now byte-identical); `superres_gate.sh` 512/512 (8-bit
+  regression); `bd10_partial_sb_gate.sh` 159/159 + 0 pinned divergences;
+  `bd10_recon_parity_gate.sh` 13/13; `bd10_hbd_src_gate.sh` 118/118;
+  `bd10_photo_gate.sh` 191/191; `bd10_nonflat_gate.sh` 309/309;
+  `bd10_video_gate.sh` 24/24; `bd10_video_selfcheck_gate.sh` 270/270;
+  `cargo nextest` 3970/3970; clippy clean; `refusal_inventory.sh`
+  regenerated (3 refusals land as CAPABILITY/`[C: accepts]`).
+- Audit surface: the post-pass call site in `pipeline.rs` (~line 6200)
+  where `cstride` + the pad are computed; the row-gather crop for
+  `last_recon10_uv` (the canvases are `cstride`-strided now, not `acw`);
+  `superres_config_error`'s three new arms; the `HbdSuperresSrc` field's
+  take-once contract (cleared unconditionally in `encode_frame_420_core`).
+  The C submodule's `DEBUG_SCALING` was flipped on for the dump
+  comparison and REVERTED before commit — `git -C reference/svt-av1
+  status` must be clean.
+
 ## 2026-09-21 — qp0 coded-lossless inter (8-bit 4:2:0) + monochrome inter — `561267534`
 
 - What: `lossless_config_error` admits inter frames at 8-bit 4:2:0 only —

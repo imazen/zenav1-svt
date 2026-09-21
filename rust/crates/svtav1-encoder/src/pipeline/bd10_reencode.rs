@@ -1195,9 +1195,12 @@ pub(super) fn bd10_reencode_chroma(
     tile_grid: &crate::entropy::obu::TileGrid,
     w: usize,
     h: usize,
-    // The 10-bit CHROMA source, in the SB-extent shape `sb_chroma_owned` has
-    // (aligned stride `cstride`, extra edge-replicated rows) so a straddling
-    // block's residual gather stays in bounds.
+    // The 10-bit CHROMA source, padded to the SB-EXTENT chroma stride
+    // (`chroma_width(ceil(w/sb)*sb)`) with the right edge replicated — the
+    // shape C's picture buffers hold after `generate_padding16_bit`, and the
+    // shape the funnel's `padded_chroma10` builds for the same reason: at an
+    // `acw` stride a right-straddle TU's residual gather wraps into the next
+    // row's real samples instead of reading the replicated edge.
     u_src10: &[u16],
     v_src10: &[u16],
     cstride: usize,
@@ -1283,9 +1286,9 @@ pub(super) fn bd10_reencode_chroma(
     let qt_u = crate::quant::build_quant_table_bd_sharp(qindex_u, bd, sharpness);
     let qt_v = crate::quant::build_quant_table_bd_sharp(qindex_v, bd, sharpness);
     let (cframe_w, cframe_h) = (w / 2, h / 2);
-    // SB-extent-sized, ALIGNED-strided — the chroma twin of the luma canvas
-    // above (and of `fun_u_recon` / `fun_v_recon` in the funnel). The caller
-    // crops the in-frame `cframe_w * cframe_h` region.
+    // SB-extent-sized AND SB-extent-strided (`cstride`) — the chroma twin of
+    // the luma canvas above (and of `fun_u_recon` / `fun_v_recon` in the
+    // funnel). The caller row-gathers the in-frame `acw` columns.
     let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
     // Seeded with the 10-bit DC default like the luma canvas above (and like
     // the funnel's `fun_u_recon` / `fun_v_recon`, which are 128u8) — see the

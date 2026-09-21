@@ -173,9 +173,11 @@ impl TileColPad {
 }
 
 /// The source sample C's kernel reads at tile-column-relative index `i`,
-/// applying `upscale_normative_rect`'s border policy.
+/// applying `upscale_normative_rect`'s border policy. Shared by the 8-bit
+/// and high-bit-depth kernels — C's `highbd_upscale_normative_rect` applies
+/// the same border policy on u16 samples.
 #[inline]
-fn sample(row: &[u8], x0: usize, width: usize, i: i32, pad: TileColPad) -> u8 {
+fn sample<T: Copy>(row: &[T], x0: usize, width: usize, i: i32, pad: TileColPad) -> T {
     if i < 0 {
         if pad.left {
             row[x0]
@@ -270,6 +272,88 @@ pub fn upscale_normative_plane(
             x_step_qn,
             x0_qn,
             TileColPad::FRAME,
+        );
+    }
+}
+
+/// C `clip_pixel_highbd(v, bd)` — the clamp ceiling is `(1 << bd) - 1`.
+#[inline]
+fn clip_pixel_highbd(v: i32, bd: i32) -> u16 {
+    v.clamp(0, (1i32 << bd) - 1) as u16
+}
+
+/// C `av1_highbd_convolve_horiz_rs_c` (super_res.c:105) for ONE row of ONE
+/// tile column, with `highbd_upscale_normative_rect`'s border handling folded
+/// in — the u16 twin of [`upscale_normative_row`].
+///
+/// Same tap indexing, phase accumulator and border policy as the 8-bit
+/// kernel; only the clamp ceiling differs (`bd`, threaded through
+/// [`clip_pixel_highbd`]). This is the kernel C runs on the unpacked 10-bit
+/// recon in `svt_av1_upscale_normative_rows` (`high_bd` arm).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_upscale_normative_row(
+    row: &[u16],
+    src_x0: usize,
+    src_width: usize,
+    dst: &mut [u16],
+    dst_width: usize,
+    x_step_qn: i32,
+    x0_qn: i32,
+    pad: TileColPad,
+    bd: i32,
+) {
+    debug_assert!(src_width > 0 && dst_width > 0);
+    let mut x_qn = x0_qn;
+    for x in dst.iter_mut().take(dst_width) {
+        let base = x_qn >> RS_SCALE_SUBPEL_BITS;
+        let phase = ((x_qn & RS_SCALE_SUBPEL_MASK) >> RS_SCALE_EXTRA_BITS) as usize;
+        debug_assert!(phase <= RS_SUBPEL_MASK as usize);
+        let filter = &RESIZE_FILTER_NORMATIVE[phase];
+        let mut sum: i32 = 0;
+        for (k, &tap) in filter.iter().enumerate() {
+            let idx = base - (UPSCALE_NORMATIVE_TAPS as i32 / 2) + k as i32;
+            debug_assert!(
+                idx >= -(UPSCALE_BORDER_COLS as i32)
+                    && idx < (src_width + UPSCALE_BORDER_COLS) as i32,
+                "upscale tap {idx} outside the +/-{UPSCALE_BORDER_COLS} border of a \
+                 {src_width}-wide tile column"
+            );
+            sum += i32::from(sample(row, src_x0, src_width, idx, pad)) * i32::from(tap);
+        }
+        *x = clip_pixel_highbd((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS, bd);
+        x_qn += x_step_qn;
+    }
+}
+
+/// Whole-plane normative upscale on u16 samples, single tile column — the
+/// `high_bd` arm of C `svt_av1_upscale_normative_rows` with
+/// `tile_cols == 1`. The 10-bit twin of [`upscale_normative_plane`]: what
+/// `svt_av1_superres_upscale_frame` runs on the unpacked 10-bit recon
+/// (cdef_process.c:152, after CDEF, before loop restoration).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_upscale_normative_plane(
+    src: &[u16],
+    src_stride: usize,
+    src_width: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst_width: usize,
+    rows: usize,
+    bd: i32,
+) {
+    let x_step_qn = upscale_convolve_step(src_width as i32, dst_width as i32);
+    let x0_qn = upscale_convolve_x0(src_width as i32, dst_width as i32, x_step_qn);
+    for r in 0..rows {
+        highbd_upscale_normative_row(
+            &src[r * src_stride..],
+            0,
+            src_width,
+            &mut dst[r * dst_stride..],
+            dst_width,
+            x_step_qn,
+            x0_qn,
+            TileColPad::FRAME,
+            bd,
         );
     }
 }

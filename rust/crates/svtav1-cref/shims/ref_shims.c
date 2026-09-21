@@ -1351,6 +1351,67 @@ void ref_superres_upscale_row(const uint8_t* input, int32_t in_width, uint8_t* o
     upscale_normative_rect((uint8_t*)input, 1, in_width, in_width, output, 1, out_width, out_width, step, x0, 1, 1);
 }
 
+/* `av1_highbd_convolve_horiz_rs_c` and `highbd_upscale_normative_rect` are
+   `static` in super_res.c (:105, :188) — not linkable. Verbatim
+   transcriptions, same convention as `ref_us_step`/`ref_us_x0` above: the
+   parity test pins the port against THIS code, and this code pins itself to
+   super_res.c by review (the kernel is 18 lines; the rect is the u8
+   function's u16 twin). */
+static void ref_av1_highbd_convolve_horiz_rs_c(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                               int w, int h, const int16_t* x_filters, int x0_qn, int x_step_qn,
+                                               int bd) {
+    src -= UPSCALE_NORMATIVE_TAPS / 2 - 1;
+    for (int y = 0; y < h; ++y) {
+        int x_qn = x0_qn;
+        for (int x = 0; x < w; ++x) {
+            const uint16_t* const src_x        = &src[x_qn >> RS_SCALE_SUBPEL_BITS];
+            const int             x_filter_idx = (x_qn & RS_SCALE_SUBPEL_MASK) >> RS_SCALE_EXTRA_BITS;
+            const int16_t* const  x_filter     = &x_filters[x_filter_idx * UPSCALE_NORMATIVE_TAPS];
+            int                   sum          = 0;
+            for (int k = 0; k < UPSCALE_NORMATIVE_TAPS; ++k) {
+                sum += src_x[k] * x_filter[k];
+            }
+            dst[x] = clip_pixel_highbd(ROUND_POWER_OF_TWO(sum, FILTER_BITS), bd);
+            x_qn += x_step_qn;
+        }
+        src += src_stride;
+        dst += dst_stride;
+    }
+}
+
+/* One-row HIGH-BIT-DEPTH normative horizontal upscale on u16 samples
+   (in_width -> out_width). Same border contract as the u8 shim. */
+void ref_superres_upscale_row_hbd(uint16_t* input, int32_t in_width, uint16_t* output, int32_t out_width,
+                                  int32_t bd) {
+    ref_rtcd_once();
+    const int32_t step        = ref_us_step(in_width, out_width);
+    const int32_t x0          = ref_us_x0(in_width, out_width, step);
+    const int     border_cols = UPSCALE_NORMATIVE_TAPS / 2 + 1;
+    /* The rect saves the border, replicates the edge sample into it, runs the
+       kernel, then restores — transcribed from highbd_upscale_normative_rect
+       with height == 1. `input` must carry >= 5 u16 border each side. */
+    uint16_t tmp_left[8];
+    uint16_t tmp_right[8];
+    memcpy(tmp_left, input - border_cols, border_cols * sizeof(uint16_t));
+    memcpy(tmp_right, input + in_width, border_cols * sizeof(uint16_t));
+    for (int i = 0; i < border_cols; i++) {
+        input[i - border_cols] = input[0]; /* left: replicate col 0 */
+        input[in_width + i] = input[in_width - 1]; /* right: replicate last col */
+    }
+    ref_av1_highbd_convolve_horiz_rs_c(input - 1,
+                                       in_width,
+                                       output,
+                                       out_width,
+                                       out_width,
+                                       1,
+                                       &svt_av1_resize_filter_normative[0][0],
+                                       x0,
+                                       step,
+                                       bd);
+    memcpy(input - border_cols, tmp_left, border_cols * sizeof(uint16_t));
+    memcpy(input + in_width, tmp_right, border_cols * sizeof(uint16_t));
+}
+
 /* ---- Quantizers (full_loop.c): the MD + encode-pass quantize kernels ----
  *
  * `svt_av1_quantize_fp_facade` (full_loop.c:462) and the `perform_rdoq == 0`

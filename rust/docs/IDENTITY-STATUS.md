@@ -201,6 +201,45 @@ qp0 inter has no inter WHT arm — its stream is legal but silently
 all-intra. Both refuse with `[C: accepts]` capability text; qp0 stills
 remain supported at 8 and 10 bits.
 
+## Superres — 8-bit AND 10-bit stills — 2026-09-21
+
+10-bit superres ships on the still surface. C's order is load-bearing:
+the native u16 source is downscaled FIRST by
+`svt_av1_highbd_resize_plane_horizontal` (the `port_resize_hbd` ladder,
+already C-pinned) and only then unpacked to the u8 canvas
+(`filtered_u16 >> 2`); truncating before the resize loses the low bits
+the filters accumulate and is NOT byte-parity. The port stages the
+full-width u16 planes (`hbd_superres_src`) and produces both canvases in
+that order in `superres_downscale_420_hbd`. The final 10-bit
+reconstruction is upscaled back to the output width by the u16 normative
+kernel (`highbd_upscale_normative_row`, byte-identical to C across
+bd {10,12} x 7 widths x denoms 9..16 x 4 contents in
+`c_parity_superres`).
+
+`tools/superres_bd10_gate.sh` is **512/512** and
+asserts all four properties per cell: OBU byte-identical to C
+(`SVT_SUPERRES_KF_DENOM`, bd 10, same u16 .yuv), `aomdec` decodes, the
+decoded frame is u16 I420 at the FULL upscaled size, and the port's
+`last_recon10_final` equals the decoder's output byte-for-byte — the
+strongest leg, since it pins the u16 normative upscale and the whole
+10-bit filter chain at output geometry. Anti-vacuity requires the
+superres stream to differ from the non-superres one.
+
+Three honest refusals came with it: **inter frames under superres**
+(`[C: accepts]` capability — the per-reference geometry under a changing
+coded width is decoder-ungated; the still arm is the measured surface),
+**mono + superres** (the mono entry has no downscale arm — measured: it
+encoded a left-cropped plane under an upscale header), and **bd10 +
+film-grain denoise** (the denoiser reads the u8 canvas before the
+downscale that produces it under the native-input order).
+
+One latent 8-bit defect fixed in the same change: the post-filter stage
+used to replace `recon` with the UPSCALED plane and then build the DPB
+reference from it at the coded stride — a diagonal smear any
+inter+superres prediction would have scored. `recon`/`recon10` now stay
+at coded geometry for the reference and only the published output planes
+(`last_recon`/`last_recon10_final`) carry the upscale.
+
 ## Still identity — 2026-09-08
 
 Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old

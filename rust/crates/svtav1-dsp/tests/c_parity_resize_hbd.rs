@@ -182,3 +182,37 @@ fn highbd_resize_multistep_identity_is_a_copy_and_matches_c() {
     highbd_resize_multistep(&input, w, &mut r_out, w, bd);
     assert_eq!(r_out, c_out);
 }
+
+// The REAL coded widths C's `scaled_size` produces for the shipped
+// denominators — 128->102 at denom 10 and the 64->51 chroma half — are not
+// the `div_ceil(w*8, denom)` values the main test sweeps (103/52). Pin the
+// kernel at the exact geometry the superres path feeds it, including the
+// uniform-style low-bits pattern whose residuals exposed the bd10
+// chroma-stride wrap (pipeline.rs `bd10_reencode_chroma` call site).
+#[test]
+fn highbd_resize_plane_horizontal_matches_c_at_real_superres_dims() {
+    use svtav1_cref as cref;
+    for &(w, w2, h) in &[(128usize, 102usize, 4usize), (64, 51, 8), (64, 51, 4)] {
+        for bd in [10i32, 12] {
+            let in_stride = w + 7;
+            let out_stride = w2 + 5;
+            let mut input = vec![0u16; (h - 1) * in_stride + w];
+            for i in 0..input.len() {
+                let (r, c) = (i / in_stride, i % in_stride);
+                if c < w {
+                    input[i] = 512 | (((r * 3 + c * 5) % 4) as u16);
+                }
+            }
+            let mut c_out = vec![0u16; (h - 1) * out_stride + w2];
+            cref::highbd_resize_plane_horizontal(
+                &input, h, w, in_stride, &mut c_out, w2, out_stride, bd,
+            );
+            let mut r_out = vec![0u16; (h - 1) * out_stride + w2];
+            highbd_resize_plane_horizontal(&input, h, w, in_stride, &mut r_out, w2, out_stride, bd);
+            assert_eq!(
+                r_out, c_out,
+                "highbd resize {w}->{w2} bd{bd} diverges from C"
+            );
+        }
+    }
+}

@@ -15,8 +15,9 @@
 
 use svtav1_cref as cref;
 use svtav1_dsp::superres::{
-    RESIZE_FILTER_NORMATIVE, TileColPad, UPSCALE_BORDER_COLS, scaled_size, upscale_convolve_step,
-    upscale_convolve_x0, upscale_normative_plane, upscale_normative_row,
+    RESIZE_FILTER_NORMATIVE, TileColPad, UPSCALE_BORDER_COLS, highbd_upscale_normative_row,
+    scaled_size, upscale_convolve_step, upscale_convolve_x0, upscale_normative_plane,
+    upscale_normative_row,
 };
 
 /// The transcribed 64x8 table is byte-identical to C's, entry for entry.
@@ -166,6 +167,98 @@ fn upscale_plane_matches_c_row_by_row() {
             "plane row {r}"
         );
     }
+}
+
+/// The u16 (high-bit-depth) content classes: a hard step between the
+/// 10-bit range's extremes, a ramp spanning it, pseudo-random noise
+/// (full 12-bit range so both bd clamps get exercised), and extremes
+/// pinned at both edges.
+fn contents_hbd(width: usize) -> Vec<(&'static str, Vec<u16>)> {
+    let mut lcg: u32 = 0x243F_6A88;
+    let mut rand = move || {
+        lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (lcg >> 20) as u16 // 12 bits: exercises the bd=10 clamp too
+    };
+    vec![
+        (
+            "step",
+            (0..width)
+                .map(|c| if c < width / 2 { 64u16 } else { 940 })
+                .collect(),
+        ),
+        (
+            "ramp",
+            (0..width)
+                .map(|c| (c * 1023 / width.max(1)) as u16)
+                .collect(),
+        ),
+        ("noise", (0..width).map(|_| rand()).collect()),
+        (
+            "edges",
+            (0..width)
+                .map(|c| if c == 0 || c + 1 == width { 1023 } else { 0 })
+                .collect(),
+        ),
+    ]
+}
+
+/// Run the C oracle on one u16 row (same >= 5-sample border contract as the
+/// u8 shim; the rect replicates/restores the edges in place).
+fn c_upscale_hbd(row: &[u16], out_width: usize, bd: i32) -> Vec<u16> {
+    let border = UPSCALE_BORDER_COLS;
+    let mut padded = vec![0u16; row.len() + 2 * border];
+    padded[border..border + row.len()].copy_from_slice(row);
+    let mut out = vec![0u16; out_width];
+    cref::superres_upscale_row_hbd(&mut padded, border, row.len(), &mut out, out_width, bd);
+    assert_eq!(&padded[border..border + row.len()], row, "input restored");
+    out
+}
+
+/// Port the same way C's row driver does (step/x0 from the plane widths).
+fn port_upscale_hbd(row: &[u16], out_width: usize, bd: i32) -> Vec<u16> {
+    let in_w = row.len();
+    let step = upscale_convolve_step(in_w as i32, out_width as i32);
+    let x0 = upscale_convolve_x0(in_w as i32, out_width as i32, step);
+    let mut out = vec![0u16; out_width];
+    highbd_upscale_normative_row(
+        row,
+        0,
+        in_w,
+        &mut out,
+        out_width,
+        step,
+        x0,
+        TileColPad::FRAME,
+        bd,
+    );
+    out
+}
+
+/// The ported u16 kernel is byte-identical to `av1_highbd_convolve_horiz_rs_c`
+/// + the hbd rect's border policy, at bd 10 AND bd 12 (C rejects 12-bit at
+/// the encoder level but the kernel itself is written for `bd > 8`; pinning
+/// both clamps keeps `clip_pixel_highbd` honest).
+#[test]
+fn upscale_row_hbd_matches_c_across_denominators() {
+    let mut cells = 0usize;
+    for bd in [10i32, 12] {
+        for &frame_w in &[64usize, 96, 128, 176, 256, 320, 512] {
+            for denom in 9u8..=16 {
+                let coded_w = scaled_size(frame_w as u16, denom) as usize;
+                for (name, row) in contents_hbd(coded_w) {
+                    assert_eq!(
+                        port_upscale_hbd(&row, frame_w, bd),
+                        c_upscale_hbd(&row, frame_w, bd),
+                        "bd {bd} frame_w {frame_w} denom {denom} content {name}: \
+                         coded_w {coded_w}"
+                    );
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert!(cells >= 400, "sweep too thin: {cells} cells");
+    println!("superres hbd upscale row: {cells} cells byte-identical to C");
 }
 
 /// `scaled_size` reproduces C `calculate_scaled_size_helper`: denom 8 is the

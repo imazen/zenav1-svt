@@ -113,6 +113,19 @@ pub struct EncodePipeline {
     /// (empty on the monochrome entry point). The bd10 consumers are all
     /// 64-aligned-gated, so this stride equals the funnel's SB-extended one.
     hbd_source: Option<HbdSource>,
+    /// Native 10-bit FULL-WIDTH source for the superres downscale — set only
+    /// by [`Self::try_encode_frame_420_hbd`] when `superres_denom` is on.
+    ///
+    /// C's 10-bit resize (`svt_aom_resize_frame`, resize.c) packs the u16
+    /// source, filters at full precision, and only THEN unpacks to the u8
+    /// MSB plane: the u8 canvas is `filtered_u16 >> 2`, not
+    /// `truncated_u8` filtered. So the bd10 arm of [`Self::superres_downscale_420`]
+    /// cannot reuse the u8 input planes; it takes this staged u16 source,
+    /// produces the coded-width u16 planes (which then become `hbd_source`
+    /// for the frame's bd10 consumers) and the u8 canvas in one pass.
+    /// `None` on every u8 and every non-superres path; taken (not cloned)
+    /// inside the downscale so it cannot leak into a following frame.
+    hbd_superres_src: Option<HbdSuperresSrc>,
     /// The PREVIOUS frame's PA (picture-analysis) picture — its padded SOURCE
     /// luma at full, 1/4 and 1/16 resolution.
     ///
@@ -451,6 +464,17 @@ struct HbdSource {
     v: alloc::vec::Vec<u16>,
 }
 
+/// Native 10-bit FULL-WIDTH (upscaled) source planes, staged by
+/// [`EncodePipeline::try_encode_frame_420_hbd`] for the superres downscale —
+/// luma `upscaled_w × true_h`, chroma `upscaled_w/2 × true_h/2` (4:2:0
+/// ceiling), each tightly packed at its own stride. See
+/// [`EncodePipeline::hbd_superres_src`].
+struct HbdSuperresSrc {
+    y: alloc::vec::Vec<u16>,
+    u: alloc::vec::Vec<u16>,
+    v: alloc::vec::Vec<u16>,
+}
+
 impl EncodePipeline {
     /// Create a new encoding pipeline.
     pub fn new(
@@ -540,6 +564,7 @@ impl EncodePipeline {
             image_sequence: false,
             superres_stats_luma: None,
             hbd_source: None,
+            hbd_superres_src: None,
             pa_ref: None,
             pa_slots: [const { None }; 8],
             pa_scratch: None,
@@ -1129,6 +1154,25 @@ impl EncodePipeline {
                 "C film grain requires 8/10-bit 4:2:0"
             )));
         }
+        // bd10 + superres: the denoise pass runs on the u8 canvas BEFORE the
+        // downscale (`prepare_film_grain` -> `superres_downscale_420`), but the
+        // native-10-bit arm produces that canvas only AFTER filtering u16 —
+        // the order C's packed-buffer pipeline guarantees. Feeding the
+        // denoiser a canvas that does not exist yet has no honest answer, so
+        // the combination is refused rather than denoising a different
+        // picture than the one that gets coded. A supplied grain table or the
+        // HDR-fork noise path never denoises (same early-out
+        // `prepare_film_grain` takes), so they stay allowed.
+        let denoise_would_run = self.film_grain.table.is_none()
+            && !(self.hdr.is_fork() && self.hdr.noise_strength > 0)
+            && self.film_grain.denoise_strength > 0;
+        if denoise_would_run && self.bit_depth == 10 && self.superres_denom.is_some() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "film-grain denoise with 10-bit superres is not implemented: the native-input \
+                 u8 canvas exists only after the u16 downscale, which runs after denoise — \
+                 C's packed-buffer order has no u16 equivalent here [C: accepts]",
+            )));
+        }
         if self
             .grain_sequence_present
             .is_some_and(|present| present != enabled)
@@ -1250,6 +1294,7 @@ impl EncodePipeline {
         // Also clear on errors before encode_frame_impl takes these fields.
         self.prepared_grain = None;
         self.hbd_source = None;
+        self.hbd_superres_src = None;
         result
     }
 
@@ -1557,10 +1602,9 @@ impl EncodePipeline {
     /// `is_wm`. Only a frame whose search cannot RUN is still refused. See
     /// `tools/global_motion_gate.sh`.
     ///
-    /// `super_res_off` is `true` at every call here: superres and inter are
-    /// mutually exclusive in this port (`superres_config_error` +
-    /// still-only superres wiring), and C's own `gm_level` only DROPS to 0
-    /// when superres is on, so `true` is the conservative reading.
+    /// `super_res_off` is `true` at every call here: superres refuses inter
+    /// frames at `superres_config_error`, and C's own `gm_level` only DROPS
+    /// to 0 when superres is on, so `true` is the conservative reading.
     fn gm_level_for_frame(&self, is_key: bool) -> u8 {
         crate::port_enc_mode_config::leaf::derive_gm_level(
             i8::try_from(self.speed_config.preset).unwrap_or(i8::MAX),
@@ -1762,6 +1806,14 @@ impl EncodePipeline {
         let Some(_denom) = self.superres_denom else {
             return Ok(None);
         };
+        // Native 10-bit arm (bd10 + superres): the staged u16 source is
+        // downscaled at full precision and only THEN truncated to the u8
+        // canvas — C's `svt_aom_resize_frame` pack -> `highbd_resize` ->
+        // unpack order (resize.c). The u8 plane arguments are unused on this
+        // arm; see `superres_downscale_420_hbd`.
+        if let Some(src) = self.hbd_superres_src.take() {
+            return self.superres_downscale_420_hbd(&src).map(Some);
+        }
         let (uw, th) = (self.upscaled_width as usize, self.true_height as usize);
         let cw = self.true_width as usize;
         let (ucw, uch) = (uw.div_ceil(2), th.div_ceil(2));
@@ -1780,6 +1832,84 @@ impl EncodePipeline {
         }
         self.superres_stats_luma = Some((orig, uw, th));
         Ok(Some((yd, ud, vd)))
+    }
+
+    /// Superres chunk B.3, native 10-bit arm: horizontally downscale the
+    /// staged u16 source to the coded width with C's highbd resize ladder
+    /// (`svt_av1_highbd_resize_plane_horizontal`, pinned byte-exact by
+    /// `c_parity_resize_hbd`), then derive BOTH source representations the
+    /// rest of the frame needs:
+    ///
+    /// * `hbd_source` — the coded-width u16 planes padded TRUE -> ALIGNED,
+    ///   the same contract the non-superres bd10 arm establishes for the
+    ///   bd10 consumers (MD funnel + level re-encode). This is C's unpacked
+    ///   `enhanced_downscaled_pic` u16 buffer.
+    /// * the returned u8 planes — `filtered_u16 >> 2`, C's `y_buffer` MSB
+    ///   plane of the packed picture. Deriving them from the FILTERED u16
+    ///   (not by u8-resizing an already-truncated source) is the
+    ///   byte-parity-critical ordering — the two orders differ by the
+    ///   low bits the filters accumulate.
+    ///
+    /// Picture statistics still read the FULL-resolution luma (truncated to
+    /// u8, the same canvas C's `enhanced_pic->y_buffer` carries), matching
+    /// the 8-bit arm's `superres_stats_luma` contract.
+    fn superres_downscale_420_hbd(
+        &mut self,
+        src: &HbdSuperresSrc,
+    ) -> crate::EncodeResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let (uw, th) = (self.upscaled_width as usize, self.true_height as usize);
+        let cw = self.true_width as usize;
+        let (ucw, uch) = (uw.div_ceil(2), th.div_ceil(2));
+        let ccw = cw.div_ceil(2);
+        let bd = i32::from(self.bit_depth);
+        // The filtered coded-width u16 planes.
+        let mut yd = svtav1_types::try_vec![0u16; cw * th]?;
+        let mut ud = svtav1_types::try_vec![0u16; ccw * uch]?;
+        let mut vd = svtav1_types::try_vec![0u16; ccw * uch]?;
+        svtav1_dsp::port_resize_hbd::highbd_resize_plane_horizontal(
+            &src.y, th, uw, uw, &mut yd, cw, cw, bd,
+        );
+        svtav1_dsp::port_resize_hbd::highbd_resize_plane_horizontal(
+            &src.u, uch, ucw, ucw, &mut ud, ccw, ccw, bd,
+        );
+        svtav1_dsp::port_resize_hbd::highbd_resize_plane_horizontal(
+            &src.v, uch, ucw, ucw, &mut vd, ccw, ccw, bd,
+        );
+        // The coded u16 canvas is what every bd10 consumer reads — pad
+        // TRUE(coded) -> ALIGNED exactly as the non-superres arm does.
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        self.hbd_source = Some(HbdSource {
+            y: pad_plane_replicate_u16(&yd, cw, cw, th, aw, ah)?,
+            u: pad_plane_replicate_u16(&ud, ccw, ccw, uch, aw / 2, ah / 2)?,
+            v: pad_plane_replicate_u16(&vd, ccw, ccw, uch, aw / 2, ah / 2)?,
+        });
+        // The u8 canvas, unpacked AFTER filtering (C's MSB plane of the
+        // resized packed picture).
+        let shift = u32::from(self.bit_depth - 8);
+        let mut y8 = svtav1_types::try_vec![0u8; cw * th]?;
+        for (d, &s) in y8.iter_mut().zip(yd.iter()) {
+            *d = (s >> shift) as u8;
+        }
+        let mut u8p = svtav1_types::try_vec![0u8; ccw * uch]?;
+        let mut v8p = svtav1_types::try_vec![0u8; ccw * uch]?;
+        for ((du, dv), (&su, &sv)) in u8p
+            .iter_mut()
+            .zip(v8p.iter_mut())
+            .zip(ud.iter().zip(vd.iter()))
+        {
+            *du = (su >> shift) as u8;
+            *dv = (sv >> shift) as u8;
+        }
+        // Full-resolution luma for the pre-scaling picture statistics —
+        // the same u8-truncated canvas the 8-bit arm stores.
+        let mut orig = svtav1_types::try_vec![0u8; uw * th]?;
+        for r in 0..th {
+            for c in 0..uw {
+                orig[r * uw + c] = (src.y[r * uw + c] >> shift) as u8;
+            }
+        }
+        self.superres_stats_luma = Some((orig, uw, th));
+        Ok((y8, u8p, v8p))
     }
 
     /// Superres chunk B.3 — the combinations whose SIGNALLED stream would not
@@ -1918,9 +2048,49 @@ impl EncodePipeline {
                  UPSCALED frame; use preset >= 7",
             );
         }
-        if self.bit_depth != 8 {
+        if !matches!(self.bit_depth, 8 | 10) {
             return Some(
-                "superres is 8-bit only so far (the u16 source downscale is unported) [C: accepts]",
+                "superres supports 8/10-bit only — C v4.2.0 rejects every other depth at \
+                 encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no \
+                 oracle exists outside that envelope [C: rejects]",
+            );
+        }
+        // Mono pipelines never reach `superres_downscale_420` — the mono core
+        // feeds the full-width luma straight to `encode_frame_impl`, which
+        // would code a left-cropped canvas and signal the normative upscale
+        // over it: plausible-but-wrong output, the class this encoder refuses
+        // everywhere else. (Measured 2026-09-21: `SVTAV1_MONO=1
+        // SVTAV1_SUPERRES=16` emitted a 269-byte stream whose decode showed
+        // the left half stretched, not the downscaled source.) C has no mono
+        // mode at all, so this is the port's own extension surface.
+        let mono = !self.chroma_420
+            && !matches!(
+                self.chroma_format,
+                Some(svtav1_types::chroma::ChromaFormat::Yuv444)
+                    | Some(svtav1_types::chroma::ChromaFormat::Yuv422)
+            );
+        if mono {
+            return Some(
+                "superres is not wired for monochrome — the mono entry has no downscale arm \
+                 and would code a left-cropped plane under an upscale header (C has no mono \
+                 mode at any depth; this is a port-extension gap, not a C envelope)",
+            );
+        }
+        // Inter frames under superres are refused: the measured surface is
+        // stills/KEY frames (`tools/superres_gate.sh` and its bd10 arm drive
+        // single-frame encodes, and the raw-sequence harness never applies a
+        // denominator). C accepts superres on inter frames
+        // (`--superres-denom` vs `--superres-kf-denom`), so this is capability
+        // debt, not a C envelope: the per-reference geometry under a changing
+        // coded width (`frame_size_with_refs`, render-vs-frame-size) is
+        // decoder-ungated here. A key frame in a GOP pipeline is still fine —
+        // the predicate is the frame type, not `intra_period`.
+        if !self.gop.is_key_frame(self.frame_count) {
+            return Some(
+                "superres on an INTER frame is not implemented: stills are the measured \
+                 surface and the reference-geometry signaling under a changing coded width \
+                 is decoder-ungated (C accepts it — this is a port capability gap, not a \
+                 C envelope) [C: accepts]",
             );
         }
         None
@@ -1985,12 +2155,22 @@ impl EncodePipeline {
         // `SVTAV1_INTER_EXPERIMENTAL` are both gone; the configuration
         // envelope is still enforced by the `*_config_error` guards.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
-        if y.len() < (th - 1) * y_stride + tw || u.len() < tcw * tch || v.len() < tcw * tch {
+        // The caller hands FULL-width (upscaled) planes under superres,
+        // coded-width planes otherwise — the same contract as
+        // [`Self::try_encode_frame_420`]. Chroma is 4:2:0 ceiling either way.
+        let (iw, icw) = if self.superres_denom.is_some() {
+            let uw = self.upscaled_width as usize;
+            (uw, uw.div_ceil(2))
+        } else {
+            (tw, tw.div_ceil(2))
+        };
+        let ich = th.div_ceil(2);
+        if y.len() < (th - 1) * y_stride + iw || u.len() < icw * ich || v.len() < icw * ich {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
-                width: self.true_width,
+                width: iw as u32,
                 height: self.true_height,
-                reason: "hbd planes must cover the true dims (y at y_stride, u/v at true_w/2)",
+                reason: "hbd planes must cover the input dims (y at y_stride, u/v at w/2; \
+                         FULL width under superres)",
             }));
         }
         let max = 1u16 << self.bit_depth;
@@ -2003,6 +2183,33 @@ impl EncodePipeline {
             .check()
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
+        if self.superres_denom.is_some() {
+            // Stage the native FULL-width source for the downscale inside
+            // `encode_frame_420_prepared`. That arm produces BOTH outputs in
+            // C's order — filtered u16 -> `hbd_source` (coded dims, aligned),
+            // `filtered_u16 >> 2` -> the u8 canvas — so building either here
+            // would duplicate the step or force the wrong
+            // truncate-then-filter order. The u8 arguments are unused on
+            // this arm (film-grain denoise + bd10 + superres is refused in
+            // `validate_film_grain` before the planes are read).
+            let mut sy = svtav1_types::try_vec![0u16; iw * th]?;
+            for r in 0..th {
+                sy[r * iw..(r + 1) * iw].copy_from_slice(&y[r * y_stride..r * y_stride + iw]);
+            }
+            let mut su = svtav1_types::try_vec![0u16; icw * ich]?;
+            su.copy_from_slice(&u[..icw * ich]);
+            let mut sv = svtav1_types::try_vec![0u16; icw * ich]?;
+            sv.copy_from_slice(&v[..icw * ich]);
+            self.hbd_superres_src = Some(HbdSuperresSrc {
+                y: sy,
+                u: su,
+                v: sv,
+            });
+            // `encode_frame_420_core` clears `hbd_superres_src` and the
+            // produced `hbd_source` unconditionally — error paths included —
+            // so nothing staged can leak into the next frame.
+            return self.encode_frame_420_core(&[], &[], &[], 0);
+        }
         // Stash the ALIGNED-padded u16 planes for `encode_frame_impl` to take,
         // and drive the existing core with the MSB-truncated u8 planes — the
         // sites chunk 1 does not thread (post-filter searches, recon SSE) keep
@@ -2013,8 +2220,8 @@ impl EncodePipeline {
         let (aw, ah) = (self.width as usize, self.height as usize);
         let hbd = HbdSource {
             y: pad_plane_replicate_u16(y, y_stride, tw, th, aw, ah)?,
-            u: pad_plane_replicate_u16(u, tcw, tcw, tch, aw / 2, ah / 2)?,
-            v: pad_plane_replicate_u16(v, tcw, tcw, tch, aw / 2, ah / 2)?,
+            u: pad_plane_replicate_u16(u, icw, icw, ich, aw / 2, ah / 2)?,
+            v: pad_plane_replicate_u16(v, icw, icw, ich, aw / 2, ah / 2)?,
         };
         let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
         for r in 0..th {
@@ -2022,9 +2229,9 @@ impl EncodePipeline {
                 y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;
             }
         }
-        let mut u8p = svtav1_types::try_vec![0u8; tcw * tch]?;
-        let mut v8p = svtav1_types::try_vec![0u8; tcw * tch]?;
-        for i in 0..tcw * tch {
+        let mut u8p = svtav1_types::try_vec![0u8; icw * ich]?;
+        let mut v8p = svtav1_types::try_vec![0u8; icw * ich]?;
+        for i in 0..icw * ich {
             u8p[i] = (u[i] >> shift) as u8;
             v8p[i] = (v[i] >> shift) as u8;
         }
@@ -2726,8 +2933,7 @@ impl EncodePipeline {
         // LR planes RESTORE_NONE) — decoder-consistent by construction.
         // `filter_chroma` is the apply-side "chroma arm runs" flag; at
         // 4:2:0 it is exactly `chroma.is_some()`.
-        let filter_chroma = chroma.is_some()
-            && fmt == svtav1_types::chroma::ChromaFormat::Yuv420;
+        let filter_chroma = chroma.is_some() && fmt == svtav1_types::chroma::ChromaFormat::Yuv420;
         let encode_input = if c_tf_enabled
             && self.speed_config.enable_temporal_filter
             && !is_key
@@ -2961,8 +3167,7 @@ impl EncodePipeline {
             };
             let preset = self.speed_config.preset;
             sc_derivation.palette_level = palette_level_default(preset.min(10), true, true);
-            sc_derivation.intrabc_level =
-                intrabc_level_default(preset.min(9), true, true, true);
+            sc_derivation.intrabc_level = intrabc_level_default(preset.min(9), true, true, true);
             sc_derivation.allow_intrabc =
                 crate::intrabc::IbcCtrls::for_level(sc_derivation.intrabc_level).enabled;
             sc_derivation.allow_screen_content_tools =
@@ -4246,10 +4451,8 @@ impl EncodePipeline {
                 t.enable_filter_intra =
                     crate::intra_arm::filter_intra_level(crate::sc_detect::ScArm::Allintra, -1)
                         != 0;
-                t.enable_intra_edge_filter = crate::intra_arm::intra_edge_filter(
-                    crate::sc_detect::ScArm::Allintra,
-                    -1,
-                );
+                t.enable_intra_edge_filter =
+                    crate::intra_arm::intra_edge_filter(crate::sc_detect::ScArm::Allintra, -1);
             }
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
@@ -5994,6 +6197,29 @@ impl EncodePipeline {
                             v_src.iter().map(|&s| (s as u16) << shift).collect(),
                         ),
                     };
+                    // The pass's residual gather reads the full TX width at
+                    // `cstride`, so a right-straddle TU on an `acw`-strided
+                    // plane WRAPS into the next row's real samples. C reads
+                    // its chroma picture at a border-inclusive stride whose
+                    // pad holds the replicated right edge
+                    // (`svt_aom_generate_padding16_bit`, resize.c:1064 —
+                    // `pad_input_pictures` on the non-resize path). Give the
+                    // source the same SB-extent-stride, edge-replicated shape
+                    // the funnel builds at `padded_chroma10`
+                    // (~pipeline.rs:14106). MEASURED: uniform 128 q20 d10 at
+                    // p9/p10/p13 — C coded a chroma txb the next-row read
+                    // quantized to eob 0 (27B vs C's 28B OBU, ±1 chroma LSB
+                    // in the right-region recon).
+                    let cstride = fmt.chroma_width(w.div_ceil(sb_size) * sb_size);
+                    let (u10, v10) = if cstride != acw {
+                        let md_ch = fmt.chroma_height(h.div_ceil(sb_size) * sb_size);
+                        (
+                            pad_plane_replicate_u16(&u10, acw, acw, ach, cstride, md_ch)?,
+                            pad_plane_replicate_u16(&v10, acw, acw, ach, cstride, md_ch)?,
+                        )
+                    } else {
+                        (u10, v10)
+                    };
                     let uv10 = bd10_reencode_chroma(
                         &mut all_trees,
                         sb_cols,
@@ -6003,7 +6229,7 @@ impl EncodePipeline {
                         h,
                         &u10,
                         &v10,
-                        acw,
+                        cstride,
                         // The 10-bit LUMA recon the pass above just produced —
                         // the CfL AC source for UV_CFL_PRED leaves. C reads the
                         // same thing (`cfl_temp_luma_recon16bit`), and it is
@@ -6035,9 +6261,17 @@ impl EncodePipeline {
                     // downstream consumer expects (the bd10 deblock-level /
                     // CDEF-strength / Wiener-LR searches compare them against
                     // `w*h` and `(w>>ss_x)*(h>>ss_y)` sources at the ALIGNED stride).
-                    // Both are already aligned-strided, so the crop is a prefix.
-                    let cn = acw * ach;
-                    self.last_recon10_uv = Some((uv10.0[..cn].to_vec(), uv10.1[..cn].to_vec()));
+                    // The canvases are `cstride`-strided (== `acw` on a
+                    // 64-aligned frame, where the crop degenerates to a prefix).
+                    let mut cu = svtav1_types::try_vec![0u16; acw * ach]?;
+                    let mut cv = svtav1_types::try_vec![0u16; acw * ach]?;
+                    for r in 0..ach {
+                        cu[r * acw..(r + 1) * acw]
+                            .copy_from_slice(&uv10.0[r * cstride..r * cstride + acw]);
+                        cv[r * acw..(r + 1) * acw]
+                            .copy_from_slice(&uv10.1[r * cstride..r * cstride + acw]);
+                    }
+                    self.last_recon10_uv = Some((cu, cv));
                 }
                 self.last_recon10_y = Some(recon10[..w * h].to_vec());
             }
@@ -7767,10 +8001,7 @@ impl EncodePipeline {
                 // tight true/ceil buffers from the aligned-strided recon +
                 // source (luma stride `w`, chroma stride `cw`); on an 8-aligned
                 // frame true == aligned, so these are byte-neutral copies.
-                let (lr_tcw, lr_tch) = (
-                    fmt.chroma_width(lr_true_w),
-                    fmt.chroma_height(lr_true_h),
-                );
+                let (lr_tcw, lr_tch) = (fmt.chroma_width(lr_true_w), fmt.chroma_height(lr_true_h));
                 let extract_tight = |src: &[u8], src_stride: usize, pw: usize, ph: usize| {
                     let mut out = alloc::vec![0u8; pw * ph];
                     for r in 0..ph {
@@ -8535,6 +8766,15 @@ impl EncodePipeline {
         // superres run at, see `superres_config_error`, so "after CDEF" is
         // here). The BITSTREAM is unaffected: nothing downstream of this point
         // codes symbols. No-op when superres is off.
+        // The OUTPUT-side upscaled planes (the `Some` arms exist only under
+        // superres). `recon` / `decoder_output8` / `recon10` themselves stay
+        // at the CODED geometry — the DPB reference built below must carry
+        // the picture a decoder predicts from, not the display picture.
+        // (This used to upscale `recon` in place; `padded_ref` then read the
+        // upscaled buffer at the coded stride — a diagonal smear that made
+        // every inter prediction under superres score the wrong reference.)
+        let mut out8: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = None;
+        let mut out10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = None;
         if self.superres_denom.is_some() {
             let (cw, uw, hh) = (
                 self.width as usize,
@@ -8566,10 +8806,10 @@ impl EncodePipeline {
                 }
             };
             let upscale_frame =
-                |y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>| -> EncodeResult<()> {
+                |y: &[u8], u: &[u8], v: &[u8]| -> EncodeResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
                     let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
                     upscale(y, cw, self.true_width as usize, &mut y_up, uw, hh);
-                    *y = y_up;
+                    let (mut u_up, mut v_up) = (alloc::vec::Vec::new(), alloc::vec::Vec::new());
                     if chroma.is_some() {
                         let (ccw, cuw, chh) = (
                             fmt.chroma_width(cw),
@@ -8577,18 +8817,64 @@ impl EncodePipeline {
                             fmt.chroma_height(hh),
                         );
                         let coded = fmt.chroma_width(self.true_width as usize);
-                        let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                        let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                        u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                        v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
                         upscale(u, ccw, coded, &mut u_up, cuw, chh);
                         upscale(v, ccw, coded, &mut v_up, cuw, chh);
-                        *u = u_up;
-                        *v = v_up;
                     }
-                    Ok(())
+                    Ok((y_up, u_up, v_up))
                 };
-            upscale_frame(&mut recon, &mut u_recon, &mut v_recon)?;
-            if let Some((y, u, v)) = decoder_output8.as_mut() {
-                upscale_frame(y, u, v)?;
+            // The decoder-equivalent output takes the replayed-filters
+            // canvas when it exists, else the search recon — same preference
+            // `last_recon` expresses below.
+            out8 = Some(match decoder_output8.as_ref() {
+                Some((y, u, v)) => upscale_frame(y, u, v)?,
+                None => upscale_frame(&recon, &u_recon, &v_recon)?,
+            });
+            // The 10-bit output: C runs `av1_highbd_convolve_horiz_rs_c` on
+            // the unpacked recon (the `high_bd` arm of
+            // `svt_av1_upscale_normative_rows`, super_res.c:289). Same
+            // normative taps and border policy on u16; `recon10` stays at
+            // coded geometry for `padded_ref_hbd`/`recon_msb8` below.
+            if let Some((y10, u10, v10)) = recon10.as_ref() {
+                let bd = i32::from(self.bit_depth);
+                let upscale_hbd = |src: &[u16],
+                                   stride: usize,
+                                   coded: usize,
+                                   out: usize,
+                                   rows: usize|
+                 -> EncodeResult<Vec<u16>> {
+                    let step =
+                        svtav1_dsp::superres::upscale_convolve_step(coded as i32, out as i32);
+                    let x0 =
+                        svtav1_dsp::superres::upscale_convolve_x0(coded as i32, out as i32, step);
+                    let mut dst = svtav1_types::try_vec![0u16; out * rows]?;
+                    for r in 0..rows {
+                        svtav1_dsp::superres::highbd_upscale_normative_row(
+                            &src[r * stride..],
+                            0,
+                            stride,
+                            &mut dst[r * out..],
+                            out,
+                            step,
+                            x0,
+                            svtav1_dsp::superres::TileColPad::FRAME,
+                            bd,
+                        );
+                    }
+                    Ok(dst)
+                };
+                let (ccw, cuw, chh) = (
+                    fmt.chroma_width(cw),
+                    fmt.chroma_width(uw),
+                    fmt.chroma_height(hh),
+                );
+                let coded = fmt.chroma_width(self.true_width as usize);
+                out10 = Some((
+                    upscale_hbd(y10, cw, self.true_width as usize, uw, hh)?,
+                    upscale_hbd(u10, ccw, coded, cuw, chh)?,
+                    upscale_hbd(v10, ccw, coded, cuw, chh)?,
+                ));
             }
         }
 
@@ -8652,15 +8938,19 @@ impl EncodePipeline {
 
         if self.recon_output {
             // Output-only replay must not alter the DPB or later frame decisions.
-            self.last_recon = Some(
-                decoder_output8
+            self.last_recon = Some(match out8 {
+                // Under superres `out8` already holds the upscaled planes of
+                // whichever canvas a decoder displays (replayed filters when
+                // they ran, search recon otherwise).
+                Some(planes) => planes,
+                None => decoder_output8
                     .unwrap_or_else(|| (recon.clone(), u_recon.clone(), v_recon.clone())),
-            );
+            });
             // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all
-            // applied to the 10-bit canvas). No superres arm: bd10 + superres
-            // is refused (`superres_config_error`), so the canvas is already
-            // at the output geometry.
-            self.last_recon10_final = recon10;
+            // applied to the 10-bit canvas), normatively upscaled to the
+            // output geometry under superres (`out10`); the coded canvas is
+            // the output geometry itself when superres is off.
+            self.last_recon10_final = out10.or(recon10);
             if let Some(fg) = film_grain.as_ref().filter(|fg| fg.apply_grain) {
                 let stride = if self.superres_denom.is_some() {
                     self.upscaled_width as usize
@@ -9751,7 +10041,10 @@ struct ChromaPass<'a> {
     /// can code inter chroma (a non-key frame whose DPB slot carries chroma).
     /// An inter leaf with no `chroma_dec` residual-codes against the MC
     /// prediction built from these; `None` only where inter cannot occur.
-    ref_uv: Option<(&'a crate::picture::PaddedPlane, &'a crate::picture::PaddedPlane)>,
+    ref_uv: Option<(
+        &'a crate::picture::PaddedPlane,
+        &'a crate::picture::PaddedPlane,
+    )>,
     /// `scs->super_block_size` for `clamp_mv_to_umv_border_sb` — the MV's
     /// out-of-frame bound is against the SB, not the block.
     sb_size: usize,
@@ -10014,9 +10307,8 @@ impl EntropyCtx {
         // silently inherit a nonzero count.
         let num_proj_ref = if !d.skip_mode
             && d.ref_frame[1] <= crate::inter_mvp::INTRA_FRAME
-            && crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx(
-                bsize,
-            ) {
+            && crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx(bsize)
+        {
             crate::inter_mvp::find_warp_samples(&grid, &ctx, d.ref_frame[0]).0 as u16
         } else {
             0
@@ -10920,8 +11212,7 @@ fn write_chroma_txb(
     // (C svt_aom_get_txb_ctx else-branch; libaom get_txb_ctx num_pels
     // comparison). The 4th arg is the luma-only fast-path flag, unused
     // for plane != 0.
-    let (txb_skip_ctx, dc_sign_ctx) =
-        coeff_c::get_txb_ctx(1, above, left, true, is_chroma_larger);
+    let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(1, above, left, true, is_chroma_larger);
     // eob relative to the scan of the DERIVED chroma tx type (the decoder
     // computes it from UVMode via Mode_To_Txfm — spec compute_tx_type,
     // plane > 0 intra: UV_DC -> DCT_DCT, UV_V -> ADST_DCT,
@@ -11404,13 +11695,7 @@ fn encode_block_syntax(
                         decision.txb_tx_types.first().copied().unwrap_or(0),
                     )
                 };
-                crate::leaf_funnel::inter_uv_tx_type(
-                    cover_eob,
-                    cover_tt,
-                    base_q_idx == 0,
-                    txw,
-                    txh,
-                )
+                crate::leaf_funnel::inter_uv_tx_type(cover_eob, cover_tt, base_q_idx == 0, txw, txh)
             } else {
                 0
             };
@@ -13943,9 +14228,7 @@ fn encode_tile_rows(
         // keep `speed_config.preset` — only WHAT IS SEARCHED changes.
         // At preset -1 `md_preset` is -1 either way (byte-inert), and
         // `deep_search` is never set on a video frame.
-        let md_preset = if deep_search
-            && matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
-        {
+        let md_preset = if deep_search && matches!(sc_arm, crate::sc_detect::ScArm::Allintra) {
             -1
         } else {
             speed_config.preset
@@ -13961,10 +14244,7 @@ fn encode_tile_rows(
         // construction — `rate_arm::allintra_flattening_matches_the_ladder`
         // pins the pair against `for_preset`'s baked values at every preset.
         let (rate_est_coeff_lvl, rate_est_real_ctx) =
-            crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(
-                sc_arm,
-                md_eff_mode,
-            ));
+            crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(sc_arm, md_eff_mode));
         funnel_cfg.coeff_rate_est_lvl = rate_est_coeff_lvl;
         funnel_cfg.real_coeff_ctx = rate_est_real_ctx;
         // `pcs->pic_filter_intra_level` -> `set_filter_intra_ctrls` and
@@ -14037,12 +14317,7 @@ fn encode_tile_rows(
         // thresholds 300/3/3 instead of 1200/15/15. Byte-neutral on the still
         // path except for one baked-table correction the pin names
         // (`nic_arm::allintra_flattening_matches_the_ladder`).
-        crate::nic_arm::apply(
-            &mut funnel_cfg,
-            sc_arm,
-            md_eff_mode,
-            temporal_layer == 0,
-        );
+        crate::nic_arm::apply(&mut funnel_cfg, sc_arm, md_eff_mode, temporal_layer == 0);
         // `uv_mode_nfl_count`'s base (product_coding_loop.c:7693-7696), for
         // THIS arm and picture: 32 on an allintra still, 64 on a video KEY
         // frame, 32 / 16 on a non-highest / highest-layer inter picture.
@@ -14423,11 +14698,7 @@ fn encode_tile_rows(
         // still passed so a future ladder row that flips 0-vs-nonzero cannot
         // silently mis-gate.
         let funnel_chain = use_funnel
-            && crate::rate_arm::update_cdf_level(
-                sc_arm,
-                md_eff_mode,
-                temporal_layer == 0,
-            ) != 0
+            && crate::rate_arm::update_cdf_level(sc_arm, md_eff_mode, temporal_layer == 0) != 0
             && multi_sb;
         let mut chain_snaps: Vec<(
             crate::entropy::context::FrameContext,
@@ -14844,8 +15115,7 @@ fn encode_tile_rows(
                 // recursion — the code every video-KEY chunk of this campaign
                 // was built to replace. They are gone; the funnel's inter
                 // candidate (item 1b) is what makes taking them off pay.
-                let use_pd0 = md_preset >= 6
-                    || (matches!(md_preset, -1..=5) && use_funnel);
+                let use_pd0 = md_preset >= 6 || (matches!(md_preset, -1..=5) && use_funnel);
                 // CLI-qp-calibrated lambda via the exact inverse mapping
                 // (see qp_to_lambda's domain note). On the PD0 fixed-tree
                 // path the leaf funnel must be preset-INDEPENDENT like
@@ -16837,9 +17107,7 @@ fn encode_tile_rows(
                             qm_u: qm_levels[1],
                             qm_v: qm_levels[2],
                             c_quant: None,
-                            ref_uv: ref_padded
-                                .and_then(|p| p.uv.as_ref())
-                                .map(|(u, v)| (u, v)),
+                            ref_uv: ref_padded.and_then(|p| p.uv.as_ref()).map(|(u, v)| (u, v)),
                             sb_size,
                             frame_w: w,
                             frame_h: h,
@@ -17409,6 +17677,100 @@ mod tests {
         let err = fork
             .try_encode_frame_420(&y, &u, &v, 64)
             .expect_err("QP 0 in fork mode (base_q_idx 0, chroma deltas) is not CodedLossless");
+        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
+    }
+
+    /// bd10 + superres on a still: the native u16 entry stages the full-width
+    /// source, the downscale runs at u16 precision, and the published 10-bit
+    /// recon comes back at the UPSCALED width — the decoder's output
+    /// geometry. (Byte parity vs C is the `superres_gate.sh` bd10 arm; this
+    /// pins the plumbing a shell gate cannot see.)
+    #[test]
+    fn superres_hbd_still_encodes_and_outputs_upscaled_recon() {
+        let (uw, th) = (128usize, 128usize);
+        let (ucw, uch) = (uw.div_ceil(2), th.div_ceil(2));
+        // Textured native-10-bit content — the low 2 bits vary per sample so
+        // the u16 path cannot be faked by a widened u8 source.
+        let y10: Vec<u16> = (0..uw * th)
+            .map(|i| (((i / uw * 5 + i % uw * 3) as u16) << 2 | (i as u16 & 3)) & 1023)
+            .collect();
+        let u10: Vec<u16> = (0..ucw * uch).map(|i| ((i * 7) % 1024) as u16).collect();
+        let v10: Vec<u16> = (0..ucw * uch)
+            .map(|i| ((i * 11 + 200) % 1024) as u16)
+            .collect();
+        let mut p = EncodePipeline::new(
+            uw as u32,
+            th as u32,
+            8,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 32,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_bit_depth(10)
+        .with_superres(12)
+        .with_chroma_420(true)
+        .with_recon_output(true);
+        let coded_w = p.true_width as usize;
+        assert!(coded_w < uw, "superres must reduce the coded width");
+        let obu = p
+            .try_encode_frame_420_hbd(&y10, &u10, &v10, uw)
+            .expect("bd10 superres still is inside the verified envelope");
+        assert!(!obu.is_empty());
+        let (ry, ru, rv) = p.last_recon10_final.as_ref().expect("bd10 final recon");
+        assert_eq!(ry.len(), uw * th, "final recon is at the UPSCALED width");
+        assert_eq!(ru.len(), ucw * uch);
+        assert_eq!(rv.len(), ucw * uch);
+        // The staged source and the produced canvas must not leak into a
+        // following frame.
+        assert!(p.hbd_superres_src.is_none());
+        assert!(p.hbd_source.is_none());
+    }
+
+    /// The arms `superres_config_error` + `validate_film_grain` close because
+    /// they cannot be served honestly: mono (no downscale arm — the left-crop
+    /// defect this refusal replaced), inter (reference geometry decoder-
+    /// ungated), and bd10 + film-grain denoise (the u8 canvas exists only
+    /// after the downscale, which runs after denoise).
+    #[test]
+    fn superres_refuses_mono_inter_and_hbd_denoise() {
+        let y: Vec<u8> = (0..64 * 64).map(|i| (i % 251) as u8).collect();
+        // Mono + superres.
+        let mut mono = EncodePipeline::new(64, 64, 8, RcConfig::default(), 0, 1).with_superres(16);
+        let err = mono
+            .try_encode_frame(&y, 64)
+            .expect_err("mono + superres must refuse");
+        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
+
+        // Inter + superres: the GOP pipeline encodes its key frame, then
+        // refuses the first inter frame. Preset 13 keeps loop restoration
+        // off on the video table so the key frame clears the LR arm.
+        let u: Vec<u8> = vec![128u8; 32 * 32];
+        let v: Vec<u8> = vec![128u8; 32 * 32];
+        let mut gop = EncodePipeline::new(64, 64, 13, RcConfig::default(), 0, 64)
+            .with_superres(16)
+            .with_chroma_420(true);
+        gop.try_encode_frame_420(&y, &u, &v, 64)
+            .expect("a key frame under superres still encodes in a GOP pipeline");
+        let err = gop
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect_err("inter + superres must refuse");
+        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
+
+        // bd10 + superres + film-grain denoise.
+        let y10 = vec![512u16; 64 * 64];
+        let c10 = vec![512u16; 32 * 32];
+        let mut g = EncodePipeline::new(64, 64, 8, RcConfig::default(), 0, 1)
+            .with_bit_depth(10)
+            .with_superres(12)
+            .with_chroma_420(true);
+        g.film_grain.denoise_strength = 25;
+        let err = g
+            .try_encode_frame_420_hbd(&y10, &c10, &c10, 64)
+            .expect_err("bd10 superres + denoise must refuse");
         assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
     }
 
