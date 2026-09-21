@@ -23,7 +23,7 @@ Changes by other authors are not listed here.
 
 ---
 
-## 2026-09-21 — 10-bit superres on stills (u16 downscale + u16 normative upscale) + bd10 chroma-stride fix — `<pending>`
+## 2026-09-21 — 10-bit superres on stills (u16 downscale + u16 normative upscale) + bd10 chroma-stride fix — `156a387e2`
 
 - What: `EncodePipeline::hbd_superres_src` + `HbdSuperresSrc` stage the
   full-width u16 planes; `superres_downscale_420_hbd` runs C's
