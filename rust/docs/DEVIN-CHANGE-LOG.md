@@ -23,6 +23,53 @@ Changes by other authors are not listed here.
 
 ---
 
+## 2026-09-22 — Acceptance criteria: masked-II workstream criteria folded in + follow-on queue landed — `e292f7dea` (supersedes the standalone file from `f886368f5`)
+
+- What: `rust/docs/ACCEPTANCE-CRITERIA.md` restructured to two layers — a
+  live top section carrying the masked-compound + inter-intra acceptance
+  criteria (pinned C contract, M1–M9, non-goals, landing checklist) and a
+  follow-on queue ordering the deferred workstreams (Q1 OBMC causal, Q2
+  temporal filtering, Q3 hierarchical/RA GOPs + mfmv/TPL/AQ, Q4 VBR/CBR,
+  Q5 long-run sequence validation), above the preserved 2026-07 still-image
+  baseline. `rust/docs/MASKED-II-ACCEPTANCE.md` (created `f886368f5`) was
+  folded in and deleted; `DOCUMENTATION-INDEX.md` row flipped to Current.
+- Why: the user directed the criteria live in the shared acceptance document
+  rather than a separate file, and that the non-goals become an explicit
+  queue. Ordering is dependency-driven — OBMC reuses this workstream's
+  plumbing, TF is independent, GOPs need the complete inter toolbox, RC
+  needs GOPs.
+- Verified by: `tools/portnote_index.sh --check` clean (43 markers, no new
+  unverified); docs-only change, no codec gates run.
+- Audit surface: M4 names the hard-coded `interinter_wedge_index: 0` in the
+  rate path that must die; M1 requires instrumented selection counts, not
+  just compilation. The queue table is a claim about dependency order, not
+  a commitment to calendar order.
+
+## 2026-09-22 — TO_AV1_COMPOUND_LUT transposed DIFFWTD and WEDGE — `71be44fc0`
+
+- What: `port_md/inject.rs` `TO_AV1_COMPOUND_LUT` `[0,1,2,3]` → `[0,1,3,2]`;
+  regression test `tier4_compound_lut_is_not_identity` pins the mapping
+  against `svtav1_dsp::port_masked_compound::CompoundType` discriminants;
+  `determine_compound_mode` syntax-value witnesses updated.
+- Why: the MD-side compound-type order puts DIFFWTD at index 2 and WEDGE at
+  index 3 while the AV1 `COMPOUND_TYPE` enum (definitions.h:1259) numbers
+  WEDGE=2 / DIFFWTD=3 — C's `to_av1_compound_lut` (mode_decision.c:494) is
+  `{0,1,3,2}`, not the identity. An identity LUT would code a searched
+  DIFFWTD as WEDGE and vice versa. Invisible today — masked compound is not
+  yet reachable (`tot_comp_types` never exceeds 2 on shipped ladders) — but
+  the table sits directly on the path the masked-II workstream opens.
+- Verified by: `cargo nextest run -p zenav1-svt-encoder port_md::inject`
+  18/18 including the new witness and the updated
+  `determine_compound_mode`/`inj_comp_modes` value assertions.
+- Audit surface: the fix is load-bearing for M2's search-faithfulness
+  criterion — wedge vs DIFFWTD mislabeling would have desynced the
+  bitstream on first reachability. The trap is that SVT's own two enums
+  disagree — the MD-side `MD_COMP_TYPE` order (DIFFWTD@2, WEDGE@3) is not
+  its AV1-side `COMPOUND_TYPE` order (WEDGE=2, DIFFWTD=3) — so an
+  identity-looking table is wrong despite both index spaces being 0–3.
+
+---
+
 ## 2026-09-21 — Global-motion gate re-pin + matrix correction; GM search verified shipped, not pending — `1861970e5`
 
 - What: `tools/global_motion_gate.sh` GLOBALMV-count pins re-measured
