@@ -140,6 +140,7 @@ pub(crate) fn min_nz_hv(
     qindex: u8,
     qm_level_y: u8,
     bit_depth: u8,
+    sharpness: i8,
 ) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
@@ -153,9 +154,9 @@ pub(crate) fn min_nz_hv(
     // `psq_resid` + `quantize_b`, so it is byte-unchanged by construction.
     let bd10 = bit_depth > 8 && !ev.psq_resid10().is_empty();
     let mut qt = if bd10 {
-        crate::quant::build_quant_table_bd(qindex, bit_depth)
+        crate::quant::build_quant_table_bd_sharp(qindex, bit_depth, sharpness)
     } else {
-        crate::quant::build_quant_table(qindex)
+        crate::quant::build_quant_table_sharp(qindex, sharpness)
     };
     // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
     qt.qm_level = qm_level_y;

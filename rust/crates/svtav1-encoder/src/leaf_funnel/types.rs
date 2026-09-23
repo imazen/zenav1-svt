@@ -406,9 +406,25 @@ pub(crate) struct FunnelCtx<'a> {
     /// inject-time prediction and the IFS/MDS3 rebuild — the same
     /// context lifetime C's own `intrapred_buf` has.
     pub ii_preds: Option<crate::inter_md_arm::IiPreds>,
+    /// The leaf's frame parameters WITH C's `aom_av1_set_ssim_rdmult`
+    /// applied — `full_lambda_md`/`fast_lambda_md` at both depths replaced
+    /// by THIS block's geometric-mean scale of the picture lambdas
+    /// (coding_loop.c:373-382). `evaluate_leaf` installs it once per leaf
+    /// when the tune runs SSIM/IQ/MS_SSIM; every `frame.lambda` reader
+    /// downstream (the u8 tx pipeline's RDOQ rdmult included) then sees
+    /// the per-block value without a signature change. `None` on every
+    /// other tune — [`FunnelCtx::frame`] then returns `frame` unchanged.
+    pub frame_ssim: Option<alloc::sync::Arc<FunnelFrame>>,
 }
 
 impl FunnelCtx<'_> {
+    /// The frame parameters this leaf evaluates with: [`FunnelCtx::frame_ssim`]
+    /// when the SSIM/IQ/MS_SSIM per-block lambda override is installed, the
+    /// shared `frame` otherwise.
+    pub fn frame(&self) -> &FunnelFrame {
+        self.frame_ssim.as_deref().unwrap_or(self.frame)
+    }
+
     /// C's bypass-encdec `hbd_md = 2` bump (product_coding_loop.c:9649): on a
     /// 10-bit video frame with `bypass_encdec`, `md_stage_3` AND the winner
     /// selection (`svt_aom_product_full_mode_decision` + `blk_skip_decision`)
@@ -430,9 +446,9 @@ impl FunnelCtx<'_> {
     pub(crate) fn mds3_hbd(&self) -> bool {
         self.y_recon10.is_some()
             && !self.full_rd10
-            && self.frame.cfg.bypass_encdec
+            && self.frame().cfg.bypass_encdec
             && self.inter.is_some()
-            && !self.frame.coded_lossless
+            && !self.frame().coded_lossless
             && self.lpd1.is_none()
     }
 }

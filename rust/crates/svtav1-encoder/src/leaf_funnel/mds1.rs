@@ -42,7 +42,7 @@ pub(super) fn run_mds1(
 ) {
     // Destructure the carriers back into the names the moved body uses, so the
     // body itself is byte-for-byte what it was inside `evaluate_leaf`.
-    let frame = fx.frame;
+    let frame = fx.frame();
     let rates = fx.rates;
     let cfg = frame.cfg;
     let LeafGeom {
@@ -449,7 +449,7 @@ fn lossless_mds1_txbs(
     aligned_dims: &crate::frame_geom::FrameDims,
     qt: &QuantTable,
 ) -> TxUnitOut {
-    let frame = fx.frame;
+    let frame = fx.frame();
     let rates = fx.rates;
     let cfg = frame.cfg;
     let (txw, txh) = txb_dims_at_depth(w, h, 1);
@@ -570,7 +570,7 @@ fn lossless_mds1_txbs_hbd(
     filt_type_y: i32,
     aligned_dims: &crate::frame_geom::FrameDims,
 ) -> TxUnitOutHbd {
-    let frame = fx.frame;
+    let frame = fx.frame();
     let rates = fx.rates;
     let cfg = frame.cfg;
     let (txw, txh) = txb_dims_at_depth(w, h, 1);

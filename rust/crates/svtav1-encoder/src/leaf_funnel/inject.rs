@@ -593,6 +593,26 @@ pub(super) fn inject_candidates(
             && neighbors.left_available
             && neighbors.above.is_some_and(|m| !m.is_inter_block())
             && neighbors.left.is_some_and(|m| !m.is_inter_block());
+        // `svt_init_mv_cost_params`'s SAD lambda — `fast_lambda_md
+        // [EB_8_BIT_MD]`. Under the SSIM/IQ/MS_SSIM tunes C's per-block
+        // `aom_av1_set_ssim_rdmult` also scales `pic_fast_lambda` into it
+        // (mode_decision.c:4078); the ME's `dist_type == SAD` arm is the
+        // reader (product_coding_loop.c:1923).
+        let inter_fast_lambda = frame
+            .ssim_rdmult
+            .as_ref()
+            .map_or(frame.inter_fast_lambda, |s| {
+                let scale = crate::tune::ssim_scale_for_block(
+                    &s.factors,
+                    s.num_cols,
+                    s.num_rows,
+                    abs_y >> 2,
+                    abs_x >> 2,
+                    w >> 2,
+                    h >> 2,
+                );
+                (f64::from(s.pic_fast8) * scale + 0.5) as u32
+            });
         let prelude = crate::inter_md_arm::block_prelude(
             im,
             &mut crate::inter_md_arm::InterBlockCtx {
@@ -636,7 +656,7 @@ pub(super) fn inject_candidates(
                 quantizer,
             },
             lambda,
-            frame.inter_fast_lambda,
+            inter_fast_lambda,
             is_intra_bordered,
             fx.lpd1.as_ref().map(|l| (&l.sig, is_intra_bordered)),
         );

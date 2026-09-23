@@ -277,15 +277,50 @@ pub(crate) fn evaluate_leaf(
     // different frame's (or a stale grid state's) predictions for a leaf
     // whose geometry repeats.
     crate::obmc_pred_arm::begin_leaf();
-    let frame = fx.frame;
     let rates = fx.rates;
+    // C `aom_av1_set_ssim_rdmult` (coding_loop.c:373-382 and
+    // product_coding_loop.c:9054/:9371 -> mode_decision.c:4060-4110):
+    // under the SSIM/IQ/MS_SSIM tunes THIS BLOCK's geometric-mean scale
+    // over the 16x16 factor grid replaces `full_lambda_md` /
+    // `fast_lambda_md` at both depths. The base is the PICTURE lambda
+    // (`ed_ctx->pic_*_lambda` — no `lambda_weight`, no per-SB
+    // modulation), and `(double)v * geom + 0.5` truncates like C's
+    // uint32_t cast. C's `blk_lambda_tuning` arm (TPL rdmult) precedes
+    // the ssim arm and is always off in the port's envelope.
+    //
+    // The swap is C's `ctx->full_lambda_md`/`fast_lambda_md` overwrite for
+    // the whole block evaluation, so the port mirrors it as a per-leaf
+    // `frame` clone with the three lambda fields replaced: `frame_owned`
+    // serves this function's own binding (fx is borrowed `&mut` below),
+    // `fx.frame_ssim` serves every downstream `fx.frame()` reader (the
+    // u8 tx pipeline's RDOQ rdmult included) without a signature change.
+    let frame_owned: Option<FunnelFrame> = fx.frame.ssim_rdmult.as_ref().map(|s| {
+        let scale = crate::tune::ssim_scale_for_block(
+            &s.factors,
+            s.num_cols,
+            s.num_rows,
+            abs_y >> 2,
+            abs_x >> 2,
+            w >> 2,
+            h >> 2,
+        );
+        let sc = |v: u32| (f64::from(v) * scale + 0.5) as u64;
+        let mut f = (*fx.frame).clone();
+        f.lambda = sc(s.pic_full8);
+        f.lambda10 = sc(s.pic_full10);
+        f.inter_fast_lambda = sc(s.pic_fast8) as u32;
+        f.ssim_rdmult = None;
+        f
+    });
+    fx.frame_ssim = frame_owned.clone().map(alloc::sync::Arc::new);
+    let frame = frame_owned.as_ref().unwrap_or(fx.frame);
     let lambda = frame.lambda;
-    let mut qt = crate::quant::build_quant_table(frame.base_qindex);
+    let mut qt = crate::quant::build_quant_table_sharp(frame.base_qindex, frame.sharpness);
     qt.qm_level = frame.qm_levels[0];
     // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
-    let mut qt_u = crate::quant::build_quant_table(frame.qindex_u);
+    let mut qt_u = crate::quant::build_quant_table_sharp(frame.qindex_u, frame.sharpness);
     qt_u.qm_level = frame.qm_levels[1];
-    let mut qt_v = crate::quant::build_quant_table(frame.qindex_v);
+    let mut qt_v = crate::quant::build_quant_table_sharp(frame.qindex_v, frame.sharpness);
     qt_v.qm_level = frame.qm_levels[2];
 
     // bd10 LUMA mode funnel (task #94): when the bd10 recon canvas is present
@@ -314,7 +349,15 @@ pub(crate) fn evaluate_leaf(
         // integer-exact since `*16` adds no low bits) — 22505@q20, 94716@q32,
         // 2053848@q55 all match. (This is a bd10-specific coincidence of the
         // rdmult-vs-SAD tables at ×16-vs-×4; the u8 path keeps frame.lambda.)
-        (lf, lf / 16)
+        // Under ssim rdmult C's readers scale `pic_full_lambda[1]` per
+        // block first — already folded into `frame.lambda10` above — then
+        // take `full_lambda_md[1] >> 4` for the fast cost
+        // (product_coding_loop.c:1074).
+        if frame_owned.is_some() {
+            (frame.lambda10, frame.lambda10 >> 4)
+        } else {
+            (lf, lf / 16)
+        }
     } else {
         (0, 0)
     };
@@ -506,11 +549,23 @@ pub(crate) fn evaluate_leaf(
         // when the caller supplied a native HBD source, else the same
         // `u8 << shift` widening this site did inline).
         let y_src10 = blk_y_src10.clone();
-        let mut qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
+        let mut qt10 = crate::quant::build_quant_table_bd_sharp(
+            frame.base_qindex,
+            frame.bit_depth,
+            frame.sharpness,
+        );
         qt10.qm_level = frame.qm_levels[0];
-        let mut qt_u10 = crate::quant::build_quant_table_bd(frame.qindex_u, frame.bit_depth);
+        let mut qt_u10 = crate::quant::build_quant_table_bd_sharp(
+            frame.qindex_u,
+            frame.bit_depth,
+            frame.sharpness,
+        );
         qt_u10.qm_level = frame.qm_levels[1];
-        let mut qt_v10 = crate::quant::build_quant_table_bd(frame.qindex_v, frame.bit_depth);
+        let mut qt_v10 = crate::quant::build_quant_table_bd_sharp(
+            frame.qindex_v,
+            frame.bit_depth,
+            frame.sharpness,
+        );
         qt_v10.qm_level = frame.qm_levels[2];
         // Block-local 10-bit chroma sources at stride cw (empty when the block
         // carries no chroma — C skips every chroma stage on !has_uv).
@@ -550,8 +605,10 @@ pub(crate) fn evaluate_leaf(
             qt_v: qt_v10,
             // Under the bypass bump C quantizes MDS3 with
             // `full_lambda_md[EB_10_BIT_MD]` — the per-SB inter value,
-            // stamped on `frame.lambda10` (md_process.c:796). The still
-            // full-RD arm keeps the kf-chain lambda.
+            // stamped on `frame.lambda10` (md_process.c:796), which the
+            // ssim override already carries as the per-block scale of
+            // `pic_full_lambda[1]` when that tune runs. The still full-RD
+            // arm keeps the kf-chain lambda.
             lambda: if mds3_hbd {
                 frame.lambda10
             } else {
@@ -731,7 +788,7 @@ pub(crate) fn evaluate_leaf(
             &geom,
             &cx,
             &qt,
-            lambda,
+            frame_owned.as_ref().map(|f| f.lambda),
             cands,
             y_src,
             y_src_stride,
@@ -1038,7 +1095,11 @@ pub(crate) fn evaluate_leaf(
             // identical `u8 << 2` widening this site did inline otherwise.
             let blk_src10 = blk_y_src10.clone();
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
-            let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
+            let qt10 = crate::quant::build_quant_table_bd_sharp(
+                frame.base_qindex,
+                frame.bit_depth,
+                frame.sharpness,
+            );
             let out = tx_unit_hbd(
                 frame.coded_lossless,
                 &blk_src10,

@@ -2823,6 +2823,7 @@ impl DepthWalk<'_, '_> {
                             self.fx.frame.base_qindex,
                             self.fx.frame.qm_levels[0],
                             self.fx.frame.bit_depth,
+                            self.fx.frame.sharpness,
                         )
                     } else {
                         None

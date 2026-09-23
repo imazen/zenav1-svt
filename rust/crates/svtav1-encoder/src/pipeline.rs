@@ -4260,19 +4260,55 @@ impl EncodePipeline {
         // [SVT_HDR_MODE] tune SSIM/IQ/MS_SSIM: per-16x16 SSIM rdmult
         // scaling factors (aom_av1_set_mb_ssim_rdmult_scaling; the
         // alt_ssim_tuning multi-scale perceptual variant when that knob is
-        // on). Applied per SB below — C scales per BLOCK from the PICTURE
-        // lambda (set_ssim_rdmult ignores the per-SB qindex lambda);
-        // PORT-NOTE(unverified): SB-granularity approximation of the
-        // per-block geometric mean — refine with a C-side lambda dump.
-        let ssim_factors: Option<(alloc::vec::Vec<f64>, usize, usize)> =
+        // on) + the PICTURE lambdas C's per-block `aom_av1_set_ssim_rdmult`
+        // scales them into `full_lambda_md`/`fast_lambda_md`
+        // (mode_decision.c:4060-4110). Those bases are `reset_enc_dec`'s
+        // `svt_aom_lambda_assign` outputs (enc_dec_process.c:176-187) —
+        // NO `lambda_weight` and NO per-SB stats/qindex modulation; the
+        // scale replaces the `av1_lambda_assign_md` result outright.
+        let ssim_rdmult: Option<crate::tune::SsimRdmult> =
             if crate::tune::tune_uses_ssim_rdmult(self.hdr.tune) {
-                Some(crate::tune::ssim_rdmult_factors(
+                let (factors, num_cols, num_rows) = crate::tune::ssim_rdmult_factors(
                     &encode_input,
                     w,
                     w,
                     h,
                     self.hdr.alt_ssim_tuning,
-                ))
+                );
+                let pic_lctx = crate::port_rc_process::LambdaContext {
+                    frame_type: i32::from(!is_key),
+                    temporal_layer_index: temporal_layer,
+                    hierarchical_levels: self.gop.hierarchical_levels,
+                    update_type: md_lambda_base_update_type
+                        .unwrap_or(crate::port_rc_process::FrameUpdateType::KfUpdate),
+                    alt_lambda_factors: md_alt_lambda_factors,
+                    rtc: false,
+                    stats_based_sb_lambda_modulation:
+                        crate::port_rc_process::stats_based_sb_lambda_modulation(
+                            crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
+                            false,
+                        ),
+                    base_q_idx: i32::from(base_qindex),
+                    delta_q_present: false,
+                    r0_delta_qp_md: false,
+                    // `scs->static_config.lambda_scale_factors` — the port
+                    // does not expose the knob; 128 is the identity C ships.
+                    lambda_scale_factors: [128; 7],
+                };
+                // `svt_aom_lambda_assign(pcs, &fast, &full, bd, base_q_idx,
+                // multiply_lambda=true)` at both depths — `(fast, full)`.
+                let (pic_fast8, pic_full8) =
+                    crate::port_rc_process::lambda_assign(&pic_lctx, 8, base_qindex, true);
+                let (_pic_fast10, pic_full10) =
+                    crate::port_rc_process::lambda_assign(&pic_lctx, 10, base_qindex, true);
+                Some(crate::tune::SsimRdmult {
+                    factors,
+                    num_cols,
+                    num_rows,
+                    pic_full8,
+                    pic_full10,
+                    pic_fast8,
+                })
             } else {
                 None
             };
@@ -5678,7 +5714,7 @@ impl EncodePipeline {
             } else {
                 None
             },
-            ssim_factors.as_ref(),
+            ssim_rdmult.as_ref(),
             base_qindex,
             frame_tx_mode_select,
             tpl_adjusted_qp,
@@ -13952,7 +13988,7 @@ fn encode_tile_rows(
     hdr_alt_ssim: bool,
     hdr_alt_lambda: bool,
     hdr_iq_lambda_weight: Option<u32>,
-    ssim_factors: Option<&(alloc::vec::Vec<f64>, usize, usize)>,
+    ssim_rdmult: Option<&crate::tune::SsimRdmult>,
     fh_base_qindex: u8,
     // FH `tx_mode == TX_MODE_SELECT` — the value `frame_tx_mode_select()`
     // computed for the header, PASSED IN rather than re-derived here. The
@@ -14551,8 +14587,8 @@ fn encode_tile_rows(
             None
         };
         #[allow(unused_mut)]
-        // The PICTURE lambda (pre per-SB overrides) — the base C's tune-SSIM
-        // set_ssim_rdmult scales from (ed_ctx->pic_full_lambda).
+        // The frame `av1_lambda_assign_md` lambda (with `lambda_weight`)
+        // — IntraBC's error-per-bit derivation and the per-SB fallbacks.
         let pic_lambda: u64 = c_quant.as_ref().map_or(0, |cq| u64::from(cq.lambda));
         let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
@@ -14586,6 +14622,10 @@ fn encode_tile_rows(
                 inter_fast_lambda: sb_inter_lambda
                     .and_then(|v| v.first())
                     .map_or(0, |l| l.fast_8bit),
+                // `aom_av1_set_ssim_rdmult`'s factors + PICTURE lambda bases
+                // — `evaluate_leaf` computes the per-BLOCK scale under the
+                // SSIM/IQ/MS_SSIM tunes (coding_loop.c:373-382).
+                ssim_rdmult: ssim_rdmult.cloned().map(alloc::sync::Arc::new),
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 // `ctx->rdoq_ctrls` for the regular lane —
@@ -15014,26 +15054,14 @@ fn encode_tile_rows(
                 // at its PLANNED qindex (luma + per-plane chroma) with the
                 // matching lambda (C per-SB svt_aom_lambda_assign). The
                 // frame-level CDF bucket stays at the FH base (C behavior).
-                // [SVT_HDR_MODE] tune-SSIM per-SB lambda: C's
-                // set_ssim_rdmult scales the PICTURE lambda per block,
-                // REPLACING the qindex-derived lambda (coding_loop.c:374)
-                // — so when factors are present they own the lambda and
-                // the per-SB delta-q override below skips its lambda set
-                // (quantization still follows the per-SB qindex).
-                if let (Some((factors, num_cols, num_rows)), Some(f)) =
-                    (ssim_factors, fun_frame.as_mut())
-                {
-                    let scale = crate::tune::ssim_scale_for_block(
-                        factors,
-                        *num_cols,
-                        *num_rows,
-                        (sb_row * sb_size) / 4,
-                        (sb_col * sb_size) / 4,
-                        sb_size / 4,
-                        sb_size / 4,
-                    );
-                    f.lambda = (pic_lambda as f64 * scale + 0.5) as u64;
-                }
+                // [SVT_HDR_MODE] tune-SSIM lambda: `evaluate_leaf` applies
+                // C's per-BLOCK `aom_av1_set_ssim_rdmult` scale to the
+                // PICTURE lambdas (coding_loop.c:373-382 /
+                // product_coding_loop.c:9054/:9371) — no SB-level override
+                // here, since a sub-SB leaf covers fewer 16x16 cells than
+                // the SB and the scale is the geometric mean over exactly
+                // the cells the block touches. `frame.ssim_rdmult` carries
+                // the factors + the `lambda_assign` picture bases.
                 if let (Some(plan), Some(f)) = (sb_qindex_plan, fun_frame.as_mut()) {
                     let sbq = plan[sb_row * sb_cols + sb_col];
                     f.base_qindex = sbq;
@@ -15059,7 +15087,7 @@ fn encode_tile_rows(
                             )
                         );
                     }
-                    if ssim_factors.is_none() {
+                    if ssim_rdmult.is_none() {
                         f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_tuned(
                             sbq,
                             u32::from(crate::rate_control::qindex_to_qp(sbq)),
@@ -15950,6 +15978,7 @@ fn encode_tile_rows(
                                     ectx: fun_ectx.as_mut().unwrap(),
                                     rates: fun_rates.as_deref().unwrap(),
                                     frame: fun_frame.as_ref().unwrap(),
+                                    frame_ssim: None,
                                     // bd10 luma mode funnel (task #94): true 10-bit
                                     // recon canvas for the per-block mode decision;
                                     // None (bd8 / other presets / partial-SB) is
@@ -16593,6 +16622,7 @@ fn encode_tile_rows(
                                     ectx: fun_ectx.as_mut().unwrap(),
                                     rates: fun_rates.as_deref().unwrap(),
                                     frame: fun_frame.as_ref().unwrap(),
+                                    frame_ssim: None,
                                     // bd10 PART axis (task #94): the PD1
                                     // depth-refine + NSQ walk compares LEAF block
                                     // costs, and C's PD1 runs at `hbd_md = 2` (true
@@ -16965,6 +16995,7 @@ fn encode_tile_rows(
                                         ectx: fun_ectx.as_mut().unwrap(),
                                         rates: fun_rates.as_deref().unwrap(),
                                         frame: fun_frame.as_ref().unwrap(),
+                                        frame_ssim: None,
                                         y_recon10: if bd10_plumb {
                                             Some(&mut tile_frame_recon10)
                                         } else {

@@ -219,6 +219,33 @@ pub fn ssim_rdmult_factors(
     (factors, num_cols, num_rows)
 }
 
+/// Frame-level inputs `aom_av1_set_ssim_rdmult` reads per block
+/// (coding_loop.c:373-382 and product_coding_loop.c:9054/:9371 ->
+/// mode_decision.c:4060-4110): the per-16x16 scaling factors plus the
+/// PICTURE lambdas the scale multiplies — `ed_ctx->pic_full_lambda` /
+/// `pic_fast_lambda` at both depths, i.e. `svt_aom_lambda_assign`'s
+/// outputs (enc_dec_process.c:176-187). Two things are deliberately
+/// ABSENT from those bases: `lambda_weight` and the per-SB
+/// stats/qindex modulation — `av1_lambda_assign_md`'s result is
+/// overwritten outright, and the ssim scale replaces it.
+#[derive(Debug, Clone)]
+pub struct SsimRdmult {
+    /// `ssim_rdmult_scaling_factors`, indexed `row * num_cols + col`
+    /// over the 16x16 grid.
+    pub factors: alloc::vec::Vec<f64>,
+    pub num_cols: usize,
+    pub num_rows: usize,
+    /// `ed_ctx->pic_full_lambda[EB_8_BIT_MD]`.
+    pub pic_full8: u32,
+    /// `ed_ctx->pic_full_lambda[EB_10_BIT_MD]`.
+    pub pic_full10: u32,
+    /// `ed_ctx->pic_fast_lambda[EB_8_BIT_MD]` — the SAD-table lambda the
+    /// inter MV search's `dist_type == SAD` arm prices with
+    /// (product_coding_loop.c:1923). `pic_fast_lambda[EB_10_BIT_MD]`
+    /// exists in C but has no consumer in this port.
+    pub pic_fast8: u32,
+}
+
 /// C `aom_av1_set_ssim_rdmult` (mode_decision.c:4117): geometric mean of
 /// the 16x16 factors a block covers. `mi_row/mi_col` = the block's mi
 /// coords, `bw_mi/bh_mi` = block dims in mi units. Note C's index quirk

@@ -355,6 +355,11 @@ impl MdRates {
 // ---------------------------------------------------------------------------
 
 /// Frame-constant funnel parameters.
+///
+/// `Clone` exists for `evaluate_leaf`'s per-leaf `frame_ssim` override —
+/// one clone per leaf under the SSIM/IQ/MS_SSIM tunes only; the `Arc`'d
+/// `ssim_rdmult` keeps the factor grid a refcount bump, not a copy.
+#[derive(Clone)]
 pub struct FunnelFrame {
     /// Source-specific chroma presort: pristine variance versus hybrid SAD.
     pub reference: crate::reference::SvtReference,
@@ -384,6 +389,16 @@ pub struct FunnelFrame {
     /// md_subpel.c:1920-1922). ZERO on a key frame, where no inter search
     /// runs; the inter arm is the only reader.
     pub inter_fast_lambda: u32,
+    /// C `ppcs->pa_me_data->ssim_rdmult_scaling_factors` + the
+    /// `ed_ctx->pic_*_lambda` bases `aom_av1_set_ssim_rdmult` scales
+    /// (mode_decision.c:4060-4110). `Some` exactly when the tune runs the
+    /// per-block SSIM rdmult (SSIM/IQ/MS_SSIM): `evaluate_leaf` then
+    /// derives THIS leaf's geometric-mean scale and replaces
+    /// `full_lambda_md`/`fast_lambda_md` at both depths — C's
+    /// `md_encode_block` behaviour, per BLOCK (a sub-SB leaf covers
+    /// fewer 16x16 cells), not per SB. `Arc` so the per-leaf override
+    /// clone is a refcount bump.
+    pub ssim_rdmult: Option<alloc::sync::Arc<crate::tune::SsimRdmult>>,
     /// C `pcs->slice_type != I_SLICE`. It selects which luma-mode rate table
     /// an INTRA candidate is priced with — `mb_mode_fac_bits[size_group]`
     /// versus the key-frame `y_mode_fac_bits[top][left]`, which are

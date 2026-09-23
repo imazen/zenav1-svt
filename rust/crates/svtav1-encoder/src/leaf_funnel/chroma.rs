@@ -80,7 +80,7 @@ pub(super) fn eval_uv(
     uv_delta: i8,
     gate: TxGate,
 ) -> (TxUnitOut, TxUnitOut) {
-    let (frame, rates) = (fx.frame, fx.rates);
+    let (frame, rates) = (fx.frame(), fx.rates);
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     // Pooled: `eval_uv` runs per UV candidate per leaf, 548,918 allocating
     // calls on the canonical alloc cell.
@@ -186,7 +186,7 @@ pub(super) fn eval_uv_hbd(
     uv_delta: i8,
     gate: TxGate,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
-    let frame = fx.frame;
+    let frame = fx.frame();
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     let mut u_pred = vec![0u16; cw * chh];
     let mut v_pred = vec![0u16; cw * chh];
@@ -244,7 +244,7 @@ pub(super) fn eval_uv_ibc_hbd(
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     let mut u_pred = vec![0u16; cw * chh];
     let mut v_pred = vec![0u16; cw * chh];
-    let frame_ch = fx.frame.frame_h_px / 2;
+    let frame_ch = fx.frame().frame_h_px / 2;
     crate::intrabc_pred::predict_intrabc_chroma(
         fx.u_recon10.as_deref().unwrap(),
         fx.c_stride,
@@ -312,7 +312,7 @@ fn tx_pair_hbd(
     // `eval_uv_inter_hbd`.
     is_inter: bool,
 ) -> (TxUnitOutHbd, TxUnitOutHbd) {
-    let (frame, rates) = (fx.frame, fx.rates);
+    let (frame, rates) = (fx.frame(), fx.rates);
     let (cw, chh) = (cx.cw, cx.chh);
     let u_out = tx_unit_hbd_gated(
         frame.coded_lossless,

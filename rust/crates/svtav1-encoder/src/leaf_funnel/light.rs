@@ -72,7 +72,7 @@ type ChromaComp = ComponentType;
 fn light_rdoq(fx: &FunnelCtx<'_>) -> RdoqCtrls {
     let l = fx.lpd1.as_ref().expect("light lane");
     let mut r = l.sig.rdoq;
-    r.clear_when_bypassed(fx.frame.cfg.bypass_encdec);
+    r.clear_when_bypassed(fx.frame().cfg.bypass_encdec);
     r
 }
 
@@ -305,7 +305,7 @@ fn light_luma_tx(
         0,
         intra_dir,
         qt,
-        fx.frame,
+        fx.frame(),
         fx.rates,
         // `ctx->rdoq_ctrls` on this lane — `md_stage_3_light_pd1`'s per-SB
         // row (`mds_do_rdoq = true`, :7153), NOT `frame.rdoq`.
@@ -365,7 +365,7 @@ fn light_chroma_pred(
                 cand.uv_delta,
                 FI_NONE,
                 &cx.uv_geom,
-                fx.frame.cfg.edge_filter,
+                fx.frame().cfg.edge_filter,
                 cx.filt_type_uv,
                 &mut None,
                 &mut p,
@@ -422,7 +422,7 @@ fn light_chroma_tx(
                 dsc,
                 intra_dir,
                 qt,
-                fx.frame,
+                fx.frame(),
                 fx.rates,
                 cx.rdoq,
                 false,
@@ -497,7 +497,7 @@ fn light_full_cost(
     // `block_has_coeff`; the inter var-tx `tx_size` coding is what
     // `block_signals_txsize` + `tx_size_bits_vartx` produce at `tx_depth 0`.
     // `skip_tx_size_bits` is 0 for every inter mode (rd_cost.c:1369).
-    let nstx = if block_signals_txsize(g.w, g.h) && !fx.frame.coded_lossless && block_has_coeff {
+    let nstx = if block_signals_txsize(g.w, g.h) && !fx.frame().coded_lossless && block_has_coeff {
         crate::vartx::tx_size_bits_vartx(
             &fx.rates.txfm_partition_fac_bits,
             fx.ectx.txfm_above_span(g.abs_x, g.w),
@@ -506,7 +506,7 @@ fn light_full_cost(
             g.h,
             0, // tx_depth is always 0 on the light path
             g.abs_y,
-            fx.frame.frame_h_px,
+            fx.frame().frame_h_px,
         )
     } else {
         0
@@ -514,7 +514,7 @@ fn light_full_cost(
     // `blk_skip_decision` — gated on `block_has_coeff && is_inter` and the
     // light path's `ctx->blk_skip_decision` (always true here).
     let mut skip = false;
-    if !fx.frame.coded_lossless && block_has_coeff && is_inter {
+    if !fx.frame().coded_lossless && block_has_coeff && is_inter {
         let nsc = rdcost(
             lambda,
             y_bits + cb_bits + cr_bits + nstx + sf[0] as u64,
@@ -586,14 +586,21 @@ pub(super) fn finish_lpd1(
     g: &LeafGeom,
     cx: &chroma::ChromaCtx,
     qt: &QuantTable,
-    _lambda: u64,
+    // C `md_encode_block_light_pd1` runs `aom_av1_set_ssim_rdmult` too
+    // (product_coding_loop.c:9371): under the SSIM/IQ/MS_SSIM tunes the
+    // per-BLOCK scale of `pic_full_lambda[EB_8_BIT_MD]` replaces this
+    // leaf's `full_lambda_md` outright. `None` on every other tune.
+    ssim_lambda: Option<u64>,
     mut cands: Vec<Cand>,
     y_src: &[u8],
     y_src_stride: usize,
     y_src_off: usize,
 ) -> LeafEval {
     let (w, h) = (g.w, g.h);
-    let lsig = fx.lpd1.as_ref().expect("light lane").clone();
+    let mut lsig = fx.lpd1.as_ref().expect("light lane").clone();
+    if let Some(l) = ssim_lambda {
+        lsig.lambda = l;
+    }
     // The light path prices everything at `full_lambda_md[EB_8_BIT_MD]`
     // (`lsig.lambda`, the PER-SB value), not the frame-level `lambda` the
     // regular funnel reads — under a variance-boost qindex plan they differ.

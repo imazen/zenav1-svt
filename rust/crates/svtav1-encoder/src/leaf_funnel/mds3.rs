@@ -58,7 +58,7 @@ pub(super) fn run_mds3(
     // This function is now the MDS3 DRIVER: derive the per-leaf depth-sweep
     // constants, run the independent-uv search, then hand each candidate to
     // `eval_candidate`. It needs only what those three steps read.
-    let frame = fx.frame;
+    let frame = fx.frame();
     let cfg = frame.cfg;
     let LeafGeom {
         w, h, abs_x, abs_y, ..
@@ -205,7 +205,7 @@ fn search_best_uv_mode(
     n3: usize,
     ind_uv: &mut Option<[(u8, i8); 13]>,
 ) {
-    let (frame, rates) = (fx.frame, fx.rates);
+    let (frame, rates) = (fx.frame(), fx.rates);
     let cfg = frame.cfg;
     let LeafGeom {
         abs_x,
@@ -496,8 +496,12 @@ fn eval_candidate(
     sc: &mut Mds3Scratch,
 ) {
     // Destructure the carriers back into the names the moved body uses, so the
-    // body itself is byte-for-byte what it was inside the loop.
-    let frame = fx.frame;
+    // body itself is byte-for-byte what it was inside the loop. The Arc clone
+    // keeps the per-leaf SSIM-override frame reachable without borrowing `fx`,
+    // so `ifs_at_mds3(&mut fx, ..)` below can still take `fx` and every
+    // downstream `frame.lambda` reader sees the block-scaled value.
+    let frame_arc = fx.frame_ssim.clone();
+    let frame = frame_arc.as_deref().unwrap_or(fx.frame);
     let rates = fx.rates;
     let cfg = frame.cfg;
     let do_rdoq = frame.rdoq_level > 0;
