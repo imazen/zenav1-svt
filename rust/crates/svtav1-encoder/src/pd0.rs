@@ -5208,6 +5208,8 @@ pub fn pd0_pick_sb_partition_video(
     tile_left: usize,
     stale_vars: Option<&SbVariance>,
     max_tx_size: u8,
+    // The same `key_min_sq` [`pd0_pick_sb_partition_video_eval`] takes.
+    key_min_sq: usize,
     // C `ctx->pd0_use_src_samples == false` (enc_mode_config.c:7309) — the
     // same parameter `pd0_pick_sb_partition_m6_eval` takes, and the same
     // value from the same call site. `Some((md_recon_plane, stride))` is the
@@ -5243,6 +5245,7 @@ pub fn pd0_pick_sb_partition_video(
         tile_left,
         stale_vars,
         max_tx_size,
+        key_min_sq,
         video_recon,
         false,
         inter,
@@ -5291,6 +5294,13 @@ pub fn pd0_pick_sb_partition_video_eval(
     tile_left: usize,
     stale_vars: Option<&SbVariance>,
     max_tx_size: u8,
+    // C `set_blocks_to_be_tested`'s `min_sq_size` on a key frame
+    // (enc_dec_process.c:1485): `disallow_4x4 ? 8 : 4` — read only when
+    // `inter` is `None`, since a non-key frame's per-SB `min_sq` rides
+    // `Pd0InterRef::min_sq`. NOT always 8: `pic_disallow_4x4` is 0 at
+    // video M0..M2 (`svt_aom_get_disallow_4x4_default`,
+    // enc_mode_config.c:8169), so key frames there floor PD0 at 4x4.
+    key_min_sq: usize,
     // C `ctx->pd0_use_src_samples == false` (enc_mode_config.c:7309) — the
     // same parameter `pd0_pick_sb_partition_m6_eval` takes, and the same
     // value from the same call site. `Some((md_recon_plane, stride))` is the
@@ -5324,9 +5334,13 @@ pub fn pd0_pick_sb_partition_video_eval(
     // Shared with `pd0_pick_sb_partition_m6_eval`, which is the entry point
     // the REFINEMENT path takes — a second copy of this resolution is exactly
     // the duplicate-transcription trap docs/WORKING-ON-THIS.md §4 records.
-    // `8` is C's `disallow_4x4 ? 8 : 4` arm, i.e. `min_sq` with depth removal
-    // off, which is the only value a key frame can have.
-    let (lambda, inter_min_sq) = pd0_frame_lambda_and_min_sq(qindex, lambda_weight, 8, inter);
+    // `key_min_sq` is C's `disallow_4x4 ? 8 : 4` arm with depth removal off —
+    // NOT always 8: `pic_disallow_4x4` is 0 at M0..M2 on the video arm
+    // (`svt_aom_get_disallow_4x4_default`, enc_mode_config.c:8169), so a
+    // key frame at those presets floors PD0 at 4x4, which the caller
+    // resolves per arm/preset.
+    let (lambda, inter_min_sq) =
+        pd0_frame_lambda_and_min_sq(qindex, lambda_weight, key_min_sq, inter);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -5343,10 +5357,10 @@ pub fn pd0_pick_sb_partition_video_eval(
         lvl1: Some(tables),
         // `get_max_block_size_default` = `scs->super_block_size`, uncapped.
         max_sq: 64.min(max_tx_size as usize),
-        // `pic_disallow_4x4` is 1 on both arms at every preset this reaches,
-        // which is C's `disallow_4x4 ? 8 : 4` arm. On a NON-KEY frame
-        // `depth_removal_ctrls` can raise it to 16, 32 or 64 per superblock —
-        // see `Pd0InterRef::min_sq`.
+        // `key_min_sq` on a key frame (the caller's `disallow_4x4 ? 8 : 4`
+        // fold — `pic_disallow_4x4` is 0 at video M0..M2, so this is 4
+        // there), `Pd0InterRef::min_sq` on a non-key frame where
+        // `depth_removal_ctrls` can raise it to 16, 32 or 64 per superblock.
         min_sq: if ctl_nosplit { 64 } else { inter_min_sq },
 
         is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {

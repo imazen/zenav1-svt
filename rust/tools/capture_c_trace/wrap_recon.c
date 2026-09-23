@@ -2946,3 +2946,50 @@ void __wrap_svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDeci
         }
     }
 }
+
+/* ---- WINNER-DECISION interposer (PD0-slot vs PD1-winner drill) -------------
+ * svt_aom_product_full_mode_decision (mode_decision.c) picks the MDS3 winner
+ * and stamps blk_ptr->cost/block_mi. The CSQ/CTREE dumps read
+ * block_data[PART_N][0], which a PD0 eval can leave anchored to the MDS0
+ * candidate — this dumps the ACTUAL decision (winner mode, admission
+ * *full_cost, re-stamped blk cost) per block origin so the two can be told
+ * apart. Env: SVT_WINDEC_OUT (file), optional SVT_WINDEC_XY="x,y".
+ * Pure pass-through when unset — the C tree stays PRISTINE. */
+uint32_t __real_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                                    ModeDecisionCandidateBuffer** buffer_ptr_array,
+                                                    uint32_t candidate_total_count, uint32_t* best_candidate_index_array);
+uint32_t __wrap_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                                    ModeDecisionCandidateBuffer** buffer_ptr_array,
+                                                    uint32_t candidate_total_count, uint32_t* best_candidate_index_array) {
+    uint32_t idx = __real_svt_aom_product_full_mode_decision(
+        pcs, ctx, buffer_ptr_array, candidate_total_count, best_candidate_index_array);
+    const char* path = getenv("SVT_WINDEC_OUT");
+    if (path && *path) {
+        const char* xy = getenv("SVT_WINDEC_XY");
+        int         px = -1, py = -1;
+        if (xy)
+            sscanf(xy, "%d,%d", &px, &py);
+        if (!xy || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py)) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                ModeDecisionCandidateBuffer* win = buffer_ptr_array[idx];
+                fprintf(f,
+                        "WINDEC poc=%u sl=%d org=(%u,%u) %ux%u st=%d shape=%d pd=%d fixp=%d n=%u "
+                        "winmode=%d winfc=%llu blkcost=%llu blkmode=%d rate=%llu dist=%llu ptr=%p\n",
+                        (unsigned)pcs->picture_number, (int)pcs->slice_type,
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                        block_size_wide[ctx->blk_geom->bsize], block_size_high[ctx->blk_geom->bsize],
+                        (int)ctx->md_stage, (int)ctx->shape, (int)ctx->pd_pass, (int)ctx->fixed_partition,
+                        candidate_total_count, (int)win->cand->block_mi.mode,
+                        (unsigned long long)*win->full_cost,
+                        (unsigned long long)ctx->blk_ptr->cost, (int)ctx->blk_ptr->block_mi.mode,
+                        (unsigned long long)ctx->blk_ptr->total_rate,
+                        (unsigned long long)ctx->blk_ptr->full_dist, (void*)ctx->blk_ptr);
+                fflush(f);
+            }
+        }
+    }
+    return idx;
+}

@@ -1,0 +1,21 @@
+# VIDEO-mode KEY frame byte-identity matrix, 72x88 q40, five synthetic
+# content classes x twelve presets
+
+date: 2026-09-23
+host: lilith (WSL2 x86_64)
+base: 64cc4645b + the key_min_sq fix — `pd0_pick_sb_partition_video_eval`
+      hardcoded the key-frame `min_sq` to 8 on the claim that
+      `pic_disallow_4x4` is 1 "at every preset this reaches", but
+      `svt_aom_get_disallow_4x4_default` (enc_mode_config.c:8169) returns
+      false at M0..M2, so C's PD0 evaluates 4x4 leaves on a key frame
+      there and the port floored at 8x8. The inflated 8x8 rds cascaded
+      upward and flipped PD0 split decisions (e.g. (0,0) 32x32 kept
+      square at 43,582,215 vs split 43,616,078 where C split at
+      43,462,085), which removed the 4x4 level from the PD1 refined scan
+      and changed the committed tree on `gradient p0` (1341 vs 1320 B).
+
+result: 60 / 60 byte-identical (0 diff, 0 broken) — the last open cell,
+        `gradient p0`, closed. Regression gates same change:
+        inter_byte_matrix 96/96 BOTH, issue9_knobs 36/36,
+        bd10_video_gate 24/24, video_selfcheck 270/270,
+        encoder tests 2603/2603.

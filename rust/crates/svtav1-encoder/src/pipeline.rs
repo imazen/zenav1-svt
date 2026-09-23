@@ -15321,6 +15321,16 @@ fn encode_tile_rows(
                             .and_then(|v| v.get(sb_index).copied()),
                     },
                 };
+                // This superblock's `ctx->disallow_4x4` for PD0 — the pic
+                // value (`get_disallow_4x4_default`; FALSE at video M0..M2,
+                // so a key frame there floors PD0 at 4x4) where depth
+                // removal resolved nothing, else that result's flag.
+                let pd0_disallow_4x4 = pd0_dr_res
+                    .and_then(|v| v.get(sb_index).copied())
+                    .map_or_else(
+                        || crate::part_arm::disallow_4x4(sc_arm, md_preset),
+                        |r| r.disallow_4x4,
+                    );
                 // The RESOLVED post-detector `Pd0Level` for THIS superblock,
                 // plus the things `video_pd0_params` derives alongside it —
                 // `coeff_rate_est_lvl`, `use_accurate_part_ctx` and the
@@ -15368,10 +15378,7 @@ fn encode_tile_rows(
                             &crate::part_arm::Pd0SigDerivInput {
                                 is_not_last_layer: pd0_det_frame.is_not_last_layer,
                                 pic_pred_depth_only: pd0_pred_depth_only,
-                                disallow_4x4: sb_dr.map_or_else(
-                                    || crate::part_arm::disallow_4x4(sc_arm, md_preset),
-                                    |r| r.disallow_4x4,
-                                ),
+                                disallow_4x4: pd0_disallow_4x4,
                                 disallow_8x8:
                                     crate::port_enc_mode_config::leaf::get_disallow_8x8_default(),
                                 // `b64_geom->is_complete_b64` — against the
@@ -15885,6 +15892,10 @@ fn encode_tile_rows(
                                     tile_sb_col_start * sb_size,
                                     sb_stale_vars,
                                     max_tx_size,
+                                    // C `set_blocks_to_be_tested`'s
+                                    // `disallow_4x4 ? 8 : 4` — 4 at video
+                                    // M0..M2, where `pic_disallow_4x4` is 0.
+                                    if pd0_disallow_4x4 { 8 } else { 4 },
                                     // C `pd0_use_src_samples` (video arm: recon)
                                     // — the same value the refinement path gets.
                                     pd0_video_recon.then_some((&tile_frame_recon[..], w)),
@@ -16213,6 +16224,9 @@ fn encode_tile_rows(
                                         tile_sb_col_start * sb_size,
                                         sb_stale_vars,
                                         search_max_sq,
+                                        // Same `disallow_4x4 ? 8 : 4` fold —
+                                        // 4 at video M0..M2.
+                                        if pd0_disallow_4x4 { 8 } else { 4 },
                                         pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                         crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
                                         pd0_inter.as_ref(),
@@ -16831,6 +16845,9 @@ fn encode_tile_rows(
                                             tile_sb_col_start * sb_size,
                                             sb_stale_vars,
                                             max_tx_size,
+                                            // Same `disallow_4x4 ? 8 : 4`
+                                            // fold — 4 at video M0..M2.
+                                            if pd0_disallow_4x4 { 8 } else { 4 },
                                             pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                             crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
                                             pd0_inter.as_ref(),
