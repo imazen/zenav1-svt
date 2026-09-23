@@ -281,7 +281,7 @@ is outside this cleanup.
 | [rust/benchmarks/wiener_avx512_tier_2026-09-05.meta](../benchmarks/wiener_avx512_tier_2026-09-05.meta) | Measurement record |
 | [rust/benchmarks/wiener_stream_ab_2026-09-02.meta](../benchmarks/wiener_stream_ab_2026-09-02.meta) | Measurement record |
 | [rust/benchmarks/z2neon_ab_2026-09-03.meta](../benchmarks/z2neon_ab_2026-09-03.meta) | Measurement record |
-| [rust/docs/ACCEPTANCE-CRITERIA.md](ACCEPTANCE-CRITERIA.md) | Historical reference |
+| [rust/docs/ACCEPTANCE-CRITERIA.md](ACCEPTANCE-CRITERIA.md) | Current |
 | [rust/docs/ANIMATED-AVIF-PLAN.md](ANIMATED-AVIF-PLAN.md) | Current |
 | [rust/docs/API-SUPPORT-AUDIT-2026-09-08.md](API-SUPPORT-AUDIT-2026-09-08.md) | Current |
 | [rust/docs/C-TEST-PORTING-AUDIT.md](C-TEST-PORTING-AUDIT.md) | Historical reference |
@@ -292,7 +292,6 @@ is outside this cleanup.
 | [rust/docs/HDR-ON-4.2.md](HDR-ON-4.2.md) | Historical reference |
 | [rust/docs/IDENTITY-STATUS.md](IDENTITY-STATUS.md) | Current |
 | [rust/docs/INTER-ENCODE-PLAN.md](INTER-ENCODE-PLAN.md) | Historical reference |
-| [rust/docs/MASKED-II-ACCEPTANCE.md](MASKED-II-ACCEPTANCE.md) | Current |
 | [rust/docs/OPEN-ISSUES-AUDIT-2026-09-07.md](OPEN-ISSUES-AUDIT-2026-09-07.md) | Historical reference |
 | [rust/docs/OPEN-ISSUES-AUDIT-2026-09-08.md](OPEN-ISSUES-AUDIT-2026-09-08.md) | Current |
 | [rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md](PARITY-REFERENCE-AUDIT-2026-09-08.md) | Historical reference |
