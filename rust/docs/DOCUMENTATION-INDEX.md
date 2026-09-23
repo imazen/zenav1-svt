@@ -292,6 +292,7 @@ is outside this cleanup.
 | [rust/docs/HDR-ON-4.2.md](HDR-ON-4.2.md) | Historical reference |
 | [rust/docs/IDENTITY-STATUS.md](IDENTITY-STATUS.md) | Current |
 | [rust/docs/INTER-ENCODE-PLAN.md](INTER-ENCODE-PLAN.md) | Historical reference |
+| [rust/docs/MASKED-II-ACCEPTANCE.md](MASKED-II-ACCEPTANCE.md) | Current |
 | [rust/docs/OPEN-ISSUES-AUDIT-2026-09-07.md](OPEN-ISSUES-AUDIT-2026-09-07.md) | Historical reference |
 | [rust/docs/OPEN-ISSUES-AUDIT-2026-09-08.md](OPEN-ISSUES-AUDIT-2026-09-08.md) | Current |
 | [rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md](PARITY-REFERENCE-AUDIT-2026-09-08.md) | Historical reference |
