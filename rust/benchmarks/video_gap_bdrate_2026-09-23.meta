@@ -1,0 +1,29 @@
+# VIDEO GAP BD-RATE — what the unported video features cost (2026-09-23)
+
+host:    lilith (WSL2 x86_64)
+commit:  b34558699 (video_key_matrix 60/60 tip)
+corpus:  pd-derf-720p 256x256, 8 frames each — johnny, vidyo4, fourpeople
+config:  CQP p6, qp {25,40,55}, intra_period -1 (single key frame)
+configs:
+  rs   = port, flat low-delay P (SVTAV1_HIER_LEVELS=0) — the shipped envelope
+  cldp = C reference, SAME flat low-delay (PRED_STRUCT=1 HIER_LEVELS=0)
+  cra  = C reference, library-default video (PRED_STRUCT=2 HIER_LEVELS=3 —
+         one complete 8-frame GOP)
+
+method:  per-frame PSNR-Y vs source after aomdec --rawvideo; BD-rate =
+         piecewise-linear integrate of log2(bytes) over the common PSNR
+         range (3 qp points — honest ballpark, not a test-set claim).
+
+result (BD-rate, negative = better):
+  clip        port vs C-LDP   C-RA vs C-LDP   C-RA vs port
+  johnny          -0.03%         -27.76%         -27.75%
+  vidyo4          +0.11%         -22.94%         -23.00%
+  fourpeople      +0.00%         -12.14%         -12.14%
+
+READ: at the matched flat-LDP configuration the port is at RD parity with
+C (sub-0.15%). The video gap — mostly hierarchical/RA GOP structure the
+port cannot yet produce (generate_rps_info covers 4 of 8 pred-struct
+branches; no TPL, no picture decision without a configured GOP) — costs
+roughly 12-28% BD-rate vs C's own default video configuration on this
+corpus. 8 frames / one GOP is a floor measurement: RA gains grow with
+GOP length, so the real-world number on longer content is likely larger.
