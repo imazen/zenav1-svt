@@ -58,6 +58,57 @@ perturb them.
 | M8 | **RD sanity** — video BD-rate measured before/after on the shipped envelope; masked/II is expected to help or hold even, and a regression is a defect to explain, not absorb | `benchmarks/` meta record with host, corpus, and commit pair |
 | M9 | **Constraints** — `#![forbid(unsafe_code)]` preserved; allocations through `crate::vecpool`; MSRV 1.98; no loosened thresholds, hidden skips, or relaxed assertions | `cargo check` MSRV leg + review |
 
+### Implementation map — where the continuation session picks up
+
+Written 2026-09-22 for the session continuing this work on `i265` (mem sizing
+`--mem 16G` there per AGENTS.md; pin `perf stat` to a P-core, `taskset -c 2`,
+per [WORKING-ON-THIS.md](WORKING-ON-THIS.md)). Everything below is verified
+against the tree at `db0e7bf9f`; re-verify before editing — line numbers drift.
+
+**Already done, do not redo:** all DSP primitives are ported and unit-tested —
+`svtav1-dsp/src/{port_masked_compound,port_wedge_search,port_compound_prep,port_interintra,port_model_rd,port_masked_blend}.rs`,
+plus the masked arm inside `enc_make_inter_predictor` in
+`port_enc_make_pred.rs` (per-ref CONV_BUF, `seg_mask` built on luma and
+reused for chroma, warp-leaf support). The injector hook surface
+(`InjectHooks` in `port_md/inject.rs`) already calls
+`inter_intra_search`/`calc_pred_masked_compound`/`search_compound_diff_wedge`
+at the C-correct sites. `inter_intra_level` already reaches
+`InterMdFrame` via `md_config_signals`. The rate layer already prices
+`comp_group_idx`/`compound_idx`/`mask_type`.
+
+**The actual work, in dependency order:**
+
+1. `InterCandidate` (`port_md/inject.rs`) — add `interinter_wedge_index` and
+   `interinter_wedge_sign` (C `interinter_comp.wedge_index`/`.wedge_sign`).
+   `InjectCtx` still builds `inter_intra_comp_ctrls` as `Default::default()` —
+   wire the real `set_inter_intra_ctrls` output.
+2. `WarpHooks` in `inter_md_arm.rs` — three stubs to implement:
+   `calc_pred_masked_compound` (returns `false`), `search_compound_diff_wedge`
+   (no-op), `inter_intra_search` (no-op). `calc_pred_masked_compound` needs a
+   `cmp_store` — MV-keyed, 4-deep per ref list, luma-only, `interp_filters=0`,
+   DUAL→8-bit; reset per ref-pair in the MVP-II path, per `inj_comp_modes`
+   call elsewhere. `inter_intra_search` needs the once-per-block intra
+   precompute (DC/V/H/SMOOTH via the funnel's `predict_unit`/
+   `predict_unit_hbd`, gated on `enabled && is_interintra_allowed_bsize`).
+3. `predict_and_price` (`inter_md_arm.rs`) — add the masked-compound and II
+   prediction arms for both u8 and u16, including chroma and the sub-8 stitch
+   via `predict_inter_chroma_sub8` (compound is unreachable on sub-8:
+   `allow_bipred` requires both dims > 4).
+4. Carrier propagation — `InterCandOut` → `InterCand`
+   (`leaf_funnel/types.rs`) → `InterDecision` (construction sites in
+   `partition.rs`, `pipeline.rs`, `bd10_reencode.rs`) → `InterModeInfo` at the
+   pack site. Kill the hard-coded `interinter_wedge_index: 0` in the
+   `fast_cost` path.
+5. IFS rebuild (`leaf_funnel/ifs.rs`) and MDS3 hbd arms must re-predict these
+   candidates identically — `use_precomputed_ii` is suppressed at the MDS3
+   hbd bump, matching C.
+6. Keep the `build_inter_candidates` refusal assert armed for everything not
+   yet predictable (OBMC included — it is Q1, not this task).
+
+**Host note for i265:** it is a hybrid Core Ultra 7 265K — unpinned wall
+clock moves several percent on core placement; M8's BD-rate/time record must
+name the host and pin measurement threads.
+
 ### Non-goals for this workstream (queued below)
 
 - **OBMC causal** — a different predictor surface (`obmc_pred_arm` + motion
