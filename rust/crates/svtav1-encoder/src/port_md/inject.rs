@@ -97,12 +97,16 @@ pub const BIPRED_3X3_X_POS: [i8; BIPRED_3X3_REFINEMENT_POSITIONS] = [-1, -1, 0, 
 pub const BIPRED_3X3_Y_POS: [i8; BIPRED_3X3_REFINEMENT_POSITIONS] = [0, 1, 1, 1, 0, -1, -1, -1];
 
 /// C `to_av1_compound_lut` (mode_decision.c:494): `MD_COMP_TYPE` ->
-/// `COMPOUND_TYPE`.
+/// `COMPOUND_TYPE`. The MD-side order puts DIFFWTD at index 2 and WEDGE at
+/// index 3 while the AV1 enum (definitions.h:1259) numbers WEDGE=2 and
+/// DIFFWTD=3 — the LUT is NOT the identity. Writing `[0,1,2,3]` here
+/// transposed the two masked types: a candidate searched as DIFFWTD was
+/// packed and blended as WEDGE.
 pub const TO_AV1_COMPOUND_LUT: [u8; 4] = [
     0, // COMPOUND_AVERAGE
     1, // COMPOUND_DISTWTD
-    2, // COMPOUND_DIFFWTD
-    3, // COMPOUND_WEDGE
+    3, // COMPOUND_DIFFWTD
+    2, // COMPOUND_WEDGE
 ];
 
 // ---------------------------------------------------------------------------
@@ -2461,8 +2465,28 @@ mod tests {
         };
         assert_eq!(check(0, &mut h), (0, 1, 0, 0)); // AVG
         assert_eq!(check(1, &mut h), (0, 0, 1, 0)); // DIST
-        assert_eq!(check(2, &mut h), (1, 1, 2, 55)); // DIFF0 — mask_type 55
-        assert_eq!(check(3, &mut h), (1, 1, 3, 0)); // WEDGE
+        // The MD-side order is DIFFWTD-then-WEDGE while the AV1 enum is
+        // WEDGE=2 / DIFFWTD=3 (definitions.h:1259) — the LUT is NOT the
+        // identity, and an identity LUT would code a searched DIFFWTD as
+        // WEDGE and vice versa.
+        assert_eq!(check(2, &mut h), (1, 1, 3, 55)); // DIFF0 -> COMPOUND_DIFFWTD, mask_type 55
+        assert_eq!(check(3, &mut h), (1, 1, 2, 0)); // WEDGE -> COMPOUND_WEDGE
+    }
+
+    /// TIER 4 — `TO_AV1_COMPOUND_LUT` mirrors C's
+    /// `{COMPOUND_AVERAGE, COMPOUND_DISTWTD, COMPOUND_DIFFWTD, COMPOUND_WEDGE}`
+    /// (mode_decision.c:494) against the enum `AVERAGE=0, DISTWTD=1, WEDGE=2,
+    /// DIFFWTD=3` (definitions.h:1259): the values are `[0, 1, 3, 2]`.
+    /// A `svtav1_dsp` `CompoundType::from` round-trip must land on the same
+    /// masked type the search picked — this is the wiring
+    /// `build_masked_compound_no_round_matches_c` could not see at MD level.
+    #[test]
+    fn tier4_compound_lut_is_not_identity() {
+        use svtav1_dsp::port_masked_compound::CompoundType;
+        assert_eq!(TO_AV1_COMPOUND_LUT[0], CompoundType::Average as u8);
+        assert_eq!(TO_AV1_COMPOUND_LUT[1], CompoundType::DistWtd as u8);
+        assert_eq!(TO_AV1_COMPOUND_LUT[2], CompoundType::DiffWtd as u8);
+        assert_eq!(TO_AV1_COMPOUND_LUT[3], CompoundType::Wedge as u8);
     }
 
     /// TIER 4 — `allow_bipred` (AV1 spec 5.11.25): BOTH dimensions must
@@ -2658,9 +2682,11 @@ mod tests {
         cands.push(base);
         inj_comp_modes(&ctx, &mut cands, &mut h);
         assert_eq!(cands.count(), 4);
+        // MD types DIST/DIFF0/WEDGE map through the non-identity LUT to
+        // AV1 values DISTWTD=1 / DIFFWTD=3 / WEDGE=2.
         assert_eq!(cands.as_slice()[1].interinter_comp_type, 1);
-        assert_eq!(cands.as_slice()[2].interinter_comp_type, 2);
-        assert_eq!(cands.as_slice()[3].interinter_comp_type, 3);
+        assert_eq!(cands.as_slice()[2].interinter_comp_type, 3);
+        assert_eq!(cands.as_slice()[3].interinter_comp_type, 2);
 
         // tot_comp_types == MD_COMP_DIST (1) is an EQUALITY early return.
         let mut ctx = w.ctx();
@@ -2687,7 +2713,8 @@ mod tests {
         cands.push(base);
         inj_comp_modes(&ctx, &mut cands, &mut h);
         assert_eq!(cands.count(), 3);
-        assert_eq!(cands.as_slice()[1].interinter_comp_type, 2);
+        // First injected is DIFF0 (MD type 2) -> COMPOUND_DIFFWTD = 3.
+        assert_eq!(cands.as_slice()[1].interinter_comp_type, 3);
     }
 
     /// TIER 4 — `calc_pred_masked_compound` returning non-zero aborts the
