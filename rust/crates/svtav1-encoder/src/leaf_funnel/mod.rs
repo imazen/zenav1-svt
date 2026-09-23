@@ -707,6 +707,7 @@ pub(crate) fn evaluate_leaf(
         bd10,
         pal,
         lambda,
+        i16::try_from(qt.dequant[1]).expect("y_dequant_qtx is int16_t in C"),
         y_src,
         y_src_stride,
         y_src_off,

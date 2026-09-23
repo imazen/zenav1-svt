@@ -379,21 +379,29 @@ fn bench_dsp(suite: &mut Suite) {
                 .collect::<Vec<i32>>()
                 .into_boxed_slice(),
         );
+        // The fwd cores take the i16 residual input; the inv cores take
+        // TranLow coefficients.
+        let coef16: &'static [i16] = Box::leak(
+            coef.iter()
+                .map(|&v| v as i16)
+                .collect::<Vec<i16>>()
+                .into_boxed_slice(),
+        );
         macro_rules! txbench {
-            ($label:expr, $n:expr, $f:path) => {
+            ($label:expr, $n:expr, $f:path, $cin:expr) => {
                 assert!(set_simd(false));
                 let mut scalar = vec![0i32; $n * $n];
-                $f(coef, &mut scalar, $n);
+                $f($cin, &mut scalar, $n);
                 assert!(set_simd(true));
                 let mut native = vec![0i32; $n * $n];
-                $f(coef, &mut native, $n);
+                $f($cin, &mut native, $n);
                 assert_eq!(scalar, native, "{}", $label);
                 suite.compare($label, |g| {
                     for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                         g.bench(arm, move |b| {
                             let mut out = vec![0i32; $n * $n];
                             b.with_input(move || assert!(set_simd(simd))).run(move |_| {
-                                $f(coef, &mut out, $n);
+                                $f($cin, &mut out, $n);
                                 black_box(&out);
                             })
                         });
@@ -401,38 +409,59 @@ fn bench_dsp(suite: &mut Suite) {
                 });
             };
         }
-        txbench!("fwd_txfm2d_4x4_dct", 4, fwd_txfm::fwd_txfm2d_4x4_dct_dct);
-        txbench!("fwd_txfm2d_8x8_dct", 8, fwd_txfm::fwd_txfm2d_8x8_dct_dct);
+        txbench!(
+            "fwd_txfm2d_4x4_dct",
+            4,
+            fwd_txfm::fwd_txfm2d_4x4_dct_dct,
+            coef16
+        );
+        txbench!(
+            "fwd_txfm2d_8x8_dct",
+            8,
+            fwd_txfm::fwd_txfm2d_8x8_dct_dct,
+            coef16
+        );
         txbench!(
             "fwd_txfm2d_16x16_dct",
             16,
-            fwd_txfm::fwd_txfm2d_16x16_dct_dct
+            fwd_txfm::fwd_txfm2d_16x16_dct_dct,
+            coef16
         );
         txbench!(
             "fwd_txfm2d_32x32_dct",
             32,
-            fwd_txfm::fwd_txfm2d_32x32_dct_dct
+            fwd_txfm::fwd_txfm2d_32x32_dct_dct,
+            coef16
         );
-        txbench!("inv_txfm2d_8x8_dct", 8, inv_txfm::inv_txfm2d_8x8_dct_dct);
+        txbench!(
+            "inv_txfm2d_8x8_dct",
+            8,
+            inv_txfm::inv_txfm2d_8x8_dct_dct,
+            coef
+        );
         txbench!(
             "inv_txfm2d_16x16_dct",
             16,
-            inv_txfm::inv_txfm2d_16x16_dct_dct
+            inv_txfm::inv_txfm2d_16x16_dct_dct,
+            coef
         );
         txbench!(
             "inv_txfm2d_32x32_dct",
             32,
-            inv_txfm::inv_txfm2d_32x32_dct_dct
+            inv_txfm::inv_txfm2d_32x32_dct_dct,
+            coef
         );
         txbench!(
             "fwd_txfm2d_64x64_dct",
             64,
-            fwd_txfm::fwd_txfm2d_64x64_dct_dct
+            fwd_txfm::fwd_txfm2d_64x64_dct_dct,
+            coef16
         );
         txbench!(
             "inv_txfm2d_64x64_dct",
             64,
-            inv_txfm::inv_txfm2d_64x64_dct_dct
+            inv_txfm::inv_txfm2d_64x64_dct_dct,
+            coef
         );
     }
 

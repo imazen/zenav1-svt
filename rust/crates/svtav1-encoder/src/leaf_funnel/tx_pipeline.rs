@@ -1438,7 +1438,7 @@ pub(super) fn tx_unit_inner(
                 6000 + eob as i32 * 1000
             } else if lvl == 0 {
                 6000 + eob as i32 * 400
-            } else {
+            } else if eob > 0 {
                 cost_coeffs_txb(
                     qcoeff,
                     eob,
@@ -1450,6 +1450,14 @@ pub(super) fn tx_unit_inner(
                     intra_dir,
                     rates,
                 )
+            } else {
+                // C `svt_aom_txb_estimate_coeff_bits` gates the real
+                // estimator on `if (y_eob)` and prices an empty TXB with
+                // `av1_cost_skip_txb` (rd_cost.c:1243-1263). Level 1's
+                // arm reaches here with `eob == 0` — the crash the
+                // completion scan saw at 152x152/168x168 p13 was this
+                // call missing that guard.
+                cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
             }
         }
         RateMode::Exact if closed_lvl2 => 6000 + eob as i32 * 1000,

@@ -218,6 +218,24 @@ pub struct InterCand {
     pub comp_group_idx: u8,
     pub compound_idx: u8,
     pub interinter_comp_type: u8,
+    /// C `block_mi.interinter_comp.mask_type` / `wedge_index` /
+    /// `wedge_sign` — `search_compound_diff_wedge`'s pick for a masked
+    /// (`COMPOUND_DIFFWTD` / `COMPOUND_WEDGE`) candidate. The MDS3/committed
+    /// rebuild re-derives the DIFFWTD mask from fresh convolution buffers
+    /// but needs `mask_type`; the WEDGE pair is the coded syntax itself.
+    pub interinter_mask_type: u8,
+    pub interinter_wedge_index: i8,
+    pub interinter_wedge_sign: bool,
+    /// C `block_mi.is_interintra_used` / `interintra_mode` /
+    /// `use_wedge_interintra` / `interintra_wedge_index` — the
+    /// `inter_intra_search` result for an inter-intra candidate
+    /// (`ref_frame[1] == INTRA_FRAME`). The rebuild re-runs the intra
+    /// predictor against the current recon neighbours and blends it with
+    /// the inter prediction using these fields.
+    pub is_interintra_used: bool,
+    pub interintra_mode: u8,
+    pub use_wedge_interintra: bool,
+    pub interintra_wedge_index: i8,
     /// C `cand->skip_mode_allowed` — the injector's NEAREST_NEARESTMV arm
     /// sets it when the candidate's ref pair IS the frame's skip-mode pair.
     /// `svt_aom_full_cost` arbitrates the skip-mode symbol against the full
@@ -381,6 +399,13 @@ pub(crate) struct FunnelCtx<'a> {
     /// regular NIC/MDS1/MDS3 funnel. `None` (and every still picture) keeps
     /// the pre-existing path byte-identical.
     pub lpd1: Option<crate::leaf_funnel::light::Lpd1Leaf>,
+    /// C `ctx->intrapred_buf` — the inter-intra intra predictions
+    /// `precompute_intra_pred_for_inter_intra` fills per block before
+    /// `generate_md_stage_0_cand`. Written by `inject::inject_candidates`
+    /// (`None` when the block is not inter-intra eligible), read by the
+    /// inject-time prediction and the IFS/MDS3 rebuild — the same
+    /// context lifetime C's own `intrapred_buf` has.
+    pub ii_preds: Option<crate::inter_md_arm::IiPreds>,
 }
 
 impl FunnelCtx<'_> {

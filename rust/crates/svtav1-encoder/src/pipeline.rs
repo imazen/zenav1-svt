@@ -5178,6 +5178,32 @@ impl EncodePipeline {
                     inter_compound_mode: md_config_signals
                         .as_ref()
                         .map_or(0, |sigs| sigs.inter_compound_mode),
+                    // C `pcs->inter_intra_level` — `svt_aom_get_inter_
+                    // intra_level`'s ladder, the input to
+                    // `set_inter_intra_ctrls` at injection.
+                    inter_intra_level: md_config_signals
+                        .as_ref()
+                        .map_or(0, |sigs| sigs.inter_intra_level),
+                    // C `pcs->hbd_md` (`sig_deriv_multi_processes_default`,
+                    // enc_mode_config.c:2151-2164): bd10 && preset<=MR → 1,
+                    // bd10 && preset<=M5 → 2 (`is_base` — a flat GOP makes
+                    // every frame base), else 0 on an inter frame. The
+                    // `hbd_mds` CLI override has no port input — it is
+                    // DEFAULT here. This is the depth the inter-intra and
+                    // masked-compound searches run at; the u16 arms are
+                    // live wherever the ladder returns non-zero.
+                    hbd_md: match self.bit_depth {
+                        10 if self.speed_config.preset <= -1 => 1,
+                        10 if self.speed_config.preset <= 5 => 2,
+                        _ => 0,
+                    },
+                    // The frame-owned mask tables C keeps file-scope
+                    // (`init_ii_masks` / `svt_av1_init_wedge_masks`): the
+                    // smooth inter-intra blends and the master wedge
+                    // table both searches and the masked compound arm
+                    // read.
+                    ii_masks: svtav1_dsp::port_interintra::IiMasks::new(),
+                    wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks::new(),
                     // C `ppcs->pic_obmc_level`, straight off the mode-decision
                     // signal derivation that already computes it.
                     pic_obmc_level: md_config_signals
@@ -12086,10 +12112,18 @@ fn encode_block_syntax(
             pred_mv,
             inter_mode_ctx,
             drl,
-            // Inter-intra and the two warped-motion inputs have no candidate
-            // to come from yet; a candidate that sets them must extend
-            // `InterDecision` rather than have them defaulted here.
-            interintra: None,
+            interintra: blk.is_interintra_used.then_some(
+                crate::port_entropy_inter::compound::InterIntraInfo {
+                    mode: match blk.interintra_mode {
+                        1 => crate::port_entropy_inter::compound::InterIntraMode::VPred,
+                        2 => crate::port_entropy_inter::compound::InterIntraMode::HPred,
+                        3 => crate::port_entropy_inter::compound::InterIntraMode::SmoothPred,
+                        _ => crate::port_entropy_inter::compound::InterIntraMode::DcPred,
+                    },
+                    use_wedge: blk.use_wedge_interintra,
+                    wedge_index: blk.interintra_wedge_index.max(0) as u8,
+                },
+            ),
             motion_mode: blk.motion_mode,
             num_proj_ref,
             overlappable_neighbors,
@@ -12108,9 +12142,9 @@ fn encode_block_syntax(
                                 3 => crate::port_entropy_inter::compound::CompoundType::Diffwtd,
                                 _ => crate::port_entropy_inter::compound::CompoundType::Wedge,
                             },
-                            wedge_index: 0,
-                            wedge_sign: false,
-                            mask_type: 0,
+                            wedge_index: blk.interinter_wedge_index.max(0) as u8,
+                            wedge_sign: blk.interinter_wedge_sign,
+                            mask_type: blk.interinter_mask_type,
                         },
                     )
                 }
@@ -12137,7 +12171,7 @@ fn encode_block_syntax(
         #[cfg(feature = "std")]
         if crate::dbgenv::interdbg() {
             std::eprintln!(
-                "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} interp={:#x} drl={:?} skm={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} interp={:#x} drl={:?} skm={} ii={:?} cgrp={} ctype={} cwidx={} cws={} cmask={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,
                 block_x / 4,
                 info.bsize,
@@ -12155,6 +12189,12 @@ fn encode_block_syntax(
                 info.interp_filters,
                 info.drl,
                 info.skip_mode,
+                info.interintra,
+                blk.comp_group_idx,
+                blk.interinter_comp_type,
+                blk.interinter_wedge_index,
+                blk.interinter_wedge_sign,
+                blk.interinter_mask_type,
                 nb.up_available,
                 nb.left_available,
                 nb.above.map(|a| (a.mode, a.ref_frame, a.interp_filters)),
@@ -15949,6 +15989,7 @@ fn encode_tile_rows(
                                     ibc_gate: Default::default(),
                                     full_rd10: bd10_full_rd,
                                     lpd1: sb_lpd1.clone(),
+                                    ii_preds: None,
                                 })
                             } else {
                                 None
@@ -16600,6 +16641,7 @@ fn encode_tile_rows(
                                     // arm — `pic_lpd1_lvl` is 0 through M6,
                                     // and `dr.adaptive`/NSQ only run there.
                                     lpd1: None,
+                                    ii_preds: None,
                                 };
                                 let nsq = if coded_lossless {
                                     crate::depth_refine::NsqCfg::off()
@@ -16984,6 +17026,7 @@ fn encode_tile_rows(
                                         // `pd1_level > REGULAR_PD1` for this
                                         // superblock.
                                         lpd1: sb_lpd1,
+                                        ii_preds: None,
                                     })
                                 } else {
                                     None
@@ -19337,6 +19380,13 @@ mod inter_decision_probe {
                 comp_group_idx: 0,
                 compound_idx: 0,
                 interinter_comp_type: 0,
+                interinter_mask_type: 0,
+                interinter_wedge_index: 0,
+                interinter_wedge_sign: false,
+                is_interintra_used: false,
+                interintra_mode: 0,
+                use_wedge_interintra: false,
+                interintra_wedge_index: 0,
                 wm_params: Default::default(),
                 wm_params_l1: Default::default(),
             })),

@@ -140,6 +140,11 @@ pub(super) fn inject_candidates(
     bd: LeafBd10<'_>,
     pal: PalFlagRates,
     lambda: u64,
+    // C `dequants->y_dequant_qtx[base_q_idx][1]` — the luma AC dequant
+    // the inter-intra/masked-compound searches' `model_rd` arms divide
+    // by (enc_inter_prediction.c:2027-2029). Inert at the reachable
+    // control levels but plumbed faithfully.
+    quantizer: i16,
     y_src: &[u8],
     y_src_stride: usize,
     y_src_off: usize,
@@ -608,6 +613,27 @@ pub(super) fn inject_candidates(
                 // funnel walks a node's shapes with PART_N first, which is
                 // what makes a single slot the faithful structure.
                 sq_me: fx.inter_sq_me.as_deref_mut(),
+                // C `ctx->part` — the wedge-mode selector between
+                // `ii_wedge_mode_sq` and `ii_wedge_mode_nsq`. The
+                // prelude's searches never read it; the field is real
+                // anyway so the block ctx carries one coherent shape.
+                is_part_n: fx.ibc_gate.is_part_n,
+                // C `blk_ptr->y_src->buffer16` — read only under
+                // `pcs->hbd_md` (nonzero at bd10 presets <= 5 on this
+                // flat GOP, 0 elsewhere).
+                y_src10: blk_y_src10,
+                // C fills `ctx->intrapred_buf` AFTER the prelude
+                // searches (`md_encode_block`, product_coding_loop.c
+                // :9444-9449) — the prelude ctx has none yet.
+                ii: None,
+                // C `full_lambda_md[bit]` — the searches' model-RD
+                // lambdas; inert at the reachable control levels.
+                full_lambda8: u32::try_from(lambda).expect("full_lambda_md is a uint32_t in C"),
+                full_lambda10: bd
+                    .rd
+                    .as_ref()
+                    .map_or(0, |r| u32::try_from(r.lambda).expect("full_lambda_md[1]")),
+                quantizer,
             },
             lambda,
             frame.inter_fast_lambda,
@@ -1901,6 +1927,157 @@ pub(super) fn inject_candidates(
     if let Some(im) = fx.inter {
         let (prelude, neighbors, overlappable, is_inter_ctx, is_intra_bordered) = inter_pre
             .expect("the block prelude is built at the top whenever the inter arm is armed");
+        // C `svt_aom_precompute_intra_pred_for_inter_intra`
+        // (enc_intra_prediction.c:718-757), called from `md_encode_block`
+        // (product_coding_loop.c:9447-9449) right before
+        // `generate_md_stage_0_cand` under the same gate:
+        // `inter_intra_comp_ctrls.enabled && is_interintra_allowed_bsize`.
+        // C stores LUMA only (`ctx->intrapred_buf`) and recomputes chroma
+        // inside `inter_intra_prediction` per call; the port keeps all
+        // three planes in the same store — the prediction is pure in the
+        // recon plane and the recon cannot change between injection and
+        // arbitration, so this is the same numbers computed once.
+        //
+        // The mode set is `interintra_to_intra_mode[]` = {DC_PRED, V_PRED,
+        // H_PRED, SMOOTH_PRED}, `INTERINTRA_MODES` entries at one block
+        // each — the layout `inter_intra_search` and the predict-time
+        // blend index by `interintra_mode`.
+        const II_TO_INTRA: [u8; 4] = [0, 1, 2, 9];
+        let ii = crate::port_enc_mode_config::ctrls::set_inter_intra_ctrls(im.inter_intra_level)
+            .filter(|c| {
+                c.enabled != 0
+                    && crate::port_md::predicates::is_interintra_allowed_bsize(bsize_idx as u8)
+            })
+            .map(|_| {
+                let mut p = crate::inter_md_arm::IiPreds {
+                    luma: vec![0; II_TO_INTRA.len() * w * h],
+                    u: vec![0; II_TO_INTRA.len() * cw * chh],
+                    v: vec![0; II_TO_INTRA.len() * cw * chh],
+                    luma16: Vec::new(),
+                    u16: Vec::new(),
+                    v16: Vec::new(),
+                };
+                // C's `intrapred_buf` is `uint16_t` under `hbd_md` — the
+                // u16 twins exist wherever this leaf carries u16
+                // prediction buffers, which is `y_recon10`'s canvas.
+                if fx.y_recon10.is_some() {
+                    p.luma16 = vec![0; II_TO_INTRA.len() * w * h];
+                }
+                if has_uv && fx.u_recon10.is_some() && fx.v_recon10.is_some() {
+                    p.u16 = vec![0; II_TO_INTRA.len() * cw * chh];
+                    p.v16 = vec![0; II_TO_INTRA.len() * cw * chh];
+                }
+                for (i, &mode) in II_TO_INTRA.iter().enumerate() {
+                    predict_unit(
+                        y_recon,
+                        y_stride,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        mode,
+                        0,
+                        FI_NONE,
+                        &y_geom,
+                        cfg.edge_filter,
+                        filt_type_y,
+                        &mut None,
+                        &mut p.luma[i * w * h..(i + 1) * w * h],
+                    );
+                    if has_uv {
+                        predict_unit(
+                            fx.u_recon,
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            mode,
+                            0,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            &mut None,
+                            &mut p.u[i * cw * chh..(i + 1) * cw * chh],
+                        );
+                        predict_unit(
+                            fx.v_recon,
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            mode,
+                            0,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            &mut None,
+                            &mut p.v[i * cw * chh..(i + 1) * cw * chh],
+                        );
+                    }
+                    if !p.luma16.is_empty() {
+                        predict_unit_hbd(
+                            fx.y_recon10.as_deref().expect("luma16 with recon10"),
+                            y_stride,
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            mode,
+                            0,
+                            FI_NONE,
+                            &y_geom,
+                            cfg.edge_filter,
+                            filt_type_y,
+                            &mut p.luma16[i * w * h..(i + 1) * w * h],
+                            im.bit_depth,
+                        );
+                    }
+                    if has_uv && !p.u16.is_empty() {
+                        predict_unit_hbd(
+                            fx.u_recon10.as_deref().expect("u16 with recon10"),
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            mode,
+                            0,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            &mut p.u16[i * cw * chh..(i + 1) * cw * chh],
+                            im.bit_depth,
+                        );
+                        predict_unit_hbd(
+                            fx.v_recon10.as_deref().expect("v16 with recon10"),
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            mode,
+                            0,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            &mut p.v16[i * cw * chh..(i + 1) * cw * chh],
+                            im.bit_depth,
+                        );
+                    }
+                }
+                p
+            });
+        // `ctx->intrapred_buf` lives on the mode-decision context for the
+        // block's whole mode decision — the inject-time prediction AND the
+        // IFS/MDS3 rebuild blend from it — so it parks on the funnel
+        // context and `InterBlockCtx` borrows it.
+        fx.ii_preds = ii;
         let built = crate::inter_md_arm::build_inter_candidates(
             im,
             &mut crate::inter_md_arm::InterBlockCtx {
@@ -1924,6 +2101,26 @@ pub(super) fn inject_candidates(
                 // funnel walks a node's shapes with PART_N first, which is
                 // what makes a single slot the faithful structure.
                 sq_me: fx.inter_sq_me.as_deref_mut(),
+                // C `ctx->part` — the wedge-mode selector between
+                // `ii_wedge_mode_sq` and `ii_wedge_mode_nsq`.
+                is_part_n: fx.ibc_gate.is_part_n,
+                // C `blk_ptr->y_src->buffer16` — read by the searches
+                // only under `pcs->hbd_md` (nonzero at bd10 presets
+                // <= 5 on this flat GOP, 0 elsewhere).
+                y_src10: blk_y_src10,
+                // C `ctx->intrapred_buf` — the inter-intra intra
+                // predictions, `None` when the block is not II-eligible.
+                ii: fx.ii_preds.as_ref(),
+                // C `full_lambda_md[bit]` + `y_dequant_qtx` — the
+                // searches' model-RD inputs; inert at the reachable
+                // control levels (`use_rd_model`/`use_rate` are 0) but
+                // plumbed so the faithful arms run.
+                full_lambda8: u32::try_from(lambda).expect("full_lambda_md is a uint32_t in C"),
+                full_lambda10: bd
+                    .rd
+                    .as_ref()
+                    .map_or(0, |r| u32::try_from(r.lambda).expect("full_lambda_md[1]")),
+                quantizer,
             },
             lambda,
             // `generate_md_stage_0_cand_light_pd1` reads the nic-level
@@ -2173,6 +2370,13 @@ pub(super) fn inject_candidates(
                     comp_group_idx: c.comp_group_idx,
                     compound_idx: c.compound_idx,
                     interinter_comp_type: c.interinter_comp_type,
+                    interinter_mask_type: c.interinter_mask_type,
+                    interinter_wedge_index: c.interinter_wedge_index,
+                    interinter_wedge_sign: c.interinter_wedge_sign,
+                    is_interintra_used: c.is_interintra_used,
+                    interintra_mode: c.interintra_mode,
+                    use_wedge_interintra: c.use_wedge_interintra,
+                    interintra_wedge_index: c.interintra_wedge_index,
                     skip_mode_allowed: c.skip_mode_allowed,
                     skip_mode_ctx: c.skip_mode_ctx,
                     skip_mode: false,

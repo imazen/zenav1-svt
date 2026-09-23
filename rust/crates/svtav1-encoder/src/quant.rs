@@ -610,7 +610,7 @@ pub fn build_coeff_cost_tables_from_fc(
             });
         }
     }
-    return tables;
+    tables
 }
 
 // ---------------------------------------------------------------------------

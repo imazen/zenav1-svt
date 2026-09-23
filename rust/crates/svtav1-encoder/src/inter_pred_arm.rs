@@ -1186,6 +1186,371 @@ pub fn predict_inter_yuv_warped_compound_hbd(
     }
 }
 
+/// The `dist_wtd_comp_weight_assign` fields ref 1's `ConvolveParams`
+/// carries — `Option` so a `use_dist_wtd_comp_avg = 0` result (and a
+/// non-compound candidate, which C never calls this for) is just `None`.
+pub type DistWtdComp = svtav1_dsp::port_scale_factors::DistWtdWeights;
+
+/// `av1_inter_prediction`'s COMPOUND arm at 8 bits
+/// (enc_inter_prediction.c:3266-3480) — the FULL driver, not the
+/// light-PD1 twin: per-reference warp by each ref's own model, the
+/// distance-weighted offsets on ref 1's convolve, and the masked arm
+/// (`is_masked_compound_type`, :3327) that redirects ref 1 through a
+/// private CONV_BUF and blends `pred0`/`pred1` under the wedge or
+/// difference mask.
+///
+/// `masked` is `Some` exactly when `interinter_comp.type` is WEDGE or
+/// DIFFWTD; `comp` then carries the CODED `wedge_index`/`wedge_sign` /
+/// `mask_type` the injection search picked. `distwtd` is the
+/// `svt_av1_dist_wtd_comp_weight_assign` result for this candidate's ref
+/// pair — applied on ref 1's convolve whenever
+/// `use_dist_wtd_comp_avg` came back set (compound-average blocks on a
+/// `enable_jnt_comp` sequence, which the decoder weights identically).
+///
+/// The `bsize` argument is the LUMA block size on EVERY plane — C passes
+/// it unchanged (:3425/:3453), which is what makes the masked blend's
+/// `subh`/`subw` test detect chroma subsampling and 2x2-average the
+/// luma-dims mask.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_compound_md(
+    refs: [(&PaddedPlane, Option<(&PaddedPlane, &PaddedPlane)>); 2],
+    wm0: &mut svtav1_types::motion::WarpedMotionParams,
+    wm1: &mut svtav1_types::motion::WarpedMotionParams,
+    is_wm: [bool; 2],
+    masked: Option<(
+        svtav1_dsp::port_masked_blend::InterInterCompoundData,
+        svtav1_dsp::port_masked_compound::DiffwtdMaskType,
+    )>,
+    distwtd: Option<DistWtdComp>,
+    wedge: &svtav1_dsp::port_wedge_masks::WedgeMasks,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    bsize: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    y_out: &mut [u8],
+    y_stride: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{
+        DstPlane, MaskedCompound, SrcPlanes, enc_make_inter_predictor,
+    };
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    // C `get_conv_params_no_round(0, tmp_dst_y, 128, 1, bit_depth)` — one
+    // shared CONV_BUF: ref 0 writes it, ref 1 blends (or the masked arm
+    // reads it as `pred0`).
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    // C's `seg_mask` — written by the DIFFWTD arm's
+    // `build_compound_diffwtd_mask` on plane 0, read as the blend mask by
+    // every plane's DIFFWTD arm (the sub-sampling is inside the blend);
+    // inert for WEDGE, which reads `wedge` instead.
+    let mut seg_mask = alloc::vec![0u8; 128 * 128];
+    let wms: [&mut svtav1_types::motion::WarpedMotionParams; 2] = [wm0, wm1];
+    for (i, &iw) in is_wm.iter().enumerate() {
+        let mut cp = ConvolveParams::no_round(false, 128, true, 8);
+        let mut masked_arg = None;
+        if i == 1 {
+            cp.do_average = true;
+            if let Some(dw) = distwtd {
+                cp.use_jnt_comp_avg = dw.use_dist_wtd_comp_avg != 0;
+                cp.fwd_offset = dw.fwd_offset;
+                cp.bck_offset = dw.bck_offset;
+            }
+            masked_arg = masked.as_ref().map(|(comp, mask_type)| MaskedCompound {
+                comp,
+                seg_mask: &mut seg_mask,
+                wedge,
+                bsize,
+                mask_type: *mask_type,
+            });
+        }
+        enc_make_inter_predictor(
+            SrcPlanes::Lbd(&refs[i].0.buf),
+            refs[i].0.origin,
+            refs[i].0.stride,
+            DstPlane::Lbd(&mut *y_out),
+            y_stride,
+            &mut conv_buf,
+            org_y as i32,
+            org_x as i32,
+            DspMv {
+                x: mvs[i].x,
+                y: mvs[i].y,
+            },
+            &sf,
+            &cp,
+            interp_filters,
+            masked_arg,
+            Some(&mut *wms[i]),
+            geom,
+            bw,
+            bh,
+            &edges,
+            0,
+            0,
+            0,
+            8,
+            false,
+            iw,
+        )
+        .expect("the luma compound leaf takes an 8-bit plane into an 8-bit destination");
+    }
+
+    // A compound block is never sub-8 (`allow_bipred` rejects width or
+    // height 4), so both references either carry chroma or neither does.
+    if !refs.iter().all(|(_, c)| c.is_some()) {
+        return;
+    }
+    let (cw, chh) = (bw / 2, bh / 2);
+    // Spec 7.11.3.1 / C :3382-3385 — the warp floor is on the SUBSAMPLED
+    // extent; the masked flag and dist-wtd offsets are not size-gated.
+    let uv_floor = cw >= 8 && chh >= 8;
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
+    for (plane, dst) in [(1usize, &mut *u_out), (2, &mut *v_out)] {
+        for (i, &iw) in is_wm.iter().enumerate() {
+            let (uref, vref) = refs[i].1.expect("the all-chroma check above");
+            let r = if plane == 1 { uref } else { vref };
+            let mut cp = ConvolveParams::no_round(false, 64, true, 8);
+            let mut masked_arg = None;
+            if i == 1 {
+                cp.do_average = true;
+                if let Some(dw) = distwtd {
+                    cp.use_jnt_comp_avg = dw.use_dist_wtd_comp_avg != 0;
+                    cp.fwd_offset = dw.fwd_offset;
+                    cp.bck_offset = dw.bck_offset;
+                }
+                masked_arg = masked.as_ref().map(|(comp, mask_type)| MaskedCompound {
+                    comp,
+                    seg_mask: &mut seg_mask,
+                    wedge,
+                    bsize,
+                    mask_type: *mask_type,
+                });
+            }
+            enc_make_inter_predictor(
+                SrcPlanes::Lbd(&r.buf),
+                r.origin,
+                r.stride,
+                DstPlane::Lbd(&mut *dst),
+                uv_stride,
+                &mut conv_buf,
+                cy as i32,
+                cx as i32,
+                DspMv {
+                    x: mvs[i].x,
+                    y: mvs[i].y,
+                },
+                &sf,
+                &cp,
+                interp_filters,
+                masked_arg,
+                Some(&mut *wms[i]),
+                geom,
+                cw,
+                chh,
+                &edges,
+                plane,
+                1,
+                1,
+                8,
+                false,
+                iw && uv_floor,
+            )
+            .expect("the chroma compound leaf takes an 8-bit plane into an 8-bit destination");
+        }
+    }
+}
+
+/// [`predict_inter_yuv_compound_md`] at true 10 bits — the same driver
+/// on `PaddedPlaneHbd`/`DstPlane::Hbd`, `bit_depth` carried through to
+/// the convolve's rounding and the masked blend's clamp.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_compound_md_hbd(
+    refs: [(
+        &crate::picture::PaddedPlaneHbd,
+        Option<(
+            &crate::picture::PaddedPlaneHbd,
+            &crate::picture::PaddedPlaneHbd,
+        )>,
+    ); 2],
+    wm0: &mut svtav1_types::motion::WarpedMotionParams,
+    wm1: &mut svtav1_types::motion::WarpedMotionParams,
+    is_wm: [bool; 2],
+    masked: Option<(
+        svtav1_dsp::port_masked_blend::InterInterCompoundData,
+        svtav1_dsp::port_masked_compound::DiffwtdMaskType,
+    )>,
+    distwtd: Option<DistWtdComp>,
+    wedge: &svtav1_dsp::port_wedge_masks::WedgeMasks,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    bsize: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{
+        DstPlane, MaskedCompound, SrcPlanes, enc_make_inter_predictor,
+    };
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let bd = i32::from(bit_depth);
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    let mut seg_mask = alloc::vec![0u8; 128 * 128];
+    let wms: [&mut svtav1_types::motion::WarpedMotionParams; 2] = [wm0, wm1];
+    for (i, &iw) in is_wm.iter().enumerate() {
+        let mut cp = ConvolveParams::no_round(false, 128, true, bd);
+        let mut masked_arg = None;
+        if i == 1 {
+            cp.do_average = true;
+            if let Some(dw) = distwtd {
+                cp.use_jnt_comp_avg = dw.use_dist_wtd_comp_avg != 0;
+                cp.fwd_offset = dw.fwd_offset;
+                cp.bck_offset = dw.bck_offset;
+            }
+            masked_arg = masked.as_ref().map(|(comp, mask_type)| MaskedCompound {
+                comp,
+                seg_mask: &mut seg_mask,
+                wedge,
+                bsize,
+                mask_type: *mask_type,
+            });
+        }
+        enc_make_inter_predictor(
+            SrcPlanes::Hbd(&refs[i].0.buf),
+            refs[i].0.origin,
+            refs[i].0.stride,
+            DstPlane::Hbd(&mut *y_out),
+            y_stride,
+            &mut conv_buf,
+            org_y as i32,
+            org_x as i32,
+            DspMv {
+                x: mvs[i].x,
+                y: mvs[i].y,
+            },
+            &sf,
+            &cp,
+            interp_filters,
+            masked_arg,
+            Some(&mut *wms[i]),
+            geom,
+            bw,
+            bh,
+            &edges,
+            0,
+            0,
+            0,
+            bd,
+            false,
+            iw,
+        )
+        .expect("the hbd luma compound leaf takes a u16 plane into a u16 destination");
+    }
+
+    if !refs.iter().all(|(_, c)| c.is_some()) {
+        return;
+    }
+    let (cw, chh) = (bw / 2, bh / 2);
+    let uv_floor = cw >= 8 && chh >= 8;
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
+    for (plane, dst) in [(1usize, &mut *u_out), (2, &mut *v_out)] {
+        for (i, &iw) in is_wm.iter().enumerate() {
+            let (uref, vref) = refs[i].1.expect("the all-chroma check above");
+            let r = if plane == 1 { uref } else { vref };
+            let mut cp = ConvolveParams::no_round(false, 64, true, bd);
+            let mut masked_arg = None;
+            if i == 1 {
+                cp.do_average = true;
+                if let Some(dw) = distwtd {
+                    cp.use_jnt_comp_avg = dw.use_dist_wtd_comp_avg != 0;
+                    cp.fwd_offset = dw.fwd_offset;
+                    cp.bck_offset = dw.bck_offset;
+                }
+                masked_arg = masked.as_ref().map(|(comp, mask_type)| MaskedCompound {
+                    comp,
+                    seg_mask: &mut seg_mask,
+                    wedge,
+                    bsize,
+                    mask_type: *mask_type,
+                });
+            }
+            enc_make_inter_predictor(
+                SrcPlanes::Hbd(&r.buf),
+                r.origin,
+                r.stride,
+                DstPlane::Hbd(&mut *dst),
+                uv_stride,
+                &mut conv_buf,
+                cy as i32,
+                cx as i32,
+                DspMv {
+                    x: mvs[i].x,
+                    y: mvs[i].y,
+                },
+                &sf,
+                &cp,
+                interp_filters,
+                masked_arg,
+                Some(&mut *wms[i]),
+                geom,
+                cw,
+                chh,
+                &edges,
+                plane,
+                1,
+                1,
+                bd,
+                false,
+                iw && uv_floor,
+            )
+            .expect("the hbd chroma compound leaf takes a u16 plane into a u16 destination");
+        }
+    }
+}
+
 /// One mode-info cell of the parent 8x8, as C's `xd->mi[row * mi_stride + col]`
 /// hands it to `inter_chroma_4xn_pred`.
 #[derive(Clone, Copy, Debug, Default)]

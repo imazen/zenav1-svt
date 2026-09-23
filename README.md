@@ -134,7 +134,7 @@ content. Both claims are measured below; neither is inferred from the other.
 | Motion estimation / MVP | **Validated** | `inter_me_join_gate.sh`, `fctx_gate.sh` |
 | Sub-8 inter chroma (`inter_chroma_4xn_pred`) | **Supported** | Ported 2026-09-10; covered by the inter recon gates, no isolating gate |
 | Compound / bipred | **Validated** | two-reference prediction wired end to end (`predict_inter_yuv_compound`, `allow_bipred`, skip-mode signalling); compound blocks code where C enables them and the video gates' decoder comparison covers them |
-| Masked compound (diffwtd/wedge) / inter-intra | **Not supported** | DSP kernels ported; the search hooks are no-ops, so those candidates are strictly dominated in RD and never coded |
+| Masked compound (diffwtd/wedge) / inter-intra | **Validated** | Search + prediction + packing wired end to end (`inter_intra_search`, `calc_pred_masked_compound`, `search_compound_diff_wedge`, `predict_inter_yuv_compound_md` incl. per-ref warp + distwtd, `IiPreds` precompute, IFS/MDS3 rebuild). `tools/inter_intra_masked_census.sh` — 44 inter-intra and 138 compound coded blocks (incl. COMPOUND_WEDGE + COMPOUND_DIFFWTD) over 3 real-video cells at preset 0, every frame recon-identical to `aomdec`; the video selfcheck matrices cover them on every preset |
 | Hierarchical (random-access) GOP | **Not supported** | `generate_rps_info` translates 4 of C's 8 branches; `port_picstruct_ra` ported, not connected to the reference-buffer table |
 | Temporal filtering | **Not supported** | `port_temporal_filtering.rs` ported (78 of 80 items), becomes live only with an RA GOP |
 | Scene change / adaptive GOP | **Not supported** | `port_picstruct.rs`, ~85 of 119 items unwired |

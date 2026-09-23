@@ -65,8 +65,8 @@ detail, and they are regenerated or gated rather than narrated.
   C and must not be "fixed".
 - Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
   scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
-- Open work: hierarchical (random-access) GOPs, masked compound and
-  inter-intra search, temporal filtering, and VBR/CBR rate control. The
+- Open work: hierarchical (random-access) GOPs, temporal filtering, and
+  VBR/CBR rate control. The
   MSRV floor is 1.98, matching what the aarch64 dotprod
   intrinsics (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 

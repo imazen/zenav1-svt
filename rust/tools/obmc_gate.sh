@@ -55,11 +55,22 @@ fi
 # went from "byte-identical to dav1d with the unrefined MV" to the same thing
 # with C's real search in the loop. A count that moves with no named cause is a
 # regression; this one has one.
+#
+# THE COUNTS MOVED AGAIN 2026-09-20 (168/92/14/56 -> 138/76/12/62) when masked
+# compound and inter-intra landed on the inter MD path: C's real competitors
+# now exist at preset 0 (`inter_compound_mode` 3/4, `inter_intra_level` 2), so
+# blocks the port used to hand OBMC by default now go to bipred/wedge/diffwtd
+# and inter-intra — vidyo3-256 gains 42 new-mode coded blocks against the
+# 30-block OBMC drop. C's own counts on these cells (292/230/77) are NOT the
+# contract — the port's partition tree diverges at p0 (314 vs 959 coded blocks
+# on vidyo3-256; the path is decoder-verified, not byte-identical) — and the
+# port still spends a LARGER share of its blocks on OBMC than C does. The
+# load-bearing column, recon == dav1d, holds 2/2 on every cell.
 CELLS=(
-    "vidyo3 256x256 0 168"
-    "vidyo1 256x256 0 92"
-    "johnny 256x256 0 14"
-    "vidyo3 128x128 0 56"
+    "vidyo3 256x256 0 138"
+    "vidyo1 256x256 0 76"
+    "johnny 256x256 0 12"
+    "vidyo3 128x128 0 62"
     "vidyo3 256x256 2 0"
     "vidyo1 256x256 2 0"
 )

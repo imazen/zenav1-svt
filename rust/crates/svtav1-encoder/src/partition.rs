@@ -2173,6 +2173,13 @@ pub(crate) fn funnel_block_decision(
                 comp_group_idx: i.comp_group_idx,
                 compound_idx: i.compound_idx,
                 interinter_comp_type: i.interinter_comp_type,
+                interinter_mask_type: i.interinter_mask_type,
+                interinter_wedge_index: i.interinter_wedge_index,
+                interinter_wedge_sign: i.interinter_wedge_sign,
+                is_interintra_used: i.is_interintra_used,
+                interintra_mode: i.interintra_mode,
+                use_wedge_interintra: i.use_wedge_interintra,
+                interintra_wedge_index: i.interintra_wedge_index,
                 wm_params: i.wm_params,
                 wm_params_l1: i.wm_params_l1,
             })
@@ -3260,6 +3267,13 @@ fn encode_single_block(
                 comp_group_idx: 0,
                 compound_idx: 0,
                 interinter_comp_type: 0,
+                interinter_mask_type: 0,
+                interinter_wedge_index: 0,
+                interinter_wedge_sign: false,
+                is_interintra_used: false,
+                interintra_mode: 0,
+                use_wedge_interintra: false,
+                interintra_wedge_index: 0,
                 wm_params: Default::default(),
                 wm_params_l1: Default::default(),
             })
@@ -3722,6 +3736,21 @@ pub struct InterDecision {
     pub comp_group_idx: u8,
     pub compound_idx: u8,
     pub interinter_comp_type: u8,
+    /// C `block_mi.interinter_comp.mask_type` / `wedge_index` /
+    /// `wedge_sign` — the masked-compound mask the winner's
+    /// `search_compound_diff_wedge` picked. `mask_type` is a coded symbol;
+    /// the wedge pair is coded syntax and the DIFFWTD rebuild seed.
+    pub interinter_mask_type: u8,
+    pub interinter_wedge_index: i8,
+    pub interinter_wedge_sign: bool,
+    /// C `block_mi.is_interintra_used` / `interintra_mode` /
+    /// `use_wedge_interintra` / `interintra_wedge_index` — the inter-intra
+    /// blend the winner's `inter_intra_search` picked. The committed
+    /// reconstruction re-runs the intra predictor and blends with these.
+    pub is_interintra_used: bool,
+    pub interintra_mode: u8,
+    pub use_wedge_interintra: bool,
+    pub interintra_wedge_index: i8,
     /// C `cand->wm_params_l0` — the local-warp affine model. For a GLOBALMV /
     /// GLOBAL_GLOBALMV leaf it is reference 0's GLOBAL model. Carried on the
     /// DECISION because the bd10 level re-encode has to rebuild this leaf's

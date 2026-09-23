@@ -3,11 +3,10 @@
 # Counts are deliberately NOT pinned -- they are not portable across hosts.
 # For information only, this host reported:
 #   clippy::assertions_on_constants 1
-#   clippy::assign_op_pattern 1
 #   clippy::bool_assert_comparison 2
-#   clippy::chunks_exact_to_as_chunks 2
-#   clippy::collapsible_if 2
-#   clippy::doc_lazy_continuation 4
+#   clippy::chunks_exact_to_as_chunks 4
+#   clippy::collapsible_if 4
+#   clippy::doc_lazy_continuation 5
 #   clippy::doc_overindented_list_items 1
 #   clippy::drop_non_drop 1
 #   clippy::empty_line_after_doc_comments 2
@@ -28,12 +27,11 @@
 #   clippy::redundant_slicing 1
 #   clippy::too_many_arguments 2
 #   clippy::type_complexity 3
-#   clippy::unnecessary_cast 3
+#   clippy::unnecessary_cast 5
 #   clippy::unnecessary_map_or 1
 #   clippy::useless_conversion 1
-# Total: 47 occurrences across 29 kinds.
+# Total: 53 occurrences across 28 kinds.
 clippy::assertions_on_constants
-clippy::assign_op_pattern
 clippy::bool_assert_comparison
 clippy::chunks_exact_to_as_chunks
 clippy::collapsible_if

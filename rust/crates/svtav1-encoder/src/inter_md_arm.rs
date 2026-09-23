@@ -30,38 +30,8 @@
 //! injector as OFF, and each one is a separate unported search rather than a
 //! shortcut in the composition:
 //!
-//! * `inter_comp_ctrls` / bipred — C's `ref_frame_type_arr` on these frames
-//!   is `[LAST, BWDREF, LAST_BWD]` with `reference_select = 1`
-//!   (`SVT_INJCFG_OUT`, 2026-09-02). This module now carries the two SINGLE
-//!   entries and DROPS `LAST_BWD`, and it hands the injector
-//!   `reference_mode_is_single = true` so `allow_bipred` is false.
-//!   **Those two suppressions are ONE missing feature, not two choices:**
-//!   dropping the compound entry alone would still let
-//!   `inject_new_candidates` build a `NEW_NEWMV` out of C's BI_PRED ME
-//!   candidate — which exists, measured `dir=2` on `gradient 64x64 q40 p8`
-//!   — and the assertion below would then refuse a candidate C really does
-//!   inject.
-//!   **And on the inter campaign's 96-cell grid it is worth ZERO coded
-//!   blocks.** MEASURED 2026-09-02 (`tools/inter_cinter_census.sh`, plan
-//!   §1z¹⁶): across 340 coded inter blocks C codes `rf[1] != NONE` on
-//!   none of them, on the 40 cells that already match AND on the 55 that
-//!   do not. Unsuppressing compound is still the right work for a grid
-//!   that reaches it; it is not the next byte.
-//!   The PREDICTION is not the obstacle:
-//!   `svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1` takes an
-//!   `mvs` SLICE and runs the `jnt_convolve` compound path whenever it has
-//!   two (`port_pd_pred.rs:240`); it is [`crate::inter_pred_arm`]'s ADAPTER
-//!   that narrows it to one MV. Unsuppressing bipred therefore means
-//!   widening that adapter, plus the `interinter_comp_type` / `compound_idx`
-//!   half of the rate — a separate chunk.
-//! * `wm_ctrls` (warped motion) and `obmc_ctrls` — the DSP is ported
-//!   (`svtav1_dsp::obmc`, the warp family) and the PREDICTION drivers are
-//!   not wired, so a warped or OBMC candidate could not be predicted. The
-//!   injector would produce them; the ctrls are off and the module ASSERTS
-//!   none arrive rather than dropping them silently.
-//! * `inter_intra_comp_ctrls` — same shape.
 //! * `unipred3x3_injection`, `bipred3x3_ctrls` — the 3x3 refinements are
-//!   unported. `inject_new_pme` / `updated_enable_pme` are now ON:
+//!   unported. `inject_new_pme` / `updated_enable_pme` are ON:
 //!   [`crate::inter_search_arm`] runs C's `build_single_ref_mvp_array` ->
 //!   `read_refine_me_mvs` -> `pme_search` chain per reference.
 //! * `md_nsq_motion_search` — not called in THIS module, and **that no longer
@@ -92,6 +62,19 @@
 //!   (`product_coding_loop.c:2860`) has no counterpart. Unreachable at the
 //!   presets measured (`shapes_for_size` returns `N_ONLY` at size 4) and
 //!   unported, not proven inert.
+//!
+//! The compound/inter-intra entries that USED to head this list have
+//! landed: `ref_frame_type_arr` carries C's compound entries (`LAST_BWD`,
+//! `LAST_LAST2`), `reference_mode_is_select` reads the real picture
+//! decision, and `inj_comp_modes` injects C's DIST/DIFF0/WEDGE variants
+//! with `calc_pred_masked_compound` + `search_compound_diff_wedge` behind
+//! [`WarpHooks`]. [`crate::inter_pred_arm::predict_inter_yuv_compound_md`]
+//! (and the `_hbd` twin) are C's full `av1_inter_prediction` compound arm
+//! — per-reference warp, `dist_wtd_comp_weight_assign` offsets on ref 1's
+//! convolve, and the masked blend through the private CONV_BUF — and
+//! `inter_intra_search` plus the `IiPreds` precompute reproduce
+//! `precompute_intra_pred_for_inter_intra` + `inter_intra_prediction` on
+//! every path that predicts (injection, IFS, MDS3, winner rebuild).
 //!
 //! `near_count_ctrls` WAS on that list, and its entry was WRONG. It read "C
 //! caps the NEAR DRL loop to ZERO unless this control is enabled (it REPLACES
@@ -297,6 +280,33 @@ pub struct InterMdFrame<'a> {
     /// The injector reads four of its fields; see the module header for what
     /// each one does here and which are inert on this envelope.
     pub cand_reduction: crate::port_enc_mode_config::encdec::CandReductionCtrls,
+    /// C `pcs->inter_intra_level` (`svt_aom_get_inter_intra_level`,
+    /// enc_mode_config.c:8819) — the level `set_inter_intra_ctrls`
+    /// (enc_mode_config.c:5385) expands into the injector's
+    /// `inter_intra_comp_ctrls`. 0 = off; 2 is the only level the shipped
+    /// presets reach (wedge search on NSQ shapes only, no RD model).
+    pub inter_intra_level: u8,
+    /// C `pcs->hbd_md` as the candidate injector sees it — the SEARCH
+    /// depth of the inter-intra and masked-compound hooks
+    /// (`inter_intra_search`, mode_decision.c:333;
+    /// `calc_pred_masked_compound`, enc_inter_prediction.c:3538, which
+    /// remaps EB_DUAL_BIT_MD to 8-bit). On the shipped ladder
+    /// `enable_hbd_mode_decision` is `DEFAULT`, which maps to
+    /// `EB_DUAL_BIT_MD` on I-slices and `EB_8_BIT_MD` on inter frames
+    /// (enc_handle.c:4518) — so this is 0 everywhere the inter arm runs.
+    /// The field is carried anyway: the hook bodies read it the way C
+    /// reads `ctx->hbd_md`, so the day a level arms 10-bit MD the wiring
+    /// is already the transcription.
+    pub hbd_md: u8,
+    /// The `smooth_interintra_mask` tables — `inter_intra_prediction`'s
+    /// per-(bsize, mode) blend weights (`init_ii_masks`,
+    /// inter_prediction.c:2294). Frame-owned: C keeps them on the MD
+    /// context; the port builds them once per inter frame here.
+    pub ii_masks: svtav1_dsp::port_interintra::IiMasks,
+    /// The `wedge_params` master tables (`av1_init_wedge_masks`,
+    /// reconinter.c) — read by the inter-intra wedge search, the
+    /// masked-compound wedge pick, and the predict-time WEDGE blend.
+    pub wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks,
 }
 
 /// The order-hint half of [`InterFrame`], owned so the borrow is local.
@@ -426,6 +436,24 @@ pub struct InterCandOut {
     pub comp_group_idx: u8,
     pub compound_idx: u8,
     pub interinter_comp_type: u8,
+    /// C `block_mi.interinter_comp.mask_type` / `wedge_index` /
+    /// `wedge_sign` — the mask `search_compound_diff_wedge` selected for a
+    /// `COMPOUND_DIFFWTD` / `COMPOUND_WEDGE` candidate. The rebuild and the
+    /// writer both need them: the DIFFWTD mask is re-derived from the two
+    /// convolution buffers at predict time while `mask_type` is coded, and
+    /// the WEDGE pair IS the coded syntax.
+    pub interinter_mask_type: u8,
+    pub interinter_wedge_index: i8,
+    pub interinter_wedge_sign: bool,
+    /// C `block_mi.is_interintra_used` / `interintra_mode` /
+    /// `use_wedge_interintra` / `interintra_wedge_index` — the
+    /// `inter_intra_search` result for an inter-intra candidate. `ref_frame[1]
+    /// == INTRA_FRAME` is the same fact (`inj_non_simple_modes` stamps both);
+    /// the fields are what the intra-predictor blend and the writer read.
+    pub is_interintra_used: bool,
+    pub interintra_mode: u8,
+    pub use_wedge_interintra: bool,
+    pub interintra_wedge_index: i8,
     /// C `cand->skip_mode_allowed` — the injector's NEAREST_NEARESTMV arm
     /// sets it when the candidate's ref pair IS the frame's skip-mode pair
     /// (mode_decision.c:1590-1595); `svt_aom_full_cost` arbitrates the
@@ -465,6 +493,68 @@ pub struct InterBlockCtx<'a> {
     /// every square block's own search and read by the NSQ shapes that
     /// follow it at the same node.
     pub sq_me: Option<&'a mut crate::inter_search_arm::SqMeState>,
+    /// C `ctx->shape == PART_N` — the pick between
+    /// `inter_intra_comp_ctrls.wedge_mode_sq` and `wedge_mode_nsq`
+    /// (mode_decision.c:468). The funnel's `ibc_gate.is_part_n`.
+    pub is_part_n: bool,
+    /// The block-local 10-bit luma source (`bw * bh` u16s, stride `bw`)
+    /// — `LeafBd10::blk_y_src10`. The `hbd_md` inter-intra and masked-
+    /// compound searches score against it. Empty when the leaf's bd10
+    /// plumbing is off — which is every shipped inter config today,
+    /// since `hbd_md` is 0 there.
+    pub y_src10: &'a [u16],
+    /// The block's precomputed inter-intra intra predictions — C's
+    /// `ctx->intrapred_buf` (`precompute_intra_pred_for_inter_intra`,
+    /// enc_intra_prediction.c:657). `None` when the block is not
+    /// inter-intra eligible; the `inter_intra_search` hook refuses in
+    /// that case rather than blending an empty table. A borrow: the
+    /// buffers live on `FunnelCtx::ii_preds` so the IFS/MDS3 rebuild
+    /// reaches them after injection returns (C's `ctx->intrapred_buf`
+    /// likewise outlives `generate_md_stage_0_cand`).
+    pub ii: Option<&'a IiPreds>,
+    /// C `full_lambda_md[EB_8_BIT_MD]` for this superblock — the lambda
+    /// `inter_intra_search`'s model-RD arm and the wedge/mask searches'
+    /// `use_rate` arms price with at the 8-bit (or DUAL-remapped) search
+    /// depth.
+    pub full_lambda8: u32,
+    /// C `full_lambda_md[EB_10_BIT_MD]` — read only when the search depth
+    /// is 10 bits (`hbd_md != 0` for inter-intra, `hbd_md == 1` for the
+    /// masked-compound prep).
+    pub full_lambda10: u32,
+    /// C `dequants->y_dequant_qtx[base_q_idx][1]` — the AC dequant
+    /// `model_rd_*` divides by inside the `use_rate`/`use_rd_model`
+    /// arms. Inert at every level the shipped ladder reaches (both
+    /// flags are 0 below level 1) but plumbed faithfully.
+    pub quantizer: i16,
+}
+
+/// The inter-intra intra predictions for one block — the port's
+/// `ctx->intrapred_buf[INTERINTRA_MODES]` (`precompute_intra_pred_for_
+/// inter_intra`, enc_intra_prediction.c:657).
+///
+/// C precomputes LUMA only and derives chroma inside
+/// `inter_intra_prediction` on every call (enc_inter_prediction.c:2217,
+/// the `use_precomputed_intra && !plane` gate). The port computes all
+/// three planes up front: the recon neighbours the predictors read
+/// cannot change between this block's injection and its arbitration, so
+/// the values are the same — and the blend tail lives in
+/// [`predict_and_price`], which cannot reach the funnel's `predict_unit`.
+///
+/// Each plane buffer is `INTERINTRA_MODES` (4) contiguous `w * h`
+/// blocks — `buf[mode * w * h ..]`; the chroma planes use the block's
+/// `get_plane_block_size(bsize, 1, 1)` dims.
+pub struct IiPreds {
+    /// `intrapred_buf[j]` luma, 8-bit MD domain — `4 * bw * bh`.
+    pub luma: Vec<u8>,
+    /// The chroma intra predictions, `4 * cw * chh` each — empty when the
+    /// block has no chroma.
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+    /// The 10-bit twins, populated only when the leaf's bd10 plumbing is
+    /// on (C's `use_precomputed_intra` 16-bit arm). Empty otherwise.
+    pub luma16: Vec<u16>,
+    pub u16: Vec<u16>,
+    pub v16: Vec<u16>,
 }
 
 /// C `BlockModeInfo::mode` as a `PredictionMode`.
@@ -663,19 +753,412 @@ impl WarpRefineBlock {
     }
 }
 
-/// The injector's [`InjectHooks`] with the WARP derivation wired.
+/// `ctx->cmp_store`'s OUTPUT — the masked-compound preparation
+/// `calc_pred_masked_compound` fills and `search_compound_diff_wedge`
+/// reads (C's `ctx->pred0`/`pred1`/`residual1`/`diff10`).
 ///
-/// Every other hook is the `NoRefinement` answer, and each is that way for a
-/// stated reason rather than by omission — see the impl.
+/// C's store is a four-entry MV-keyed cache per list
+/// (`port_compound_prep::cmp_store_lookup` is that policy); the
+/// predictors are deterministic per (ref, MV), so this port keeps only
+/// the live pair's buffers and pays a second uniprediction on a repeated
+/// MV rather than holding eight slots of scratch per block. The search
+/// output is identical either way.
+#[derive(Default)]
+struct CmpStore {
+    /// The 8-bit domain buffers — used whenever the remap
+    /// (`hbd_md == EB_DUAL_BIT_MD ? 8 : hbd_md`, enc_inter_prediction.c:3538)
+    /// lands on 8 bits, which is every reachable case.
+    pred0_8: Vec<u8>,
+    pred1_8: Vec<u8>,
+    residual1_8: Vec<i16>,
+    diff10_8: Vec<i16>,
+    /// The `hbd_md == EB_10_BIT_MD` twins — wired for faithfulness, dead
+    /// on the shipped ladder (`hbd_md` is 0 on inter frames).
+    pred0_16: Vec<u16>,
+    pred1_16: Vec<u16>,
+    residual1_16: Vec<i16>,
+    diff10_16: Vec<i16>,
+    /// The post-remap search depth the preparation ran at; `None` until
+    /// `calc_pred_masked_compound` has filled the store.
+    hbd: Option<bool>,
+}
+
+/// The injector's [`InjectHooks`] with the WARP derivation, the
+/// inter-intra search, and the masked-compound preparation/pick wired.
+///
+/// `blk` is the block-scoped warp-refinement state; `f`/`b` carry the
+/// frame and block inputs the three pixel searches read; `ii_ctrls` and
+/// `comp_ctrls` are the SAME control objects `InjectCtx` holds (C's
+/// `ctx->inter_intra_comp_ctrls` / `inter_comp_ctrls`); `cmp` is the
+/// `calc_pred_masked_compound` → `search_compound_diff_wedge` buffer
+/// bridge.
 struct WarpHooks<'a> {
     blk: &'a WarpRefineBlock,
+    f: &'a InterMdFrame<'a>,
+    b: &'a InterBlockCtx<'a>,
+    ii_ctrls: crate::port_md::inject::InterIntraCompCtrls,
+    comp_ctrls: crate::port_md::inject::InterCompCtrls,
+    cmp: CmpStore,
+}
+
+/// The injector's `MotionMode` (port_md::predicates) as the prediction/
+/// rate crate's (`port_entropy_inter::modes`) — same discriminants.
+fn map_mm(m: crate::port_md::predicates::MotionMode) -> MotionMode {
+    match m {
+        crate::port_md::predicates::MotionMode::SimpleTranslation => MotionMode::SimpleTranslation,
+        crate::port_md::predicates::MotionMode::ObmcCausal => MotionMode::ObmcCausal,
+        crate::port_md::predicates::MotionMode::WarpedCausal => MotionMode::WarpedCausal,
+    }
+}
+
+/// The single-reference luma prediction C's `svt_aom_inter_prediction`
+/// makes for a unipred candidate at the 8-bit domain — the warp leaf when
+/// `is_wm`, the plain convolve otherwise, `interp_filters` 0.
+///
+/// This is what `inter_intra_search` blends against (mode_decision.c:357)
+/// and what `calc_pred_masked_compound` fills `pred0`/`pred1` with
+/// (:3579/:3630) — the `unipred_override` shape: no compound, no
+/// inter-intra, no OBMC.
+#[allow(clippy::too_many_arguments)]
+fn unipred_luma8(
+    p: &crate::picture::PaddedPlane,
+    mut wm: svtav1_types::motion::WarpedMotionParams,
+    is_wm: bool,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    dst: &mut [u8],
+) {
+    if is_wm {
+        crate::inter_pred_arm::predict_inter_yuv_warped(
+            (p, None),
+            &mut wm,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            mv,
+            0,
+            sb_size,
+            frame_w,
+            frame_h,
+            dst,
+            bw,
+            &mut [],
+            &mut [],
+            0,
+        );
+    } else {
+        crate::inter_pred_arm::predict_inter_luma(
+            p, org_x, org_y, bw, bh, mv, 0, sb_size, frame_w, frame_h, dst, bw,
+        );
+    }
+}
+
+/// [`unipred_luma8`] at true 10 bits — `predict_inter_leaf_hbd`'s luma-
+/// only form, for the `hbd_md` search domains.
+#[allow(clippy::too_many_arguments)]
+fn unipred_luma16(
+    p: &crate::picture::PaddedPlaneHbd,
+    motion_mode: MotionMode,
+    is_wm: bool,
+    wm: svtav1_types::motion::WarpedMotionParams,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    dst: &mut [u16],
+) {
+    crate::inter_pred_arm::predict_inter_leaf_hbd(
+        p,
+        None,
+        motion_mode,
+        is_wm,
+        wm,
+        org_x,
+        org_y,
+        bw,
+        bh,
+        mv,
+        0,
+        sb_size,
+        frame_w,
+        frame_h,
+        bit_depth,
+        dst,
+        bw,
+        &mut [],
+        &mut [],
+        0,
+    );
 }
 
 impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
-    /// Inter-intra is unported; the injector never asks (`enable_ii` reaches
-    /// this only through `is_interintra_allowed`, whose `ctrls.enabled` is
-    /// `Default::default()` == false on this arm).
-    fn inter_intra_search(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) {}
+    /// C `inter_intra_search` (mode_decision.c:326-484): the regular
+    /// inter prediction blended against each of the four
+    /// `intrapred_buf` modes, priced by SSE or the RD model, then the
+    /// `ii_wedge_mode` wedge search on the winner. The candidate keeps
+    /// the strict-`<` winners; `use_wedge_interintra` follows C's
+    /// mode-1/mode-2 rule exactly.
+    fn inter_intra_search(&mut self, cand: &mut crate::port_md::inject::InterCandidate) {
+        use svtav1_dsp::port_interintra::{
+            InterIntraMode, combine_interintra, combine_interintra_highbd,
+        };
+        use svtav1_dsp::port_masked_compound::{
+            highbd_sse, highbd_subtract_block, sse, subtract_block,
+        };
+        use svtav1_dsp::port_wedge_search::{SearchCtx, pick_wedge_fixed_sign};
+
+        let f = self.f;
+        let b = self.b;
+        let Some(ii) = b.ii.as_ref() else {
+            // `precompute_intra_pred_for_inter_intra` never ran for this
+            // block — the funnel's gate and the injector's
+            // `is_interintra_allowed` should agree, but refuse rather
+            // than blend an empty table.
+            debug_assert!(
+                false,
+                "inter_intra_search without precomputed intrapred_buf"
+            );
+            return;
+        };
+        // C reads `ctx->hbd_md` DIRECTLY here (mode_decision.c:333) —
+        // no EB_DUAL_BIT_MD remap — so a DUAL block searches at 10 bits.
+        let hbd = f.hbd_md != 0;
+        let full_lambda = if hbd { b.full_lambda10 } else { b.full_lambda8 };
+        let (bw, bh) = (b.bw, b.bh);
+        let n = bw * bh;
+        let bsize = svtav1_types::block::BlockSize::from_u8(b.bsize)
+            .expect("an injected inter block must have a real BlockSize");
+        let padded = f.padded_by_ref[cand.ref_frame[0].max(0) as usize].unwrap_or_else(|| {
+            panic!(
+                "an inter candidate names reference {} with no DPB picture",
+                cand.ref_frame[0]
+            )
+        });
+        let mm = map_mm(cand.motion_mode);
+        let is_wm = crate::inter_pred_arm::inter_pred_uses_warp(
+            mm,
+            cand.mode as u8,
+            bw,
+            bh,
+            &cand.wm_params_l0,
+        );
+        // C `svt_aom_inter_prediction` into `tmp_buf` — the plain
+        // single-reference prediction (`interp_filters` 0,
+        // `is_interintra_used` 0 on the copy the injector hands us).
+        let mut inter8: Vec<u8> = Vec::new();
+        let mut inter16: Vec<u16> = Vec::new();
+        if hbd {
+            inter16 = alloc::vec![0u16; n];
+            let h = padded
+                .hbd
+                .as_ref()
+                .expect("hbd_md inter-intra search needs the 10-bit DPB twin");
+            unipred_luma16(
+                &h.y,
+                mm,
+                is_wm,
+                cand.wm_params_l0,
+                b.org_x,
+                b.org_y,
+                bw,
+                bh,
+                cand.mv[0],
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                f.bit_depth,
+                &mut inter16,
+            );
+        } else {
+            inter8 = alloc::vec![0u8; n];
+            unipred_luma8(
+                &padded.y,
+                cand.wm_params_l0,
+                is_wm,
+                b.org_x,
+                b.org_y,
+                bw,
+                bh,
+                cand.mv[0],
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                &mut inter8,
+            );
+        }
+        let src8_off = b.org_y * f.src_stride + b.org_x;
+        let bsize_group =
+            crate::port_entropy_inter::modes::SIZE_GROUP_LOOKUP[bsize as usize] as usize;
+        // The four-way mode loop (mode_decision.c:382-461): blend, score,
+        // keep the strict-`<` best. `best_interintra_rd` is INT64_MAX
+        // init, so the first mode always lands.
+        let mut best_rd = i64::MAX;
+        let mut best_mode = svtav1_dsp::port_interintra::INTERINTRA_MODES as u8;
+        let mut blend: Vec<u8> = Vec::new();
+        let mut blend16: Vec<u16> = Vec::new();
+        if hbd {
+            blend16 = alloc::vec![0u16; n];
+        } else {
+            blend = alloc::vec![0u8; n];
+        }
+        for (j, mode) in InterIntraMode::ALL.iter().enumerate() {
+            let rmode = i64::from(f.fac.inter_intra_mode[bsize_group][j]);
+            if hbd {
+                combine_interintra_highbd(
+                    &f.ii_masks,
+                    &f.wedge_masks,
+                    *mode,
+                    false,
+                    0,
+                    0,
+                    bsize as usize,
+                    bsize as usize,
+                    &mut blend16,
+                    bw,
+                    &inter16,
+                    bw,
+                    &ii.luma16[j * n..],
+                    bw,
+                );
+            } else {
+                combine_interintra(
+                    &f.ii_masks,
+                    &f.wedge_masks,
+                    *mode,
+                    false,
+                    0,
+                    0,
+                    bsize as usize,
+                    bsize as usize,
+                    &mut blend,
+                    bw,
+                    &inter8,
+                    bw,
+                    &ii.luma[j * n..],
+                    bw,
+                );
+            }
+            let rd: i64 = if self.ii_ctrls.use_rd_model {
+                // `src_stride` is consumed by the LIVE arm only — the
+                // 10-bit source is `blk_y_src10`, a block-local `bw`-
+                // strided canvas (C's `input_frame16bit` crop), while the
+                // 8-bit source is the frame-strided `enhanced_pic`.
+                let (rate_sum, dist_sum) = svtav1_dsp::port_model_rd::model_rd_for_sb_with_curvfit(
+                    bsize,
+                    bw,
+                    bh,
+                    &f.src[src8_off..],
+                    if hbd { bw } else { f.src_stride },
+                    b.y_src10,
+                    &blend,
+                    bw,
+                    &blend16,
+                    0,
+                    0,
+                    hbd,
+                    b.quantizer,
+                    full_lambda,
+                    None,
+                );
+                crate::port_rd_cost::rdcost(
+                    u64::from(full_lambda),
+                    (i64::from(rate_sum) + rmode).max(0) as u64,
+                    dist_sum.max(0) as u64,
+                ) as i64
+            } else if hbd {
+                highbd_sse(b.y_src10, bw, &blend16, bw, bw, bh) as i64
+            } else {
+                sse(&f.src[src8_off..], f.src_stride, &blend, bw, bw, bh) as i64
+            };
+            if rd < best_rd {
+                best_rd = rd;
+                best_mode = j as u8;
+                cand.interintra_mode = j as u8;
+            }
+        }
+        // The wedge arm (mode_decision.c:463-484): residuals against the
+        // SMOOTH-winner's intra pred and the same inter pred, then
+        // `pick_wedge_fixed_sign` at sign 0 (`INTERINTRA_WEDGE_SIGN`).
+        let ii_wedge_mode = if b.is_part_n {
+            self.ii_ctrls.wedge_mode_sq
+        } else {
+            self.ii_ctrls.wedge_mode_nsq
+        };
+        let mut best_rd_wedge = i64::MAX;
+        if ii_wedge_mode != 0 {
+            let mut residual1 = alloc::vec![0i16; n];
+            let mut diff10 = alloc::vec![0i16; n];
+            if hbd {
+                highbd_subtract_block(bh, bw, &mut residual1, bw, b.y_src10, bw, &inter16, bw);
+                highbd_subtract_block(
+                    bh,
+                    bw,
+                    &mut diff10,
+                    bw,
+                    &inter16,
+                    bw,
+                    &ii.luma16[best_mode as usize * n..],
+                    bw,
+                );
+            } else {
+                subtract_block(
+                    bh,
+                    bw,
+                    &mut residual1,
+                    bw,
+                    &f.src[src8_off..],
+                    f.src_stride,
+                    &inter8,
+                    bw,
+                );
+                subtract_block(
+                    bh,
+                    bw,
+                    &mut diff10,
+                    bw,
+                    &inter8,
+                    bw,
+                    &ii.luma[best_mode as usize * n..],
+                    bw,
+                );
+            }
+            let ctx = SearchCtx {
+                hbd,
+                full_lambda,
+                // `pick_wedge_fixed_sign` reads
+                // `inter_intra_comp_ctrls.use_rd_model` on this arm — see
+                // `SearchCtx::use_rate`'s doc.
+                use_rate: self.ii_ctrls.use_rd_model,
+                quantizer: b.quantizer,
+            };
+            let (rd_wedge, wedge_index) = pick_wedge_fixed_sign(
+                &f.wedge_masks,
+                &ctx,
+                bsize,
+                &residual1,
+                &diff10,
+                0,
+                &f.fac.wedge_idx[bsize as usize],
+            );
+            cand.interintra_wedge_index = wedge_index as i8;
+            best_rd_wedge = rd_wedge;
+        }
+        // C's exact rule (mode_decision.c:481-483): mode 1 always wedges;
+        // mode 2 wedges only when it beats the smooth winner.
+        cand.use_wedge_interintra = ii_wedge_mode == 1 || best_rd_wedge < best_rd;
+    }
 
     /// `svt_aom_wm_motion_refinement` at INJECTION time. Unreachable on this
     /// arm: `wm_ctrls.enabled` is forced false whenever `refine_level == 0`,
@@ -744,15 +1227,229 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
         true
     }
 
-    /// Compound is suppressed at the source (`allow_bipred` is false), so no
-    /// masked-compound candidate reaches these two.
-    fn calc_pred_masked_compound(
-        &mut self,
-        _cand: &crate::port_md::inject::InterCandidate,
-    ) -> bool {
+    /// C `svt_aom_calc_pred_masked_compound`
+    /// (enc_inter_prediction.c:3535-3703): the two unipred predictors
+    /// for the candidate's ref pair, the `pred0_to_pred1_mult` SAD early
+    /// exit, then `residual1 = src - pred1` and `diff10 = pred1 - pred0`
+    /// into the store `search_compound_diff_wedge` reads. A `true`
+    /// return is C's `exit_compound_prep`, which makes `inj_comp_modes`
+    /// inject nothing for the pair.
+    fn calc_pred_masked_compound(&mut self, cand: &crate::port_md::inject::InterCandidate) -> bool {
+        use svtav1_dsp::port_compound_prep::{
+            compound_residuals, compound_residuals_hbd, exit_compound_prep,
+        };
+
+        let f = self.f;
+        let b = self.b;
+        // C :3538 — EB_DUAL_BIT_MD remaps to the 8-bit domain; only
+        // EB_10_BIT_MD (1) prepares at true depth. On the shipped ladder
+        // `hbd_md` is 0, so the 8-bit arm is the live one.
+        let hbd = f.hbd_md == 1;
+        self.cmp.hbd = Some(hbd);
+        let (bw, bh) = (b.bw, b.bh);
+        let n = bw * bh;
+        // The unipred override (C :3573/:3624): `mode` is NEWMV, or
+        // GLOBALMV when the candidate is GLOBAL_GLOBALMV — which is what
+        // makes `inter_pred_uses_warp` fire on the model that candidate
+        // carries — and `interp_filters`/`is_interintra_used` forced 0.
+        let mode = if cand.mode == PredictionMode::GlobalGlobalMv {
+            PredictionMode::GlobalMv
+        } else {
+            PredictionMode::NewMv
+        };
+        let mm = map_mm(cand.motion_mode);
+        for i in 0..2 {
+            let rf = cand.ref_frame[i];
+            let padded = f.padded_by_ref[rf.max(0) as usize].unwrap_or_else(|| {
+                panic!("a compound candidate names reference {rf} with no DPB picture")
+            });
+            let wm = if i == 0 {
+                cand.wm_params_l0
+            } else {
+                cand.wm_params_l1
+            };
+            let is_wm = crate::inter_pred_arm::inter_pred_uses_warp(mm, mode as u8, bw, bh, &wm);
+            if hbd {
+                let h = padded
+                    .hbd
+                    .as_ref()
+                    .expect("hbd_md masked-compound prep needs the 10-bit DPB twin");
+                let dst = if i == 0 {
+                    self.cmp.pred0_16 = alloc::vec![0u16; n];
+                    &mut self.cmp.pred0_16
+                } else {
+                    self.cmp.pred1_16 = alloc::vec![0u16; n];
+                    &mut self.cmp.pred1_16
+                };
+                unipred_luma16(
+                    &h.y,
+                    mm,
+                    is_wm,
+                    wm,
+                    b.org_x,
+                    b.org_y,
+                    bw,
+                    bh,
+                    cand.mv[i],
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    f.bit_depth,
+                    dst,
+                );
+            } else {
+                let dst = if i == 0 {
+                    self.cmp.pred0_8 = alloc::vec![0u8; n];
+                    &mut self.cmp.pred0_8
+                } else {
+                    self.cmp.pred1_8 = alloc::vec![0u8; n];
+                    &mut self.cmp.pred1_8
+                };
+                unipred_luma8(
+                    &padded.y, wm, is_wm, b.org_x, b.org_y, bw, bh, cand.mv[i], f.sb_size,
+                    f.frame_w, f.frame_h, dst,
+                );
+            }
+        }
+        // C :3662-3671 — the per-pixel SAD budget: too-similar predictors
+        // have nothing for a mask to separate.
+        let dist = if hbd {
+            svtav1_dsp::hbd::highbd_sad_kernel(
+                &self.cmp.pred0_16,
+                bw,
+                &self.cmp.pred1_16,
+                bw,
+                bw,
+                bh,
+            )
+        } else {
+            svtav1_dsp::sad::sad(&self.cmp.pred0_8, bw, &self.cmp.pred1_8, bw, bw, bh)
+        };
+        if exit_compound_prep(dist, bw, bh, u32::from(self.comp_ctrls.pred0_to_pred1_mult)) {
+            return true;
+        }
+        // C :3675/:3696 — `residual1 = src - pred1`, `diff10 = pred1 -
+        // pred0`, at the SAME depth the predictors ran at.
+        if hbd {
+            self.cmp.residual1_16 = alloc::vec![0i16; n];
+            self.cmp.diff10_16 = alloc::vec![0i16; n];
+            compound_residuals_hbd(
+                &mut self.cmp.residual1_16,
+                &mut self.cmp.diff10_16,
+                b.y_src10,
+                bw,
+                &self.cmp.pred0_16,
+                &self.cmp.pred1_16,
+                bw,
+                bh,
+            );
+        } else {
+            self.cmp.residual1_8 = alloc::vec![0i16; n];
+            self.cmp.diff10_8 = alloc::vec![0i16; n];
+            let src8_off = b.org_y * f.src_stride + b.org_x;
+            compound_residuals(
+                &mut self.cmp.residual1_8,
+                &mut self.cmp.diff10_8,
+                &f.src[src8_off..],
+                f.src_stride,
+                &self.cmp.pred0_8,
+                &self.cmp.pred1_8,
+                bw,
+                bh,
+            );
+        }
         false
     }
-    fn search_compound_diff_wedge(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) {}
+
+    /// C `svt_aom_search_compound_diff_wedge`
+    /// (enc_inter_prediction.c:3705-3710) — `pick_interinter_mask` over
+    /// the store `calc_pred_masked_compound` just filled, writing the
+    /// CODED `wedge_index`/`wedge_sign` (WEDGE) or `mask_type`
+    /// (DIFFWTD) on the candidate.
+    fn search_compound_diff_wedge(&mut self, cand: &mut crate::port_md::inject::InterCandidate) {
+        use svtav1_dsp::port_masked_compound::CompoundType;
+        use svtav1_dsp::port_wedge_search::{PickedMask, SearchCtx, pick_interinter_mask};
+
+        let f = self.f;
+        let b = self.b;
+        let bsize = svtav1_types::block::BlockSize::from_u8(b.bsize)
+            .expect("an injected inter block must have a real BlockSize");
+        let comp_type = match cand.interinter_comp_type {
+            t if t == CompoundType::Wedge as u8 => CompoundType::Wedge,
+            t if t == CompoundType::DiffWtd as u8 => CompoundType::DiffWtd,
+            _ => return,
+        };
+        // The pair contract: `determine_compound_mode` reaches this only
+        // inside `inj_comp_modes`, after `calc_pred_masked_compound` ran
+        // for the same ref pair.
+        let Some(hbd) = self.cmp.hbd else {
+            debug_assert!(
+                false,
+                "search_compound_diff_wedge before calc_pred_masked_compound"
+            );
+            return;
+        };
+        let ctx = SearchCtx {
+            hbd,
+            full_lambda: if hbd { b.full_lambda10 } else { b.full_lambda8 },
+            use_rate: self.comp_ctrls.use_rate,
+            quantizer: b.quantizer,
+        };
+        let src8_off = b.org_y * f.src_stride + b.org_x;
+        let empty8: &[u8] = &[];
+        let empty16: &[u16] = &[];
+        let (src8, src16, src_stride, p0_8, p1_8, p0_16, p1_16, r1, d10) = if hbd {
+            (
+                empty8,
+                b.y_src10,
+                b.bw,
+                empty8,
+                empty8,
+                &self.cmp.pred0_16[..],
+                &self.cmp.pred1_16[..],
+                &self.cmp.residual1_16[..],
+                &self.cmp.diff10_16[..],
+            )
+        } else {
+            (
+                &f.src[src8_off..],
+                empty16,
+                f.src_stride,
+                &self.cmp.pred0_8[..],
+                &self.cmp.pred1_8[..],
+                empty16,
+                empty16,
+                &self.cmp.residual1_8[..],
+                &self.cmp.diff10_8[..],
+            )
+        };
+        match pick_interinter_mask(
+            &f.wedge_masks,
+            &ctx,
+            comp_type,
+            bsize,
+            src8,
+            src16,
+            src_stride,
+            p0_8,
+            p1_8,
+            p0_16,
+            p1_16,
+            r1,
+            d10,
+        ) {
+            Some(PickedMask::Wedge { sign, index }) => {
+                cand.interinter_wedge_sign = sign != 0;
+                cand.interinter_wedge_index = index as i8;
+            }
+            Some(PickedMask::Seg(mask_type)) => {
+                cand.interinter_mask_type = mask_type as u8;
+            }
+            // C `assert(0)`s on a non-masked type; `pick_interinter_mask`
+            // returns `None` there, which cannot happen on this dispatch.
+            None => {}
+        }
+    }
 }
 
 /// The block-setup half of C's `md_product_coding_loop`: the per-reference
@@ -1135,7 +1832,11 @@ pub fn build_inter_candidates(
         bheight: b.bh as u16,
         blk_org_x: b.org_x as u32,
         blk_org_y: b.org_y as u32,
-        shape_is_part_n: true,
+        // C `ctx->shape == PART_N` — the inter-intra ctrls pick their
+        // wedge mode between `wedge_mode_sq` and `wedge_mode_nsq` on it
+        // (mode_decision.c:468). It was hardcoded true, which sent every
+        // NSQ shape down the square path.
+        shape_is_part_n: b.is_part_n,
         // C `frm_hdr->reference_mode == SINGLE_REFERENCE` — the value
         // `allow_bipred` reads. `REFERENCE_SELECT` frames (every inter
         // frame of a complete mini-GOP) get bipred, which is what the
@@ -1210,7 +1911,20 @@ pub fn build_inter_candidates(
         )
         .map(crate::port_md::inject::InterCompCtrls::from)
         .unwrap_or_default(),
-        inter_intra_comp_ctrls: Default::default(),
+        // C `set_inter_intra_ctrls(ctx->inter_intra_comp_ctrls,
+        // pcs->inter_intra_level)` (mode_decision.c:420-470 / enc_mode_
+        // config.c:5385) — level 2 on the reachable ladder: enabled, no
+        // RD model, wedge search on NSQ shapes only.
+        inter_intra_comp_ctrls: crate::port_enc_mode_config::ctrls::set_inter_intra_ctrls(
+            f.inter_intra_level,
+        )
+        .map(|c| crate::port_md::inject::InterIntraCompCtrls {
+            enabled: c.enabled != 0,
+            use_rd_model: c.use_rd_model != 0,
+            wedge_mode_sq: c.wedge_mode_sq,
+            wedge_mode_nsq: c.wedge_mode_nsq,
+        })
+        .unwrap_or_default(),
         wm_ctrls: WmCtrls {
             enabled: wm_injection_wired,
             use_wm_for_mvp: wm_injection_wired && wmc.use_wm_for_mvp != 0,
@@ -1310,15 +2024,23 @@ pub fn build_inter_candidates(
         // light_pd1` runs the light refine, not the MDS1 warp lane).
         inject_inter_candidates_light_pd1(&inj, &mut cands, &mut log);
     } else {
-        let mut hooks = WarpHooks { blk: warp_out };
+        let mut hooks = WarpHooks {
+            blk: warp_out,
+            f,
+            b,
+            ii_ctrls: inj.inter_intra_comp_ctrls,
+            comp_ctrls: inj.inter_comp_ctrls,
+            cmp: CmpStore::default(),
+        };
         inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
     }
 
     let mut out = Vec::new();
     for c in cands.as_slice() {
-        // WARPED_CAUSAL is now predictable (`predict_inter_yuv_warped`); OBMC
-        // and inter-intra are not. Compound IS predictable (the two-MV arm of
-        // `av1_inter_prediction_light_pd1`). The assertion stays because a
+        // Every motion mode C's regular lane can stamp is predictable
+        // (`predict_inter_yuv_warped` / the OBMC blend tail), and
+        // inter-intra compounds are predicted by the `combine_interintra`
+        // tail in `predict_and_price`. The assertion stays because a
         // silently dropped candidate is a mode decision nobody made.
         assert!(
             matches!(
@@ -1326,7 +2048,7 @@ pub fn build_inter_candidates(
                 crate::port_md::predicates::MotionMode::SimpleTranslation
                     | crate::port_md::predicates::MotionMode::WarpedCausal
                     | crate::port_md::predicates::MotionMode::ObmcCausal
-            ) && !c.is_interintra_used,
+            ),
             "the inter candidate set produced a candidate this port cannot PREDICT \
              (motion_mode {:?}, interintra {}, ref_frame {:?}). Its control was supposed \
              to be off — see `inter_md_arm`'s header. Refusing rather than dropping it, \
@@ -1649,6 +2371,76 @@ pub(crate) fn obmc_nb_spans(
     out
 }
 
+/// `block_mi.interinter_comp` → the masked arm's `InterInterCompoundData`
+/// + the DIFFWTD `mask_type`, and `dist_wtd_comp_weight_assign`'s outputs
+/// for ref 1's convolve (enc_inter_prediction.c:3253-3264 — ref 0 is
+/// `bck_frame_index`, ref 1 `fwd_frame_index`, `order_idx` 0). Shared by
+/// the inject-time prediction and the IFS/MDS3 rebuild: C's driver runs
+/// this setup once per `svt_aom_inter_prediction` call, so each port call
+/// site re-derives it from the same candidate fields.
+#[allow(clippy::type_complexity)]
+pub(crate) fn compound_md_args(
+    f: &InterMdFrame<'_>,
+    ref_frame: [i8; 2],
+    interinter_comp_type: u8,
+    interinter_mask_type: u8,
+    interinter_wedge_index: i8,
+    interinter_wedge_sign: bool,
+    compound_idx: u8,
+) -> (
+    Option<(
+        svtav1_dsp::port_masked_blend::InterInterCompoundData,
+        svtav1_dsp::port_masked_compound::DiffwtdMaskType,
+    )>,
+    Option<svtav1_dsp::port_scale_factors::DistWtdWeights>,
+) {
+    use svtav1_dsp::port_masked_compound::{CompoundType, DiffwtdMaskType};
+    let is_compound = ref_frame[1] > crate::inter_mvp::INTRA_FRAME;
+    let comp_type = match interinter_comp_type {
+        0 => CompoundType::Average,
+        1 => CompoundType::DistWtd,
+        2 => CompoundType::Wedge,
+        3 => CompoundType::DiffWtd,
+        t => panic!("an injected compound candidate carries interinter_comp_type {t}"),
+    };
+    let masked =
+        is_compound && svtav1_dsp::port_masked_compound::is_masked_compound_type(comp_type);
+    let comp_data = masked.then(|| {
+        (
+            svtav1_dsp::port_masked_blend::InterInterCompoundData {
+                compound_type: comp_type,
+                wedge_index: interinter_wedge_index.max(0) as usize,
+                wedge_sign: usize::from(interinter_wedge_sign),
+            },
+            match interinter_mask_type {
+                0 => DiffwtdMaskType::D38,
+                1 => DiffwtdMaskType::D38Inv,
+                t => panic!("an injected DIFFWTD candidate carries mask_type {t}"),
+            },
+        )
+    });
+    // C's call is inside the `is_compound` arm — a single-reference or
+    // inter-intra candidate never reaches the weight assign.
+    let distwtd = is_compound.then(|| {
+        svtav1_dsp::port_scale_factors::dist_wtd_comp_weight_assign(
+            f.order_hint.enable_order_hint,
+            f.order_hint.order_hint_bits as i32,
+            f.order_hint.cur_order_hint,
+            f.order_hint.ref_order_hint[(ref_frame[0] - 1) as usize],
+            f.order_hint.ref_order_hint[(ref_frame[1] - 1) as usize],
+            i32::from(compound_idx),
+            0,
+            true,
+            svtav1_dsp::port_scale_factors::DistWtdWeights {
+                fwd_offset: 0,
+                bck_offset: 0,
+                use_dist_wtd_comp_avg: 0,
+            },
+        )
+    });
+    (comp_data, distwtd)
+}
+
 /// One injected candidate -> its prediction and C's MDS0 rate.
 fn predict_and_price(
     f: &InterMdFrame<'_>,
@@ -1701,9 +2493,12 @@ fn predict_and_price(
             c.ref_frame[0]
         )
     });
-    // C `has_second_ref(&mbmi->block_mi)` — a COMPOUND candidate's second
-    // reference binds the same way the first does.
-    let is_compound = c.ref_frame[1] > NONE_FRAME;
+    // C `has_second_ref(&mbmi->block_mi)` — spec 7.10.1: `rf[1] >
+    // INTRA_FRAME`. An INTER-INTRA candidate's `ref_frame[1]` is
+    // INTRA_FRAME (0), which is NOT a second reference — `> NONE_FRAME`
+    // would index `padded_by_ref[0]` for a picture that is not a
+    // reference at all.
+    let is_compound = c.ref_frame[1] > crate::inter_mvp::INTRA_FRAME;
     let padded1 = is_compound.then(|| {
         f.padded_by_ref[c.ref_frame[1].max(0) as usize].unwrap_or_else(|| {
             panic!(
@@ -1739,15 +2534,27 @@ fn predict_and_price(
             b.bh,
             &c.wm_params_l1,
         );
-    if let Some(p1) = padded1.filter(|_| is_wm || is_wm1) {
-        // Compound with at least one warped reference: C's per-ref loop
-        // where each ref picks warp or convolve by its OWN model, sharing
-        // one CONV_BUF (ref 0 fills it, ref 1 blends). `interinter_comp`
-        // is COMPOUND_AVERAGE for GLOBAL_GLOBALMV, so the blend is the
-        // plain mean — no dist-wtd weighting applies (compound_idx = 1).
+    // `block_mi.interinter_comp` → the masked arm's `InterInterCompoundData`
+    // + the DIFFWTD `mask_type`, and `dist_wtd_comp_weight_assign`'s output
+    // for ref 1's convolve — shared with the IFS/MDS3 rebuild via
+    // [`compound_md_args`].
+    let (comp_data, distwtd) = compound_md_args(
+        f,
+        c.ref_frame,
+        c.interinter_comp_type,
+        c.interinter_mask_type,
+        c.interinter_wedge_index,
+        c.interinter_wedge_sign,
+        c.compound_idx,
+    );
+    if let Some(p1) = padded1 {
+        // COMPOUND — C's `av1_inter_prediction` compound arm: each ref
+        // picks warp or convolve by its OWN model over one shared
+        // CONV_BUF, ref 1 takes the distance-weighted offsets and the
+        // masked blend when `interinter_comp.type` is WEDGE/DIFFWTD.
         let mut wm0 = c.wm_params_l0;
         let mut wm1 = c.wm_params_l1;
-        crate::inter_pred_arm::predict_inter_yuv_warped_compound(
+        crate::inter_pred_arm::predict_inter_yuv_compound_md(
             [
                 (
                     &padded.y,
@@ -1761,10 +2568,14 @@ fn predict_and_price(
             &mut wm0,
             &mut wm1,
             [is_wm, is_wm1],
+            comp_data,
+            distwtd,
+            &f.wedge_masks,
             b.org_x,
             b.org_y,
             b.bw,
             b.bh,
+            b.bsize as usize,
             c.mv,
             interp_filters,
             f.sb_size,
@@ -1799,47 +2610,6 @@ fn predict_and_price(
             &mut v_pred,
             cw,
         );
-    } else if let Some(p1) = padded1 {
-        // COMPOUND: `allow_bipred` rejects a 4-wide or 4-tall block, so no
-        // compound candidate is ever sub-8 and there is no compound form of
-        // `inter_chroma_4xn_pred` to port here. `av1_inter_prediction_
-        // light_pd1` averages the two per-reference predictors into
-        // `y_pred`/`u_pred`/`v_pred` in place.
-        match (b.has_uv, padded.uv.as_ref(), p1.uv.as_ref()) {
-            (true, Some((u0, v0)), Some((u1, v1))) => {
-                crate::inter_pred_arm::predict_inter_yuv_compound(
-                    [(&padded.y, u0, v0), (&p1.y, u1, v1)],
-                    b.org_x,
-                    b.org_y,
-                    b.bw,
-                    b.bh,
-                    c.mv,
-                    interp_filters,
-                    f.sb_size,
-                    f.frame_w,
-                    f.frame_h,
-                    &mut y_pred,
-                    b.bw,
-                    &mut u_pred,
-                    &mut v_pred,
-                    cw,
-                );
-            }
-            _ => crate::inter_pred_arm::predict_inter_luma_compound(
-                [&padded.y, &p1.y],
-                b.org_x,
-                b.org_y,
-                b.bw,
-                b.bh,
-                c.mv,
-                interp_filters,
-                f.sb_size,
-                f.frame_w,
-                f.frame_h,
-                &mut y_pred,
-                b.bw,
-            ),
-        }
     } else {
         let sub8 = b.bw < 8 || b.bh < 8;
         match (b.has_uv && !sub8, padded.uv.as_ref()) {
@@ -1900,6 +2670,79 @@ fn predict_and_price(
                 &mut v_pred,
                 cw,
             );
+        }
+    }
+
+    // ---- Inter-intra, C `av1_inter_prediction`'s tail ----
+    // `inter_intra_prediction` (enc_inter_prediction.c:3468-3478 ->
+    // inter_prediction.c:2217+) blends the block's OWN prediction with the
+    // precomputed intra prediction under the smooth (or wedge) mask —
+    // INSIDE `av1_inter_prediction`, so it runs before the OBMC tail
+    // below, per plane. `intrapred_buf` is the block's, which
+    // `precompute_intra_pred_for_inter_intra` fills only for an
+    // inter-intra-eligible block — an II candidate on a block without it
+    // is a wiring bug, not a slow path.
+    if c.is_interintra_used {
+        let ii = b
+            .ii
+            .as_ref()
+            .expect("an inter-intra candidate reached prediction on a block with no intrapred_buf");
+        let n = b.bw * b.bh;
+        let mode = svtav1_dsp::port_interintra::InterIntraMode::ALL[c.interintra_mode as usize];
+        let mut inter = alloc::vec![0u8; n];
+        inter.copy_from_slice(&y_pred);
+        svtav1_dsp::port_interintra::combine_interintra(
+            &f.ii_masks,
+            &f.wedge_masks,
+            mode,
+            c.use_wedge_interintra,
+            c.interintra_wedge_index as usize,
+            // C `INTERINTRA_WEDGE_SIGN` — the wedge search is run at a
+            // FIXED sign (pick_wedge_fixed_sign), so the blend reads the
+            // same sign it was picked at; it is not a coded symbol.
+            0,
+            b.bsize as usize,
+            b.bsize as usize,
+            &mut y_pred,
+            b.bw,
+            &inter,
+            b.bw,
+            &ii.luma[c.interintra_mode as usize * n..],
+            b.bw,
+        );
+        if b.has_uv {
+            // C :2217's per-plane loop — `plane_bsize` is the chroma
+            // plane's own block size while `bsize` stays the LUMA one
+            // (the wedge mask's sub-sampling test reads it).
+            let plane_bsize = svtav1_dsp::port_obmc_data::get_plane_block_size(
+                svtav1_types::block::BlockSize::from_u8(b.bsize)
+                    .expect("an injected inter block must have a real BlockSize"),
+                1,
+                1,
+            )
+            .expect("an inter block's chroma has a real plane_bsize")
+                as usize;
+            let cn = cw * chh;
+            for (pred, plane_ii) in [(&mut u_pred, &ii.u), (&mut v_pred, &ii.v)] {
+                let mut inter_uv = alloc::vec![0u8; cn];
+                inter_uv.copy_from_slice(pred);
+                svtav1_dsp::port_interintra::combine_interintra(
+                    &f.ii_masks,
+                    &f.wedge_masks,
+                    mode,
+                    c.use_wedge_interintra,
+                    c.interintra_wedge_index as usize,
+                    0,
+                    b.bsize as usize,
+                    plane_bsize,
+                    pred,
+                    cw,
+                    &inter_uv,
+                    cw,
+                    &plane_ii[c.interintra_mode as usize * cn..],
+                    cw,
+                );
+            }
         }
     }
 
@@ -1967,79 +2810,44 @@ fn predict_and_price(
             v_pred10 = alloc::vec![0u16; cw * chh];
         }
         if let Some(h1) = hbd1 {
-            if is_wm || is_wm1 {
-                // The same per-reference warp split as the 8-bit arm —
-                // each ref picks warp or convolve by its OWN model and the
-                // two share one CONV_BUF.
-                let mut wm0 = c.wm_params_l0;
-                let mut wm1 = c.wm_params_l1;
-                crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd(
-                    [
-                        (
-                            &hbd.y,
-                            hbd.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
-                        ),
-                        (
-                            &h1.y,
-                            h1.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
-                        ),
-                    ],
-                    &mut wm0,
-                    &mut wm1,
-                    [is_wm, is_wm1],
-                    b.org_x,
-                    b.org_y,
-                    b.bw,
-                    b.bh,
-                    c.mv,
-                    interp_filters,
-                    f.sb_size,
-                    f.frame_w,
-                    f.frame_h,
-                    f.bit_depth,
-                    &mut y_pred10,
-                    b.bw,
-                    &mut u_pred10,
-                    &mut v_pred10,
-                    cw,
-                );
-            } else {
-                crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
-                    [
-                        (
-                            &hbd.y,
-                            if want_uv {
-                                hbd.uv.as_ref().map(|(u, v)| (u, v))
-                            } else {
-                                None
-                            },
-                        ),
-                        (
-                            &h1.y,
-                            if want_uv {
-                                h1.uv.as_ref().map(|(u, v)| (u, v))
-                            } else {
-                                None
-                            },
-                        ),
-                    ],
-                    b.org_x,
-                    b.org_y,
-                    b.bw,
-                    b.bh,
-                    c.mv,
-                    interp_filters,
-                    f.sb_size,
-                    f.frame_w,
-                    f.frame_h,
-                    f.bit_depth,
-                    &mut y_pred10,
-                    b.bw,
-                    &mut u_pred10,
-                    &mut v_pred10,
-                    cw,
-                );
-            }
+            // The SAME compound arm at 10 bits — `predict_inter_yuv_
+            // compound_md`'s `SrcPlanes::Hbd` twin.
+            let mut wm0 = c.wm_params_l0;
+            let mut wm1 = c.wm_params_l1;
+            crate::inter_pred_arm::predict_inter_yuv_compound_md_hbd(
+                [
+                    (
+                        &hbd.y,
+                        hbd.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
+                    ),
+                    (
+                        &h1.y,
+                        h1.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
+                    ),
+                ],
+                &mut wm0,
+                &mut wm1,
+                [is_wm, is_wm1],
+                comp_data,
+                distwtd,
+                &f.wedge_masks,
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                b.bsize as usize,
+                c.mv,
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                f.bit_depth,
+                &mut y_pred10,
+                b.bw,
+                &mut u_pred10,
+                &mut v_pred10,
+                cw,
+            );
         } else {
             // C's OBMC block predicts with the PLAIN inter path first and
             // blends the neighbours in after — `predict_inter_leaf_hbd`'s
@@ -2104,6 +2912,72 @@ fn predict_and_price(
                     &mut v_pred10,
                     cw,
                 );
+            }
+        }
+        // The SAME inter-intra blend at 10 bits — `combine_interintra_
+        // highbd` on the u16 `pred10` buffers, still inside C's
+        // `av1_inter_prediction` tail so the OBMC blend below applies on
+        // top of it. `luma16` is empty when the block has no u16 recon
+        // canvas (M6-M8 bd10): `pred10` has no consumer there — C's
+        // hbd_md=0 produces no u16 inter-intra prediction either — so the
+        // blend is skipped rather than faked.
+        if c.is_interintra_used {
+            let ii = b.ii.as_ref().expect(
+                "an inter-intra candidate reached prediction on a block with no intrapred_buf",
+            );
+            if !ii.luma16.is_empty() {
+                let n = b.bw * b.bh;
+                let mode =
+                    svtav1_dsp::port_interintra::InterIntraMode::ALL[c.interintra_mode as usize];
+                let mut inter = alloc::vec![0u16; n];
+                inter.copy_from_slice(&y_pred10);
+                svtav1_dsp::port_interintra::combine_interintra_highbd(
+                    &f.ii_masks,
+                    &f.wedge_masks,
+                    mode,
+                    c.use_wedge_interintra,
+                    c.interintra_wedge_index as usize,
+                    0,
+                    b.bsize as usize,
+                    b.bsize as usize,
+                    &mut y_pred10,
+                    b.bw,
+                    &inter,
+                    b.bw,
+                    &ii.luma16[c.interintra_mode as usize * n..],
+                    b.bw,
+                );
+                if want_uv && !ii.u16.is_empty() && !ii.v16.is_empty() {
+                    let plane_bsize = svtav1_dsp::port_obmc_data::get_plane_block_size(
+                        svtav1_types::block::BlockSize::from_u8(b.bsize)
+                            .expect("an injected inter block must have a real BlockSize"),
+                        1,
+                        1,
+                    )
+                    .expect("an inter block's chroma has a real plane_bsize")
+                        as usize;
+                    let cn = cw * chh;
+                    for (pred, plane_ii) in [(&mut u_pred10, &ii.u16), (&mut v_pred10, &ii.v16)] {
+                        let mut inter_uv = alloc::vec![0u16; cn];
+                        inter_uv.copy_from_slice(pred);
+                        svtav1_dsp::port_interintra::combine_interintra_highbd(
+                            &f.ii_masks,
+                            &f.wedge_masks,
+                            mode,
+                            c.use_wedge_interintra,
+                            c.interintra_wedge_index as usize,
+                            0,
+                            b.bsize as usize,
+                            plane_bsize,
+                            pred,
+                            cw,
+                            &inter_uv,
+                            cw,
+                            &plane_ii[c.interintra_mode as usize * cn..],
+                            cw,
+                        );
+                    }
+                }
             }
         }
         // The SAME OBMC blend at 10 bits (`av1_inter_prediction_obmc` with
@@ -2240,7 +3114,7 @@ fn predict_and_price(
                 3 => svtav1_types::prediction::CompoundType::DiffWtd,
                 _ => svtav1_types::prediction::CompoundType::Average,
             },
-            interinter_wedge_index: 0,
+            interinter_wedge_index: c.interinter_wedge_index.max(0) as u8,
             skip_mode_allowed: c.skip_mode_allowed,
         },
         lambda,
@@ -2316,6 +3190,13 @@ fn predict_and_price(
         comp_group_idx: c.comp_group_idx,
         compound_idx: c.compound_idx,
         interinter_comp_type: c.interinter_comp_type,
+        interinter_mask_type: c.interinter_mask_type,
+        interinter_wedge_index: c.interinter_wedge_index,
+        interinter_wedge_sign: c.interinter_wedge_sign,
+        is_interintra_used: c.is_interintra_used,
+        interintra_mode: c.interintra_mode,
+        use_wedge_interintra: c.use_wedge_interintra,
+        interintra_wedge_index: c.interintra_wedge_index,
         skip_mode_allowed: c.skip_mode_allowed,
         skip_mode_ctx: skip_mode_ctx as u8,
     }

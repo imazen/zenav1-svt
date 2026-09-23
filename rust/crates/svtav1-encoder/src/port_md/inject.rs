@@ -152,6 +152,12 @@ pub struct InterCandidate {
     pub interinter_comp_type: u8,
     /// C `block_mi.interinter_comp.mask_type`.
     pub interinter_mask_type: u8,
+    /// C `block_mi.interinter_comp.wedge_index` — the CODED wedge symbol
+    /// `search_compound_diff_wedge` picks for a `COMPOUND_WEDGE`
+    /// candidate.
+    pub interinter_wedge_index: i8,
+    /// C `block_mi.interinter_comp.wedge_sign`.
+    pub interinter_wedge_sign: bool,
     /// C `transform_type[0]` / `transform_type_uv`, written only by
     /// [`inject_zz_backup_candidate`].
     pub transform_type_y: u8,
@@ -180,6 +186,8 @@ impl Default for InterCandidate {
             compound_idx: 0,
             interinter_comp_type: 0,
             interinter_mask_type: 0,
+            interinter_wedge_index: 0,
+            interinter_wedge_sign: false,
             transform_type_y: 0,
             transform_type_uv: 0,
         }
@@ -326,12 +334,18 @@ pub struct InterCompCtrls {
     pub skip_on_ref_info: bool,
     pub no_sym_dist: bool,
     pub max_mv_length: u16,
+    /// C `use_rate` — `search_compound_diff_wedge` prices each wedge/mask
+    /// trial with `model_rd` when set (level 1 only).
+    pub use_rate: bool,
+    /// C `pred0_to_pred1_mult` — the per-pixel SAD budget under which
+    /// `calc_pred_masked_compound` early-exits.
+    pub pred0_to_pred1_mult: u8,
 }
 
 impl From<crate::port_enc_mode_config::ctrls::InterCompCtrls> for InterCompCtrls {
-    /// The injectors read a subset of `ctx->inter_comp_ctrls`; the
-    /// `use_rate`/`pred0_to_pred1_mult` fields belong to the unported
-    /// `inj_comp_modes` rate arms and are dropped here on purpose.
+    /// The injectors read a subset of `ctx->inter_comp_ctrls`; `use_rate`
+    /// and `pred0_to_pred1_mult` are carried through for the
+    /// `calc_pred_masked_compound` / `search_compound_diff_wedge` hooks.
     fn from(c: crate::port_enc_mode_config::ctrls::InterCompCtrls) -> Self {
         Self {
             tot_comp_types: c.tot_comp_types,
@@ -345,6 +359,8 @@ impl From<crate::port_enc_mode_config::ctrls::InterCompCtrls> for InterCompCtrls
             skip_on_ref_info: c.skip_on_ref_info,
             no_sym_dist: c.no_sym_dist,
             max_mv_length: c.max_mv_length,
+            use_rate: c.use_rate,
+            pred0_to_pred1_mult: c.pred0_to_pred1_mult,
         }
     }
 }
@@ -353,6 +369,9 @@ impl From<crate::port_enc_mode_config::ctrls::InterCompCtrls> for InterCompCtrls
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterIntraCompCtrls {
     pub enabled: bool,
+    /// C `use_rd_model` — price the four blends through
+    /// `model_rd_for_sb_with_curvfit` instead of raw SSE (level 1 only).
+    pub use_rd_model: bool,
     pub wedge_mode_sq: u8,
     pub wedge_mode_nsq: u8,
 }
@@ -2800,6 +2819,7 @@ mod tests {
             enabled: true,
             wedge_mode_sq: 1,
             wedge_mode_nsq: 0,
+            use_rd_model: false,
         };
         let mut cands = CandArray::new(64);
         cands.push(InterCandidate {
