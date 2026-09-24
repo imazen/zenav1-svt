@@ -1141,16 +1141,27 @@ impl EncodePipeline {
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
         let tiles_log2 = self.tile_rows_log2 + self.tile_cols_log2;
+        let td = crate::entropy::obu::write_temporal_delimiter();
+        // C `count_frames_in_next_tu` (packetization_process.c:90-115): a
+        // temporal unit is [hidden frames]* + ONE displayable frame — the TD
+        // opens each TU and a `show_frame` picture closes it. The emit loop
+        // is in decode order, so a shown picture simply ends the open TU.
+        let mut tu_open = false;
         for idx in emit {
             let frame = &frames[idx];
             let pic = pics[idx]
                 .take()
                 .expect("emit order visits each picture once");
             let display_order = frame.display_order;
+            let show_frame = pic.show_frame;
             let has_show_existing = pic.has_show_existing;
             let show_slot = pic.show_existing_frame;
             let decided = Some((display_order, pic));
-            if let Some(tf_pic) = frames_tf.get(idx).filter(|t| t.do_tf) {
+            if !tu_open {
+                out.extend_from_slice(&td);
+                tu_open = true;
+            }
+            let pkt = if let Some(tf_pic) = frames_tf.get(idx).filter(|t| t.do_tf) {
                 // The temporally filtered planes ARE the aligned-dims
                 // source C's `enhanced_pic` carries out of
                 // `svt_av1_init_temporal_filtering` — feed them to the
@@ -1159,37 +1170,30 @@ impl EncodePipeline {
                 let y_f = tf_pic.extract_luma();
                 let u_f = tf_pic.extract_u();
                 let v_f = tf_pic.extract_v();
-                out.extend_from_slice(&self.encode_frame_impl(
-                    &y_f,
-                    aw,
-                    Some((&u_f, &v_f)),
-                    decided,
-                )?);
+                self.encode_frame_impl(&y_f, aw, Some((&u_f, &v_f)), decided)?
             } else if aw == tw && ah == th {
-                out.extend_from_slice(&self.encode_frame_impl(
-                    &frame.y,
-                    tw,
-                    Some((&frame.u, &frame.v)),
-                    decided,
-                )?);
+                self.encode_frame_impl(&frame.y, tw, Some((&frame.u, &frame.v)), decided)?
             } else {
                 let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
                 let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
                 let y_pad = pad_plane_replicate(&frame.y, tw, tw, th, aw, ah)?;
                 let u_pad = pad_plane_replicate(&frame.u, cw, cw, ch, acw, ach)?;
                 let v_pad = pad_plane_replicate(&frame.v, cw, cw, ch, acw, ach)?;
-                out.extend_from_slice(&self.encode_frame_impl(
-                    &y_pad,
-                    aw,
-                    Some((&u_pad, &v_pad)),
-                    decided,
-                )?);
+                self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)), decided)?
+            };
+            // `encode_frame_impl` prepends the sequential path's
+            // one-TU-per-frame TD; an RA TU spans hidden+shown frames, so the
+            // loop above owns TD placement and each packet's copy is dropped.
+            debug_assert_eq!(pkt[..td.len()], td[..], "frame packet must begin with the TD it always emits");
+            out.extend_from_slice(&pkt[td.len()..]);
+            if show_frame {
+                tu_open = false;
             }
             if has_show_existing {
                 // C emits each show_existing as its own temporal unit
                 // (TD + OBU_FRAME_HEADER); without the TD a decoder treats
                 // it as part of the preceding frame's TU and drops it.
-                out.extend_from_slice(&crate::entropy::obu::write_temporal_delimiter());
+                out.extend_from_slice(&td);
                 out.extend_from_slice(&crate::entropy::obu::write_show_existing_obu(
                     show_slot, tiles_log2,
                 ));
