@@ -2934,3 +2934,390 @@ fn traced_copy_tf_params_ra_selection() {
         C::Disabled
     );
 }
+
+// ---------------------------------------------------------------------------
+// MCTF-B: `derive_tf_window_params`' list half, noise carry, filt/unfilt diff
+// ---------------------------------------------------------------------------
+
+/// Build the candidate list `assemble_tf_window` searches. `hists` is one
+/// boxed 16 KiB region-histogram per picture (kept off the stack);
+/// `spec` is `(poc, hierarchical_levels, avg_luma)` per candidate.
+fn tf_window_cands<'a>(
+    hists: &'a [std::boxed::Box<pp::RegionHistograms>],
+    spec: &[(u64, u8, u64)],
+) -> Vec<pp::TfWindowCand<'a>> {
+    spec.iter()
+        .enumerate()
+        .map(|(i, &(poc, hier, avg_luma))| pp::TfWindowCand {
+            picture_number: poc,
+            frame_width: 64,
+            frame_height: 64,
+            hierarchical_levels: hier,
+            avg_luma,
+            picture_histogram: &hists[i],
+        })
+        .collect()
+}
+
+/// A uniform histogram — every bin the same count.
+fn tf_hist(bin: u32) -> Box<pp::RegionHistograms> {
+    Box::new([[[bin; 256]; 4]; 4])
+}
+
+/// A histogram that differs from `tf_hist(base)` by `spread` counts
+/// concentrated in `concentrated` bins of region (0,0) — the knob that
+/// steers `calc_ahd`'s per-region active test.
+fn tf_hist_spread(base: u32, spread: u32, concentrated: usize) -> Box<pp::RegionHistograms> {
+    let mut h = tf_hist(base);
+    for b in 0..concentrated {
+        h[0][0][b] += spread;
+    }
+    h
+}
+
+/// INTER arm (`pd_process.c:4004-4100`): past+centre from the mini-GOP
+/// (poc-matched, dims-checked), future from the positional forward walk,
+/// `calc_ahd` stamped on every member including the centre (0 vs itself).
+#[test]
+fn traced_assemble_tf_window_ra_inter() {
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..8).map(|_| tf_hist(10)).collect();
+    let spec: Vec<(u64, u8, u64)> = (0..8u64).map(|p| (p, 2, 100 + p)).collect();
+    let cands = tf_window_cands(&hists, &spec);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 2,
+        num_future_pics: 2,
+    };
+    // centre = poc 3; the whole buffer is one mini-GOP.
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::RandomAccessInter,
+        &counts,
+        3,
+        &cands,
+        0,
+        8,
+        &[],
+        3,
+        4,
+        4,
+    );
+    assert_eq!(w.past_altref_nframes, 2);
+    assert_eq!(w.future_altref_nframes, 2);
+    assert_eq!(w.members.len(), 5);
+    // Slots 0,1 = past (pocs 1,2), slot 2 = centre (poc 3), 3,4 = future.
+    let pocs: Vec<u64> = w
+        .members
+        .iter()
+        .map(|m| cands[m.unwrap().index].picture_number)
+        .collect();
+    assert_eq!(pocs, vec![1, 2, 3, 4, 5]);
+    // ahd stamped everywhere; centre-vs-centre is 0.
+    assert_eq!(w.members[2].unwrap().ahd_error_to_central, 0);
+    assert_eq!(w.members[2].unwrap().index, 3);
+    // avg_luma over the four NON-centre members: (101+102+104+105)/4 = 103.
+    assert_eq!(w.tf_avg_luma, 103);
+    assert_eq!(w.tf_avg_ahd_error, 0);
+}
+
+/// The `avail_past_pictures` bound truncates the past side at a mini-GOP
+/// start — `num_past_pics` is the REQUESTED count and shrinks only via the
+/// avail bound.
+#[test]
+fn traced_assemble_tf_window_ra_inter_avail_past_bound() {
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..8).map(|_| tf_hist(10)).collect();
+    let spec: Vec<(u64, u8, u64)> = (0..8u64).map(|p| (p, 2, 50)).collect();
+    let cands = tf_window_cands(&hists, &spec);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 3,
+        num_future_pics: 1,
+    };
+    // centre = poc 1; only ONE past picture exists in the mini-GOP.
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::RandomAccessInter,
+        &counts,
+        1,
+        &cands,
+        0,
+        8,
+        &[],
+        1,
+        4,
+        4,
+    );
+    assert_eq!(w.past_altref_nframes, 1, "avail_past clamps num_past");
+    let pocs: Vec<u64> = w
+        .members
+        .iter()
+        .map(|m| cands[m.unwrap().index].picture_number)
+        .collect();
+    assert_eq!(pocs, vec![0, 1, 2]);
+}
+
+/// A resolution change in the future walk breaks the search — the member
+/// after the mismatched one is never reached (`pd_process.c:4056-4060`).
+#[test]
+fn traced_assemble_tf_window_resolution_change_breaks() {
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..8).map(|_| tf_hist(10)).collect();
+    let spec: Vec<(u64, u8, u64)> = (0..8u64).map(|p| (p, 2, 50)).collect();
+    let mut cands = tf_window_cands(&hists, &spec);
+    cands[4].frame_width = 128; // resolution change at centre+1
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 1,
+        num_future_pics: 4,
+    };
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::RandomAccessInter,
+        &counts,
+        3,
+        &cands,
+        0,
+        8,
+        &[],
+        3,
+        4,
+        4,
+    );
+    assert_eq!(w.future_altref_nframes, 0);
+    assert_eq!(w.members.len(), 2); // past + centre only
+}
+
+/// DELAYED-INTRA arm (`pd_process.c:3922-3965`): the centre sits OUTSIDE
+/// the searched mini-GOP (it is `prev_delayed_intra`), lands at slot 0,
+/// and its future members come from a poc-matched search of the FOLLOWING
+/// mini-GOP — never the queue.
+#[test]
+fn traced_assemble_tf_window_delayed_intra() {
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..9).map(|_| tf_hist(10)).collect();
+    // cand 0 = the held intra (poc 0, hier 4); cands 1..8 = the next MG.
+    let mut spec: Vec<(u64, u8, u64)> = vec![(0, 4, 90)];
+    spec.extend((1..9u64).map(|p| (p, 3, 100 + p)));
+    let cands = tf_window_cands(&hists, &spec);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 0,
+        num_future_pics: 4,
+    };
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::DelayedIntra,
+        &counts,
+        0,
+        &cands,
+        1,
+        9,
+        &[],
+        0,
+        4,
+        4,
+    );
+    assert_eq!(w.past_altref_nframes, 0);
+    assert_eq!(w.future_altref_nframes, 4);
+    let pocs: Vec<u64> = w
+        .members
+        .iter()
+        .map(|m| cands[m.unwrap().index].picture_number)
+        .collect();
+    assert_eq!(pocs, vec![0, 1, 2, 3, 4]);
+    // The pred-structure fixup: poc+1's level (3) differs from the
+    // centre's (4) -> stamp 3 on the centre.
+    assert_eq!(w.hier_fixup, Some(3));
+}
+
+/// IDR arm (`pd_process.c:3966-4002`): centre at slot 0, future members
+/// from the positional queue walk — the poc-matched mini-GOP search does
+/// NOT run here.
+#[test]
+fn traced_assemble_tf_window_ra_idr() {
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..8).map(|_| tf_hist(10)).collect();
+    let spec: Vec<(u64, u8, u64)> = (0..8u64).map(|p| (p, 2, 100 + p)).collect();
+    let cands = tf_window_cands(&hists, &spec);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 0,
+        num_future_pics: 3,
+    };
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::RandomAccessIdr,
+        &counts,
+        0,
+        &cands,
+        0,
+        8,
+        &[],
+        0,
+        4,
+        4,
+    );
+    assert_eq!((w.past_altref_nframes, w.future_altref_nframes), (0, 3));
+    let pocs: Vec<u64> = w
+        .members
+        .iter()
+        .map(|m| cands[m.unwrap().index].picture_number)
+        .collect();
+    assert_eq!(pocs, vec![0, 1, 2, 3]);
+    assert_eq!(w.members[0].unwrap().ahd_error_to_central, 0);
+}
+
+/// LOW-DELAY arm (`pd_process.c:3851-3921`): past members come from
+/// `tf_pic_array` — the LD ring — with NO dims check and NO `calc_ahd`;
+/// a poc the ring lacks leaves the slot empty while
+/// `past_altref_nframes` still counts it (C's dead-compaction behaviour).
+#[test]
+fn traced_assemble_tf_window_low_delay() {
+    // Window: centre poc 5 + futures 6,7,8,9.
+    let hists: Vec<Box<pp::RegionHistograms>> = (0..5).map(|_| tf_hist(10)).collect();
+    let spec: Vec<(u64, u8, u64)> = (5..10u64).map(|p| (p, 2, 70)).collect();
+    let cands = tf_window_cands(&hists, &spec);
+    // The LD ring holds pocs 3,4 — poc 2 is missing (sparse slot).
+    let ld_hists: Vec<Box<pp::RegionHistograms>> = (0..2).map(|_| tf_hist(20)).collect();
+    let ld = tf_window_cands(&ld_hists, &[(3, 2, 60), (4, 2, 61)]);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 3,
+        num_future_pics: 2,
+    };
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::LowDelay,
+        &counts,
+        0,
+        &cands,
+        0,
+        5,
+        &ld,
+        0,
+        4,
+        4,
+    );
+    // Requested 3 past: slots 0..3 — poc 2 unfilled, 3 and 4 found.
+    assert_eq!(w.past_altref_nframes, 3);
+    assert!(w.members[0].is_none(), "poc 2 absent from the ring");
+    assert_eq!(w.members[1].unwrap().pool, pp::TfMemberPool::LdRing);
+    assert_eq!(w.members[1].unwrap().index, 0);
+    assert_eq!(w.members[2].unwrap().index, 1);
+    // The LD arm stamps no AHD.
+    assert!(!w.members[1].unwrap().active_region_present);
+    // Centre at slot 3, future pocs 6,7 at 4,5.
+    assert_eq!(w.members[3].unwrap().index, 0);
+    assert_eq!(w.members[3].unwrap().pool, pp::TfMemberPool::Window);
+    assert_eq!(w.future_altref_nframes, 2);
+    assert_eq!(w.members.len(), 6);
+}
+
+/// `calc_ahd`'s active-region stamp: `ahd_per_region > region_area` flips
+/// `tf_active_region_present` — 64x64 with 4x4 regions means 256 pixels.
+#[test]
+fn traced_assemble_tf_window_ahd_active_region_threshold() {
+    // Centre histogram: bin counts 10 everywhere. Member: +300 in ONE bin
+    // of region (0,0) — ahd_per_region = 300 > 256 -> active.
+    let hists: Vec<Box<pp::RegionHistograms>> = vec![
+        tf_hist(10),
+        tf_hist_spread(10, 300, 1),
+        tf_hist_spread(10, 100, 2), // ahd_per_region = 200 < 256 -> inactive
+    ];
+    let spec: Vec<(u64, u8, u64)> = vec![(0, 2, 0), (1, 2, 0), (2, 2, 0)];
+    let cands = tf_window_cands(&hists, &spec);
+    let counts = pp::TfWindowCounts {
+        num_past_pics: 0,
+        num_future_pics: 2,
+    };
+    let w = pp::assemble_tf_window(
+        pp::TfWindowArm::RandomAccessIdr,
+        &counts,
+        0,
+        &cands,
+        0,
+        3,
+        &[],
+        0,
+        4,
+        4,
+    );
+    assert_eq!(w.members[1].unwrap().ahd_error_to_central, 300);
+    assert!(w.members[1].unwrap().active_region_present);
+    assert_eq!(w.members[2].unwrap().ahd_error_to_central, 200);
+    assert!(!w.members[2].unwrap().active_region_present);
+}
+
+/// `tf_window_noise` — the `do_noise_est` selection and the last-I carry
+/// (`pd_process.c:3755-3849`).
+#[test]
+fn traced_tf_window_noise_carry() {
+    let mut last_i = [0i32; 3];
+    // use_intra off -> always estimate.
+    let n = pp::tf_window_noise(false, false, false, Some(7000), [0, 0], &mut last_i);
+    assert_eq!(n.levels_log1p_fp16[0], 7000);
+    assert_eq!(last_i[0], 7000, "fresh estimate publishes to last_i");
+    assert!(n.estimated_y);
+    // use_intra on, not an I slice -> reuse the carry.
+    let n = pp::tf_window_noise(true, false, false, None, [0, 0], &mut last_i);
+    assert_eq!(n.levels_log1p_fp16[0], 7000);
+    assert!(!n.estimated_y);
+    // An I slice ALWAYS estimates, even under use_intra.
+    let n = pp::tf_window_noise(true, true, false, Some(9000), [0, 0], &mut last_i);
+    assert_eq!(n.levels_log1p_fp16[0], 9000);
+    assert_eq!(last_i[0], 9000);
+    // chroma_lvl stamps U/V unconditionally of do_noise_est.
+    let n = pp::tf_window_noise(true, false, true, None, [111, 222], &mut last_i);
+    assert_eq!(n.levels_log1p_fp16, [9000, 111, 222]);
+    // chroma_lvl off leaves C's zero-initialised slots.
+    let n = pp::tf_window_noise(true, false, false, None, [111, 222], &mut last_i);
+    assert_eq!(n.levels_log1p_fp16[1..], [0, 0]);
+    // is_noise_level reads the value in force: 9000 < VQ_NOISE_LVL_TH(15000).
+    assert!(!n.is_noise_level);
+    last_i[0] = 20000;
+    let n = pp::tf_window_noise(true, false, false, None, [0, 0], &mut last_i);
+    assert!(n.is_noise_level);
+}
+
+/// `filt_to_unfilt_diff` carry (`pd_process.c:5122-5125`): every picture
+/// inherits the context value; only an I slice publishes back.
+#[test]
+fn traced_filt_to_unfilt_diff_carry() {
+    let mut ctx = pp::PicDecisionCtx::new();
+    assert_eq!(ctx.filt_to_unfilt_diff, u32::MAX, "~0 until the first I");
+    let mut pic = pp::PicParams::default();
+    pic.slice_type = pp::SliceType::B;
+    pp::tf_inherit_filt_to_unfilt_diff(&ctx, &mut pic);
+    assert_eq!(pic.filt_to_unfilt_diff, u32::MAX);
+    // The filter measured a real difference on this pic (MCTF-C's write).
+    pic.filt_to_unfilt_diff = 12345;
+    pp::tf_publish_filt_to_unfilt_diff(&mut ctx, &pic);
+    assert_eq!(
+        ctx.filt_to_unfilt_diff,
+        u32::MAX,
+        "a B slice never publishes"
+    );
+    pic.slice_type = pp::SliceType::I;
+    pp::tf_publish_filt_to_unfilt_diff(&mut ctx, &pic);
+    assert_eq!(ctx.filt_to_unfilt_diff, 12345);
+}
+
+/// `ref_pics_modulation`'s ratio is computed in UINT32 in C
+/// (`pd_process.c:3660`): the `~0` carried diff makes `* 100` wrap to
+/// 0xFFFFFF9C — a huge POSITIVE ratio — where a signed multiply would
+/// produce 0. This is the difference between the max modulation arm and
+/// the min one on the first inter picture after an I slice.
+#[test]
+fn traced_ref_pics_modulation_u32_ratio() {
+    let ctrls = pp::TfCtrls {
+        modulate_pics: 1,
+        ..Default::default()
+    };
+    // tl0, modulate_pics 1: ratio < 100 -> 5, else TF_MAX_EXTENSION (6).
+    assert_eq!(
+        pp::ref_pics_modulation(false, 0, &ctrls, 20000, u32::MAX, 1, 1),
+        6,
+        "the ~0 carry must wrap to a huge u32 ratio"
+    );
+    // A small measured diff: (5000 * 100) / 20000 = 25 < 100 -> offset 5.
+    assert_eq!(
+        pp::ref_pics_modulation(false, 0, &ctrls, 20000, 5000, 1, 1),
+        5
+    );
+    // qp_opt applies DIVIDE_AND_ROUND to the offset.
+    let qp_ctrls = pp::TfCtrls {
+        modulate_pics: 1,
+        qp_opt: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        pp::ref_pics_modulation(false, 0, &qp_ctrls, 20000, 5000, 1, 2),
+        // (5000*100)/20000 = 25 -> offset 5 -> (5*1)/2 rounded = 3.
+        3
+    );
+}

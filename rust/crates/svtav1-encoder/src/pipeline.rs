@@ -90,6 +90,15 @@ pub struct EncodePipeline {
     /// `pred_structure == RandomAccess`; emptied by
     /// [`Self::encode_ra_window`].
     ra_input: alloc::vec::Vec<RaBufferedFrame>,
+    /// The picture-analysis statistics `svt_aom_gathering_picture_statistics`
+    /// produces per buffered input — region histograms and `avg_luma`,
+    /// indexed exactly like `ra_input`. `None` per slot while `calc_hist` is
+    /// off (C gathers them only when a TF type is enabled or scene-change
+    /// detection runs; only the TF arm exists here). Filled lazily by
+    /// [`Self::run_ra_picture_decision`], consumed by the TF window assembly
+    /// and the filter itself.
+    ra_stats:
+        alloc::vec::Vec<Option<alloc::boxed::Box<crate::port_preanalysis::PictureStatistics>>>,
     /// The display-order POC the next accepted input takes under random
     /// access. `frame_count` stays the count of CODED frames (it increments
     /// inside `encode_frame_impl`); under RA the two orders differ inside a
@@ -614,6 +623,7 @@ impl EncodePipeline {
             gop: GopStructure::new(hierarchical_levels, intra_period),
             pred_structure: crate::port_picstruct::PredStructure::LowDelay,
             ra_input: alloc::vec::Vec::new(),
+            ra_stats: alloc::vec::Vec::new(),
             ra_display_next: 0,
             frame_count: 0,
             width: dims.aligned_w as u32,
@@ -1131,6 +1141,20 @@ impl EncodePipeline {
 
         let mut pics: alloc::vec::Vec<Option<pp::PicParams>> = (0..n).map(|_| None).collect();
         let mut emit: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+
+        // `scs->calc_hist` (enc_handle.c:1353): the region histograms +
+        // `avg_luma` the TF window's `calc_ahd` reads are gathered for EVERY
+        // buffered input once any `tf_params_per_type` entry is enabled.
+        // (Scene-change detection, the other `calc_hist` consumer, is not
+        // part of this envelope.)
+        self.ra_stats.clear();
+        if tf_params_per_type.iter().any(|c| c.enabled) {
+            for pic_idx in 0..self.ra_input.len() {
+                let stats = self.gather_tf_stats(pic_idx);
+                self.ra_stats.push(Some(alloc::boxed::Box::new(stats)));
+            }
+        }
+
         for mg_idx in 0..self.mg_map.total_number_of_mini_gops {
             let start = self.mg_map.start_index[mg_idx] as usize;
             let end = self.mg_map.end_index[mg_idx] as usize;
@@ -1157,6 +1181,11 @@ impl EncodePipeline {
                     pred_struct_type: pp::PredStructure::RandomAccess,
                     aligned_width: self.width,
                     aligned_height: self.height,
+                    // `pcs.c:422`: the configured input dims, not the aligned
+                    // ones — the TF window's resolution-change exclusion
+                    // compares these.
+                    frame_width: self.true_width,
+                    frame_height: self.true_height,
                     // `resource_coordination_process.c:414-416`: non-CBR
                     // `frame_offset = picture_number`. `get_pic_idx_in_mg`
                     // overwrites it only in low delay.
@@ -1259,8 +1288,233 @@ impl EncodePipeline {
                 })?;
                 emit.push(pic_idx);
             }
+
+            // ---- Pass 4, DISPLAY order (`pd_process.c:5090-5132`) ----
+            // `process_pics`' MCTF loop: per-picture `filt_to_unfilt_diff`
+            // inheritance, `derive_tf_window_params` (noise selection,
+            // reference-count modulation, window assembly) and the publish
+            // carry. The filtered PICTURE itself is produced by the MCTF
+            // driver (`port_temporal_filtering`), not here.
+            self.run_ra_tf_prep(&mut pics, start, end);
         }
         Ok((pics, emit))
+    }
+
+    /// `svt_aom_gathering_picture_statistics` for one buffered RA input
+    /// (`pic_analysis_process.c:1960-2006`): pad the luma to aligned dims,
+    /// decimate to the 1/16 plane, then gather the region histograms and
+    /// `avg_luma` the TF window's `calc_ahd` reads.
+    fn gather_tf_stats(&self, pic_idx: usize) -> crate::port_preanalysis::PictureStatistics {
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        let frame = &self.ra_input[pic_idx];
+        // `svt_aom_pad_input_pictures` + `downsample_filtering_input_picture`:
+        // the LIVE route decimates the ALIGNED padded luma twice by 2
+        // (`PaPicture::from_source` owns that exact chain).
+        let y_pad = if aw == tw && ah == th {
+            frame.y.clone()
+        } else {
+            pad_plane_replicate(&frame.y, tw, tw, th, aw, ah)
+                .expect("aligned dims are never smaller than true dims")
+        };
+        let pa =
+            crate::inter_me_arm::PaPicture::from_source(&y_pad, aw, aw, ah, frame.display_order);
+        let regions_per_width = if self.true_width >= 64 { 4 } else { 1 };
+        let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
+        let mut stats = crate::port_preanalysis::PictureStatistics::default();
+        crate::port_preanalysis::gathering_picture_statistics(
+            /*calc_hist=*/ true,
+            /*calculate_variance=*/ false,
+            regions_per_width,
+            regions_per_height,
+            /*scene_change_detection=*/ false,
+            &pa.sixteenth.buf[pa.sixteenth.org..],
+            pa.sixteenth.stride,
+            pa.sixteenth.width,
+            pa.sixteenth.height,
+            None,
+            &mut stats,
+        );
+        stats
+    }
+
+    /// C `process_pics`' display-order MCTF loop (`pd_process.c:5090-5132`)
+    /// for one mini-GOP, minus the filter dispatch itself.
+    ///
+    /// Per picture, in display order:
+    /// 1. inherit `ctx->filt_to_unfilt_diff` (`:5122`);
+    /// 2. `mctf_frame` — here: `derive_tf_window_params`, i.e. the noise
+    ///    selection/carry, `ref_pics_modulation`, window counts and the
+    ///    `temp_filt_pcs_list` assembly (`:4194-4241`); when `tf_ctrls` is
+    ///    off the picture's `do_tf` is cleared (`:4239`) — no window is
+    ///    built, which is the port's equivalent;
+    /// 3. `is_noise_level` is stamped on EVERY picture (`:4240-4241`);
+    /// 4. an I slice publishes its filt/unfilt difference back to the
+    ///    context (`:5124`).
+    ///
+    /// The delayed-intra slot (`:5103-5110`) is unreachable here: a
+    /// mid-stream key drains the partial window and takes the sequential
+    /// path before any of this runs, so no buffered picture is
+    /// `is_delayed_intra` today — the `continue` is kept for the day that
+    /// changes. `gm_pp_enabled`'s base-layer toggle (`:5117-5120`) has no
+    /// ported consumer yet and is noted rather than reproduced.
+    fn run_ra_tf_prep(
+        &mut self,
+        pics: &mut alloc::vec::Vec<Option<crate::port_picstruct::PicParams>>,
+        mg_lo: usize,
+        mg_hi: usize,
+    ) {
+        use crate::port_picstruct as pp;
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let cw = tw.div_ceil(2);
+        let regions_per_width = if self.true_width >= 64 { 4 } else { 1 };
+        let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
+        // `set_qp_based_th_scaling_ctrls_default` (enc_handle.c:3785-3816):
+        // `tf_ref_qp_based_th_scaling` is off only at ENC_MR (preset -1).
+        let (q_weight, q_weight_denom) =
+            crate::port_enc_mode_config::me::get_qp_based_th_scaling_factors(
+                self.speed_config.preset > -1,
+                u32::from(self.rc_config.qp),
+            );
+
+        // The candidate view `assemble_tf_window` searches: every buffered
+        // input in display order. C's `mg_pictures_array` / reorder queue /
+        // pre-assignment buffer are all entries of this one buffer under the
+        // port's driver.
+        let empty_hist: alloc::boxed::Box<pp::RegionHistograms> =
+            alloc::boxed::Box::new([[[0u32; 256]; 4]; 4]);
+        let cands: alloc::vec::Vec<pp::TfWindowCand> = (0..self.ra_input.len())
+            .map(|i| {
+                let st = self.ra_stats.get(i).and_then(|s| s.as_deref());
+                pp::TfWindowCand {
+                    picture_number: self.ra_input[i].display_order,
+                    frame_width: self.true_width,
+                    frame_height: self.true_height,
+                    hierarchical_levels: pics[i].as_ref().map_or(0, |p| p.hierarchical_levels),
+                    avg_luma: st.map_or(crate::port_preanalysis::INVALID_LUMA, |s| s.avg_luma),
+                    picture_histogram: st.map_or(&*empty_hist, |s| &s.picture_histogram),
+                }
+            })
+            .collect();
+        let mg_pocs: alloc::vec::Vec<u64> = (mg_lo..=mg_hi)
+            .map(|i| self.ra_input[i].display_order)
+            .collect();
+
+        for pic_idx in mg_lo..=mg_hi {
+            let (is_delayed_intra, tf_enabled, is_i, tl, hier, poc, ctrls, is_key) = {
+                let p = pics[pic_idx].as_ref().unwrap();
+                (
+                    p.is_delayed_intra,
+                    p.tf_ctrls.enabled,
+                    p.slice_type == pp::SliceType::I,
+                    p.temporal_layer_index,
+                    p.hierarchical_levels,
+                    p.picture_number,
+                    p.tf_ctrls,
+                    p.is_key_frame,
+                )
+            };
+            // `pd_process.c:5115`: delayed intra runs through the
+            // `prev_delayed_intra` slot, not this loop.
+            if is_delayed_intra {
+                continue;
+            }
+            // `:5122` — inherit the carried filt/unfilt difference.
+            pp::tf_inherit_filt_to_unfilt_diff(&self.pd_ctx, pics[pic_idx].as_mut().unwrap());
+            if tf_enabled {
+                // `derive_tf_window_params`' noise half (`:3755-3849`).
+                // 8-bit arm only: the RA driver is the `try_encode_frame_420`
+                // (u8) path; the highbd estimator is ported for when a 10-bit
+                // RA entry exists.
+                let do_est = !ctrls.use_intra_for_noise_est || is_i;
+                let fresh_y = if do_est {
+                    let f = &self.ra_input[pic_idx];
+                    Some(crate::port_temporal_filtering::noise_log1p_fp16(
+                        crate::temporal_filter::estimate_noise_fp16(&f.y, tw, th, tw),
+                    ))
+                } else {
+                    None
+                };
+                let fresh_uv = if ctrls.chroma_lvl != 0 {
+                    let f = &self.ra_input[pic_idx];
+                    // `pd_process.c:3826-3841`: the estimate runs on
+                    // `width >> ss_x` (FLOOR) — differs from the packed
+                    // plane's `div_ceil` stride only at odd widths.
+                    [
+                        crate::port_temporal_filtering::noise_log1p_fp16(
+                            crate::temporal_filter::estimate_noise_fp16(&f.u, tw >> 1, th >> 1, cw),
+                        ),
+                        crate::port_temporal_filtering::noise_log1p_fp16(
+                            crate::temporal_filter::estimate_noise_fp16(&f.v, tw >> 1, th >> 1, cw),
+                        ),
+                    ]
+                } else {
+                    [0, 0]
+                };
+                let noise = pp::tf_window_noise(
+                    ctrls.use_intra_for_noise_est,
+                    is_i,
+                    ctrls.chroma_lvl != 0,
+                    fresh_y,
+                    fresh_uv,
+                    &mut self.pd_ctx.last_i_noise_levels_log1p_fp16,
+                );
+                // `:3850` — reference-count modulation (qp-scaled when the
+                // control table's `qp_opt` is set).
+                let filt_diff = pics[pic_idx].as_ref().unwrap().filt_to_unfilt_diff;
+                let offset = if ctrls.modulate_pics != 0 {
+                    pp::ref_pics_modulation(
+                        is_i,
+                        tl,
+                        &ctrls,
+                        noise.levels_log1p_fp16[0],
+                        filt_diff,
+                        q_weight,
+                        q_weight_denom,
+                    )
+                } else {
+                    0
+                };
+                // `pcs->idr_flag` selects the IDR arm; a buffered I slice is
+                // an IDR in this envelope (CRAs are refused upstream).
+                let arm = if is_key {
+                    pp::TfWindowArm::RandomAccessIdr
+                } else {
+                    pp::TfWindowArm::RandomAccessInter
+                };
+                let counts = pp::derive_tf_window_counts(arm, &ctrls, offset, u32::from(hier), tl);
+                let avail_past = pp::avail_past_pictures(&mg_pocs, poc);
+                let window = pp::assemble_tf_window(
+                    arm,
+                    &counts,
+                    pic_idx,
+                    &cands,
+                    mg_lo,
+                    mg_hi + 1,
+                    // `pd_ctx->tf_pic_array` — empty under random access.
+                    &[],
+                    avail_past,
+                    regions_per_width,
+                    regions_per_height,
+                );
+                let pic = pics[pic_idx].as_mut().unwrap();
+                pic.noise_levels_log1p_fp16 = noise.levels_log1p_fp16;
+                if let Some(lvl) = window.hier_fixup {
+                    pic.hierarchical_levels = lvl;
+                }
+                pic.past_altref_nframes = window.past_altref_nframes as u8;
+                pic.future_altref_nframes = window.future_altref_nframes as u8;
+                pic.tf_avg_luma = window.tf_avg_luma;
+                pic.tf_avg_ahd_error = window.tf_avg_ahd_error;
+                pic.tf_window = Some(alloc::boxed::Box::new(window));
+            }
+            let pic = pics[pic_idx].as_mut().unwrap();
+            // `:4240-4241` — stamped on every picture, TF enabled or not.
+            pic.is_noise_level =
+                self.pd_ctx.last_i_noise_levels_log1p_fp16[0] >= pp::VQ_NOISE_LVL_TH;
+            // `:5124` — only an I slice publishes its measured difference.
+            pp::tf_publish_filt_to_unfilt_diff(&mut self.pd_ctx, pic);
+        }
     }
 
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: i8) -> (usize, bool) {

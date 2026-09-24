@@ -616,6 +616,38 @@ pub struct PicParams {
     /// C `pcs->tf_ctrls` — the `tf_params_per_type` entry `copy_tf_params`
     /// selected for this picture, stamped by [`init_pic_settings`].
     pub tf_ctrls: TfCtrls,
+    /// C `pcs->frame_width` — the UNALIGNED source width. `derive_tf_window_params`
+    /// compares it pairwise to exclude resolution-change candidates
+    /// (`pd_process.c:3881` et seq.).
+    pub frame_width: u32,
+    /// C `pcs->frame_height`.
+    pub frame_height: u32,
+    /// C `pcs->filt_to_unfilt_diff` — `~0` from the pcs ctor
+    /// (`resource_coordination_process.c:347`), then inherited from
+    /// `ctx->filt_to_unfilt_diff` before `mctf_frame` runs
+    /// (`pd_process.c:5122`), and finally overwritten by the filter itself
+    /// (`temporal_filtering.c:4108`).
+    pub filt_to_unfilt_diff: u32,
+    /// C `pcs->is_noise_level` — `last_i_noise_levels_log1p_fp16[0] >=
+    /// VQ_NOISE_LVL_TH`, stamped on EVERY picture by `mctf_frame`
+    /// (`pd_process.c:4240-4241`), TF enabled or not.
+    pub is_noise_level: bool,
+    /// C `pcs->noise_levels_log1p_fp16[3]` — the Q16 `log1p` noise levels the
+    /// temporal filter weights off.
+    pub noise_levels_log1p_fp16: [i32; 3],
+    /// C `pcs->past_altref_nframes`.
+    pub past_altref_nframes: u8,
+    /// C `pcs->future_altref_nframes`.
+    pub future_altref_nframes: u8,
+    /// C `pcs->tf_avg_luma` — the window-mean member `avg_luma`, centre excluded.
+    pub tf_avg_luma: u64,
+    /// C `pcs->tf_avg_ahd_error`.
+    pub tf_avg_ahd_error: i32,
+    /// The picture's assembled temporal-filter window — C's
+    /// `temp_filt_pcs_list` plus the per-member `tf_ahd_error_to_central` /
+    /// `tf_active_region_present` stamps. `Some` only when
+    /// `derive_tf_window_params`' list half ran (`tf_ctrls.enabled`).
+    pub tf_window: Option<alloc::boxed::Box<TfWindow>>,
     /// C `pcs->pred_struct_ptr->pred_type` — the *picture's* structure, which
     /// can be `LOW_DELAY` inside a `RANDOM_ACCESS` sequence (an incomplete MG).
     pub pred_struct_type: PredStructure,
@@ -723,6 +755,16 @@ impl Default for PicParams {
             is_overlay: false,
             is_delayed_intra: false,
             tf_ctrls: TfCtrls::default(),
+            frame_width: 0,
+            frame_height: 0,
+            filt_to_unfilt_diff: u32::MAX,
+            is_noise_level: false,
+            noise_levels_log1p_fp16: [0; 3],
+            past_altref_nframes: 0,
+            future_altref_nframes: 0,
+            tf_avg_luma: 0,
+            tf_avg_ahd_error: 0,
+            tf_window: None,
             pred_struct_type: PredStructure::LowDelay,
             pred_struct_entry_count: 1,
             update_type: FrameUpdateType::Lf,
@@ -845,6 +887,26 @@ pub struct PicDecisionCtx {
     /// C stores `0` for "no id"; [`core::num::NonZeroU32`] makes that
     /// sentinel unrepresentable (see [`crate::port_ref_mgmt`]).
     pub pic_id_per_dpb_slot: [Option<core::num::NonZeroU32>; REF_FRAMES],
+    /// C `ctx->last_i_noise_levels_log1p_fp16` — the last I slice's luma
+    /// noise in Q16 `log1p` form. `derive_tf_window_params` updates it from
+    /// the fresh estimate or reuses it when `use_intra_for_noise_est` skips
+    /// the estimate (`pd_process.c:3843-3848`).
+    pub last_i_noise_levels_log1p_fp16: [i32; 3],
+    /// C `ctx->filt_to_unfilt_diff` — the filtered-vs-unfiltered difference
+    /// the last I slice's temporal filter measured, inherited by every
+    /// following picture's `ref_pics_modulation` until the next I publishes
+    /// a new one (`pd_process.c:5107/5122-5125`). `~0` before the first I
+    /// slice runs — C's `pcs` ctor value (`resource_coordination_process.c:347`),
+    /// and what the delayed-intra slot resets both sides to.
+    pub filt_to_unfilt_diff: u32,
+    /// C `ctx->tf_motion_direction` — the `-1`/`0`/`1` verdict `mctf_frame`
+    /// publishes after filtering (`pd_process.c:4232-4238`; the port's
+    /// [`tf_motion_direction`]).
+    pub tf_motion_direction: i8,
+    /// C `ctx->tf_pic_array` + `ctx->tf_pic_arr_cnt` — the low-delay TF ring
+    /// `low_delay_store_tf_pictures` fills and `low_delay_release_tf_pictures`
+    /// drains. Dead while low-delay TF is disabled, transcribed anyway.
+    pub ld_tf_ring: LowDelayTfRing,
 }
 
 impl PicDecisionCtx {
@@ -860,6 +922,11 @@ impl PicDecisionCtx {
     pub fn new() -> Self {
         Self {
             transition_detected: -1,
+            // `~0`, C's pcs-ctor sentinel (`resource_coordination_process.c:347`).
+            // The C context itself is malloc'd and only ever written at
+            // `pd_process.c:5107`, which also writes `~0` — so `~0` is the
+            // only value either side can carry before the first I slice.
+            filt_to_unfilt_diff: u32::MAX,
             ..Self::default()
         }
     }
@@ -5297,9 +5364,13 @@ pub fn ref_pics_modulation(
             offset = 2;
         }
     } else {
-        // C computes the ratio in `int`; the guard avoids a divide by zero.
+        // C computes `(pcs->filt_to_unfilt_diff * 100) / noise` in UINT32:
+        // the multiply wraps, the divisor sign-extends into u32, and the
+        // quotient is then assigned to `int`. The `~0` carry between I
+        // slices makes the wraparound VISIBLE — u32 gives a huge positive
+        // ratio (max offset), a signed multiply would give 0.
         let ratio: i32 = if noise_levels_log1p_fp16 != 0 {
-            ((filt_to_unfilt_diff as i32).wrapping_mul(100)) / noise_levels_log1p_fp16
+            (filt_to_unfilt_diff.wrapping_mul(100) / (noise_levels_log1p_fp16 as u32)) as i32
         } else {
             0
         };
@@ -5532,6 +5603,422 @@ pub fn tf_window_averages(
         }
     }
     (tot_luma / n as u64, tot_err / n as i32)
+}
+
+// ---------------------------------------------------------------------------
+// `derive_tf_window_params`' list half: candidates, assembly, noise carry
+// ---------------------------------------------------------------------------
+
+/// One picture the TF-window search may pick — the per-pcs fields C reads
+/// off each `PictureParentControlSet*` while filling `temp_filt_pcs_list`
+/// (`pd_process.c:3850-4118`).
+///
+/// C reaches candidates through three structures — `mg_pictures_array`, the
+/// picture-decision reorder queue, and the pre-assignment buffer. Under this
+/// port's one-buffer-at-a-time RA driver all three resolve to entries of the
+/// same display-ordered slice, so the caller passes one `cands` view and the
+/// bounds of the centre's own mini-GOP inside it (the only sub-range C
+/// distinguishes — the past side of the inter arm and the whole
+/// delayed-intra future search are bounded to `mg_pictures_array`).
+#[derive(Debug, Clone, Copy)]
+pub struct TfWindowCand<'a> {
+    /// C `pcs->picture_number`.
+    pub picture_number: u64,
+    /// C `pcs->frame_width` — the UNALIGNED source width; a candidate whose
+    /// resolution differs from the centre's is excluded.
+    pub frame_width: u32,
+    /// C `pcs->frame_height`.
+    pub frame_height: u32,
+    /// C `pcs->hierarchical_levels` — read only by the delayed-intra
+    /// pred-structure fixup (`pd_process.c:3936-3943`).
+    pub hierarchical_levels: u8,
+    /// C `pcs->avg_luma` — `INVALID_LUMA` when no statistics were gathered.
+    pub avg_luma: u64,
+    /// C `pcs->picture_histogram` — the per-region luma histograms `calc_ahd`
+    /// sums absolute bin differences over.
+    pub picture_histogram: &'a RegionHistograms,
+}
+
+/// Which caller-supplied candidate slice a [`TfWindowMember`] indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TfMemberPool {
+    /// The buffered random-access window — C's `mg_pictures_array`, reorder
+    /// queue and pre-assignment buffer, unified here.
+    Window,
+    /// C `pd_ctx->tf_pic_array` — the low-delay ring
+    /// `low_delay_store_tf_pictures` fills. Only the low-delay arm produces
+    /// members in this pool.
+    LdRing,
+}
+
+/// One filled `temp_filt_pcs_list` slot — the member's own locator plus the
+/// fields C stamps on the member's pcs while assembling the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfWindowMember {
+    /// Index into the slice [`TfMemberPool`] names.
+    pub index: usize,
+    /// Which candidate slice `index` addresses.
+    pub pool: TfMemberPool,
+    /// C `pcs->avg_luma` — carried so `tf_avg_luma` needs no second lookup.
+    pub avg_luma: u64,
+    /// C `pcs->tf_ahd_error_to_central` — `calc_ahd` between centre and
+    /// member. `0` on arms C never computes it (low delay) and on the centre
+    /// slot of the delayed-intra/IDR arms.
+    pub ahd_error_to_central: u32,
+    /// C `pcs->tf_active_region_present` — `active_region_cnt > 0`.
+    pub active_region_present: bool,
+}
+
+/// The assembled `temp_filt_pcs_list` for one centre picture
+/// (`pd_process.c:3850-4118`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TfWindow {
+    /// Slot-addressed exactly like C's `pcs->temp_filt_pcs_list`: slots
+    /// `0..past_altref_nframes` are past members, `past_altref_nframes` is
+    /// the centre, `past+1..past+1+future` are future members. `None` is C's
+    /// `NULL` — a slot `search_this_pic` failed to fill (only the sparse
+    /// fills can produce it; C counts those slots in `past_altref_nframes`
+    /// regardless).
+    pub members: alloc::vec::Vec<Option<TfWindowMember>>,
+    /// C `pcs->past_altref_nframes` — the REQUESTED (clamped) past count, not
+    /// the count actually found: C never adjusts it (`actual_past_pics` is
+    /// assigned `num_past_pics`, never incremented).
+    pub past_altref_nframes: usize,
+    /// C `pcs->future_altref_nframes` — the count actually found.
+    pub future_altref_nframes: usize,
+    /// C `pcs->tf_avg_luma` — member `avg_luma` mean, centre excluded.
+    pub tf_avg_luma: u64,
+    /// C `pcs->tf_avg_ahd_error`.
+    pub tf_avg_ahd_error: i32,
+    /// The delayed-intra `hierarchical_levels` fixup (`pd_process.c:3936-3943`):
+    /// when poc+1 exists in the mini-GOP and its level differs from the
+    /// centre's, C stamps the MEMBER's level onto the centre (via
+    /// `temp_filt_pcs_list[0]`, which IS the centre) and writes it back —
+    /// `Some(level)` tells the caller to stamp `level` on the centre's
+    /// `hierarchical_levels` (the member's level is already the source value).
+    pub hier_fixup: Option<u8>,
+}
+
+/// C `derive_tf_window_params`' LIST half (`pd_process.c:3850-4118`).
+///
+/// Fills the `temp_filt_pcs_list` equivalent for one centre picture and
+/// stamps the window statistics. The C structures collapse like this:
+///
+/// * **past, low-delay arm** (`:3863-3870`): `search_this_pic` over
+///   `pd_ctx->tf_pic_array` → `ld_past`, NO dims check, NO `calc_ahd`.
+/// * **past+centre, inter arm** (`:4030-4041`): `search_this_pic` over
+///   `mg_pictures_array` → `cands[mg_lo..mg_hi]`, dims-checked with `break`,
+///   `calc_ahd` stamped on each found member — INCLUDING the centre itself
+///   (whose histogram difference against itself is trivially 0).
+/// * **future, delayed-intra arm** (`:3946-3961`): `search_this_pic` over
+///   `mg_pictures_array`, dims-checked with `break`, `calc_ahd` stamped.
+/// * **future, IDR arm** (`:3977-3995`): the reorder-queue walk only — the
+///   (i+1)-th entry after the centre in input order, dims-checked, `calc_ahd`
+///   stamped. Input order is display order here, so the walk is positional:
+///   `cands[centre_idx + 1 + i]`.
+/// * **future, inter arm** (`:4051-4087`): the same positional queue walk,
+///   then `search_this_pic` over the pre-assignment buffer for the remaining
+///   slots. Contiguous POCs make the two identical — both resolve to the
+///   positional walk.
+/// * **past/future, low-delay arm**: same queue walk for the future side.
+///
+/// `avail_past` is the caller's `avail_past_pictures(mg_pocs, centre_poc)` —
+/// the inter arm's same-mini-GOP bound (`pd_process.c:4024-4028`).
+///
+/// The compaction block C gates on `actual_past_pics != num_past_pics` is
+/// dead in C (the two are always equal — `compact_tf_past_window` documents
+/// it), so `past_altref_nframes` is the REQUESTED count even when some past
+/// slots are `None`.
+#[must_use]
+pub fn assemble_tf_window(
+    arm: TfWindowArm,
+    counts: &TfWindowCounts,
+    centre_idx: usize,
+    cands: &[TfWindowCand],
+    mg_lo: usize,
+    mg_hi: usize,
+    ld_past: &[TfWindowCand],
+    avail_past: i32,
+    regions_per_width: usize,
+    regions_per_height: usize,
+) -> TfWindow {
+    let centre = &cands[centre_idx];
+    let (cw, ch) = (centre.frame_width, centre.frame_height);
+    let poc = centre.picture_number;
+    // `search_this_pic` works on POC slices; the two arrays C searches are
+    // collected once here.
+    let mg_pocs: alloc::vec::Vec<u64> = cands[mg_lo..mg_hi]
+        .iter()
+        .map(|c| c.picture_number)
+        .collect();
+    let ld_pocs: alloc::vec::Vec<u64> = ld_past.iter().map(|c| c.picture_number).collect();
+    let mut members: alloc::vec::Vec<Option<TfWindowMember>> =
+        alloc::vec![None; ALTREF_MAX_NFRAMES];
+
+    let member = |index: usize, pool: TfMemberPool, c: &TfWindowCand, do_ahd: bool| {
+        let (ahd, active) = if do_ahd {
+            calc_ahd(
+                centre.picture_histogram,
+                c.picture_histogram,
+                c.frame_width,
+                c.frame_height,
+                regions_per_width,
+                regions_per_height,
+            )
+        } else {
+            (0, 0)
+        };
+        TfWindowMember {
+            index,
+            pool,
+            avg_luma: c.avg_luma,
+            ahd_error_to_central: ahd,
+            active_region_present: active > 0,
+        }
+    };
+
+    let num_past = counts.num_past_pics.max(0) as usize;
+    let num_future = counts.num_future_pics.max(0) as usize;
+    let mut past = 0usize;
+    let mut future = 0usize;
+    let mut hier_fixup = None;
+
+    match arm {
+        TfWindowArm::LowDelay => {
+            // `pd_process.c:3863-3880`: past from `tf_pic_array` — no dims
+            // check, no AHD; a miss leaves the slot NULL but counts anyway.
+            for pic_itr in 0..num_past {
+                let target = poc
+                    .wrapping_sub(num_past as u64)
+                    .wrapping_add(pic_itr as u64);
+                let i = search_this_pic(&ld_pocs, target);
+                if i >= 0 {
+                    let i = i as usize;
+                    members[pic_itr] = Some(member(i, TfMemberPool::LdRing, &ld_past[i], false));
+                }
+            }
+            // `:3882` — centre at slot `num_past`.
+            members[num_past] = Some(member(centre_idx, TfMemberPool::Window, centre, false));
+            // `:3886-3912` — future: queue walk then pre-ass buffer; both are
+            // the positional forward walk here. Dims mismatch breaks.
+            for pic_i in 0..num_future {
+                match cands.get(centre_idx + 1 + pic_i) {
+                    Some(c) if c.frame_width == cw && c.frame_height == ch => {
+                        members[num_past + 1 + pic_i] = Some(member(
+                            centre_idx + 1 + pic_i,
+                            TfMemberPool::Window,
+                            c,
+                            false,
+                        ));
+                        future += 1;
+                    }
+                    _ => break,
+                }
+            }
+            // `:3908-3909` — `actual_past_pics` is `num_past_pics` verbatim;
+            // the compaction below it is dead (see `compact_tf_past_window`).
+            past = num_past;
+        }
+        TfWindowArm::DelayedIntra => {
+            // `:3932` — centre at slot 0; NO ahd stamped on it.
+            members[0] = Some(member(centre_idx, TfMemberPool::Window, centre, false));
+            // `:3936-3943` — the key-frame pred-structure fixup. The
+            // `centre != temp_filt_pcs_list[0]` half is dead (slot 0 IS the
+            // centre); only the member comparison can fire.
+            let next = poc.wrapping_add(1);
+            let fixup_idx = search_this_pic(&mg_pocs, next);
+            if fixup_idx >= 0 {
+                let lvl = cands[mg_lo + fixup_idx as usize].hierarchical_levels;
+                if lvl != centre.hierarchical_levels {
+                    hier_fixup = Some(lvl);
+                }
+            }
+            // `:3946-3961` — future from `mg_pictures_array` only, poc-matched.
+            for pic_i in 0..num_future {
+                let target = poc.wrapping_add(pic_i as u64 + 1);
+                let local = search_this_pic(&mg_pocs, target);
+                if local < 0 {
+                    break;
+                }
+                let idx = mg_lo + local as usize;
+                let c = &cands[idx];
+                if c.frame_width != cw || c.frame_height != ch {
+                    break;
+                }
+                members[pic_i + 1] = Some(member(idx, TfMemberPool::Window, c, true));
+                future += 1;
+            }
+        }
+        TfWindowArm::RandomAccessIdr => {
+            // `:3971` — centre at slot 0; NO ahd stamped.
+            members[0] = Some(member(centre_idx, TfMemberPool::Window, centre, false));
+            // `:3977-3995` — future from the reorder queue only (positional).
+            for pic_i in 0..num_future {
+                match cands.get(centre_idx + 1 + pic_i) {
+                    Some(c) if c.frame_width == cw && c.frame_height == ch => {
+                        members[pic_i + 1] = Some(member(
+                            centre_idx + 1 + pic_i,
+                            TfMemberPool::Window,
+                            c,
+                            true,
+                        ));
+                        future += 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        TfWindowArm::RandomAccessInter => {
+            // `:4024-4028` — bound to what the mini-GOP actually holds.
+            let num_past = num_past.min(avail_past.max(0) as usize);
+            // `:4030-4041` — past+centre from `mg_pictures_array`, poc-matched;
+            // dims mismatch breaks, a plain miss leaves the slot NULL.
+            for pic_itr in 0..=num_past {
+                let target = poc
+                    .wrapping_sub(num_past as u64)
+                    .wrapping_add(pic_itr as u64);
+                let local = search_this_pic(&mg_pocs, target);
+                if local >= 0 {
+                    let idx = mg_lo + local as usize;
+                    let c = &cands[idx];
+                    if c.frame_width != cw || c.frame_height != ch {
+                        break;
+                    }
+                    members[pic_itr] = Some(member(idx, TfMemberPool::Window, c, true));
+                }
+            }
+            // `:4051-4087` — queue walk then pre-ass buffer: the positional
+            // forward walk.
+            for pic_i in 0..num_future {
+                match cands.get(centre_idx + 1 + pic_i) {
+                    Some(c) if c.frame_width == cw && c.frame_height == ch => {
+                        members[num_past + 1 + pic_i] = Some(member(
+                            centre_idx + 1 + pic_i,
+                            TfMemberPool::Window,
+                            c,
+                            true,
+                        ));
+                        future += 1;
+                    }
+                    _ => break,
+                }
+            }
+            // `:4089` — `actual_past_pics` is `num_past_pics` verbatim.
+            past = num_past;
+        }
+    }
+
+    // `:4101-4118` — averages over slots `0..=past+future`, centre excluded.
+    members.truncate(past + 1 + future);
+    let mut luma = alloc::vec::Vec::with_capacity(members.len());
+    let mut errs = alloc::vec::Vec::with_capacity(members.len());
+    for m in &members {
+        // C dereferences `temp_filt_pcs_list[i]` unconditionally — a NULL
+        // slot would crash there; the port treats it as a 0 contribution,
+        // which is only reachable on the sparse fills.
+        let (l, e) = m.map_or((0, 0), |m| (m.avg_luma, m.ahd_error_to_central as i32));
+        luma.push(l);
+        errs.push(e);
+    }
+    let (tf_avg_luma, tf_avg_ahd_error) = tf_window_averages(&luma, &errs, past, future);
+
+    TfWindow {
+        members,
+        past_altref_nframes: past,
+        future_altref_nframes: future,
+        tf_avg_luma,
+        tf_avg_ahd_error,
+        hier_fixup,
+    }
+}
+
+/// The noise state `derive_tf_window_params` stamps on the centre
+/// (`pd_process.c:3755-3849`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfWindowNoise {
+    /// C `pcs->noise_levels_log1p_fp16[3]` — the Q16 `log1p` levels per plane.
+    pub levels_log1p_fp16: [i32; 3],
+    /// C `pcs->is_noise_level` — read off `last_i` AFTER the carry, identical
+    /// to reading `levels[0]`.
+    pub is_noise_level: bool,
+    /// C `do_noise_est` — whether the fresh Y estimate ran. When false,
+    /// `levels[0]` is the carried `last_i` value.
+    pub estimated_y: bool,
+}
+
+/// C `derive_tf_window_params`' NOISE half (`pd_process.c:3755-3849`).
+///
+/// The pixel estimation itself belongs to the caller (the ported
+/// `svt_estimate_noise*_fp16` kernels); this owns the SELECTION:
+///
+/// * `do_noise_est = !use_intra_for_noise_est || slice_type == I_SLICE` — an
+///   I slice ALWAYS re-estimates whatever the control table says.
+/// * Y is estimated only under `do_noise_est`; U/V are estimated
+///   UNCONDITIONALLY when `chroma_lvl` is set — the last-I carry applies to
+///   luma alone.
+/// * `last_i[0]` is updated from the fresh estimate, or reloaded into
+///   `levels[0]` when the estimate was skipped.
+/// * `is_noise_level = last_i[0] >= VQ_NOISE_LVL_TH`, read after the carry.
+///
+/// `fresh_y_log1p_fp16` must be `Some` exactly when `do_noise_est` holds —
+/// the caller computes it with `estimate_noise_fp16` / `_highbd_fp16` over the
+/// centre's source and runs it through `noise_log1p_fp16`. `fresh_uv` carries
+/// the same for chroma, required only when `chroma_lvl` is set; when it is
+/// not set C leaves the pcs's zero-initialised U/V slots alone, which the
+/// `[0, 0]` stamp reproduces for a picture this runs once on.
+#[must_use]
+pub fn tf_window_noise(
+    use_intra_for_noise_est: bool,
+    is_i_slice: bool,
+    chroma_lvl: bool,
+    fresh_y_log1p_fp16: Option<i32>,
+    fresh_uv_log1p_fp16: [i32; 2],
+    last_i_noise_levels_log1p_fp16: &mut [i32; 3],
+) -> TfWindowNoise {
+    // `pd_process.c:3757-3759`.
+    let do_noise_est = !use_intra_for_noise_est || is_i_slice;
+    let y = if do_noise_est {
+        let y = fresh_y_log1p_fp16
+            .expect("do_noise_est is set: C estimates Y — the caller must supply it");
+        // `:3844` — publish to the carry slot.
+        last_i_noise_levels_log1p_fp16[0] = y;
+        y
+    } else {
+        debug_assert!(
+            fresh_y_log1p_fp16.is_none(),
+            "do_noise_est is clear: C does not estimate Y, but a fresh value was supplied"
+        );
+        // `:3846` — reuse the carried I-slice noise.
+        last_i_noise_levels_log1p_fp16[0]
+    };
+    // `:3794-3810` / `:3826-3841` — chroma estimates are UNCONDITIONAL under
+    // `chroma_lvl`; with the gate off C keeps the pcs's initial zeros.
+    let [u, v] = if chroma_lvl {
+        fresh_uv_log1p_fp16
+    } else {
+        [0, 0]
+    };
+    TfWindowNoise {
+        levels_log1p_fp16: [y, u, v],
+        // `:3848` — reads `last_i` after the carry; equal to `y` in force.
+        is_noise_level: last_i_noise_levels_log1p_fp16[0] >= VQ_NOISE_LVL_TH,
+        estimated_y: do_noise_est,
+    }
+}
+
+/// `pd_process.c:5122` — the centre inherits the context's carried
+/// filt/unfilt difference before its window params derive (and before the
+/// filter overwrites it with its own measurement).
+pub fn tf_inherit_filt_to_unfilt_diff(ctx: &PicDecisionCtx, pic: &mut PicParams) {
+    pic.filt_to_unfilt_diff = ctx.filt_to_unfilt_diff;
+}
+
+/// `pd_process.c:5124` — only an I slice publishes its measured
+/// filt/unfilt difference back to the context.
+pub fn tf_publish_filt_to_unfilt_diff(ctx: &mut PicDecisionCtx, pic: &PicParams) {
+    if pic.slice_type == SliceType::I {
+        ctx.filt_to_unfilt_diff = pic.filt_to_unfilt_diff;
+    }
 }
 
 /// C `low_delay_store_tf_pictures`' STORE PREDICATE
