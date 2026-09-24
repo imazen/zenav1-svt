@@ -112,7 +112,7 @@ impl SpeedConfig {
 /// EbDebugMacros.h:37/74/77). `allintra` is C `scs->allintra` =
 /// `intra_period_length == 0 || avif || pred_structure == ALL_INTRA`
 /// (enc_handle.c:4624) — our still-picture single-frame mode
-/// (`intra_period <= 1`), the identity-harness `--avif 1` config.
+/// (`intra_period == 1`), the identity-harness `--avif 1` config.
 ///
 /// allintra = true:
 ///

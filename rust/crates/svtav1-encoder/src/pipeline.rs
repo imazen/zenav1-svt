@@ -617,7 +617,7 @@ impl EncodePipeline {
         // branch; the port's still/key pipeline is the same shape.
         let sb_inputs = crate::sb128_geom::SbSizeInputs {
             qp: rc_config.qp,
-            allintra: intra_period <= 1,
+            allintra: intra_period == 1,
             ..Default::default()
         };
         let derived_sb = crate::sb128_geom::derive_super_block_size(
@@ -912,9 +912,10 @@ impl EncodePipeline {
     fn ra_config_error(&self) -> Option<&'static str> {
         if self.gop.intra_period <= 1 {
             return Some(
-                "pred_structure RandomAccess needs a GOP: intra_period <= 1 makes every \
-                 frame a key frame, so there is no mini-GOP to reorder [C: accepts but \
-                 degenerates to all-intra]",
+                "pred_structure RandomAccess needs a GOP: intra_period == 1 makes every \
+                 frame a key frame, so there is no mini-GOP to reorder, and \
+                 intra_period == 0 (single key then low-delay inter) is untested on \
+                 the RA path [C: accepts but degenerates to all-intra at == 1]",
             );
         }
         if self.superres_denom.is_some() {
@@ -2110,7 +2111,7 @@ impl EncodePipeline {
         // The SB derivation keys off the ALIGNED dims, which just changed.
         let sb_inputs = crate::sb128_geom::SbSizeInputs {
             qp: self.rc_config.qp,
-            allintra: self.gop.intra_period <= 1,
+            allintra: self.gop.intra_period == 1,
             ..Default::default()
         };
         self.derived_sb_size = crate::sb128_geom::derive_super_block_size(
@@ -2789,7 +2790,7 @@ impl EncodePipeline {
     /// ladder; the allintra arm is unconditional TX_MODE_SELECT, the video arm
     /// signals it only while `pcs->txs_level != 0`.
     fn frame_tx_mode_select(&self, temporal_layer: u8) -> bool {
-        let arm = if self.gop.intra_period <= 1 {
+        let arm = if self.gop.intra_period == 1 {
             crate::sc_detect::ScArm::Allintra
         } else {
             crate::sc_detect::ScArm::Video { is_islice: true }
@@ -2846,7 +2847,7 @@ impl EncodePipeline {
     /// (`mfmv_level >= 2`) come BACK instead of silently coding a wrong bit.
     fn scs_tpl(&self) -> bool {
         crate::inter_hdr_arm::scs_tpl(
-            self.gop.intra_period <= 1,
+            self.gop.intra_period == 1,
             self.rc_config.aq_mode,
             // Every inter picture this pipeline builds is LOW_DELAY
             // (`pred_struct_type: PredStructure::LowDelay` in the picture
@@ -3253,7 +3254,7 @@ impl EncodePipeline {
                  use mainline mode or QP >= 1",
             );
         }
-        if !is_key || self.gop.intra_period > 1 {
+        if !is_key || self.gop.intra_period != 1 {
             // The encode can contain INTER frames. Coded-lossless inter is
             // decoder-verified only on the 8-bit 4:2:0 funnel arm: real
             // inter-coded blocks emit WHT residuals aomdec reconstructs
@@ -3353,7 +3354,7 @@ impl EncodePipeline {
         // is where the superres gate lives until the upscaled-LR wiring lands.
         let tools = crate::speed_config::seq_tools_for_preset(
             self.speed_config.preset,
-            self.gop.intra_period <= 1,
+            self.gop.intra_period == 1,
             self.width as usize * self.height as usize,
         );
         if tools.enable_restoration
@@ -3752,7 +3753,7 @@ impl EncodePipeline {
         self.enhancements
             .validate(
                 self.speed_config.preset,
-                self.gop.intra_period <= 1,
+                self.gop.intra_period == 1,
                 self.chroma_420 && chroma.is_some(),
                 self.bit_depth,
             )
@@ -3816,7 +3817,7 @@ impl EncodePipeline {
         {
             let sb_inputs = crate::sb128_geom::SbSizeInputs {
                 qp: self.rc_config.qp,
-                allintra: self.gop.intra_period <= 1,
+                allintra: self.gop.intra_period == 1,
                 variance_boost: self.hdr.enable_variance_boost,
                 ..Default::default()
             };
@@ -3992,7 +3993,7 @@ impl EncodePipeline {
         // pic_lpd1_lvl, ME search area, prehme level and
         // stats_based_sb_lambda_modulation all derive differently from
         // raw 13 than from C's 11.
-        let sc_arm = if self.gop.intra_period <= 1 {
+        let sc_arm = if self.gop.intra_period == 1 {
             crate::sc_detect::ScArm::Allintra
         } else {
             crate::sc_detect::ScArm::Video { is_islice: is_key }
@@ -4061,7 +4062,7 @@ impl EncodePipeline {
         // the local `PicParams` — nothing downstream of a KEY frame reads
         // either.
         let decided_is_some = decided.is_some();
-        let pic_decision = if self.gop.intra_period > 1 {
+        let pic_decision = if self.gop.intra_period != 1 {
             Some(match decided {
                 // Random access: the window decision already ran RPS + DPB
                 // state for this picture — re-running it per frame would
@@ -4654,7 +4655,7 @@ impl EncodePipeline {
         // `is_ref`/`idr_flag` are true for the key frame this reaches today;
         // the non-base temporal-layer arm needs a DPB the port does not have,
         // and `cqp_qindex_calc` documents that it must not be used there yet.
-        let allintra = self.gop.intra_period <= 1;
+        let allintra = self.gop.intra_period == 1;
         if !allintra {
             // rc_crf_cqp.c:439-444 — the LOW_DELAY non-base boost reads the
             // L0 reference's per-SB intra counts (`get_ref_obj(pcs,
@@ -4904,7 +4905,7 @@ impl EncodePipeline {
         // nothing can ever reference this frame, and the pyramid is a padded
         // copy plus two decimations of the whole luma plane — real work to
         // spend on a buffer with no reader.
-        let pa_cur = (self.gop.intra_period > 1).then(|| match self.pa_scratch.take() {
+        let pa_cur = (self.gop.intra_period != 1).then(|| match self.pa_scratch.take() {
             // Recycle the frame-before-last's pyramid. `refill_from_source`
             // rewrites every byte and every descriptor field, so this is
             // byte-identical to the fresh allocation it replaces.
@@ -5835,7 +5836,7 @@ impl EncodePipeline {
         // Threaded to the SH + FH writers AND the entropy walk below —
         // the per-block use_filter_intra symbol exists exactly when the
         // SH signals the tool, so all three consumers MUST see one value.
-        let is_single_frame = self.gop.intra_period <= 1;
+        let is_single_frame = self.gop.intra_period == 1;
         let seq_tools = {
             let mut t = crate::speed_config::seq_tools_for_preset(
                 self.speed_config.preset,
@@ -5872,7 +5873,7 @@ impl EncodePipeline {
             if self
                 .enhancements
                 .contains(crate::enhancements::ZenEnhancement::DeepSearch)
-                && self.gop.intra_period <= 1
+                && self.gop.intra_period == 1
                 && self.chroma_420
             {
                 t.enable_filter_intra =
@@ -8305,7 +8306,7 @@ impl EncodePipeline {
             || crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
             || self.recon_output
             // A later frame may predict from this recon via the DPB. Only an
-            // all-key sequence (`intra_period <= 1`) provably has no such
+            // all-key sequence (`intra_period == 1`) provably has no such
             // reader — every `self.dpb.get(..)` site is gated on `!is_key`.
             || !is_single_frame;
         let (
@@ -9857,8 +9858,10 @@ impl EncodePipeline {
         } else {
             let pic = pic_decision.as_ref().ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame needs the picture decision, which this port so far runs \
-                     only when a GOP is configured (intra_period > 1) [C: accepts]",
+                    "an inter frame reached header signalling without a picture decision — \
+                     unreachable since run_picture_decision covers every intra_period != 1 \
+                     config (defensive; remove the caller's is_key guard instead of emitting \
+                     a header that disagrees with the encode) [C: accepts]",
                 ))
             })?;
             let ref_queue =

@@ -328,7 +328,7 @@ pub struct PipelineMdInputs {
     pub hierarchical_levels: u8,
     /// `ppcs->update_type` (`port_picstruct::set_frame_update_type`,
     /// `pd_process.c:4591`). `None` when no picture decision ran — the
-    /// `intra_period <= 1` non-key shape this pipeline does not produce.
+    /// `intra_period == 1` non-key shape this pipeline does not produce.
     /// `set_cand_reduction_ctrls` reads it as `frame_is_leaf`
     /// (`enc_mode_config.c:4100`), which is NOT `is_highest_layer`: the two
     /// disagree on a flat GOP, where every non-key frame is `LF_UPDATE`.

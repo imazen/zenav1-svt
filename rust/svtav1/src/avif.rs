@@ -559,7 +559,10 @@ impl AvifEncoder {
     /// [`Self::build_pipeline`] with an explicit key-frame interval, for the
     /// animation path's inter-coded colour track. `intra_period` is C's
     /// `GopStructure::intra_period`: 1 codes every picture as a key frame,
-    /// `n > 1` codes one key frame followed by `n - 1` inter frames.
+    /// `n > 1` codes one key frame followed by `n - 1` inter frames, and 0
+    /// codes a single key frame followed by inter frames for the rest of
+    /// the sequence — the low-delay equivalent of C's `intra_period_length`
+    /// beyond the clip end (byte-verified against C on flat-LDP cells).
     ///
     /// Hierarchical levels stay 0 — a flat low-delay-P GOP is the only
     /// structure this port's reference-buffer table fills, and
