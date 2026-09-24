@@ -65,8 +65,10 @@ detail, and they are regenerated or gated rather than narrated.
   C and must not be "fixed".
 - Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
   scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
-- Open work: hierarchical (random-access) GOPs, temporal filtering, and
-  VBR/CBR rate control. The
+- Random-access (hierarchical) GOPs encode end to end — decoder-verified
+  (`ra_selfcheck_gate.sh`, 11/11), not byte-claimed vs C. Temporal filtering
+  is live under RA, including the delayed-intra key path. Open work:
+  VBR/CBR rate control, scene-change/adaptive GOP, TPL. The
   MSRV floor is 1.98, matching what the aarch64 dotprod
   intrinsics (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 
@@ -105,7 +107,7 @@ detail, and they are regenerated or gated rather than narrated.
 - Signed native −1 is implemented; −2/−3 are refused. C all-intra SGR research
   search and video SGR have different preset selectors; do not say SGR is absent.
 - Single-still CRF/CQP equivalence is measured in its stated envelope; multi-frame
-  rate control/lookahead/temporal filtering remains separate work.
+  rate control/lookahead remains separate work.
 - Tile-parallel output is deterministic; tiles may be forced by dimensions.
   Do not assume the caller's zero tile request implies a single tile.
 - `COVERAGE.md` is historical C-struct shape coverage, not a count of features.

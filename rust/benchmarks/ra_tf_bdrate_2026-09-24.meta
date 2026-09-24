@@ -1,0 +1,41 @@
+# RA + TEMPORAL-FILTER BD-RATE — port vs C reference (2026-09-24)
+
+host:    lilith (WSL2 x86_64)
+commit:  35e57f952 (MCTF-D tip — delayed-intra key path landed)
+corpus:  pd-derf-720p 256x256, johnny / vidyo4 / fourpeople — each looped to
+         9 frames so the encode is one key frame plus ONE COMPLETE 8-picture
+         mini-GOP (hier 3)
+config:  CQP p6, qp {25,40,55}, intra period 64, pred-struct RA, hier 3,
+         temporal filtering ON (the default on both sides)
+configs:
+  rs   = port, SVT_PRED_STRUCT=2 SVTAV1_HIER_LEVELS=3 (enable_tf default)
+  cra  = C reference v4.2.0, --hierarchical-levels 3 (--enable-tf default 1)
+
+method:  per-frame PSNR-Y vs source after aomdec --rawvideo, averaged over
+         the 9 displays; BD-rate = piecewise-linear integrate of
+         log2(bytes) over the common PSNR range (3 qp points — honest
+         ballpark, not a test-set claim). Same methodology as
+         video_gap_bdrate_2026-09-23.
+
+result (BD-rate, positive = port worse):
+  clip        rs vs cra
+  johnny        +0.37%
+  vidyo4        -0.03%
+  fourpeople    +0.55%
+
+per-point notes:
+  - qp25: the port spends MORE bits (+2%..+32%) at HIGHER PSNR (+0.1..+0.6dB)
+  - qp55: the port spends FEWER bits (-10%..-23%) at LOWER PSNR (-0.8..-2.1dB)
+  The qp55 divergence is bit-ALLOCATION, not filtering: C's hierarchical
+  QP-offset ladder spends more on the leaf layer than the port does at high
+  QP. BD-rate over the common PSNR range reads the real gap: sub-1%.
+
+context: at the same corpus/config the flat low-delay port-vs-C parity is
+  ±0.15% (video_gap_bdrate_2026-09-23). RA+TF lands within ~0.55% — the
+  residual is the generic inter envelope (ME/MD divergence), not a TF defect:
+  the delayed-intra key's recon moved from == C-noTF (unfiltered) to closer
+  to C-TF than to C-noTF on the same clip (maxdiff 15 vs 23).
+
+gates behind this landing: ra_selfcheck_gate.sh 11/11 (recon == aomdec on
+  every display frame, hidden-frame anti-vacuity), workspace nextest
+  4003/4003, regression_spotcheck 145/145.
