@@ -694,7 +694,20 @@ pub fn run_frame_me_into(
         enhanced_height: p.height as u32,
         ahd_error: u32::MAX,
         input_resolution: input_resolution.as_u8(),
-        enable_me_8x8: true,
+        // C `pcs->enable_me_8x8` (`svt_aom_sig_deriv_pre_analysis_pcs`,
+        // enc_mode_config.c:2756) — `svt_aom_get_enable_me_8x8` over the
+        // preset/resolution ladder, 0 above M8 (>720p) and above M5 at any
+        // size. Was hard-coded `true`, so `svt_aom_get_me_block_offset`'s
+        // `me_idx_85_8x8_to_16x16_conversion` remap never ran: at p9+ a
+        // sub-16 block read its OWN 8x8 ME result where C reads the parent
+        // 16x16's (measured 2026-09: screenrep 72x88 q40 p13 f1, the 8x8s
+        // under mi(8,16) inherited MV (-4,+1) in C, (-6,+2) in the port,
+        // flipping the PD0 leaf-vs-split pick).
+        enable_me_8x8: crate::port_enc_mode_config::leaf::get_enable_me_8x8(
+            p.enc_mode,
+            input_resolution,
+            /*rtc_tune=*/ false,
+        ) != 0,
         enable_me_16x16: true,
         max_number_of_pus_per_sb: 85,
         hierarchical_levels: p.hierarchical_levels,
