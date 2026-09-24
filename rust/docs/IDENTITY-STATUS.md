@@ -12,6 +12,47 @@ that is the property a wrong stream actually violates and because the port's
 inter search does not track C's bytes on all content. Never infer one from the
 other.
 
+## Random-access stream bytes — 2026-09-24
+
+The RA path's *stream machinery* is now byte-verified against C where the
+decision surface is unambiguous, and decoder-verified everywhere per the
+generic inter envelope. The measured parity cell is C with `aq_mode 0`:
+C's default `aq_mode=2` enables TPL under RA (the `TPL is disabled for
+aq_mode 0` warning is the tell), which the port deliberately refuses —
+`aq_mode != 0` is a typed refusal, so `aq_mode 0` is the honest envelope.
+
+Driven by `tools/identity_run` (`SVTAV1_FRAMES`, `SVT_PRED_STRUCT=2`,
+`SVTAV1_HIER_LEVELS`, `SVTAV1_INTRA_PERIOD=64`, `SVT_ENABLE_TF`) vs
+`tools/capture_c_trace/capture_c_trace` (`SVT_FRAMES`, `SVT_PRED_STRUCT`,
+`SVT_HIER_LEVELS`, `SVT_INTRA_PERIOD`, `SVT_ENABLE_TF`) on the shared
+`.yuv` the port writes, 256x256 p6 q40:
+
+- `uniform` hier 3 9f: **byte-identical**, `SVT_ENABLE_TF` 0 AND 1.
+- `screen` hier {1:4f, 2:6f, 3:9f, 4:9f, 5:9f}: **byte-identical** end to
+  end — seq header, key tile, TU batching (TD + hidden + shown frames in
+  one TU), `show_existing` OBUs, every inter tile's entropy payload, and
+  the CDF continuation across reordered pictures (hidden pic8's stored
+  context is what pic4's tile seeds from — byte-proven by pic4's tile
+  matching, including its MFMV-derived MVP stacks).
+- `gradient` / `johnny` real video: diverge inside inter tiles on
+  *equivalent* decisions, not structure — e.g. C picks `NEWMV mv=-704`
+  where the port picks `NEAREST mv=-192` on the period-64 gradient (both
+  predictions SSE-identical), and C splits one SB the port keeps while the
+  port splits a different one. Same documented inter-MD envelope as
+  low-delay; headers, TU layout and the CDF chain still match.
+- `diag` diverges inside the KEY tile (intra path, unrelated to RA).
+
+Two RA-specific defects were fixed to get here: TU emission now batches
+hidden+shown frames under one TD (`7600037f0`, matching C's
+`count_frames_in_next_tu` semantics), and `frame_hier` for IDR keys now
+takes the configured level per `pd_process.c:968` (`db0ce08f3`) — without
+it, h5 coded the key at `base_q_idx 67` vs C's `70` (the `percents[0]`
+row only reachable via `hierarchical_levels > 4`).
+
+The claim is: RA streams are byte-identical to C on unambiguous
+synthetic content; on real video the generic inter envelope applies
+(decoder-verified via `ra_selfcheck_gate.sh`, 11/11).
+
 ## Tune surface (`--tune`) — 2026-09-19
 
 `SvtTune` (`zenav1-svt::SvtTune`, builder `with_tune`) exposes C's
