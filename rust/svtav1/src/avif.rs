@@ -29,6 +29,10 @@ pub use crate::policy::{Effort, EncodingPolicy, ResolvedStillPolicy, StillSuitab
 pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
 /// Pinned C source identity, separate from speed and policy.
 pub use svtav1_encoder::reference::SvtReference;
+/// `__expert`: fixed per-plane chroma delta-q; see
+/// [`AvifEncoder::with_chroma_q_override`].
+#[cfg(feature = "__expert")]
+pub use svtav1_encoder::chroma_q::ChromaQOverride;
 /// Checked C preset domain, including research -1.
 pub use svtav1_encoder::speed_config::NativePreset;
 /// C `--tune` bundles (`--tune 0..4`) for the still/allintra path.
@@ -164,6 +168,9 @@ pub struct AvifEncoder {
     /// Cooperative cancellation token forwarded to every `EncodePipeline`
     /// this encoder builds; see [`Self::with_stop`].
     stop: Option<almost_enough::StopToken>,
+    /// `__expert`: see [`Self::with_chroma_q_override`].
+    #[cfg(feature = "__expert")]
+    chroma_q_override: Option<ChromaQOverride>,
 }
 
 impl Default for AvifEncoder {
@@ -205,7 +212,23 @@ impl AvifEncoder {
             matrix_coefficients: 1,       // BT.709
             full_range: false,
             stop: None,
+            #[cfg(feature = "__expert")]
+            chroma_q_override: None,
         }
+    }
+
+    /// `__expert`: replace the derived chroma delta-q with fixed per-plane
+    /// qindex deltas for U (Cb) and V (Cr). Each is clamped to `[-64, 63]`
+    /// and applied to both the DC and AC quantizer of its plane; positive is
+    /// coarser. `u != v` signals `separate_uv_delta_q = 1`.
+    ///
+    /// For decorrelated-plane research stimuli (chroma much coarser or finer
+    /// than luma); not a quality knob, and no C-parity claim. Monochrome
+    /// encodes with an override set are refused with an explicit error.
+    #[cfg(feature = "__expert")]
+    pub fn with_chroma_q_override(mut self, u: i8, v: i8) -> Self {
+        self.chroma_q_override = Some(ChromaQOverride::new(u, v));
+        self
     }
 
     /// Install a cooperative cancellation token, forwarded to every
@@ -623,6 +646,10 @@ impl AvifEncoder {
         pipeline.bit_depth = self.bit_depth;
         pipeline.reference = self.reference;
         pipeline.enhancements = self.enhancements;
+        #[cfg(feature = "__expert")]
+        {
+            pipeline.chroma_q_override = self.chroma_q_override;
+        }
         pipeline.color_description = self.color_description();
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
         // now the real pipeline settings. Defaults are off, so this is

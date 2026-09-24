@@ -55,6 +55,59 @@ impl ChromaQDeltas {
     }
 }
 
+/// `__expert`: a fixed per-plane chroma delta-q that REPLACES the derived
+/// [`ChromaQDeltas`] (mainline, tune-IQ and fork alike) on every frame that
+/// carries chroma planes. Monochrome frames ignore it.
+///
+/// This exists to decorrelate plane quality for research stimuli (chroma much
+/// coarser than luma, or much finer), not as a tuning knob. It has no C
+/// counterpart and makes no C-parity claim.
+///
+/// Each value is a qindex delta applied to BOTH the DC and the AC quantizer
+/// of its plane, clamped to the FH `su(1+6)` range `[-64, 63]`: positive is
+/// coarser, negative finer. The plane qindex (base + delta) is further clamped
+/// to `[0, 255]` exactly as the derived deltas are. One delta per plane — the
+/// quantizer consumes a single per-plane qindex, so a split DC/AC delta
+/// would signal something the encoder never applied.
+///
+/// `u != v` forces SH `separate_uv_delta_q = 1` (the fork's four-delta FH
+/// form); `u == v` keeps the mainline shared form. Signal and application
+/// stay in agreement by construction: both read the same resolved deltas.
+#[cfg(feature = "__expert")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChromaQOverride {
+    /// U (Cb) plane qindex delta, `[-64, 63]` after clamping.
+    pub u: i8,
+    /// V (Cr) plane qindex delta, `[-64, 63]` after clamping.
+    pub v: i8,
+}
+
+#[cfg(feature = "__expert")]
+impl ChromaQOverride {
+    /// Override with independent U and V deltas.
+    pub const fn new(u: i8, v: i8) -> Self {
+        Self { u, v }
+    }
+
+    /// The FH delta set this override signals and the quantizer applies.
+    pub fn deltas(self) -> ChromaQDeltas {
+        let u = self.u.clamp(-64, 63);
+        let v = self.v.clamp(-64, 63);
+        ChromaQDeltas {
+            u_dc: u,
+            u_ac: u,
+            v_dc: v,
+            v_ac: v,
+        }
+    }
+
+    /// Whether the sequence header must signal `separate_uv_delta_q = 1`.
+    pub fn needs_separate_uv(self) -> bool {
+        let d = self.deltas();
+        d.u_ac != d.v_ac
+    }
+}
+
 #[inline]
 fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
     v.clamp(lo, hi)
@@ -192,5 +245,24 @@ mod tests {
         // P3 caps at 4.
         let d = fork_chroma_q_deltas(240, &cd(EB_CICP_CP_SMPTE_431, 13));
         assert_eq!((d.u_dc, d.v_dc), (-8 - 4 + 12, -12 - 4 + 4));
+    }
+
+    #[cfg(feature = "__expert")]
+    #[test]
+    fn override_clamps_to_fh_range_and_ties_dc_to_ac() {
+        let d = ChromaQOverride::new(100, -100).deltas();
+        assert_eq!((d.u_dc, d.u_ac, d.v_dc, d.v_ac), (63, 63, -64, -64));
+        let d = ChromaQOverride::new(-5, 17).deltas();
+        assert_eq!((d.u_dc, d.u_ac, d.v_dc, d.v_ac), (-5, -5, 17, 17));
+    }
+
+    #[cfg(feature = "__expert")]
+    #[test]
+    fn override_separate_uv_only_when_planes_differ() {
+        assert!(!ChromaQOverride::new(20, 20).needs_separate_uv());
+        assert!(ChromaQOverride::new(20, 0).needs_separate_uv());
+        // Distinct raw values that clamp to the same delta are NOT separate.
+        assert!(!ChromaQOverride::new(90, 70).needs_separate_uv());
+        assert!(ChromaQOverride::default().deltas().is_zero());
     }
 }

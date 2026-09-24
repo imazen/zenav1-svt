@@ -74,6 +74,10 @@ symtrace = ["zenav1-svt-encoder/symtrace"]
 # Feature 3: forward fallible allocation down to the encoder/types so the
 # gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
 fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]
+# Expert-only controls with no C-parity claim (double-underscore prefix: not a
+# stable surface; may change without a semver bump). Forwards the encoder
+# crate's `__expert` and exposes `AvifEncoder::with_chroma_q_override`.
+__expert = ["zenav1-svt-encoder/__expert"]
 
 [[test]]
 # Animated AVIF had no test anywhere in the workspace until 2026-09-11; this
@@ -147,6 +151,11 @@ required-features = ["avif-container"]
 [[example]]
 name = "mp4_to_avif"
 required-features = ["avif-container"]
+
+# Recon-parity witness for the expert chroma delta-q override.
+[[example]]
+name = "chroma_q_override_recon"
+required-features = ["__expert"]
 
 # Instruction-count (callgrind) benchmark for the still-encode perf cell —
 # see benches/iai_encode.rs. `harness = false` lets the iai main! drive the

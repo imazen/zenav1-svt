@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **67
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **69
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **9** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -69,6 +69,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef_scaling must be 1..=30 (C verify_settings, enc_settings.c:975) |
+| `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override changed U/V separation after the key frame; the sequence header fixes separate_uv_delta_q until the next key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is reserved (C verify_settings, enc_settings.c:762) |
 | `crates/svtav1-encoder/src/pipeline.rs` | complex_hvs must be 0 or 1 (C verify_settings, enc_settings.c:965) |
 | `crates/svtav1-encoder/src/pipeline.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
@@ -108,6 +109,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess with film grain is untested: C's show_existing headers would have to re-signal grain state |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess with superres is untested: references at a different coded width inside the window need decoder verification first |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess needs a GOP: intra_period == 1 makes every frame a key frame, so there is no mini-GOP to reorder, and intra_period == 0 (single key then low-delay inter) is untested on the RA path |
+| `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override is set but this frame is monochrome: there is no U/V quantizer to override; clear the override for mono frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | hierarchical_levels > 5 is outside C's own supported range (enc_settings.c:275, \"Hierarchical Levels supported: [0-5]\") and the pred-struct tables end at level 5. Use hierarchical_levels <= 5 |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres supports 8/10-bit only — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists outside that envelope |

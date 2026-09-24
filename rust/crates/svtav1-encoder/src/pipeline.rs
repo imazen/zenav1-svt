@@ -74,6 +74,19 @@ pub struct EncodePipeline {
     pub hdr: crate::hdr_mode::HdrForkConfig,
     /// C denoiser, supplied table, and INTER grain reuse controls.
     pub film_grain: crate::film_grain_config::FilmGrainConfig,
+    /// `__expert`: fixed per-plane chroma delta-q that REPLACES the derived
+    /// deltas on every frame with chroma planes (see
+    /// [`crate::chroma_q::ChromaQOverride`]). `None`, the default, keeps the
+    /// derived deltas and the bytes. No C counterpart, no C-parity claim; a
+    /// monochrome frame with an override set is refused.
+    #[cfg(feature = "__expert")]
+    pub chroma_q_override: Option<crate::chroma_q::ChromaQOverride>,
+    /// The `separate_uv_delta_q` the last key frame's sequence header
+    /// signalled. Inter frames must agree with it: the SH is written on key
+    /// frames only, so a mid-sequence override change could otherwise switch
+    /// the FH chroma-q form under a SH that no longer matches.
+    #[cfg(feature = "__expert")]
+    sh_separate_uv_delta_q: Option<bool>,
     prepared_grain: Option<crate::entropy::obu::FilmGrainParams>,
     grain_references: [Option<crate::entropy::obu::FilmGrainParams>; 8],
     grain_sequence_present: Option<bool>,
@@ -632,6 +645,10 @@ impl EncodePipeline {
             reference: crate::reference::SvtReference::Hybrid3115,
             enhancements: crate::enhancements::ZenEnhancements::default(),
             film_grain: Default::default(),
+            #[cfg(feature = "__expert")]
+            chroma_q_override: None,
+            #[cfg(feature = "__expert")]
+            sh_separate_uv_delta_q: None,
             prepared_grain: None,
             grain_references: core::array::from_fn(|_| None),
             grain_sequence_present: None,
@@ -2039,6 +2056,21 @@ impl EncodePipeline {
         } else {
             (want, false)
         }
+    }
+
+    /// SH `separate_uv_delta_q`. The fork always signals it; an `__expert`
+    /// chroma override with distinct U/V deltas needs it too. The SH bit and
+    /// the FH [`crate::entropy::obu::ChromaQSignal`] form both read this, so
+    /// they cannot disagree.
+    fn separate_uv_delta_q(&self) -> bool {
+        #[cfg(feature = "__expert")]
+        if self
+            .chroma_q_override
+            .is_some_and(crate::chroma_q::ChromaQOverride::needs_separate_uv)
+        {
+            return true;
+        }
+        self.hdr.is_fork()
     }
 
     /// Produce the decoder-exact reconstruction in `last_recon` /
@@ -3780,6 +3812,13 @@ impl EncodePipeline {
                 "pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension",
             )));
         }
+        #[cfg(feature = "__expert")]
+        if self.chroma_q_override.is_some() && chroma.is_none() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "chroma_q_override is set but this frame is monochrome: there is no U/V \
+                 quantizer to override; clear the override for mono frames [C: no mono]",
+            )));
+        }
         // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
         // `--tune 3` (IQ, "still image only") and `--tune 4` (MS-SSIM) are not
         // single RD knobs: C rewrites qm on/min/max (luma AND chroma),
@@ -3983,6 +4022,22 @@ impl EncodePipeline {
 
         // Step 1: Determine frame type from GOP structure
         let is_key = self.gop.is_key_frame(display_order);
+        // `__expert` chroma override: the SH (written on key frames only)
+        // fixes separate_uv_delta_q until the next key frame, so an override
+        // change that flips U/V separation mid-sequence is refused rather
+        // than signalled under a mismatched SH.
+        #[cfg(feature = "__expert")]
+        {
+            let separate = self.separate_uv_delta_q();
+            if is_key {
+                self.sh_separate_uv_delta_q = Some(separate);
+            } else if self.sh_separate_uv_delta_q.is_some_and(|s| s != separate) {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "chroma_q_override changed U/V separation after the key frame; the \
+                     sequence header fixes separate_uv_delta_q until the next key frame",
+                )));
+            }
+        }
         // C picks a DIFFERENT derivation function per arm of `scs->allintra`
         // (enc_handle.c:4406 — `intra_period_length == 0 || avif ||
         // pred_structure == ALL_INTRA`); the port's proxy for it is the same
@@ -5600,6 +5655,12 @@ impl EncodePipeline {
             // tile payload already matching byte-for-byte in size.
             crate::chroma_q::mainline_chroma_q_deltas(base_qindex, self.hdr.tune)
         };
+        // `__expert` override REPLACES the derivation (mono frames were
+        // refused above, so this only ever reaches frames with chroma).
+        #[cfg(feature = "__expert")]
+        let chroma_deltas = self
+            .chroma_q_override
+            .map_or(chroma_deltas, crate::chroma_q::ChromaQOverride::deltas);
         let qindex_u = (i32::from(base_qindex) + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
         let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
         // Stills are I-slices at temporal layer 0: effective = ac_bias * 0.3.
@@ -5889,9 +5950,12 @@ impl EncodePipeline {
             }
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
-            // fork block hardcodes both flags true).
-            if self.hdr.is_fork() {
+            // fork block hardcodes both flags true). An `__expert` chroma
+            // override with distinct U/V deltas needs it too.
+            if self.separate_uv_delta_q() {
                 t.separate_uv_delta_q = true;
+            }
+            if self.hdr.is_fork() {
                 // Photon noise signals grain tables per frame.
                 t.film_grain_params_present = self.hdr.noise_strength > 0;
             }
@@ -10150,18 +10214,28 @@ impl EncodePipeline {
                 // IQ (rc_crf_cqp.c's `#else` arm). `None` selects the
                 // zero-delta bit pattern, which is what every non-tune-IQ
                 // mainline encode still gets.
-                if chroma_deltas.is_zero() {
-                    None
-                } else if self.hdr.is_fork() {
+                //
+                // Separate is checked FIRST: under a SH that signalled
+                // separate_uv_delta_q = 1 the decoder reads diff_uv_delta (and,
+                // with QM, qm_v) even when every delta is zero, and `None`
+                // writes neither — a desync. The fork's derived deltas are
+                // never all zero (U = V + 12), so this ordering is byte-inert
+                // for it; an `__expert` override of (0, 0) on the fork is the
+                // case that reached it (tools/chroma_q_override_gate.sh,
+                // 2026-09-24: aomdec and dav1d both rejected the stream).
+                if self.separate_uv_delta_q() {
                     // The fork's SH signals separate_uv_delta_q = 1, so the FH
                     // carries diff_uv_delta + four independent deltas (its U
                     // delta has a further +12, so U and V really do differ).
+                    // An `__expert` override with U != V takes this form too.
                     Some(crate::entropy::obu::ChromaQSignal::Separate([
                         chroma_deltas.u_dc,
                         chroma_deltas.u_ac,
                         chroma_deltas.v_dc,
                         chroma_deltas.v_ac,
                     ]))
+                } else if chroma_deltas.is_zero() {
+                    None
                 } else {
                     // MAINLINE: the SH signals separate_uv_delta_q = 0, so the
                     // FH must NOT write a diff_uv_delta bit — one (dc, ac)

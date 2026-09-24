@@ -51,6 +51,12 @@ symtrace = ["std"]
 # Feature 3: forward fallible allocation to svtav1-types (parallels the
 # unconditional std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
+# Expert-only encoder controls that have NO C-parity claim and are not part of
+# the stable surface (double-underscore prefix: do not depend on this in
+# production code; fields may change without a semver bump). Currently:
+# `EncodePipeline::chroma_q_override` — fixed per-plane chroma delta-q for
+# decorrelated-plane research stimuli (chroma_q.rs `ChromaQOverride`).
+__expert = []
 
 [[test]]
 name = "encoder_parity"
