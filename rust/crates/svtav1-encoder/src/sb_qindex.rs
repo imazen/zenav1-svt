@@ -353,6 +353,172 @@ pub fn variance_adjust_qp(
     }
 }
 
+
+// =============================================================================
+// TPL-LA per-SB qindex — C `svt_aom_sb_qp_derivation_tpl_la` + `sb_setup_lambda`
+// (rc_aq.c:695-780, 789-825)
+// =============================================================================
+
+/// C `svt_av1_get_deltaq_offset` (rc_aq.c:695-723).
+///
+/// Translates a TPL `beta` into a qindex delta by walking the DC-quantizer
+/// ladder until the step crosses `q / sqrt(beta)` — or `q / sqrt(sqrt(beta))`
+/// for a non-intra frame whose beta says the block deserves MORE bits
+/// (`beta > 1` lowers q). The walk is C's own linear one.
+#[must_use]
+pub fn get_deltaq_offset(bit_depth: u8, qindex: i32, beta: f64, is_intra: bool) -> i32 {
+    let dc_quant = |q: i32| -> i32 {
+        let i = q.clamp(0, MAXQ) as usize;
+        match bit_depth {
+            8 => i32::from(svtav1_dsp::quant_tables::DC_QLOOKUP_8[i]),
+            10 => i32::from(crate::bd10::DC_QLOOKUP_10[i]),
+            _ => unreachable!("get_deltaq_offset: bit depth {bit_depth}"),
+        }
+    };
+    let q = dc_quant(qindex);
+    // `rint` — round-half-even — matches C's rint() on .5 cases.
+    let newq = if !is_intra && beta > 1.0 {
+        (q as f64 / beta.sqrt().sqrt()).round_ties_even() as i32
+    } else {
+        (q as f64 / beta.sqrt()).round_ties_even() as i32
+    };
+    let orig_qindex = qindex;
+    if newq == q {
+        return 0;
+    }
+    let mut qindex = qindex;
+    if newq < q {
+        let mut q = q;
+        while qindex > 0 {
+            qindex -= 1;
+            q = dc_quant(qindex);
+            if newq >= q {
+                break;
+            }
+        }
+    } else {
+        let mut q = q;
+        while qindex < MAXQ {
+            qindex += 1;
+            q = dc_quant(qindex);
+            if newq <= q {
+                break;
+            }
+        }
+    }
+    qindex - orig_qindex
+}
+
+/// C `svt_aom_sb_qp_derivation_tpl_la` (rc_aq.c:789-822) — the per-SB deltaq
+/// half. `sb_qindex` is the per-SB plan initialized to `base_q_idx`; each
+/// entry is adjusted by `get_deltaq_offset(beta)` clamped to ±35 then
+/// `[1, MAXQ]`.
+///
+/// The `r0_delta_qp_quant -> delta_q_present = 1` write and the per-SB
+/// `sb_setup_lambda` call are NOT here — the first is a frame-header flag the
+/// caller sets, the second is [`sb_setup_lambda`] below (C calls it per SB
+/// inside this same loop; the port splits it so the qindex plan and the
+/// lambda-factor grid can be borrowed independently).
+pub fn sb_qp_derivation_tpl_la(
+    bit_depth: u8,
+    is_intra: bool,
+    tpl_beta: &[f64],
+    sb_qindex: &mut [u8],
+) {
+    debug_assert_eq!(tpl_beta.len(), sb_qindex.len());
+    for (sb, &beta) in sb_qindex.iter_mut().zip(tpl_beta.iter()) {
+        let offset =
+            get_deltaq_offset(bit_depth, i32::from(*sb), beta, is_intra).clamp(-35, 35);
+        // `CLIP3(1, MAXQ, qindex + offset)` — qindex 0 is lossless, unused.
+        *sb = (i32::from(*sb) + offset).clamp(1, MAXQ) as u8;
+    }
+}
+
+/// C `sb_setup_lambda` (rc_aq.c:727-780) — propagate this SB's rdmult ratio
+/// into `tpl_sb_rdmult_scaling_factors` over the synth-block grid cells the
+/// SB covers, normalized so the geometric mean over the SB is preserved.
+///
+/// `tpl_rdmult_scaling_factors` is `pa_me_data->tpl_rdmult_scaling_factors`
+/// (input); `tpl_sb_rdmult_scaling_factors` is the output grid of the SAME
+/// length. `me_qindex` is `svt_aom_get_me_qindex(sb)` — the caller's
+/// `b64_me_qindex` map lookup. `lctx` carries the frame's
+/// [`crate::port_rc_process::LambdaContext`] for `compute_rd_mult`;
+/// `bit_depth` is `hbd_md`'s depth (10 when the MD canvas is 10-bit, else 8).
+/// Returns `true` — C sets `ppcs->blk_lambda_tuning = true` unconditionally.
+#[allow(clippy::too_many_arguments)]
+pub fn sb_setup_lambda(
+    sb_org_x: u32,
+    sb_org_y: u32,
+    superres_denom: u8,
+    enhanced_unscaled_width: u32,
+    sb_size_is_128: bool,
+    synth_blk_size: u8,
+    mi_rows: i32,
+    base_qindex: u8,
+    sb_qindex: u8,
+    me_qindex: u8,
+    lctx: &crate::port_rc_process::LambdaContext,
+    bit_depth: u8,
+    tpl_rdmult_scaling_factors: &[f64],
+    tpl_sb_rdmult_scaling_factors: &mut [f64],
+) -> bool {
+    let mi_col = (sb_org_x / 4) as i32;
+    let mi_row = (sb_org_y / 4) as i32;
+
+    let mi_col_sr = crate::port_md_lambda::coded_to_superres_mi(mi_col, i32::from(superres_denom));
+    let mi_cols_sr = ((enhanced_unscaled_width as i32 + 15) / 16) << 2;
+    let sb_mi_width_sr = crate::port_md_lambda::coded_to_superres_mi(
+        if sb_size_is_128 { 32 } else { 16 },
+        i32::from(superres_denom),
+    );
+    let (num_mi_w, num_mi_h) = if synth_blk_size == 32 { (8i32, 8i32) } else { (4, 4) };
+    let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
+    let num_rows = (mi_rows + num_mi_h - 1) / num_mi_h;
+    let num_bcols = (sb_mi_width_sr + num_mi_w - 1) / num_mi_w;
+    let num_brows =
+        ((if sb_size_is_128 { 32i32 } else { 16 }) + num_mi_h - 1) / num_mi_h;
+
+    let mut base_block_count = 0i32;
+    let mut log_sum = 0.0f64;
+    // C's row bound divides by `num_mi_w` and the column bound by `num_mi_h`
+    // — a transposition that is harmless because both are equal (4 or 8).
+    let row0 = mi_row / num_mi_w;
+    let col0 = mi_col_sr / num_mi_h;
+    for row in row0..num_rows.min(row0 + num_brows) {
+        for col in col0..num_cols.min(col0 + num_bcols) {
+            let index = (row * num_cols + col) as usize;
+            log_sum += tpl_rdmult_scaling_factors[index].ln();
+            base_block_count += 1;
+        }
+    }
+    debug_assert!(base_block_count > 0);
+
+    let orig_rdmult = f64::from(crate::port_rc_process::compute_rd_mult(
+        lctx,
+        base_qindex,
+        base_qindex,
+        bit_depth,
+    ));
+    let new_rdmult = f64::from(crate::port_rc_process::compute_rd_mult(
+        lctx,
+        sb_qindex,
+        me_qindex,
+        bit_depth,
+    ));
+    let scaling_factor = new_rdmult / orig_rdmult;
+    let scale_adj = scaling_factor / (log_sum / f64::from(base_block_count)).exp();
+
+    for row in row0..num_rows.min(row0 + num_brows) {
+        for col in col0..num_cols.min(col0 + num_bcols) {
+            let index = (row * num_cols + col) as usize;
+            tpl_sb_rdmult_scaling_factors[index] =
+                scale_adj * tpl_rdmult_scaling_factors[index];
+        }
+    }
+    // C `ppcs->blk_lambda_tuning = true`.
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

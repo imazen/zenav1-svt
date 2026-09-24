@@ -225,6 +225,21 @@ unsafe extern "C" {
         bw: i32,
         bh: i32,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_update_neighbor_samples_open_loop_recon(
+        use_trbl: u8,
+        update_top: u8,
+        above: *mut u8,
+        left: *mut u8,
+        recon: *const u8,
+        stride: u32,
+        src_origin_x: u32,
+        src_origin_y: u32,
+        bwidth: u8,
+        bheight: u8,
+        width: u32,
+        height: u32,
+    );
 }
 
 /// Positive control for the dispatched entry points: are the RTCD slots and
@@ -846,6 +861,50 @@ pub fn intra_prediction_open_loop_mb(
             stride as i32,
             bw as i32,
             bh as i32,
+        );
+    }
+}
+
+/// The reference `svt_aom_update_neighbor_samples_array_open_loop_mb_recon`
+/// (enc_intra_prediction.c:818) — the raw-buffer twin of the open-loop
+/// neighbour fill the TPL dispenser uses on both the source and the TPL
+/// recon buffers.
+///
+/// `above`/`left` carry C's corner convention: index 0 is `above_row[-1]` /
+/// `left_col[-1]`; the function writes `1 + 2*bwidth` / `1 + 2*bheight`
+/// slots max when `use_trbl` is set.
+#[allow(clippy::too_many_arguments)]
+pub fn update_neighbor_samples_open_loop_recon(
+    use_trbl: bool,
+    update_top: bool,
+    above: &mut [u8],
+    left: &mut [u8],
+    recon: &[u8],
+    stride: usize,
+    src_origin_x: u32,
+    src_origin_y: u32,
+    bwidth: u8,
+    bheight: u8,
+    width: u32,
+    height: u32,
+) {
+    let n_w = if use_trbl { 2 * bwidth as usize } else { bwidth as usize };
+    let n_h = if use_trbl { 2 * bheight as usize } else { bheight as usize };
+    assert!(above.len() >= n_w + 1 && left.len() >= n_h + 1);
+    unsafe {
+        ref_update_neighbor_samples_open_loop_recon(
+            use_trbl as u8,
+            update_top as u8,
+            above.as_mut_ptr(),
+            left.as_mut_ptr(),
+            recon.as_ptr(),
+            stride as u32,
+            src_origin_x,
+            src_origin_y,
+            bwidth,
+            bheight,
+            width,
+            height,
         );
     }
 }

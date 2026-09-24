@@ -527,6 +527,214 @@ const QP_OFFSET_PERCENTS: [[i32; 6]; 2] = [[75, 70, 60, 20, 15, 0], [76, 60, 30,
 /// | qp40 (qindex 160), hier 5 | 70 | 70 |
 /// | qp55 (qindex 220), hier 0 | 143 | 143 |
 ///
+/// Inputs C's `crf_qindex_calc` (rc_crf_cqp.c:183-360) reads off
+/// pcs/ppcs/rc/scs — one-pass CRF/TPL qindex derivation.
+#[derive(Debug, Clone)]
+pub struct CrfQindexInputs {
+    /// C `frame_is_intra_only(ppcs)`.
+    pub is_intra_only: bool,
+    /// C `ppcs->temporal_layer_index`.
+    pub temporal_layer_index: u8,
+    /// C `ppcs->hierarchical_levels`.
+    pub hierarchical_levels: u8,
+    /// C `ppcs->is_highest_layer` — `leaf_frame`.
+    pub is_highest_layer: bool,
+    /// C `ppcs->r0_qps` — the qstep-vs-ref-frame dispatch.
+    pub r0_qps: bool,
+    /// C `ppcs->r0` on entry; the adjusted value comes back in the output.
+    pub r0: f64,
+    /// C `ppcs->tpl_ctrls.r0_adjust_factor` (0 disables).
+    pub r0_adjust_factor: f64,
+    /// C `ppcs->used_tpl_frame_num`.
+    pub used_tpl_frame_num: u32,
+    /// C `ppcs->tpl_group_size`.
+    pub tpl_group_size: u32,
+    /// C `scs->lad_mg != 0`.
+    pub scs_lad_mg: bool,
+    /// C `scs->input_resolution` (`ResolutionRange`) — `<= INPUT_SIZE_720p_RANGE`
+    /// selects the 3x boost numerator.
+    pub input_resolution: i32,
+    /// C `scs->static_config.encoder_bit_depth`.
+    pub bit_depth: u8,
+    /// C `ppcs->sc_class1`.
+    pub sc_class1: bool,
+    /// C `SVT_QP_SCALE_WEIGHT(static_config)`.
+    pub qp_scale_weight: f64,
+    /// C `SVT_QP_SCALE_ON(static_config)`.
+    pub qp_scale_on: bool,
+    /// C `rc->best_quality` / `rc->worst_quality` —
+    /// `quantizer_to_qindex[min/max_qp_allowed]`.
+    pub best_quality: i32,
+    /// See [`CrfQindexInputs::best_quality`].
+    pub worst_quality: i32,
+    /// C `rc->arf_q` on entry = `ref_base_q_idx[L0][0]`, max'd with L1[0] for a
+    /// B slice with `ref_list1_count_try`.
+    pub arf_q: i32,
+    /// C `ref_obj_l0->tmp_layer_idx` for the `is_intrl_arf_boost` arm.
+    pub ref0_tmp_layer: u8,
+    /// C `ref_obj_l1->tmp_layer_idx` when `slice_type == B_SLICE &&
+    /// ref_list1_count_try` — `None` otherwise.
+    pub ref1_tmp_layer: Option<u8>,
+    /// C `pcs->ref_intra_percentage` (hier-5 w1 bump).
+    pub ref_intra_percentage: i32,
+}
+
+/// Outputs of [`crf_qindex_calc`] — C's return value plus the `rc`/`ppcs`
+/// state it mutates.
+#[derive(Debug, Clone, Copy)]
+pub struct CrfQindexOutput {
+    /// C's return — the frame's `active_best_quality`.
+    pub qindex: i32,
+    /// C `ppcs->top_index`.
+    pub top_index: i32,
+    /// C `ppcs->bottom_index`.
+    pub bottom_index: i32,
+    /// C `ppcs->r0` after the in-place adjustments.
+    pub r0: f64,
+    /// C `rc->arf_q` after the qstep arm's update.
+    pub arf_q: i32,
+    /// C `rc->kf_boost` (intra arm only, else 0).
+    pub kf_boost: i32,
+    /// C `rc->gfu_boost` (inter arm only, else 0).
+    pub gfu_boost: i32,
+}
+
+/// C `crf_qindex_calc` (rc_crf_cqp.c:183-360) — one-pass qindex assignment
+/// with TPL stats. `qindex` is C's `rc->active_worst_quality` argument.
+#[must_use]
+pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
+    use crate::port_rc_process as p;
+    let cq_level = qindex;
+    let mut active_best_quality: i32 = 0;
+    let mut active_worst_quality: i32 = qindex;
+    let temporal_layer = i.temporal_layer_index;
+    let hierarchical_levels = i.hierarchical_levels as usize;
+    let leaf_frame = i.is_highest_layer;
+    let is_intrl_arf_boost = temporal_layer > 0 && !leaf_frame;
+    let rf_level = if i.is_intra_only {
+        p::RateFactorLevel::KfStd
+    } else if temporal_layer == 0 {
+        p::RateFactorLevel::GfArfStd
+    } else if !leaf_frame {
+        p::RateFactorLevel::GfArfLow
+    } else {
+        p::RateFactorLevel::InterNormal
+    };
+    let bit_depth = i.bit_depth;
+    let use_qstep_based_q_calc = i.r0_qps;
+    let mut arf_q = i.arf_q;
+    let mut r0 = i.r0;
+    let mut kf_boost = 0i32;
+    let mut gfu_boost = 0i32;
+
+    // r0 scaling (rc_crf_cqp.c:232-279).
+    if i.is_intra_only {
+        if i.r0_adjust_factor != 0.0 {
+            r0 /= i.r0_adjust_factor;
+        }
+        r0 /= p::TPL_HL_ISLICE_DIV_FACTOR[hierarchical_levels];
+        // `frames_to_key == -1` — not available in one-pass.
+        kf_boost = p::get_cqp_kf_boost_from_r0(r0, -1, i.input_resolution);
+        let max_boost = (i.used_tpl_frame_num * 400) as i32; // KB = 400
+        kf_boost = kf_boost.min(max_boost);
+    } else {
+        if use_qstep_based_q_calc && i.r0_adjust_factor != 0.0 {
+            r0 /= i.r0_adjust_factor;
+            r0 /= p::TPL_HL_BASE_FRAME_DIV_FACTOR[hierarchical_levels];
+        }
+        let num_stats_required_for_gfu_boost =
+            i.tpl_group_size + (1u32 << hierarchical_levels);
+        let mut min_boost_factor = (1f64) * f64::from(1u32 << (hierarchical_levels >> 1));
+        if hierarchical_levels & 1 != 0 {
+            min_boost_factor *= core::f64::consts::SQRT_2;
+        }
+        gfu_boost = p::get_gfu_boost_from_r0_lap(
+            min_boost_factor,
+            10.0, // MAX_GFUBOOST_FACTOR
+            r0,
+            num_stats_required_for_gfu_boost as i32,
+        );
+    }
+
+    if use_qstep_based_q_calc {
+        let r0_weight_idx = usize::from(!i.is_intra_only) + usize::from(temporal_layer != 0);
+        debug_assert!(r0_weight_idx <= 2);
+        let mut weight = p::R0_WEIGHT[r0_weight_idx];
+        if i.scs_lad_mg
+            && !i.is_intra_only
+            && i.tpl_group_size < (2u32 << hierarchical_levels)
+        {
+            weight = (weight + 0.1).min(1.0);
+        }
+        let mut qstep_ratio = r0.sqrt() * weight * i.qp_scale_weight;
+        if i.qp_scale_on {
+            qstep_ratio = weight.min(qstep_ratio);
+        }
+        let qindex_from_qstep_ratio =
+            q_index_from_qstep_ratio(qindex, qstep_ratio, bit_depth);
+        if !i.is_intra_only {
+            arf_q = qindex_from_qstep_ratio;
+        }
+        active_best_quality = qindex_from_qstep_ratio.clamp(i.best_quality, qindex);
+        active_worst_quality = (active_best_quality + 3 * active_worst_quality + 2) / 4;
+    } else {
+        active_best_quality = cq_level;
+        if is_intrl_arf_boost && !i.is_intra_only && !leaf_frame {
+            let mut ref_tmp_layer = i.ref0_tmp_layer;
+            if let Some(l1) = i.ref1_tmp_layer {
+                ref_tmp_layer = ref_tmp_layer.max(l1);
+            }
+            active_best_quality = arf_q;
+            let mut tmp_layer_delta = i32::from(temporal_layer) - i32::from(ref_tmp_layer);
+            if rf_level == p::RateFactorLevel::GfArfLow {
+                let mut w1 = p::NON_BASE_QINDEX_WEIGHT_REF[hierarchical_levels];
+                let w2 = p::NON_BASE_QINDEX_WEIGHT_WQ[hierarchical_levels];
+                if temporal_layer > 0 && hierarchical_levels == 5 {
+                    w1 += i.ref_intra_percentage;
+                }
+                // C `while (tmp_layer_delta--)` — post-decrement: runs while
+                // the OLD value is nonzero; C relies on delta >= 0.
+                debug_assert!(tmp_layer_delta >= 0);
+                while tmp_layer_delta != 0 {
+                    tmp_layer_delta -= 1;
+                    active_best_quality = (w1 * active_best_quality
+                        + (w2 * cq_level)
+                        + ((w1 + w2) / 2))
+                        / (w1 + w2);
+                }
+            }
+        }
+    }
+
+    if temporal_layer != 0 {
+        active_best_quality = active_best_quality.max(arf_q);
+    }
+    // `adjust_active_best_and_worst_quality` (rc_crf_cqp.c:167-182).
+    if !i.is_intra_only {
+        let qdelta = p::frame_type_qdelta(
+            i.best_quality,
+            i.worst_quality,
+            rf_level,
+            active_worst_quality,
+            bit_depth,
+            i.sc_class1,
+        );
+        active_worst_quality = (active_worst_quality + qdelta).max(active_best_quality);
+    }
+    active_best_quality = active_best_quality.clamp(i.best_quality, i.worst_quality);
+    active_worst_quality = active_worst_quality.clamp(active_best_quality, i.worst_quality);
+
+    CrfQindexOutput {
+        qindex: active_best_quality,
+        top_index: active_worst_quality,
+        bottom_index: active_best_quality,
+        r0,
+        arf_q,
+        kf_boost,
+        gfu_boost,
+    }
+}
+
 /// The still path is unaffected: C returns `qindex` untouched when
 /// `scs->allintra`, which is the early return the entire 280/280 still
 /// envelope takes.
@@ -755,4 +963,64 @@ mod tests {
         assert_eq!(qp_to_qindex(90), 255);
         assert_eq!(qp_to_qindex(255), 255);
     }
+}
+
+/// C's four r0 capability flags (`initial_rc_process.c:734-762`) — derived
+/// per picture after `svt_aom_set_tpl_group`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct R0Flags {
+    /// C `pcs->r0_gen` — run `generate_r0beta` for this picture.
+    pub r0_gen: bool,
+    /// C `pcs->r0_qps` — `crf_qindex_calc`'s qstep arm.
+    pub r0_qps: bool,
+    /// C `pcs->r0_delta_qp_md` — `sb_qp_derivation_tpl_la`'s gate.
+    pub r0_delta_qp_md: bool,
+    /// C `pcs->r0_delta_qp_quant` — `delta_q_present` in the frame header.
+    pub r0_delta_qp_quant: bool,
+}
+
+/// C `initial_rc_process.c:733-762` — when TPL results are unavailable for
+/// this temporal layer all four flags shut off; otherwise `r0_gen` is on and
+/// the others depend on the configured hierarchical level.
+///
+/// `reduced_tpl_group` is `tpl_ctrls.reduced_tpl_group` (-1 = no reduction).
+#[must_use]
+pub fn r0_flags(
+    tpl_enable: bool,
+    reduced_tpl_group: i8,
+    temporal_layer_index: u8,
+    hierarchical_levels: u8,
+    slice_is_i: bool,
+) -> R0Flags {
+    let tl = temporal_layer_index;
+    if !tpl_enable || (reduced_tpl_group >= 0 && tl > reduced_tpl_group as u8) {
+        return R0Flags::default();
+    }
+    let mut f = R0Flags {
+        r0_gen: true,
+        ..Default::default()
+    };
+    match hierarchical_levels {
+        5 => {
+            f.r0_qps = true;
+            f.r0_delta_qp_md = tl <= 3;
+            f.r0_delta_qp_quant = f.r0_delta_qp_md && tl == 0;
+        }
+        4 => {
+            f.r0_qps = true;
+            f.r0_delta_qp_md = tl <= 2;
+            f.r0_delta_qp_quant = f.r0_delta_qp_md && tl == 0;
+        }
+        3 => {
+            f.r0_qps = true;
+            f.r0_delta_qp_md = tl <= 1;
+            f.r0_delta_qp_quant = f.r0_delta_qp_md && slice_is_i;
+        }
+        _ => {
+            f.r0_qps = tl == 0;
+            f.r0_delta_qp_md = tl == 0;
+            f.r0_delta_qp_quant = f.r0_delta_qp_md && slice_is_i;
+        }
+    }
+    f
 }

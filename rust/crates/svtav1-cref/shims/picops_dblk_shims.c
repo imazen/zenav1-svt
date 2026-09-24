@@ -440,3 +440,41 @@ int32_t ref_intra_prediction_open_loop_mb(int32_t p_angle, uint8_t ois_intra_mod
     for (int32_t r = 0; r < bh; ++r) memcpy(dst + (size_t)r * stride, d + (size_t)r * PICOPS_MAX_DIM, (size_t)bw);
     return (int32_t)e;
 }
+
+/* `enc_intra_prediction.h` drags in me_process.h/mode_decision.h — declare
+ * the one entry point instead. */
+void svt_aom_update_neighbor_samples_array_open_loop_mb_recon(uint8_t use_top_righ_bottom_left,
+                                                              uint8_t update_top_neighbor, uint8_t* above_ref,
+                                                              uint8_t* left_ref, uint8_t* recon_ptr,
+                                                              uint32_t stride, uint32_t src_origin_x,
+                                                              uint32_t src_origin_y, uint8_t bwidth,
+                                                              uint8_t bheight, uint32_t width, uint32_t height);
+
+/* `svt_aom_update_neighbor_samples_array_open_loop_mb_recon`
+ * (enc_intra_prediction.c:818): the raw-buffer twin of the open-loop
+ * neighbour fill. The non-recon entry reads the same body with
+ * `input_ptr->y_buffer`/`width`/`height`, so parity here is parity for both
+ * modulo the trivial field extraction.
+ *
+ * above/left use the C convention: `above_ref`/`left_ref` point at the
+ * CORNER slot (the function writes `*above_ref` then bumps the pointer).
+ */
+void ref_update_neighbor_samples_open_loop_recon(uint8_t use_trbl, uint8_t update_top,
+                                                 uint8_t* above, uint8_t* left, const uint8_t* recon,
+                                                 uint32_t stride, uint32_t src_origin_x,
+                                                 uint32_t src_origin_y, uint8_t bwidth, uint8_t bheight,
+                                                 uint32_t width, uint32_t height) {
+    picops_ensure_init();
+    svt_aom_update_neighbor_samples_array_open_loop_mb_recon(use_trbl,
+                                                             update_top,
+                                                             above,
+                                                             left,
+                                                             (uint8_t*)recon,
+                                                             stride,
+                                                             src_origin_x,
+                                                             src_origin_y,
+                                                             bwidth,
+                                                             bheight,
+                                                             width,
+                                                             height);
+}

@@ -109,6 +109,7 @@ pub mod port_src_ops;
 pub mod port_superres_decision;
 pub mod port_temporal_filtering;
 pub mod port_tf_driver;
+pub mod port_tpl;
 pub mod port_tune_vmaf;
 pub mod qm;
 pub mod qm_tables;

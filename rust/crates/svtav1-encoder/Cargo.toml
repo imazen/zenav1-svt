@@ -143,6 +143,10 @@ name = "c_parity_intra_open_loop"
 path = "tests/c_parity_intra_open_loop.rs"
 
 [[test]]
+name = "c_parity_tpl_neigh"
+path = "tests/c_parity_tpl_neigh.rs"
+
+[[test]]
 name = "c_parity_intrabc"
 path = "tests/c_parity_intrabc.rs"
 
