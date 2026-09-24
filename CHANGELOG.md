@@ -13,6 +13,21 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`__expert` per-plane chroma delta-q override** (`1611ca68`). New
+  double-underscore feature on `zenav1-svt-encoder` and `zenav1-svt` (not a
+  stable surface): `EncodePipeline::chroma_q_override` /
+  `AvifEncoder::with_chroma_q_override(u, v)` replace the derived chroma
+  delta-q with fixed U and V qindex deltas (each clamped to [-64, 63],
+  applied to DC and AC), for decorrelated-plane research stimuli — not a
+  quality knob, and with no C counterpart. `u != v` signals
+  `separate_uv_delta_q = 1` on a mainline stream. Monochrome frames with an
+  override, and an override that flips U/V separation after the key frame,
+  are refused. Default builds are byte-unchanged: `decode_conformance`
+  (mono, chroma, avif) and `hdr_fork_smoke` outputs are md5-identical to
+  `8458da11` over 3081 files, with the feature off and with it on and no
+  override set. Gate: `tools/chroma_q_override_gate.sh` 73/73 — recon ==
+  aomdec == dav1d across mainline, tune IQ and the fork, with anti-vacuity
+  on per-plane chroma error.
 - **Inter (video) frames ship, in a measured envelope: 8-bit 4:2:0, presets
   6..13** (`df614665`, `a33b9873`). The blanket "inter frames are not
   implemented for the public API" refusal, the chain refusal on a frame whose
@@ -43,6 +58,13 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Frame-header chroma-q form under a separate-UV sequence header**
+  (`1611ca68`). With SH `separate_uv_delta_q = 1`, an all-zero chroma delta
+  set took the `None` form, which writes neither `diff_uv_delta` nor (with
+  QM) `qm_v`; aomdec and dav1d both rejected the stream. The fork's derived
+  deltas are never all zero, so no fork stream was affected — the
+  `__expert` override (0, 0) on the fork is what reached it. The Separate
+  form is now chosen whenever the SH signals separation.
 - **The temporal motion-vector field's block-geometry flag was picture-level**
   (`df614665`). C sets `ctx->sb64_sq_no4xn_geom` PER BLOCK
   (`product_coding_loop.c:10256`); the port derived it once per frame from the
