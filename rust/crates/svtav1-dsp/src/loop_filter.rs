@@ -1391,6 +1391,29 @@ fn transpose8x8_v3(_t: Desktop64, x: &[__m128i; 8]) -> [__m128i; 4] {
     [d0d1, d2d3, d4d5, d6d7]
 }
 
+/// Eight bytes at `buf[i..]`, zero-filled past the end of `buf`.
+///
+/// C's `svt_aom_lpf_vertical_6_sse2` loads 8 bytes per row at `s-3` and its
+/// transpose consumes only the low 6 — the filter touches `s-3..=s+2`. C's
+/// frames are padded, ours are not: on the last row of a plane whose buffer
+/// ends right after `s+2`, the top 2 bytes of that load lie past the end and
+/// the direct slice panicked (zenavif `svt_rs_partial_sb_roundtrip_at_low_presets`,
+/// 100x37 at speed 4, 2026-09-24). Zero-filling them is output-identical:
+/// those lanes never reach a filtered or stored pixel.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline]
+fn load8_zero_padded(buf: &[u8], i: usize) -> [u8; 8] {
+    match buf.get(i..i + 8) {
+        Some(r) => r.try_into().unwrap(),
+        None => {
+            let tail = &buf[i..];
+            let mut r = [0u8; 8];
+            r[..tail.len()].copy_from_slice(tail);
+            r
+        }
+    }
+}
+
 /// C `svt_aom_lpf_vertical_6_sse2` — 4 rows. Loads 8-byte rows at s-3
 /// (the transpose consumes the low 6 bytes), transposes, filters,
 /// transposes back, and stores 6 bytes per row.
@@ -1404,9 +1427,8 @@ fn lpf_vertical_6_impl_v3(token: Desktop64, buf: &mut [u8], off: usize, pitch: u
 
     let zero = _mm_setzero_si128();
     let row = |k: usize| -> __m128i {
-        let i = off - 3 + k * pitch;
-        let r: &[u8; 8] = buf[i..i + 8].try_into().unwrap();
-        _mm_loadu_si64(r)
+        let r = load8_zero_padded(buf, off - 3 + k * pitch);
+        _mm_loadu_si64(&r)
     };
     let x = [row(0), row(1), row(2), row(3), zero, zero];
     let [d0d1, d2d3, d4d5] = transpose6x6_v3(token, &x);
@@ -2083,9 +2105,9 @@ fn lpf_vertical_6_impl_neon(
 
     let zero = vdupq_n_u8(0);
     let row = |k: usize| -> uint8x16_t {
-        let i = off - 3 + k * pitch;
-        let r: &[u8; 8] = buf[i..i + 8].try_into().unwrap();
-        lpf_ld8_neon(token, r)
+        // Same 8-byte-load-of-6-used as the v3 arm: see `load8_zero_padded`.
+        let r = load8_zero_padded(buf, off - 3 + k * pitch);
+        lpf_ld8_neon(token, &r)
     };
     let x = [row(0), row(1), row(2), row(3), zero, zero];
     let [d0d1, d2d3, d4d5] = transpose6x6_neon(token, &x);

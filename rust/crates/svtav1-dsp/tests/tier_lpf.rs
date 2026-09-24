@@ -129,3 +129,44 @@ fn lpf_all_tiers_match_c() {
         assert!(report.permutations_run >= 2, "{report:?}");
     }
 }
+
+/// Regression (2026-09-24, found by zenavif's 100x37 partial-SB roundtrip at
+/// speed 4): the SIMD `lpf_vertical_6` arms load 8 bytes per row at `s-3`
+/// where the filter touches 6, so on the last row of an unpadded plane the
+/// load ran past the buffer and panicked. Every tier must filter a buffer
+/// that ends exactly after the scalar kernel's last touched byte, and match
+/// C run on a padded copy.
+#[test]
+fn lpf_vertical_6_at_the_end_of_an_unpadded_plane() {
+    let mut rng = Rng(0x0DD3_7202_6092_4000);
+    let v_off = 2 * SIZE + 8;
+    // Last filtered row starts at v_off + 3*SIZE; the scalar footprint there
+    // is s-3..=s+2, so the buffer ends at s+3 (exclusive).
+    let end = v_off + 3 * SIZE + 3;
+    for iter in 0..60 {
+        let t = lf::LfThresh {
+            mblim: rng.byte(),
+            lim: rng.byte(),
+            hev_thr: rng.byte(),
+        };
+        let mut padded = vec![0u8; SIZE * SIZE];
+        fill(rng.range(3) as u32, &mut rng, true, &mut padded);
+        let mut c_buf = padded.clone();
+        cref::lpf(
+            cref::LpfKind::V6,
+            &mut c_buf,
+            v_off,
+            SIZE,
+            t.mblim,
+            t.lim,
+            t.hev_thr,
+        );
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut ours = padded[..end].to_vec();
+            lf::lpf_vertical_6(&mut ours, v_off, SIZE, t);
+            assert_eq!(ours[..], c_buf[..end], "V6 unpadded iter {iter} t={t:?}");
+        });
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.permutations_run >= 2, "{report:?}");
+    }
+}
