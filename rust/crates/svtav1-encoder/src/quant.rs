@@ -1147,6 +1147,13 @@ fn update_coeff_simple<const TC: usize>(
         let dist_low = get_coeff_dist(abs_tqc, abs_dqc_low, shift);
         let rd_low = rdcost(o.rdmult, rate_low as i64, dist_low);
 
+        #[cfg(feature = "std")]
+        if crate::dbgenv::trellis() {
+            std::eprintln!(
+                "TSMP si={si} ci={ci} qc={qc} tqc={abs_tqc} dqc={abs_dqc} ctx={coeff_ctx} rate={rate} ratel={rate_low} dist={dist} distl={dist_low} rd={rd} rdlow={rd_low} dqv={dqv} sh={shift} rm={} bc={:?}",
+                o.rdmult, o.txb_costs.base_cost[coeff_ctx]
+            );
+        }
         if rd_low < rd {
             let sign: i32 = if qc < 0 { 1 } else { 0 };
             qcoeff[ci] = (-sign ^ abs_qc_low) + sign;

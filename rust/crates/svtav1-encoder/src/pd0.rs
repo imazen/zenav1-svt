@@ -4582,6 +4582,11 @@ pub fn pd0_pick_sb_partition(
     // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
     // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
     max_tx_size: u8,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
+    // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
+    // factor whenever the SB qindex differs from base). See
+    // [`pd0_frame_lambda_and_min_sq`].
+    sb_lambda: Option<u64>,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -4593,7 +4598,8 @@ pub fn pd0_pick_sb_partition(
     } else {
         Pd0Mode::Lvl6
     };
-    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
+    let lambda =
+        sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -4714,13 +4720,19 @@ pub fn pd0_pick_sb_partition_lvl0(
     // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
     // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
     max_tx_size: u8,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
+    // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
+    // factor whenever the SB qindex differs from base). See
+    // [`pd0_frame_lambda_and_min_sq`].
+    sb_lambda: Option<u64>,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
     let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
-    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
+    let lambda =
+        sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -4891,7 +4903,19 @@ fn pd0_frame_lambda_and_min_sq(
     lambda_weight: u32,
     key_min_sq: usize,
     inter: Option<&Pd0InterRef<'_>>,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` — the per-SB `av1_lambda_assign_md`
+    // snapshot `svt_aom_full_cost_pd0` prices every PD0 block with
+    // (product_coding_loop.c:5967-5999). The caller computes it for this SB
+    // (delta-q stats factor, lambda_weight, scale factors — md_process.c:
+    // 724-764); the qindex/lambda_weight rederivation below is the fallback
+    // for callers without it (unit tests) and loses the per-SB qdiff factor
+    // whenever `sb_qindex != base_q_idx`.
+    sb_lambda: Option<u64>,
 ) -> (u64, usize) {
+    let min_sq = inter.map_or(key_min_sq, |ir| ir.min_sq);
+    if let Some(l) = sb_lambda {
+        return (l, min_sq);
+    }
     match inter {
         None => (
             kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64,
@@ -4995,12 +5019,18 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
     // (`Pd0Mode::default_subres_step`), which is what every allintra caller
     // and every pre-resolution video caller priced with.
     subres_step: Option<u32>,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
+    // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
+    // factor whenever the SB qindex differs from base). See
+    // [`pd0_frame_lambda_and_min_sq`].
+    sb_lambda: Option<u64>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let (lambda, min_sq) = pd0_frame_lambda_and_min_sq(qindex, lambda_weight, min_sq, inter);
+    let (lambda, min_sq) =
+        pd0_frame_lambda_and_min_sq(qindex, lambda_weight, min_sq, inter, sb_lambda);
     // C `get_max_block_size_allintra` (enc_mode_config.c:7042): the
     // 64-variance cap fires ONLY at enc_mode >= M8 (base_var_th_cap is
     // (uint16_t)~0 = unlimited through M7, 7500 at M8+). A busy SB
@@ -5223,6 +5253,9 @@ pub fn pd0_pick_sb_partition_video(
     // C `ctx->parent_cost_bias` from the same signal derivation — read only
     // by the inter PD0_LVL_6 arm; every other level holds 1000.
     parent_cost_bias: u32,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — forwarded verbatim to
+    // [`pd0_pick_sb_partition_video_eval`].
+    sb_lambda: Option<u64>,
 ) -> Pd0Tree {
     pd0_pick_sb_partition_video_eval(
         src,
@@ -5251,6 +5284,7 @@ pub fn pd0_pick_sb_partition_video(
         inter,
         subres_step,
         parent_cost_bias,
+        sb_lambda,
     )
     .tree()
 }
@@ -5319,6 +5353,11 @@ pub fn pd0_pick_sb_partition_video_eval(
     // C `ctx->parent_cost_bias` from the same signal derivation — read only
     // by the inter PD0_LVL_6 arm; every other level holds 1000.
     parent_cost_bias: u32,
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
+    // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
+    // factor whenever the SB qindex differs from base). See
+    // [`pd0_frame_lambda_and_min_sq`].
+    sb_lambda: Option<u64>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -5340,7 +5379,7 @@ pub fn pd0_pick_sb_partition_video_eval(
     // key frame at those presets floors PD0 at 4x4, which the caller
     // resolves per arm/preset.
     let (lambda, inter_min_sq) =
-        pd0_frame_lambda_and_min_sq(qindex, lambda_weight, key_min_sq, inter);
+        pd0_frame_lambda_and_min_sq(qindex, lambda_weight, key_min_sq, inter, sb_lambda);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -5734,6 +5773,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
         // q40 / q55 keep the same 4x32 shape here (the parent still wins);
@@ -5753,6 +5793,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(t55.leaf_sizes(), vec![64]);
     }
@@ -5953,6 +5994,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(t20.leaf_sizes(), vec![16; 16]);
         // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
@@ -5970,6 +6012,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
         // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
@@ -5986,6 +6029,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
@@ -6003,6 +6047,7 @@ mod tests {
             64,
             None,
             64,
+            None,
         );
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }

@@ -1315,6 +1315,52 @@ impl NsqCfg {
         )
     }
 
+    /// `for_arm_with_coeff` plus the per-SUPERBLOCK `me_dist_mod` bump that
+    /// `set_nsq_search_ctrls` applies between `pcs->nsq_search_level` and the
+    /// controls row (enc_mode_config.c:4967-4984): on an inter frame
+    /// (`slice_type != I_SLICE && enc_mode > ENC_MR` — every non-key frame at
+    /// M0+, so `me_stats == None` is exactly the `me_dist_mod == 0` arm) the
+    /// level gains +1, capped at 19, when the superblock's
+    /// `me_8x8_distortion <= super_block_size^2 * 3` AND its
+    /// `me_8x8_cost_variance <= 10000`. The caller resolves `(dist_8, var)`
+    /// C-side per SB — `me_8x8_*[sb_index]` at `super_block_size == 64`, the
+    /// `get_sb128_me_data` quadrant aggregate at 128 (:62-114).
+    ///
+    /// The `mimic_only_tx_4x4` arm (:4967) never reaches here: a
+    /// `coded_lossless` frame takes `NsqCfg::off()` at the call site, which is
+    /// level 0 with none of the switch tail.
+    pub(crate) fn for_arm_sb(
+        arm: crate::sc_detect::ScArm,
+        preset: i8,
+        cli_qp: u32,
+        coeff_level: crate::quant::CoeffLvl,
+        temporal_layer: u8,
+        sb_size: usize,
+        me_stats: Option<(u32, u32)>,
+    ) -> Self {
+        let mut level = crate::part_arm::nsq_search_level_with_coeff(
+            arm,
+            preset,
+            cli_qp,
+            coeff_level,
+            temporal_layer,
+        );
+        if let Some((dist_8, cost_var)) = me_stats {
+            if level != 0
+                && u64::from(dist_8) <= (sb_size * sb_size * 3) as u64
+                && cost_var <= 10000
+            {
+                level = level.saturating_add(1).min(19);
+            }
+        }
+        Self::for_levels(
+            level,
+            crate::part_arm::nsq_geom_level(arm, preset),
+            crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
+            cli_qp,
+        )
+    }
+
     /// The `nsq_search_level` -> controls row plus the `nsq_geom_level` ->
     /// shape-gate pair. Split out of `for_arm` so the wiring and the
     /// arm-parity tests drive the SAME function.
@@ -2053,7 +2099,7 @@ impl DepthWalk<'_, '_> {
         split_flag: bool,
     ) -> bool {
         let nsq = self.nsq;
-        let sq_cost = sq.ev.block_cost();
+        let sq_cost = sq.ev.block_cost(self.lambda);
 
         let mut nsq_split_cost_th = nsq.nsq_split_cost_th;
         if nsq_split_cost_th != 0 {
@@ -2251,7 +2297,7 @@ impl DepthWalk<'_, '_> {
         };
         let full_lambda = self.lambda;
         let dist = rdcost(full_lambda, 0, sq.ev.full_dist());
-        let cost = sq.ev.block_cost();
+        let cost = sq.ev.block_cost(self.lambda);
         let dist_cost_ratio = (dist * 100) / cost;
         let (min_ratio, max_ratio) = (50u64, 100u64);
         let modulated_th = if dist_cost_ratio > min_ratio {
@@ -2392,7 +2438,7 @@ impl DepthWalk<'_, '_> {
         if matches!(shape, PartitionType::Horz4 | PartitionType::Vert4) {
             sq_weight += Self::CONSERVATIVE_OFFSET_0;
         }
-        let sq_cost = sq.ev.block_cost();
+        let sq_cost = sq.ev.block_cost(self.lambda);
         if matches!(
             shape,
             PartitionType::Horz4 | PartitionType::HorzA | PartitionType::HorzB
@@ -2726,7 +2772,7 @@ impl DepthWalk<'_, '_> {
                             c_bsize_sq(size),
                             c_part(shape),
                             nsi,
-                            ev.block_cost(),
+                            ev.block_cost(self.lambda),
                             ev.total_rate(),
                             ev.full_dist(),
                             ev.mode(),
@@ -2745,7 +2791,7 @@ impl DepthWalk<'_, '_> {
                             ev.dbg_inter(),
                         );
                     }
-                    part_cost += ev.block_cost();
+                    part_cost += ev.block_cost(self.lambda);
                     evals.push(ev);
 
                     if let Some((_, best_rd, _)) = &best
@@ -2783,8 +2829,8 @@ impl DepthWalk<'_, '_> {
                 // tested_blk[PART_H/V][0..1] + block_has_coeff).
                 if matches!(shape, PartitionType::Horz | PartitionType::Vert) && evals.len() == 2 {
                     let pair = [
-                        (evals[0].block_cost(), evals[0].block_has_coeff()),
-                        (evals[1].block_cost(), evals[1].block_has_coeff()),
+                        (evals[0].block_cost(self.lambda), evals[0].block_has_coeff()),
+                        (evals[1].block_cost(self.lambda), evals[1].block_has_coeff()),
                     ];
                     if shape == PartitionType::Horz {
                         h_children = Some(pair);
@@ -3374,6 +3420,7 @@ mod tests {
                 // These are KEY-frame scans (no reference exists in a unit test).
                 None,
                 None,
+                None,
             );
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
@@ -3411,6 +3458,7 @@ mod tests {
             64,
             None,
             // These are KEY-frame scans (no reference exists in a unit test).
+            None,
             None,
             None,
         );
@@ -3452,6 +3500,7 @@ mod tests {
             64,
             None,
             // These are KEY-frame scans (no reference exists in a unit test).
+            None,
             None,
             None,
         );

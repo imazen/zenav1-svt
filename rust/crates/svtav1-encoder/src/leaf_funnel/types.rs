@@ -609,10 +609,17 @@ pub(crate) struct LeafEval {
 }
 
 impl LeafEval {
-    /// The winner's MDS3 full cost (C `blk_ptr->cost` before the
-    /// partition-rate term the depth walk adds).
-    pub(crate) fn block_cost(&self) -> u64 {
-        self.win.mds3_cost
+    /// C `blk_ptr->cost` (mode_decision.c:3880-3883): the winner's cost
+    /// REPRICED under the SB lambda (`full_sb_lambda_md`), NOT the tuned
+    /// block lambda that priced the MDS3 candidate race — block-lambda
+    /// tuning affects per-block candidate selection, but every
+    /// inter-depth/partition decision compares on the SB lambda.
+    /// `total_rate`/`full_dist` carry every arm's writeback (skip mode
+    /// included), so this is the same RDCOST recompute C runs after
+    /// winner select. The partition-rate term the depth walk adds is
+    /// still on top.
+    pub(crate) fn block_cost(&self, sb_lambda: u64) -> u64 {
+        rdcost(sb_lambda, self.win.total_rate, self.win.full_dist)
     }
 
     /// IBC chunk 8: whether the winner is an IntraBC candidate — the C

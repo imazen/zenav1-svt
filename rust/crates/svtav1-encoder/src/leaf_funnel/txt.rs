@@ -81,6 +81,10 @@ pub(super) struct TxtDbg {
     pub(super) tx_y: usize,
     pub(super) mode: u8,
     pub(super) fi: u8,
+    /// Inter candidate identity — `cand.mode` is meaningless for inter
+    /// (it stays 0), so the mode/mv/ref/drl tuple is what joins a dump
+    /// line to one candidate. `None` for intra candidates.
+    pub(super) inter: Option<(u8, i8, i8, i16, i16, u8)>,
 }
 
 /// TXT search for one luma txb (`tx_type_search`, product_coding_loop.c:
@@ -124,6 +128,9 @@ pub(super) fn txt_search(
                     "PTXT org=({},{}) tx=({},{}) {w}x{h} d={depth} mode={} fi={} ",
                     d.abs_x, d.abs_y, d.tx_x, d.tx_y, d.mode, d.fi
                 );
+                if let Some((im, r0, r1, mx, my, drl)) = d.inter {
+                    eprint!("im={im} rf={r0},{r1} mv={mx},{my} drl={drl} ");
+                }
                 eprintln!($($t)*);
             }
         };

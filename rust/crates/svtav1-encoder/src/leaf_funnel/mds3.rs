@@ -608,8 +608,17 @@ fn eval_candidate(
     //      loop, on every inter candidate. See [`super::ifs`].
     if cands[ci].inter.is_some() {
         // C `dequants->y_dequant_qtx[base_q_idx][1]` (enc_inter_prediction.c
-        // :2027-2029); `qt` is built from `frame.base_qindex`.
-        let quantizer = i16::try_from(qt.dequant[1]).expect("y_dequant_qtx is int16_t in C");
+        // :2022-2025) — the FRAME-HEADER base qindex unconditionally (not
+        // `ctx->qp_index`, not the `delta_q_present` selection), at the
+        // `hbd_md`-selected table depth.
+        let deq_ac = if bd10_rd.is_some() {
+            i32::from(crate::bd10::ac_qlookup_10(frame.fh_qindex[0]))
+        } else {
+            i32::from(
+                svtav1_dsp::quant_tables::AC_QLOOKUP_8[frame.fh_qindex[0] as usize],
+            )
+        };
+        let quantizer = i16::try_from(deq_ac).expect("y_dequant_qtx is int16_t in C");
         super::ifs::ifs_at_mds3(
             fx,
             g,
@@ -981,6 +990,16 @@ fn eval_candidate(
                     tx_y,
                     mode: cand.mode,
                     fi: cand.fi,
+                    inter: cand.inter.as_deref().map(|ic| {
+                        (
+                            ic.mode as u8,
+                            ic.ref_frame[0],
+                            ic.ref_frame[1],
+                            ic.mv[0].x,
+                            ic.mv[0].y,
+                            ic.drl_index,
+                        )
+                    }),
                 })
             };
             #[cfg(not(feature = "std"))]
@@ -1116,8 +1135,25 @@ fn eval_candidate(
                         }
                         co_field = alloc::format!(" co=[{}]", v.join(","));
                     }
+                    let cand_tag = cand.inter.as_deref().map_or_else(
+                        || alloc::format!("mode={}", cand.mode),
+                        |ic| {
+                            alloc::format!(
+                                "mode={} rf={},{} mv0={},{} mv1={},{} drl={} itf={:#x}",
+                                cand.mode,
+                                ic.ref_frame[0],
+                                ic.ref_frame[1],
+                                ic.mv[0].x,
+                                ic.mv[0].y,
+                                ic.mv[1].x,
+                                ic.mv[1].y,
+                                ic.drl_index,
+                                ic.interp_filters,
+                            )
+                        },
+                    );
                     eprintln!(
-                        "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} dq={:?} lam={lambda} eob={} nz=[{}]{co_field}",
+                        "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} dq={:?} lam={lambda} eob={} {cand_tag} nz=[{}]{co_field}",
                         qt.dequant,
                         eob_d,
                         nz.join(",")
@@ -2279,6 +2315,63 @@ fn eval_candidate(
                     (i, s, rd, non_cfl_cost)
                 }
             };
+            #[cfg(feature = "std")]
+            if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                eprintln!(
+                    "NSQDBG CFLCMP org=({abs_x},{abs_y}) {w}x{h} luma={} uv={} uvd={} \
+                     ub={} ud={} ueob={} vb={} vd={} veob={} ncd={} fcr={} ncc={} \
+                     cflrd={} cflidx={} cflsgn={} ncub={} ncvb={} pu={} pv={} \
+                     bq={} qu={} qv={} dqu={} dqv={}",
+                    cand.mode,
+                    cand.uv,
+                    cand.uv_delta,
+                    u_out.bits,
+                    u_out.dist,
+                    u_out.eob,
+                    v_out.bits,
+                    v_out.dist,
+                    v_out.eob,
+                    if bd10_rd.is_none() { u_nc.dist + v_nc.dist } else { 0 },
+                    cand.fcr,
+                    cfl_cmp_cost,
+                    cfl_rd,
+                    cfl_idx,
+                    cfl_signs,
+                    u_nc.bits,
+                    v_nc.bits,
+                    u_pred.first().copied().unwrap_or(0),
+                    v_pred.first().copied().unwrap_or(0),
+                    frame.base_qindex,
+                    frame.qindex_u,
+                    frame.qindex_v,
+                    qt_u.dequant[0],
+                    qt_v.dequant[0],
+                );
+                if std::env::var_os("SVTAV1_UVLOOP_COEFF").is_some() {
+                    let dump = |c: &TxUnitOut| -> String {
+                        c.qcoeff
+                            .iter()
+                            .take(16)
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+                    let rdump = |r: &[u8]| -> String {
+                        r.iter()
+                            .take(8)
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+                    eprintln!(
+                        "CFLCOEF org=({abs_x},{abs_y}) qc={} qv={} ru8={} rv8={}",
+                        dump(&u_out),
+                        dump(&v_out),
+                        rdump(&u_out.recon),
+                        rdump(&v_out.recon),
+                    );
+                }
+            }
             if cfl_rd != MAX_MODE_COST && cfl_rd < cfl_cmp_cost {
                 // CfL wins: redo chroma with the winning alpha (DCT_DCT)
                 // for the full TX path, and swap in the CFL mode + rate.

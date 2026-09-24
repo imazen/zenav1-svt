@@ -1192,7 +1192,29 @@ pub(super) fn tx_unit_inner(
             cut_off_num: rdoq.cut_off_num,
             cut_off_denum: rdoq.cut_off_denum,
         };
+        #[cfg(feature = "std")]
+        let q194_fp = qcoeff.get(194).copied().unwrap_or(0);
         crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut eob, scan, qt, &o);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_Q194").is_some()
+            && plane_type == 0
+            && w == 16
+            && h == 16
+            && tx_type == 2
+        {
+            eprintln!(
+                "Q194 t={} qfp={} q={} dq={} eob={} pk=[{},{},{}] rdm={}",
+                packed.get(194).copied().unwrap_or(0),
+                q194_fp,
+                qcoeff.get(194).copied().unwrap_or(0),
+                dqcoeff.get(194).copied().unwrap_or(0),
+                eob,
+                packed.first().copied().unwrap_or(0),
+                packed.get(1).copied().unwrap_or(0),
+                packed.get(2).copied().unwrap_or(0),
+                o_rdmult,
+            );
+        }
     }
     // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
     if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {

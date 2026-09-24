@@ -444,7 +444,22 @@ pub struct FunnelFrame {
     /// FALSE on a video-mode frame, where CHROMA weights rate at 20 instead
     /// of the allintra arm's 13. Luma (17) is the same on both arms.
     pub rdoq_allintra_rd_mult: bool,
+    /// `ctx->qp_index` analog (`blk_ptr->qindex`, md_process.c:800-803) —
+    /// `delta_q_present || r0_delta_qp_md ? sb_qp : base_q_idx`, so on a
+    /// TPL-QPM picture this is the per-SB modulated value even when the
+    /// header signals no delta-q. The QUANTIZER does NOT key on this
+    /// directly — see [`FunnelFrame::quant_qindex`].
     pub base_qindex: u8,
+    /// C `frm_hdr.delta_q_params.delta_q_present` — the SIGNALLED flag.
+    /// False whenever the frame header carries no per-SB delta-q (incl.
+    /// `r0_delta_qp_md` without `r0_delta_qp_quant`, aq_mode==2's usual
+    /// non-TL0 case).
+    pub delta_q_present: bool,
+    /// C `frm_hdr.quantization_params`' per-plane qindexes at the FRAME
+    /// base — [base_q_idx, base+delta_q_dc[U], base+delta_q_dc[V]] —
+    /// the quantizer side `quantize_inv_quantize` selects when
+    /// `delta_q_present` is 0.
+    pub fh_qindex: [u8; 3],
     /// Encode bit depth (8 or 10). At bd10 C forces `pd0_ctrls.pd0_level =
     /// PD0_LVL_0` (`set_pd0_ctrls`, enc_mode_config.c:5416) regardless of
     /// preset, so the eff-M9 per-SB TXS coupling
@@ -539,6 +554,34 @@ pub struct FunnelFrame {
     pub coded_lossless: bool,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
+}
+
+impl FunnelFrame {
+    /// The qindex the QUANTIZER for `plane` (0=Y, 1=U, 2=V) must use — C
+    /// `quantize_inv_quantize`'s selection (full_loop.c:1668-1683):
+    ///
+    /// ```c
+    /// q_index = delta_q_present ? qindex_arg : base_q_idx;
+    /// q_index += segmentation_qp_offset;            // 0 — no segmap port
+    /// q_index += delta_q_dc[plane] on chroma;       // folded into both sides
+    /// ```
+    ///
+    /// `base_qindex`/`qindex_u`/`qindex_v` carry C's `ctx->qp_index`
+    /// (`blk_ptr->qindex`) — the TPL/variance-modulated per-SB value —
+    /// which `quantize_inv_quantize` reads ONLY when the header signals
+    /// delta-q. Under `r0_delta_qp_md` WITHOUT `r0_delta_qp_quant`
+    /// (aq_mode==2's usual non-TL0 case: `delta_q_present=0` in the trace
+    /// that found this — C `qidx=96 dqp=0 bq=131`) every plane quantizes
+    /// at the FRAME qindex; the per-SB map drives MD lambdas and
+    /// `ctx->qp_index`-keyed thresholds only.
+    #[inline]
+    pub fn quant_qindex(&self, plane: usize) -> u8 {
+        if self.delta_q_present {
+            [self.base_qindex, self.qindex_u, self.qindex_v][plane]
+        } else {
+            self.fh_qindex[plane]
+        }
+    }
 }
 
 /// Per-preset leaf-funnel configuration (allintra still, presets 6/7/8),

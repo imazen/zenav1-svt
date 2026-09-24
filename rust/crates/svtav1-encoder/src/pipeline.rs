@@ -1222,6 +1222,17 @@ impl EncodePipeline {
             return Ok(out);
         }
         let (mut pics, emit, frames_tf) = self.run_ra_picture_decision()?;
+        #[cfg(feature = "std")]
+        if crate::dbgenv::medbg() {
+            std::eprintln!(
+                "RAEMIT emit={emit:?} pics={:?}",
+                pics.iter()
+                    .map(|p| p
+                        .as_ref()
+                        .map(|p| (p.picture_number, p.decode_order, p.temporal_layer_index)))
+                    .collect::<alloc::vec::Vec<_>>()
+            );
+        }
         // Drain the buffer up front: each index is visited exactly once (the
         // emit order is a permutation), and holding the frames locally keeps
         // `&mut self` free for the per-picture encode.
@@ -2253,6 +2264,26 @@ impl EncodePipeline {
         // two-mini-GOP `tpl_lad_mg == 1` shape needs a deeper lookahead
         // queue and is refused upstream for now.
         let tpl_lad_mg = 0u8;
+        // C's `scs->tpl_lad_mg` CONFIG value (enc_handle.c:4041-4063) — NOT
+        // the port's group shape. `allintra || LOW_DELAY -> 0`; else
+        // `look_ahead < mg_size -> 0`, `scs->tpl -> 1` (an `scs->tpl` short
+        // of this stage already returned above). The RA window this
+        // pipeline buffers IS one full mini-GOP, so C's
+        // `look_ahead_distance < mg_size` test is false wherever TPL runs.
+        // MEASURED (johnny 256x256 9f qp40 p6 hier3 aq2): C's
+        // `r0_adjust_factor` is 0 for every picture because
+        // `!scs->tpl_lad_mg` is false — the port's structural 0 wrongly fed
+        // `set_tpl_group` here and divided every inter `r0` by
+        // `0.8 * tpl_hl_base_frame_div_factor[3]` = 1.6, dropping
+        // `qstep_ratio`/`base_q_idx` (poc8: port 104 vs C 128) and halving
+        // the inter SB lambda (poc8 sb1: port 37775 vs C 76453).
+        let scs_tpl_lad_mg: u8 = if self.gop.intra_period == 1
+            || self.pred_structure == crate::port_picstruct::PredStructure::LowDelay
+        {
+            0
+        } else {
+            1
+        };
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
         let sb_size = self.sb_size;
@@ -2291,7 +2322,10 @@ impl EncodePipeline {
                     slice_type: pic.slice_type,
                     hierarchical_levels: pic.hierarchical_levels,
                     input_resolution,
-                    tpl_lad_mg,
+                    // C `pcs->scs->tpl_lad_mg` — the CONFIG knob C's
+                    // `r0_adjust_factor` gate reads, not the port's
+                    // group-shape `tpl_lad_mg` (which stays 0).
+                    tpl_lad_mg: scs_tpl_lad_mg,
                     rate_control_mode: pp::RcMode::CqpOrCrf,
                 }),
                 tpl_group_level(pic.slice_type == pp::SliceType::I),
@@ -2397,6 +2431,20 @@ impl EncodePipeline {
             let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
             let complete = (0..2)
                 .all(|li| (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some()));
+            #[cfg(feature = "std")]
+            if crate::dbgenv::medbg() {
+                std::eprintln!(
+                    "MERPS poc={} rps_poc={:?} rps_idx={:?} ns={:?} refs=[{:?},{:?},{:?},{:?}] complete={complete}",
+                    pic.picture_number,
+                    pic.rps.ref_poc_array,
+                    pic.rps.ref_dpb_index,
+                    num_to_search,
+                    refs.arr[0][0].map(|d| d.picture_number),
+                    refs.arr[0][1].map(|d| d.picture_number),
+                    refs.arr[1][0].map(|d| d.picture_number),
+                    refs.arr[1][1].map(|d| d.picture_number),
+                );
+            }
             if !complete {
                 continue;
             }
@@ -5824,9 +5872,20 @@ impl EncodePipeline {
                         r0_adjust_factor: fti.tpl_ctrls.r0_adjust_factor,
                         used_tpl_frame_num: fti.used_tpl_frame_num,
                         tpl_group_size: fti.tpl_group_size,
-                        // `scs->lad_mg != 0` — the lookahead queue this
-                        // pipeline does not have (tpl_lad_mg == 0 shape).
-                        scs_lad_mg: false,
+                        // `scs->lad_mg != 0` — C's CONFIG value
+                        // (enc_handle.c:4041-4065), `= scs->tpl_lad_mg`
+                        // under CQP_OR_CRF: 0 for allintra/LOW_DELAY, else
+                        // 1 whenever TPL is in play (the RA window this
+                        // pipeline buffers is a full mini-GOP, so C's
+                        // `look_ahead < mg_size` test is false). It gates
+                        // the base-layer weight bump `weight = min(w+0.1,1)`
+                        // (rc_crf_cqp.c:285-287) — with it off, a base
+                        // frame's `r0_weight[1]=0.9` never bumps to 1.0
+                        // and `qstep_ratio`/`base_q_idx` come out low
+                        // (johnny 9f p6: poc8 port 121 vs C 128).
+                        scs_lad_mg: !allintra
+                            && self.pred_structure
+                                != crate::port_picstruct::PredStructure::LowDelay,
                         input_resolution: i32::from(
                             crate::port_enc_mode_config::ResolutionRange::from_luma_area(
                                 self.width * self.height,
@@ -8404,16 +8463,36 @@ impl EncodePipeline {
                 // `ref_obj_l0->sb_min_sq_size[sb_index]`, i.e. LAST's — see
                 // `last_ref_slot`, not DPB slot 0. C only reads it when the
                 // reference is POC-ADJACENT (`abs(picture_number - ref_poc)
-                // <= 1`, enc_mode_config.c:3176-3178); a farther ref leaves
+                // <= 1`, enc_mode_config.c:3175-3177); a farther ref leaves
                 // `sb_min_sq_size` at `(uint8_t)~0` and the deviation
                 // thresholds get NO bump — feeding the value unconditionally
                 // was the `96x96 hier` over-disallow on poc>=2. The L1
-                // `MIN()` arm (:3180-3185) is unreachable: low-delay never
-                // populates list 1.
-                let ref_mins = last_ref_slot
+                // `MIN()` arm (:3179-3186) fires on an RA B slice where
+                // `ref_list1_count_try` and a same-size BWD reference
+                // (`ref_dpb_index[BWD]`) exist, on ITS OWN POC adjacency —
+                // unreachable on low-delay, which never populates list 1.
+                // `svt_aom_is_ref_same_size` (enc_mode_config.c:2857) gates
+                // each list: `is_not_scaled` short-circuits true.
+                let ref_same_size = |rf: &crate::picture::ReferenceFrame| {
+                    self.superres_denom.is_none()
+                        || (rf.width == self.width as u32 && rf.height == self.height as u32)
+                };
+                let ref_l0_adj = last_ref_slot
                     .and_then(|slot| self.dpb.get(slot))
-                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1)
-                    .map(|rf| rf.sb_min_sq_size.clone());
+                    .filter(|rf| ref_same_size(rf))
+                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1);
+                let ref_l1_adj = pic_decision
+                    .as_ref()
+                    .filter(|p| {
+                        p.slice_type == crate::port_picstruct::SliceType::B
+                            && p.ref_list1_count_try > 0
+                    })
+                    .and_then(|p| {
+                        self.dpb
+                            .get(p.rps.ref_dpb_index[crate::port_picstruct::BWD] as usize)
+                    })
+                    .filter(|rf| ref_same_size(rf))
+                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1);
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
                 let mut dr_out = Vec::with_capacity(sb_cols * sb_rows);
                 for sb_row in 0..sb_rows {
@@ -8454,16 +8533,18 @@ impl EncodePipeline {
                                 sb_width: u16::try_from(sb_size.min(w - x0)).unwrap_or(u16::MAX),
                                 sb_height: u16::try_from(sb_size.min(h - y0)).unwrap_or(u16::MAX),
                                 disallow_4x4_in: true,
-                                // C `(uint8_t)~0` when no same-size reference
-                                // within one POC exists; the port's DPB slot 0
-                                // is the only reference in this envelope and
-                                // it is always POC-adjacent here. An EMPTY
-                                // vector (a picture whose trees were never
-                                // folded) takes the same `None` arm, which is
-                                // the no-adjustment one.
-                                ref_sb_min_sq_size: ref_mins
-                                    .as_ref()
-                                    .and_then(|v| v.get(sb_idx).copied()),
+                                // C `(uint8_t)~0` when neither list's
+                                // reference is POC-adjacent — `None` takes
+                                // the no-adjustment arm. With both present
+                                // C keeps the `MIN()`.
+                                ref_sb_min_sq_size: [
+                                    ref_l0_adj.and_then(|rf| rf.sb_min_sq_size.get(sb_idx)),
+                                    ref_l1_adj.and_then(|rf| rf.sb_min_sq_size.get(sb_idx)),
+                                ]
+                                .into_iter()
+                                .flatten()
+                                .copied()
+                                .reduce(u8::min),
                             },
                         );
                         let c = res.map(|r| r.ctrls).unwrap_or_default();
@@ -8485,9 +8566,10 @@ impl EncodePipeline {
                         #[cfg(feature = "std")]
                         if crate::dbgenv::pd0dbg() {
                             eprintln!(
-                                "PD0DR sb={sb_idx} org=({x0},{y0}) dr={}/{}/{}/{} minsq={min_sq} \
+                                "PD0DR poc={display_order} nb64={} sb={sb_idx} org=({x0},{y0}) dr={}/{}/{}/{} minsq={min_sq} \
                                  drlvl={} fastlam={fast_lambda} pqp={picture_qp} \
-                                 med={}/{}/{}/{} mev={} refmin={}",
+                                 med={}/{}/{}/{} mev={} refmin={}/{}",
+                                me.per_b64.len(),
                                 c.enabled,
                                 c.disallow_below_64x64,
                                 c.disallow_below_32x32,
@@ -8498,10 +8580,12 @@ impl EncodePipeline {
                                 b.map_or(0, |o| o.me_16x16_distortion),
                                 b.map_or(0, |o| o.me_8x8_distortion),
                                 b.map_or(0, |o| o.me_8x8_cost_variance),
-                                ref_mins
-                                    .as_ref()
-                                    .and_then(|v| v.get(sb_idx).copied())
-                                    .map_or(255, u32::from),
+                                ref_l0_adj
+                                    .and_then(|rf| rf.sb_min_sq_size.get(sb_idx))
+                                    .map_or(255, |v| u32::from(*v)),
+                                ref_l1_adj
+                                    .and_then(|rf| rf.sb_min_sq_size.get(sb_idx))
+                                    .map_or(255, |v| u32::from(*v)),
                             );
                         }
                         out.push(
@@ -8629,6 +8713,47 @@ impl EncodePipeline {
                 }
             });
 
+        // `update_pred_th_offset`'s `use_ref_info` read
+        // (enc_dec_process.c:1611-1621) takes `ref_obj_l0`'s
+        // `sb_min_sq_size`/`sb_max_sq_size`, then — on a B slice with
+        // `ref_list1_count_try` and a same-size L1 reference — merges
+        // `MIN(min, l1_min)` / `MAX(max, l1_max)`. Unlike the depth-removal
+        // read above there is NO POC-adjacency gate. Owned vectors because
+        // the merge produces a new array; `None` on a key frame.
+        let ref_min_max_sq: Option<(Vec<u8>, Vec<u8>)> = last_ref
+            .as_ref()
+            .filter(|rf| {
+                self.superres_denom.is_none()
+                    || (rf.width == self.width as u32 && rf.height == self.height as u32)
+            })
+            .map(|rf| {
+                let mut mn = rf.sb_min_sq_size.clone();
+                let mut mx = rf.sb_max_sq_size.clone();
+                let l1 = pic_decision
+                    .as_ref()
+                    .filter(|p| {
+                        p.slice_type == crate::port_picstruct::SliceType::B
+                            && p.ref_list1_count_try > 0
+                    })
+                    .and_then(|p| {
+                        self.dpb
+                            .get(p.rps.ref_dpb_index[crate::port_picstruct::BWD] as usize)
+                    })
+                    .filter(|rf| {
+                        self.superres_denom.is_none()
+                            || (rf.width == self.width as u32 && rf.height == self.height as u32)
+                    });
+                if let Some(l1) = l1 {
+                    for (m, v) in mn.iter_mut().zip(l1.sb_min_sq_size.iter()) {
+                        *m = (*m).min(*v);
+                    }
+                    for (m, v) in mx.iter_mut().zip(l1.sb_max_sq_size.iter()) {
+                        *m = (*m).max(*v);
+                    }
+                }
+                (mn, mx)
+            });
+
         let tile_recons = encode_tile_rows(
             &encode_input,
             sb_input,
@@ -8644,6 +8769,10 @@ impl EncodePipeline {
             qindex_v,
             ac_bias_eff,
             md_sb_qindex.map(|p| p.sb_qindex.as_slice()),
+            // `frm_hdr.delta_q_params.delta_q_present` — the SIGNALLING
+            // side. `md_sb_qindex` exists under `r0_delta_qp_md` even when
+            // nothing is signalled, so it cannot proxy this flag.
+            delta_q_plan.is_some(),
             tpl_rdmult.clone(),
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
             sharp_tx_active,
@@ -8694,9 +8823,9 @@ impl EncodePipeline {
             // `ref_obj_l0->{sb_min_sq_size,sb_max_sq_size}` for the
             // use_ref_info refinement arm — LAST ref (see `last_ref_slot`),
             // `None` on a key frame.
-            last_ref
+            ref_min_max_sq
                 .as_ref()
-                .map(|rf| (rf.sb_min_sq_size.as_slice(), rf.sb_max_sq_size.as_slice())),
+                .map(|(mn, mx)| (mn.as_slice(), mx.as_slice())),
             sb_inter_lambda.as_deref(),
             primary_ref_cdfs.as_deref(),
             &mv_map,
@@ -16242,6 +16371,13 @@ fn merge_sb_units(
     out
 }
 
+/// TEMPORARY: SVTAV1_PSYM env gate for the partition-symbol stream trace —
+/// joins against the C interposer's PSYM lines (SVT_PARTSYM_OUT).
+fn psym_dbg() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("SVTAV1_PSYM").is_some())
+}
+
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut crate::entropy::writer::AomWriter,
@@ -16274,6 +16410,19 @@ fn encode_partition_tree(
                 );
                 if !recon_only {
                     let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
+                    if psym_dbg() {
+                        eprintln!(
+                            "PSYM sim={} mi=({},{}) bsize={}x{} part=0 ctx={} hr={} hc={}",
+                            writer.cdf_only as u8,
+                            block_y / 4,
+                            block_x / 4,
+                            w,
+                            h,
+                            ctx,
+                            has_rows as u8,
+                            has_cols as u8
+                        );
+                    }
                     crate::entropy::context::write_partition_edge(
                         writer,
                         frame_ctx,
@@ -16314,6 +16463,20 @@ fn encode_partition_tree(
             if !recon_only {
                 let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
                 let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
+                if psym_dbg() {
+                    eprintln!(
+                        "PSYM sim={} mi=({},{}) bsize={}x{} part={} ctx={} hr={} hc={}",
+                        writer.cdf_only as u8,
+                        block_y / 4,
+                        block_x / 4,
+                        w,
+                        h,
+                        *partition_type as u8,
+                        ctx,
+                        has_rows as u8,
+                        has_cols as u8
+                    );
+                }
                 crate::entropy::context::write_partition_edge(
                     writer,
                     frame_ctx,
@@ -17026,6 +17189,12 @@ fn encode_tile_rows(
     // Also the TPL `r0_delta_qp_md` map — `ctx->qp_index` reads it even
     // when the header signals no delta-q.
     sb_qindex_plan: Option<&[u8]>,
+    // C `frm_hdr.delta_q_params.delta_q_present` — the SIGNALLED flag
+    // (`delta_q_plan.is_some()` at the caller). The quantizer selection in
+    // `quantize_inv_quantize` (full_loop.c:1668-1676) keys on THIS, not on
+    // the plan being present: when false every block quantizes at the
+    // frame `base_q_idx` + chroma deltas whatever `sb_qindex_plan` says.
+    fh_delta_q_present: bool,
     // C `ppcs->blk_lambda_tuning` payload — `pa_me_data->tpl_sb_rdmult_
     // scaling_factors` after `sb_setup_lambda` folded each superblock's
     // rdmult ratio in. `evaluate_leaf` scales the per-BLOCK lambda by the
@@ -17712,6 +17881,8 @@ fn encode_tile_rows(
                 // re-encode cannot disagree about the RDOQ rate-weight arm.
                 rdoq_allintra_rd_mult: cq.allintra_rd_mult,
                 base_qindex,
+                delta_q_present: fh_delta_q_present,
+                fh_qindex: [base_qindex, qindex_u, qindex_v],
                 bit_depth,
                 qindex_u,
                 qindex_v,
@@ -18107,8 +18278,11 @@ fn encode_tile_rows(
                 // scan (`perform_pred_depth_refinement`,
                 // enc_dec_process.c:3017) and the PD1 walk. Falls back to the
                 // frame lambda on a key frame / allintra cell, where
-                // `sb_inter_lambda` is `None`.
-                let sb_md_full_lambda: u64 = sb_inter_lambda
+                // `sb_inter_lambda` is `None` — UNLESS the per-SB plan arm
+                // below computes this SB's `av1_lambda_assign_md` output,
+                // which IS C's `full_sb_lambda_md` snapshot
+                // (md_process.c:763-764).
+                let mut sb_md_full_lambda: u64 = sb_inter_lambda
                     .and_then(|v| v.get(sb_row * sb_cols + sb_col))
                     .map_or_else(
                         || c_quant.as_ref().map_or(0, |cq| u64::from(cq.lambda)),
@@ -18146,16 +18320,23 @@ fn encode_tile_rows(
                             fh_base_qindex,
                             crate::pd0::kf_full_lambda_8bit_ex(
                                 sbq,
-                                u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                                u32::from(picture_qp),
                                 hdr_alt_lambda,
                                 i32::from(sbq) - i32::from(fh_base_qindex),
                             )
                         );
                     }
                     if ssim_rdmult.is_none() {
-                        f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_tuned(
+                        let sb_assigned = u64::from(crate::pd0::kf_full_lambda_8bit_tuned(
                             sbq,
-                            u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                            // C keys `pcs->lambda_weight` on `ppcs->picture_qp`
+                            // — the FRAME qp (enc_mode_config.c:10101-10107),
+                            // constant across SBs. A per-SB `qindex_to_qp(sbq)`
+                            // here drops the weight to 0 on SBs whose delta-q
+                            // falls under the >=16 rung while the frame qp
+                            // stays above it (measured: sbq=62/base=71 -> qp15
+                            // vs frame qp18, lambda 9718 where C has 11388).
+                            u32::from(picture_qp),
                             hdr_alt_lambda,
                             i32::from(sbq) - i32::from(fh_base_qindex),
                             // Frame `lambda_weight` + the extended-CRF bump.
@@ -18166,12 +18347,24 @@ fn encode_tile_rows(
                                 (None, 0) => None,
                                 (None, b) => Some(crate::pd0::frame_lambda_weight_for_preset(
                                     speed_config.preset,
-                                    u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                                    u32::from(picture_qp),
                                     false,
                                     b,
                                 )),
                             },
                         ));
+                        f.lambda = sb_assigned;
+                        // C `full_sb_lambda_md` (md_process.c:763-764): the
+                        // per-SB `av1_lambda_assign_md` snapshot, priced on
+                        // EVERY block in this SB's partition/depth walk and
+                        // in the `blk_ptr->cost` recompute after winner
+                        // select (mode_decision.c:3880-3883). On a frame
+                        // with `sb_inter_lambda` the per-SB inter assign
+                        // already bound the correct value above — this arm
+                        // is the key/allintra-frame path.
+                        if sb_inter_lambda.is_none() {
+                            sb_md_full_lambda = sb_assigned;
+                        }
                     }
                 }
 
@@ -18709,6 +18902,20 @@ fn encode_tile_rows(
                         fc.palette_y_mode_cdf[0][1][0],
                         fc.palette_y_mode_cdf[0][2][0],
                     );
+                    // SEED3: full partition/skip/txsize ctx[0] rows — joins
+                    // the C interposer's SEED3 (wrap_recon.c).
+                    eprintln!(
+                        "SEED3 sb={} part=[{}] skip=[{}] txs=[{}]",
+                        sb_index,
+                        join(&fc.partition_cdf.iter().map(|r| r[0]).collect::<Vec<_>>()),
+                        join(&fc.skip_cdf.iter().map(|r| r[0]).collect::<Vec<_>>()),
+                        join(
+                            &fc.tx_size_cdf
+                                .iter()
+                                .flat_map(|cat| cat.iter().map(|ctx| ctx[0]).collect::<Vec<_>>())
+                                .collect::<Vec<_>>()
+                        )
+                    );
                 }
                 if funnel_chain {
                     fun_rates = Some(match &chain_base {
@@ -18900,6 +19107,10 @@ fn encode_tile_rows(
                                     sb_stale_vars,
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
                                     max_tx_size,
+                                    // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                    // (svt_aom_full_cost_pd0's lambda — PD0
+                                    // runs at 8-bit even at bd10).
+                                    Some(sb_md_full_lambda),
                                 )
                             } else if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) {
                                 // The VIDEO arm's PD0, which is a different
@@ -18972,6 +19183,9 @@ fn encode_tile_rows(
                                     // `ctx->parent_cost_bias`, same source —
                                     // read only by the inter PD0_LVL_6 arm.
                                     sb_parent_cost_bias,
+                                    // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                    // (svt_aom_full_cost_pd0's lambda).
+                                    Some(sb_md_full_lambda),
                                 );
                                 // C `md_encode_block`'s `lpd1` per-SB dispatch
                                 // off the PD0 root result. The light path uses
@@ -19020,6 +19234,9 @@ fn encode_tile_rows(
                                     sb_stale_vars,
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
                                     max_tx_size,
+                                    // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                    // (svt_aom_full_cost_pd0's lambda).
+                                    Some(sb_md_full_lambda),
                                 )
                             };
                             // The same per-SB variance map C's picture analysis
@@ -19297,6 +19514,9 @@ fn encode_tile_rows(
                                         pd0_inter.as_ref(),
                                         Some(sb_subres_step),
                                         sb_parent_cost_bias,
+                                        // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                        // (svt_aom_full_cost_pd0's lambda).
+                                        Some(sb_md_full_lambda),
                                     )
                                 } else {
                                     crate::pd0::pd0_pick_sb_partition_m6_eval(
@@ -19405,6 +19625,9 @@ fn encode_tile_rows(
                                         // (video arm only; `None` on allintra
                                         // keeps the level default).
                                         sb_pd0_det.map(|t| t.3),
+                                        // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                        // (svt_aom_full_cost_pd0's lambda).
+                                        Some(sb_md_full_lambda),
                                     )
                                 }
                             };
@@ -19577,6 +19800,9 @@ fn encode_tile_rows(
                                                 // be worse than no fold.
                                                 pd0_inter.as_ref(),
                                                 sb_pd0_det.map(|t| t.3),
+                                                // C `full_sb_lambda_md`
+                                                // (svt_aom_full_cost_pd0's lambda).
+                                                Some(sb_md_full_lambda),
                                             )
                                             .max_min_picked(&mut mx, &mut mn);
                                         }
@@ -19752,10 +19978,51 @@ fn encode_tile_rows(
                                     lpd1: None,
                                     ii_preds: None,
                                 };
+                                // C `set_nsq_search_ctrls`'s `me_dist_mod`
+                                // per-SB inputs (enc_mode_config.c:4956-4984):
+                                // the +1 level bump is gated on THIS
+                                // superblock's `me_8x8_distortion` /
+                                // `me_8x8_cost_variance` — `ppcs->me_8x8_*
+                                // [sb_index]` at `super_block_size == 64`, the
+                                // `get_sb128_me_data` quadrant aggregate at 128
+                                // (:62-114: dist averaged over the in-bounds
+                                // 64x64 cells, variance maxed). `None` on a
+                                // key frame (`slice_type == I_SLICE` ->
+                                // me_dist_mod 0) and at ENC_MR
+                                // (`enc_mode <= ENC_MR` -> 0).
+                                let nsq_me_stats = inter_md
+                                    .filter(|_| {
+                                        crate::rate_arm::eff_enc_mode(
+                                            sc_arm,
+                                            speed_config.preset,
+                                        ) > crate::port_enc_mode_config::enc_mode::MR
+                                    })
+                                    .and_then(|f| {
+                                        if sb_size == 64 {
+                                            f.me.per_b64.get(sb_index).map(|o| {
+                                                (o.me_8x8_distortion, o.me_8x8_cost_variance)
+                                            })
+                                        } else {
+                                            let (bx, by) = (x0 / 64, y0 / 64);
+                                            let (mut d8, mut var, mut n) = (0u64, 0u32, 0u64);
+                                            for dy in 0..2usize {
+                                                for dx in 0..2usize {
+                                                    if let Some(o) = f.me.per_b64.get(
+                                                        (by + dy) * f.me.b64_cols + bx + dx,
+                                                    ) {
+                                                        d8 += u64::from(o.me_8x8_distortion);
+                                                        var = var.max(o.me_8x8_cost_variance);
+                                                        n += 1;
+                                                    }
+                                                }
+                                            }
+                                            (n > 0).then_some(((d8 / n) as u32, var))
+                                        }
+                                    });
                                 let nsq = if coded_lossless {
                                     crate::depth_refine::NsqCfg::off()
                                 } else {
-                                    crate::depth_refine::NsqCfg::for_arm_with_coeff(
+                                    crate::depth_refine::NsqCfg::for_arm_sb(
                                         sc_arm,
                                         speed_config.preset,
                                         cli_qp as u32,
@@ -19765,6 +20032,8 @@ fn encode_tile_rows(
                                                 q.input_coeff_level
                                             }),
                                         temporal_layer,
+                                        sb_size,
+                                        nsq_me_stats,
                                     )
                                 };
                                 crate::depth_refine::decide_sb_refined(
@@ -19918,6 +20187,9 @@ fn encode_tile_rows(
                                             pd0_inter.as_ref(),
                                             Some(sb_subres_step),
                                             sb_parent_cost_bias,
+                                            // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                            // (svt_aom_full_cost_pd0's lambda).
+                                            Some(sb_md_full_lambda),
                                         )
                                     } else {
                                         crate::pd0::pd0_pick_sb_partition_m6_eval(
@@ -20002,6 +20274,9 @@ fn encode_tile_rows(
                                             // default — `sb_pd0_det` is None
                                             // on this arm by construction.
                                             None,
+                                            // C `full_sb_lambda_md[EB_8_BIT_MD]`
+                                            // (svt_aom_full_cost_pd0's lambda).
+                                            Some(sb_md_full_lambda),
                                         )
                                     }
                                 };

@@ -1507,6 +1507,20 @@ pub fn setup_ref_mv_list_seeded(
         entry.weight += REF_CAT_LEVEL;
     }
 
+    // TEMP parity trace (SVTAV1_MVPDBG): stage-boundary refmv dump.
+    #[cfg(feature = "std")]
+    let mvpdbg = crate::dbgenv::canddbg()
+        && std::env::var("SVTAV1_MVPDBG").is_ok()
+        && crate::depth_refine::nsqdbg_here(ctx.mi_col as usize * 4, ctx.mi_row as usize * 4);
+    #[cfg(feature = "std")]
+    if mvpdbg {
+        eprintln!(
+            "MVPDBG mi=({},{}) ref={} stage=spatial cnt={} stack={:?}",
+            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count,
+            &stack[..usize::from(refmv_count).min(8)],
+        );
+    }
+
     // ---- Temporal MVP / MFMV (:754-860) ----
     if env.use_ref_frame_mvs {
         let mut is_available = 0i32;
@@ -1620,6 +1634,15 @@ pub fn setup_ref_mv_list_seeded(
         }
     } // End temporal MVP
 
+    #[cfg(feature = "std")]
+    if mvpdbg {
+        eprintln!(
+            "MVPDBG mi=({},{}) ref={} stage=temporal cnt={} stack={:?}",
+            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count,
+            &stack[..usize::from(refmv_count).min(8)],
+        );
+    }
+
     // TOP-LEFT (:862-877), with the dummy newmv counter.
     let mut dummy_newmv_count = 0u8;
     scan_blk_mbmi(
@@ -1730,6 +1753,15 @@ pub fn setup_ref_mv_list_seeded(
         if rf[1] > NONE_FRAME {
             clamp_mv_ref(&mut entry.comp_mv, bw_px, bh_px, ctx);
         }
+    }
+
+    #[cfg(feature = "std")]
+    if mvpdbg {
+        eprintln!(
+            "MVPDBG mi=({},{}) ref={} stage=final cnt={} mc={} stack={:?}",
+            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count, mode_context,
+            &stack[..usize::from(refmv_count).min(8)],
+        );
     }
 
     out.count = refmv_count;

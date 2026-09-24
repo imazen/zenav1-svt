@@ -206,12 +206,17 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_av1_refine_integerized_param \
     -Wl,--wrap=svt_aom_wm_motion_refinement \
     -Wl,--wrap=svt_aom_estimate_transform \
+    -Wl,--wrap=svt_aom_encode_sb \
     -Wl,--wrap=svt_aom_estimate_coefficients_rate \
+    -Wl,--wrap=svt_aom_write_modes_sb \
+    -Wl,--wrap=svt_aom_generate_av1_mvp_table \
+    -Wl,--wrap=svt_aom_update_part_stats \
     -Wl,--wrap=svt_aom_quantize_inv_quantize_light \
     -Wl,--wrap=svt_aom_inv_transform_recon_wrapper \
     -Wl,--wrap=svt_aom_product_full_mode_decision \
     -Wl,--wrap=svt_av1_get_q_index_from_qstep_ratio \
     -Wl,--wrap=svt_av1_rc_init_sb_qindex \
+    -Wl,--wrap=svt_av1_rc_calc_qindex_crf_cqp \
     -Wl,--wrap=svt_aom_set_tuned_blk_lambda \
     "$LIB" -lpthread -lm
 

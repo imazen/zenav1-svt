@@ -381,12 +381,18 @@ pub(crate) fn evaluate_leaf(
     fx.frame_ssim = frame_owned.clone().map(alloc::sync::Arc::new);
     let frame = frame_owned.as_ref().unwrap_or(fx.frame);
     let lambda = frame.lambda;
-    let mut qt = crate::quant::build_quant_table_sharp(frame.base_qindex, frame.sharpness);
+    // `quantize_inv_quantize`'s qindex (full_loop.c:1668-1676): the blk
+    // `ctx->qp_index` ONLY when delta-q is signalled, else the frame
+    // `base_q_idx` (+chroma deltas) — see `FunnelFrame::quant_qindex`.
+    let mut qt =
+        crate::quant::build_quant_table_sharp(frame.quant_qindex(0), frame.sharpness);
     qt.qm_level = frame.qm_levels[0];
     // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
-    let mut qt_u = crate::quant::build_quant_table_sharp(frame.qindex_u, frame.sharpness);
+    let mut qt_u =
+        crate::quant::build_quant_table_sharp(frame.quant_qindex(1), frame.sharpness);
     qt_u.qm_level = frame.qm_levels[1];
-    let mut qt_v = crate::quant::build_quant_table_sharp(frame.qindex_v, frame.sharpness);
+    let mut qt_v =
+        crate::quant::build_quant_table_sharp(frame.quant_qindex(2), frame.sharpness);
     qt_v.qm_level = frame.qm_levels[2];
 
     // bd10 LUMA mode funnel (task #94): when the bd10 recon canvas is present
@@ -616,19 +622,19 @@ pub(crate) fn evaluate_leaf(
         // `u8 << shift` widening this site did inline).
         let y_src10 = blk_y_src10.clone();
         let mut qt10 = crate::quant::build_quant_table_bd_sharp(
-            frame.base_qindex,
+            frame.quant_qindex(0),
             frame.bit_depth,
             frame.sharpness,
         );
         qt10.qm_level = frame.qm_levels[0];
         let mut qt_u10 = crate::quant::build_quant_table_bd_sharp(
-            frame.qindex_u,
+            frame.quant_qindex(1),
             frame.bit_depth,
             frame.sharpness,
         );
         qt_u10.qm_level = frame.qm_levels[1];
         let mut qt_v10 = crate::quant::build_quant_table_bd_sharp(
-            frame.qindex_v,
+            frame.quant_qindex(2),
             frame.bit_depth,
             frame.sharpness,
         );
@@ -1162,7 +1168,7 @@ pub(crate) fn evaluate_leaf(
             let blk_src10 = blk_y_src10.clone();
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
             let qt10 = crate::quant::build_quant_table_bd_sharp(
-                frame.base_qindex,
+                frame.quant_qindex(0),
                 frame.bit_depth,
                 frame.sharpness,
             );
