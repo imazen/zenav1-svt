@@ -30,6 +30,7 @@ fn ra_seq() -> pp::SeqPicParams {
         },
         hierarchical_levels: 0,
         max_managed_refs: 0,
+        ..Default::default()
     }
 }
 

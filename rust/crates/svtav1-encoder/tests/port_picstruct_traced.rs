@@ -34,6 +34,7 @@ fn ld_flat_cqp_seq() -> pp::SeqPicParams {
         },
         hierarchical_levels: 0,
         max_managed_refs: 0,
+        ..Default::default()
     }
 }
 
@@ -2380,7 +2381,7 @@ fn traced_commit_sub_mini_gop_split() {
 ///   while base layer gives 0/1/2.
 #[test]
 fn traced_ref_pics_modulation_three_shapes() {
-    let c = |modulate: u8| pp::TfWindowCtrls {
+    let c = |modulate: u8| pp::TfCtrls {
         modulate_pics: modulate,
         ..Default::default()
     };
@@ -2430,7 +2431,7 @@ fn traced_ref_pics_modulation_three_shapes() {
     assert_eq!(pp::ref_pics_modulation(false, 0, &c(1), 0, 9_999, 1, 1), 5);
 
     // qp_opt applies DIVIDE_AND_ROUND(offset * q_weight, q_weight_denom).
-    let qp = pp::TfWindowCtrls {
+    let qp = pp::TfCtrls {
         modulate_pics: 1,
         qp_opt: true,
         ..Default::default()
@@ -2447,7 +2448,7 @@ fn traced_ref_pics_modulation_three_shapes() {
 /// below names the difference it pins.
 #[test]
 fn traced_derive_tf_window_counts_per_arm() {
-    let ctrls = pp::TfWindowCtrls {
+    let ctrls = pp::TfCtrls {
         enabled: true,
         modulate_pics: 1,
         num_past_pics: 2,
@@ -2461,14 +2462,14 @@ fn traced_derive_tf_window_counts_per_arm() {
     let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &ctrls, 3, 5, 0);
     assert_eq!((c.num_past_pics, c.num_future_pics), (5, 5));
     // With modulate_pics 0 the offset is dropped even if the caller passes one.
-    let no_mod = pp::TfWindowCtrls {
+    let no_mod = pp::TfCtrls {
         modulate_pics: 0,
         ..ctrls
     };
     let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &no_mod, 3, 5, 0);
     assert_eq!((c.num_past_pics, c.num_future_pics), (2, 2));
     // max_num_* caps.
-    let capped = pp::TfWindowCtrls {
+    let capped = pp::TfCtrls {
         max_num_past_pics: 3,
         max_num_future_pics: 3,
         ..ctrls
@@ -2499,7 +2500,7 @@ fn traced_derive_tf_window_counts_per_arm() {
 
     // The inter arm's per-struct cap keys off the temporal layer: BASE takes
     // row 1 (7 each side), non-base takes row 2 (1 below 6L, 2 at 6L).
-    let wide = pp::TfWindowCtrls {
+    let wide = pp::TfCtrls {
         num_past_pics: 9,
         num_future_pics: 9,
         max_num_past_pics: 30,
@@ -2778,4 +2779,158 @@ fn traced_low_delay_tf_ring() {
     // Draining an empty ring is a no-op, not a panic.
     pp::low_delay_release_tf_pictures(&mut ring);
     assert!(ring.pics.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// `derive_tf_params` + `tf_controls` / `tf_ld_controls` (enc_handle.c:2525-3355)
+// ---------------------------------------------------------------------------
+
+/// LOW_DELAY forces `tf_level = 0` through `tf_ld_controls(0)` BEFORE any
+/// preset logic — the whole table is disabled no matter what `enable_tf`,
+/// the preset, or the hierarchy say.
+#[test]
+fn traced_derive_tf_params_low_delay_always_off() {
+    for preset in [-1i8, 0, 6, 13] {
+        for hier in [0u8, 1, 5] {
+            let (level, t) =
+                pp::derive_tf_params(pp::PredStructure::LowDelay, preset, hier, true, false);
+            assert_eq!(level, 0, "preset {preset} hier {hier}");
+            assert!(
+                t.iter().all(|e| !e.enabled),
+                "LD table is disabled at preset {preset} hier {hier}"
+            );
+        }
+    }
+}
+
+/// The RA ladder: `do_tf` gates on `enable_tf && hier >= 1 && !lossless`,
+/// then `enc_mode <= M1 -> 1`, `<= M2 -> 2`, `<= M7 -> 5`, else 9.
+#[test]
+fn traced_derive_tf_params_ra_ladder() {
+    use pp::PredStructure::RandomAccess as RA;
+    // The level boundaries, all at hier 4 with TF on.
+    for (enc_mode, want) in [
+        (-1i8, 1u8),
+        (0, 1),
+        (1, 1),
+        (2, 2),
+        (3, 5),
+        (7, 5),
+        (8, 9),
+        (13, 9),
+    ] {
+        let (level, _) = pp::derive_tf_params(RA, enc_mode, 4, true, false);
+        assert_eq!(level, want, "enc_mode {enc_mode}");
+    }
+    // `do_tf == 0` collapses every level to 0 (and the disabled table).
+    for (enable_tf, hier, lossless) in [(false, 4, false), (true, 0, false), (true, 4, true)] {
+        let (level, t) = pp::derive_tf_params(RA, 6, hier, enable_tf, lossless);
+        assert_eq!(level, 0);
+        assert!(t.iter().all(|e| !e.enabled));
+    }
+}
+
+/// `tf_level 5` (presets 3..=7) spot fields: the half-pel mode is 2 (the
+/// diagonal-skip mode `check_position` reads), L1 modulates with table 2
+/// where BASE uses 3, and `enable_8x8_pred` is off for all three.
+#[test]
+fn traced_tf_controls_level5_fields() {
+    let t = pp::tf_controls(4, 5);
+    assert!(t.iter().all(|e| e.enabled));
+    assert!(
+        t.iter()
+            .all(|e| e.half_pel_mode == 2 && e.quarter_pel_mode == 1)
+    );
+    assert!(
+        t.iter()
+            .all(|e| !e.enable_8x8_pred && e.eight_pel_mode == 0)
+    );
+    assert!(t.iter().all(|e| e.pred_error_32x32_th == 20 * 32 * 32));
+    assert!(
+        t.iter()
+            .all(|e| e.use_2tap && e.subpel_early_exit_th == 1 && e.qp_opt)
+    );
+    assert_eq!(t[0].num_future_pics, 24);
+    assert_eq!((t[1].modulate_pics, t[2].modulate_pics), (3, 2));
+    // Hierarchy-dependent caps at hier 4: BASE min(16, 7)=7, L1 min(8, 1)=1.
+    assert_eq!((t[1].max_num_past_pics, t[1].max_num_future_pics), (7, 7));
+    assert_eq!((t[2].max_num_past_pics, t[2].max_num_future_pics), (1, 1));
+}
+
+/// The max-count caps move with `hierarchical_levels`: L1's cap is
+/// `MIN((1 << hier) / 2, tf_max_ref_per_struct(hier, 2, dir))` — below hier 5
+/// the struct cap is 1, at hier 5+ it is 2.
+#[test]
+fn traced_tf_controls_l1_caps_follow_hierarchy() {
+    for (hier, want) in [(1u8, 1u8), (2, 1), (4, 1), (5, 2), (6, 2)] {
+        let t = pp::tf_controls(hier, 5);
+        assert_eq!(t[2].max_num_past_pics, want, "hier {hier}");
+        assert_eq!(t[2].max_num_future_pics, want, "hier {hier}");
+    }
+    // The I_SLICE future cap is MIN(1 << hier, 1 << hier) = the mini-GOP size.
+    assert_eq!(pp::tf_controls(3, 5)[0].max_num_future_pics, 8);
+}
+
+/// `tf_ld_controls` is the only source of `use_zz_based_filter = 1`; level 0
+/// — the only level `derive_tf_params` ever selects — disables everything.
+#[test]
+fn traced_tf_ld_controls() {
+    assert!(pp::tf_ld_controls(0).iter().all(|e| !e.enabled));
+    let t = pp::tf_ld_controls(1);
+    assert!(!t[0].enabled && t[1].enabled && !t[2].enabled);
+    assert!(t[1].use_zz_based_filter && !t[1].enable_8x8_pred);
+    assert_eq!(t[1].chroma_lvl, 1);
+    assert_eq!(pp::tf_ld_controls(2)[1].chroma_lvl, 2);
+    assert_eq!(pp::tf_ld_controls(2)[1].pred_error_32x32_th, u64::MAX);
+    // And the RA table never produces the zz flag.
+    for level in 0..=9u8 {
+        assert!(
+            pp::tf_controls(4, level)
+                .iter()
+                .all(|e| !e.use_zz_based_filter),
+            "level {level}"
+        );
+    }
+}
+
+/// `copy_tf_params` under RANDOM_ACCESS: a key frame honours
+/// `enable_tf_key`, a delayed intra takes entry 0, BASE takes 1, L1 takes 2,
+/// the highest layer and overlays are disabled.
+#[test]
+fn traced_copy_tf_params_ra_selection() {
+    use pp::TfParamsChoice as C;
+    let ra = pp::PredStructure::RandomAccess;
+    // Delayed intra wins over the base-layer mapping (key + tl0 + delayed).
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::I, true, 0, 4, false, true, true),
+        C::DelayedIntra
+    );
+    // ...but not when `enable_tf_key` is off — C checks the key flag FIRST.
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::I, true, 0, 4, false, false, true),
+        C::Disabled
+    );
+    // tl0 inter -> BASE, tl1 -> L1, highest layer (tl == hier) -> off.
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::B, false, 0, 4, false, true, false),
+        C::Base
+    );
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::B, false, 1, 4, false, true, false),
+        C::L1
+    );
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::B, false, 4, 4, false, true, false),
+        C::Disabled
+    );
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::B, false, 0, 4, true, true, false),
+        C::Disabled,
+        "overlays are never filtered"
+    );
+    // Layers above 1 but below the top fall to Disabled too (no L2+ entry).
+    assert_eq!(
+        pp::copy_tf_params(ra, pp::SliceType::B, false, 2, 4, false, true, false),
+        C::Disabled
+    );
 }

@@ -500,6 +500,7 @@ fn c_parity_ra_reference_structure() {
             },
             hierarchical_levels: hier,
             max_managed_refs: 0,
+            ..Default::default()
         };
 
         let mut ctx = pp::PicDecisionCtx::new();

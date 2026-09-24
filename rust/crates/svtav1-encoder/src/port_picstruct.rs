@@ -554,6 +554,15 @@ pub struct SeqPicParams {
     /// C `scs->static_config.max_managed_refs` — how many long-term anchors
     /// the application may hold at once (see [`crate::port_ref_mgmt`]).
     pub max_managed_refs: u8,
+    /// C `scs->static_config.enable_tf_key` — whether a key frame may be
+    /// temporally filtered. C's config default is 1 (`enc_settings.c`).
+    pub enable_tf_key: bool,
+    /// C `tf_level` — the preset-selected TF level `derive_tf_params`
+    /// (`enc_handle.c:3333`) produces; 0 disables the whole table.
+    pub tf_level: u8,
+    /// C `scs->tf_params_per_type[0..3]` — `[I_SLICE, BASE, L1]`, filled by
+    /// [`derive_tf_params`].
+    pub tf_params_per_type: [TfCtrls; 3],
 }
 
 impl Default for SeqPicParams {
@@ -570,6 +579,9 @@ impl Default for SeqPicParams {
             },
             hierarchical_levels: 0,
             max_managed_refs: 0,
+            enable_tf_key: true,
+            tf_level: 0,
+            tf_params_per_type: [TfCtrls::default(); 3],
         }
     }
 }
@@ -595,6 +607,15 @@ pub struct PicParams {
     pub hierarchical_levels: u8,
     /// C `pcs->is_overlay`.
     pub is_overlay: bool,
+    /// C `svt_aom_is_delayed_intra(pcs)` — whether an intra picture is held
+    /// back to join the next mini-GOP; selects `tf_params_per_type[0]` in
+    /// `copy_tf_params`. Precomputed by the caller because C's inputs
+    /// (`end_of_sequence_flag`, the pre-assignment buffer) live outside
+    /// [`PicParams`].
+    pub is_delayed_intra: bool,
+    /// C `pcs->tf_ctrls` — the `tf_params_per_type` entry `copy_tf_params`
+    /// selected for this picture, stamped by [`init_pic_settings`].
+    pub tf_ctrls: TfCtrls,
     /// C `pcs->pred_struct_ptr->pred_type` — the *picture's* structure, which
     /// can be `LOW_DELAY` inside a `RANDOM_ACCESS` sequence (an incomplete MG).
     pub pred_struct_type: PredStructure,
@@ -700,6 +721,8 @@ impl Default for PicParams {
             temporal_layer_index: 0,
             hierarchical_levels: 0,
             is_overlay: false,
+            is_delayed_intra: false,
+            tf_ctrls: TfCtrls::default(),
             pred_struct_type: PredStructure::LowDelay,
             pred_struct_entry_count: 1,
             update_type: FrameUpdateType::Lf,
@@ -2092,7 +2115,27 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
 
     set_ref_frame_sign_bias(pic, seq);
 
-    // copy_tf_params + sig_deriv_multi_processes: see the doc comment.
+    // C `copy_tf_params` (`pd_process.c:4931`), placed where C calls it —
+    // inside `init_pic_settings`, right after the order hints and sign bias.
+    // A `Disabled` choice maps to `tf_ctrls.enabled = 0`; every other choice
+    // copies the whole `tf_params_per_type` entry, including the case where
+    // the table itself is disabled (`tf_level == 0` under LOW_DELAY).
+    pic.tf_ctrls = match copy_tf_params(
+        seq.pred_structure,
+        pic.slice_type,
+        pic.is_key_frame,
+        pic.temporal_layer_index,
+        pic.hierarchical_levels,
+        pic.is_overlay,
+        seq.enable_tf_key,
+        pic.is_delayed_intra,
+    ) {
+        TfParamsChoice::DelayedIntra => seq.tf_params_per_type[0],
+        TfParamsChoice::Base => seq.tf_params_per_type[1],
+        TfParamsChoice::L1 => seq.tf_params_per_type[2],
+        TfParamsChoice::Disabled => TfCtrls::default(),
+    };
+    // sig_deriv_multi_processes: see the doc comment.
 
     update_count_try(pic, seq);
 
@@ -4783,28 +4826,432 @@ pub fn tf_max_ref_per_struct(hierarchical_levels: u32, ty: u8, _direction: bool)
     }
 }
 
-/// The `TfControls` fields the window derivation reads (`pcs.h`'s
-/// `TfControls`, the subset `pd_process.c` uses).
+/// C `TfControls` (`definitions.h:155-234`) — the complete per-type parameter
+/// set. `scs->tf_params_per_type[0..3]` holds the I_SLICE / BASE / L1 entries
+/// the `tf_controls` / `tf_ld_controls` tables fill; `pcs->tf_ctrls` carries
+/// the copy `copy_tf_params` selected for one picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TfWindowCtrls {
+pub struct TfCtrls {
     /// C `tf_ctrls.enabled`.
     pub enabled: bool,
-    /// C `tf_ctrls.modulate_pics` (0 disables modulation entirely).
-    pub modulate_pics: u8,
+    /// C `tf_ctrls.chroma_lvl` — 0: Y only, 1: all planes, 2: Y plus
+    /// noise-gated chroma.
+    pub chroma_lvl: u8,
+    /// C `tf_ctrls.use_zz_based_filter` — skip ME and filter with (0,0) MVs.
+    /// Only ever set by `tf_ld_controls` levels 1/2, which `derive_tf_params`
+    /// never selects (see `port_temporal_filtering.rs`'s dead-arms note).
+    pub use_zz_based_filter: bool,
     /// C `tf_ctrls.num_past_pics`.
     pub num_past_pics: u8,
     /// C `tf_ctrls.num_future_pics`.
     pub num_future_pics: u8,
+    /// C `tf_ctrls.modulate_pics` (0 disables modulation entirely).
+    pub modulate_pics: u8,
+    /// C `tf_ctrls.use_intra_for_noise_est`.
+    pub use_intra_for_noise_est: bool,
     /// C `tf_ctrls.max_num_past_pics`.
     pub max_num_past_pics: u8,
     /// C `tf_ctrls.max_num_future_pics`.
     pub max_num_future_pics: u8,
+    /// C `tf_ctrls.hme_me_level`.
+    pub hme_me_level: u8,
+    /// C `tf_ctrls.half_pel_mode`.
+    pub half_pel_mode: u8,
+    /// C `tf_ctrls.quarter_pel_mode`.
+    pub quarter_pel_mode: u8,
+    /// C `tf_ctrls.eight_pel_mode`.
+    pub eight_pel_mode: u8,
+    /// C `tf_ctrls.use_8bit_subpel`.
+    pub use_8bit_subpel: bool,
+    /// C `tf_ctrls.avoid_2d_qpel`.
+    pub avoid_2d_qpel: bool,
+    /// C `tf_ctrls.use_2tap`.
+    pub use_2tap: bool,
+    /// C `tf_ctrls.sub_sampling_shift`.
+    pub sub_sampling_shift: u8,
+    /// C `tf_ctrls.pred_error_32x32_th`.
+    pub pred_error_32x32_th: u64,
+    /// C `tf_ctrls.enable_8x8_pred`.
+    pub enable_8x8_pred: bool,
+    /// C `tf_ctrls.me_exit_th`.
+    pub me_exit_th: u32,
+    /// C `tf_ctrls.use_pred_64x64_only_th`.
+    pub use_pred_64x64_only_th: u8,
+    /// C `tf_ctrls.subpel_early_exit_th`.
+    pub subpel_early_exit_th: u8,
+    /// C `tf_ctrls.ref_frame_factor`.
+    pub ref_frame_factor: u8,
     /// C `tf_ctrls.qp_opt`.
     pub qp_opt: bool,
-    /// C `tf_ctrls.use_intra_for_noise_est`.
-    pub use_intra_for_noise_est: bool,
-    /// C `tf_ctrls.chroma_lvl`.
-    pub chroma_lvl: u8,
+}
+
+/// C `tf_controls` (`enc_handle.c:2646-3320`) — static.
+///
+/// The RANDOM_ACCESS parameter table, one switch arm per `tf_level` (0-9).
+/// Returns `[I_SLICE, BASE, L1]`, C's `tf_params_per_type[0..3]`. Levels
+/// 3/4/6/7/8 are unreachable through `derive_tf_params` (it emits only
+/// {0,1,2,5,9}) and are transcribed anyway per `WORKING-ON-THIS.md` §7.
+///
+/// Every max-count is `MIN(1 << hierarchical_levels, svt_aom_tf_max_ref_per_struct(..))`
+/// for BASE and `MIN((1 << hierarchical_levels) / 2, ..)` for L1; the I_SLICE
+/// entry caps only its future count. `use_zz_based_filter` is forced 0 on all
+/// three entries after the switch (`:3317-3319`), which `TfCtrls::default()`
+/// already gives.
+#[must_use]
+pub fn tf_controls(hierarchical_levels: u8, tf_level: u8) -> [TfCtrls; 3] {
+    let hier = u32::from(hierarchical_levels);
+    let mg = (1u32 << hier) as u8;
+    let mg_half = ((1u32 << hier) / 2) as u8;
+    // C `MIN(1 << hier, tf_max_ref_per_struct(hier, ty, dir))` per type.
+    let max_i_fut = mg.min(tf_max_ref_per_struct(hier, 0, true));
+    let max_base_past = mg.min(tf_max_ref_per_struct(hier, 1, false));
+    let max_base_fut = mg.min(tf_max_ref_per_struct(hier, 1, true));
+    let max_l1_past = mg_half.min(tf_max_ref_per_struct(hier, 2, false));
+    let max_l1_fut = mg_half.min(tf_max_ref_per_struct(hier, 2, true));
+
+    let mut t = [TfCtrls::default(); 3];
+    match tf_level {
+        0 => {}
+        1 => {
+            let base = TfCtrls {
+                enabled: true,
+                hme_me_level: 1,
+                half_pel_mode: 1,
+                quarter_pel_mode: 1,
+                eight_pel_mode: 1,
+                chroma_lvl: 1,
+                enable_8x8_pred: true,
+                use_8bit_subpel: true,
+                ref_frame_factor: 1,
+                ..TfCtrls::default()
+            };
+            t[0] = TfCtrls {
+                num_future_pics: 24,
+                modulate_pics: 1,
+                max_num_future_pics: max_i_fut,
+                ..base
+            };
+            t[1] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 1,
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                ..base
+            };
+            t[2] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 1,
+                max_num_past_pics: max_l1_past,
+                max_num_future_pics: max_l1_fut,
+                ..base
+            };
+        }
+        2 => {
+            let base = TfCtrls {
+                enabled: true,
+                hme_me_level: 1,
+                half_pel_mode: 1,
+                quarter_pel_mode: 1,
+                eight_pel_mode: 1,
+                chroma_lvl: 1,
+                pred_error_32x32_th: 8 * 32 * 32,
+                enable_8x8_pred: true,
+                use_8bit_subpel: true,
+                ref_frame_factor: 1,
+                ..TfCtrls::default()
+            };
+            t[0] = TfCtrls {
+                num_future_pics: 24,
+                modulate_pics: 1,
+                max_num_future_pics: max_i_fut,
+                ..base
+            };
+            t[1] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 2,
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                ..base
+            };
+            t[2] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 1,
+                max_num_past_pics: max_l1_past,
+                max_num_future_pics: max_l1_fut,
+                ..base
+            };
+        }
+        3 => {
+            let base = TfCtrls {
+                enabled: true,
+                hme_me_level: 1,
+                half_pel_mode: 1,
+                quarter_pel_mode: 1,
+                eight_pel_mode: 1,
+                chroma_lvl: 1,
+                pred_error_32x32_th: 8 * 32 * 32,
+                use_8bit_subpel: true,
+                ref_frame_factor: 1,
+                qp_opt: true,
+                ..TfCtrls::default()
+            };
+            t[0] = TfCtrls {
+                num_future_pics: 24,
+                modulate_pics: 1,
+                max_num_future_pics: max_i_fut,
+                enable_8x8_pred: true,
+                ..base
+            };
+            t[1] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 2,
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                ..base
+            };
+            t[2] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 1,
+                max_num_past_pics: max_l1_past,
+                max_num_future_pics: max_l1_fut,
+                ..base
+            };
+        }
+        4 => {
+            let base = TfCtrls {
+                enabled: true,
+                hme_me_level: 2,
+                half_pel_mode: 1,
+                quarter_pel_mode: 1,
+                chroma_lvl: 1,
+                pred_error_32x32_th: 8 * 32 * 32,
+                use_8bit_subpel: true,
+                ref_frame_factor: 1,
+                qp_opt: true,
+                ..TfCtrls::default()
+            };
+            t[0] = TfCtrls {
+                num_future_pics: 24,
+                modulate_pics: 1,
+                max_num_future_pics: max_i_fut,
+                subpel_early_exit_th: 1,
+                ..base
+            };
+            t[1] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 2,
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                subpel_early_exit_th: 1,
+                ..base
+            };
+            // L1 alone keeps the eight-pel search and the full subpel path.
+            t[2] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 1,
+                max_num_past_pics: max_l1_past,
+                max_num_future_pics: max_l1_fut,
+                eight_pel_mode: 1,
+                ..base
+            };
+        }
+        5 => {
+            let base = TfCtrls {
+                enabled: true,
+                hme_me_level: 2,
+                half_pel_mode: 2,
+                quarter_pel_mode: 1,
+                chroma_lvl: 1,
+                pred_error_32x32_th: 20 * 32 * 32,
+                use_2tap: true,
+                use_8bit_subpel: true,
+                subpel_early_exit_th: 1,
+                ref_frame_factor: 1,
+                qp_opt: true,
+                ..TfCtrls::default()
+            };
+            t[0] = TfCtrls {
+                num_future_pics: 24,
+                modulate_pics: 1,
+                max_num_future_pics: max_i_fut,
+                ..base
+            };
+            t[1] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 3,
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                ..base
+            };
+            t[2] = TfCtrls {
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: 2,
+                max_num_past_pics: max_l1_past,
+                max_num_future_pics: max_l1_fut,
+                ..base
+            };
+        }
+        6 | 7 | 8 | 9 => {
+            // The fast tail: chroma off, exhaustive-error thresholds, 2-tap
+            // subsampled subpel, key-frame noise reuse, and L1 disabled.
+            let is8 = if hier < 5 { 8 } else { 16 };
+            t[0] = TfCtrls {
+                enabled: true,
+                num_future_pics: if tf_level == 6 || tf_level == 7 {
+                    is8
+                } else {
+                    8
+                },
+                max_num_future_pics: max_i_fut,
+                hme_me_level: if tf_level == 9 { 3 } else { 2 },
+                half_pel_mode: 2,
+                quarter_pel_mode: 1,
+                chroma_lvl: 0,
+                pred_error_32x32_th: u64::MAX,
+                sub_sampling_shift: 1,
+                avoid_2d_qpel: true,
+                use_2tap: true,
+                use_intra_for_noise_est: true,
+                use_8bit_subpel: true,
+                use_pred_64x64_only_th: if tf_level == 6 { 0 } else { 35 },
+                me_exit_th: if tf_level == 6 { 0 } else { 16 * 16 },
+                subpel_early_exit_th: if tf_level <= 7 { 1 } else { 4 },
+                ref_frame_factor: if tf_level <= 7 { 1 } else { 2 },
+                qp_opt: true,
+                ..TfCtrls::default()
+            };
+            t[1] = TfCtrls {
+                enabled: true,
+                num_past_pics: 1,
+                num_future_pics: 1,
+                modulate_pics: if tf_level <= 7 { 3 } else { 4 },
+                max_num_past_pics: max_base_past,
+                max_num_future_pics: max_base_fut,
+                hme_me_level: if tf_level == 9 { 3 } else { 2 },
+                half_pel_mode: 2,
+                quarter_pel_mode: 1,
+                chroma_lvl: if tf_level <= 7 { 1 } else { 0 },
+                pred_error_32x32_th: if tf_level <= 7 {
+                    20 * 32 * 32
+                } else {
+                    u64::MAX
+                },
+                sub_sampling_shift: if tf_level <= 7 { 0 } else { 1 },
+                avoid_2d_qpel: tf_level >= 8,
+                use_2tap: true,
+                use_intra_for_noise_est: true,
+                use_8bit_subpel: true,
+                use_pred_64x64_only_th: if tf_level == 6 { 0 } else { 35 },
+                me_exit_th: if tf_level == 6 { 0 } else { 16 * 16 },
+                subpel_early_exit_th: if tf_level <= 7 { 1 } else { 4 },
+                ref_frame_factor: 1,
+                qp_opt: true,
+                ..TfCtrls::default()
+            };
+            // t[2] stays disabled.
+        }
+        _ => unreachable!("tf_level {tf_level} is outside C's 0..=9 switch"),
+    }
+    t
+}
+
+/// C `tf_ld_controls` (`enc_handle.c:2525-2644`) — static.
+///
+/// The LOW_DELAY parameter table. `derive_tf_params` calls it only with
+/// `tf_level == 0` (all disabled — "TF disabled for all LD"); levels 1/2 are
+/// unreachable configuration and are the ONLY source of
+/// `use_zz_based_filter = 1`, which is why the `zz` kernels in
+/// `port_temporal_filtering.rs` are dead code. `enable_8x8_pred` is forced 0
+/// on all three entries after the switch (`:2641-2643`).
+#[must_use]
+pub fn tf_ld_controls(tf_level: u8) -> [TfCtrls; 3] {
+    let mut t = [TfCtrls::default(); 3];
+    match tf_level {
+        0 => {}
+        1 | 2 => {
+            t[1] = TfCtrls {
+                enabled: true,
+                num_past_pics: 1,
+                num_future_pics: 0,
+                modulate_pics: 0,
+                max_num_past_pics: 1,
+                max_num_future_pics: 0,
+                hme_me_level: 4,
+                half_pel_mode: 0,
+                quarter_pel_mode: 0,
+                eight_pel_mode: 0,
+                chroma_lvl: if tf_level == 1 { 1 } else { 2 },
+                pred_error_32x32_th: if tf_level == 1 {
+                    20 * 32 * 32
+                } else {
+                    u64::MAX
+                },
+                sub_sampling_shift: 0,
+                use_zz_based_filter: true,
+                avoid_2d_qpel: false,
+                use_2tap: false,
+                use_intra_for_noise_est: false,
+                use_8bit_subpel: false,
+                use_pred_64x64_only_th: 0,
+                me_exit_th: 0,
+                subpel_early_exit_th: u8::from(tf_level == 1),
+                ref_frame_factor: 1,
+                qp_opt: false,
+                enable_8x8_pred: false,
+            };
+        }
+        _ => unreachable!("tf_ld level {tf_level} is outside C's 0..=2 switch"),
+    }
+    t
+}
+
+/// C `derive_tf_params` (`enc_handle.c:3333-3355`) — static.
+///
+/// Selects the TF level from the sequence knobs and fills
+/// `tf_params_per_type`. Returns `(tf_level, [I_SLICE, BASE, L1])`.
+///
+/// * LOW_DELAY forces `tf_level = 0` through `tf_ld_controls` before any
+///   preset logic — TF is inert in low delay no matter what `enable_tf` says.
+/// * `do_tf = enable_tf && hierarchical_levels >= 1 && !lossless` — a
+///   flat/1-layer GOP or a lossless config disables it even in random access.
+/// * `enc_mode` is the CONFIGURED preset (`static_config.enc_mode`, post the
+///   resource-coordination clamp): `<= M1` → 1, `<= M2` → 2, `<= M7` → 5,
+///   else 9.
+#[must_use]
+pub fn derive_tf_params(
+    pred_structure: PredStructure,
+    enc_mode: i8,
+    hierarchical_levels: u8,
+    enable_tf: bool,
+    lossless: bool,
+) -> (u8, [TfCtrls; 3]) {
+    use crate::port_enc_mode_config::enc_mode::{M1, M2, M7};
+    if pred_structure == PredStructure::LowDelay {
+        return (0, tf_ld_controls(0));
+    }
+    let do_tf = enable_tf && hierarchical_levels >= 1 && !lossless;
+    let tf_level = if !do_tf {
+        0
+    } else if enc_mode <= M1 {
+        1
+    } else if enc_mode <= M2 {
+        2
+    } else if enc_mode <= M7 {
+        5
+    } else {
+        9
+    };
+    (tf_level, tf_controls(hierarchical_levels, tf_level))
 }
 
 /// C `ref_pics_modulation` (`pd_process.c:3642-3745`) — static.
@@ -4832,7 +5279,7 @@ pub struct TfWindowCtrls {
 pub fn ref_pics_modulation(
     is_i_slice: bool,
     temporal_layer_index: u8,
-    ctrls: &TfWindowCtrls,
+    ctrls: &TfCtrls,
     noise_levels_log1p_fp16: i32,
     filt_to_unfilt_diff: u32,
     q_weight: u32,
@@ -4960,7 +5407,7 @@ pub struct TfWindowCounts {
 #[must_use]
 pub fn derive_tf_window_counts(
     arm: TfWindowArm,
-    ctrls: &TfWindowCtrls,
+    ctrls: &TfCtrls,
     offset: i32,
     hierarchical_levels: u32,
     temporal_layer_index: u8,

@@ -74,6 +74,17 @@ pub struct EncodePipeline {
     /// interleaving `show_existing_frame` OBUs at each hidden picture's
     /// display position. See [`Self::try_encode_frame_420_ra`].
     pub pred_structure: crate::port_picstruct::PredStructure,
+    /// C `static_config.enable_tf` — whether motion-compensated temporal
+    /// filtering may run at all. C's default is 1 (`enc_settings.c`), and
+    /// `derive_tf_params` additionally requires RANDOM_ACCESS and
+    /// `hierarchical_levels >= 1`, so this is inert on a low-delay pipeline.
+    /// Only inert-until-wired today: the parameter tables and per-picture
+    /// `tf_ctrls` are derived, but no filtered picture is produced yet.
+    pub enable_tf: bool,
+    /// C `static_config.enable_tf_key` — whether a key frame may be
+    /// temporally filtered (`copy_tf_params`, `pd_process.c:4483`). C's
+    /// default is 1.
+    pub enable_tf_key: bool,
     /// Random-access input staging, in display order, planes tightly packed
     /// at TRUE dims (the encode pads per frame). Populated only while
     /// `pred_structure == RandomAccess`; emptied by
@@ -597,6 +608,8 @@ impl EncodePipeline {
             ),
             rc_config,
             rc_state: RcState::default(),
+            enable_tf: true,
+            enable_tf_key: true,
             dpb: DecodedPictureBuffer::new(),
             gop: GopStructure::new(hierarchical_levels, intra_period),
             pred_structure: crate::port_picstruct::PredStructure::LowDelay,
@@ -729,10 +742,20 @@ impl EncodePipeline {
             pp::RcMode::CqpOrCrf,
         );
         self.mrp_ctrls = mrp_ctrls;
+        let (tf_level, tf_params_per_type) = pp::derive_tf_params(
+            self.pred_structure,
+            self.speed_config.preset,
+            hier,
+            self.enable_tf,
+            /*lossless=*/ false,
+        );
         let seq = pp::SeqPicParams {
             // The campaign's GOP: low-delay P, CQP/CRF. C's driver is given
-            // `SVT_PRED_STRUCT=1` (LOW_DELAY) for the same cells.
-            pred_structure: pp::PredStructure::LowDelay,
+            // `SVT_PRED_STRUCT=1` (LOW_DELAY) for the same cells. Under RA a
+            // mid-stream key reaches this path via the drain release, where
+            // `scs->static_config.pred_structure` stays RANDOM_ACCESS — so
+            // this is `self.pred_structure`, not a literal.
+            pred_structure: self.pred_structure,
             rate_control_mode: pp::RcMode::CqpOrCrf,
             rtc: false,
             allintra: false,
@@ -743,6 +766,9 @@ impl EncodePipeline {
             },
             hierarchical_levels: hier,
             max_managed_refs: 0,
+            enable_tf_key: self.enable_tf_key,
+            tf_level,
+            tf_params_per_type,
         };
         let mini_gop = 1u32 << hier;
         self.pd_ctx.mini_gop_length[0] = mini_gop;
@@ -756,6 +782,13 @@ impl EncodePipeline {
             },
             is_key_frame: is_key,
             is_intra_only: is_key,
+            // C `svt_aom_is_delayed_intra` (`pd_process.c:3620`): an IDR/CRA
+            // inside a RANDOM_ACCESS sequence with a live intra period. The
+            // port has no per-input `end_of_sequence_flag` (C's is an input
+            // buffer field), so that clause is always-false here.
+            is_delayed_intra: is_key
+                && self.pred_structure == pp::PredStructure::RandomAccess
+                && self.gop.intra_period != 0,
             hierarchical_levels: hier,
             pred_struct_type: pp::PredStructure::LowDelay,
             pred_struct_entry_count: mini_gop,
@@ -1039,6 +1072,13 @@ impl EncodePipeline {
             pp::RcMode::CqpOrCrf,
         );
         self.mrp_ctrls = mrp_ctrls;
+        let (tf_level, tf_params_per_type) = pp::derive_tf_params(
+            self.pred_structure,
+            self.speed_config.preset,
+            hier,
+            self.enable_tf,
+            /*lossless=*/ false,
+        );
         let seq = pp::SeqPicParams {
             pred_structure: pp::PredStructure::RandomAccess,
             rate_control_mode: pp::RcMode::CqpOrCrf,
@@ -1051,6 +1091,9 @@ impl EncodePipeline {
             },
             hierarchical_levels: hier,
             max_managed_refs: 0,
+            enable_tf_key: self.enable_tf_key,
+            tf_level,
+            tf_params_per_type,
         };
 
         // The buffer C releases is `pre_assignment_buffer_count` pictures
@@ -3410,14 +3453,15 @@ impl EncodePipeline {
         // `svt_av1_apply_temporal_filter_planewise_medium` — the port's filter
         // is a homegrown heuristic that blends with the RECON, where SVT's
         // filters the source against neighbouring SOURCE pictures.
-        // `derive_pic_params` constructs `PredStructure::LowDelay` for every
-        // picture this encoder produces, so C's LD arm applies unconditionally
-        // and the answer is a constant `false`. It is spelled as C's predicate
-        // rather than as `false` so that a future non-LD pred structure has to
-        // change this line, and so the reason is readable at the site.
-        let pred_structure = crate::port_picstruct::PredStructure::LowDelay;
-        let c_tf_enabled = pred_structure != crate::port_picstruct::PredStructure::LowDelay
-            && self.gop.hierarchical_levels >= 1;
+        //
+        // RANDOM_ACCESS now reaches this function (`pred_structure` is no
+        // longer a compile-time LowDelay), and MCTF-A stamps a real
+        // `pic.tf_ctrls` — but C's `produce_temporally_filtered_pic` driver is
+        // not yet ported, so the homegrown heuristic stays hard-gated OFF:
+        // feeding it into the bitstream is exactly the 90965-vs-26635
+        // divergence measured above. `c_tf_enabled` therefore stays a literal
+        // `false` until MCTF-C/D replaces it with the real driver.
+        let c_tf_enabled = false;
         let w = self.width as usize;
         let h = self.height as usize;
         let n = w * h;
