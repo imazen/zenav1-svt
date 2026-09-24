@@ -217,6 +217,11 @@ pub struct RaTfScs {
     /// `scs->static_config.tf_strength` (`hdr.tf_strength` on the port's
     /// config; mainline default 3).
     pub tf_strength: u8,
+    /// `scs->static_config.kf_tf_strength` under `SVT_HDR_MODE` — `Some(s)`
+    /// selects the fork arm of the shift-factor split
+    /// (`derive_tf_shift`), `None` the mainline arm. `None` in mainline
+    /// mode regardless of the configured value, matching the `#if`.
+    pub kf_tf_strength: Option<u8>,
     /// `scs->tf_ref_qp_based_th_scaling` — off only at ENC_MR.
     pub tf_ref_qp_based_th_scaling: bool,
     /// `scs->vq_ctrls.sharpness_ctrls.tf` (`derive_vq_params`).
@@ -572,6 +577,7 @@ pub fn ra_mctf_filter(
         scs.vq_sharpness_tf,
         update_type == FrameUpdateType::Kf,
         0,
+        scs.kf_tf_strength,
     );
     if shift.disable_on_this_frame {
         decay = [0, 0, 0];

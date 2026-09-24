@@ -797,7 +797,7 @@ fn tier4_tf_q_decay_fp8() {
 #[test]
 fn tier4_derive_tf_shift_mainline_arm() {
     // enable_tf <= 1: shift = 10 + (4 - tf_strength). The default is 3 -> 11.
-    let d = port::derive_tf_shift(1, 3, false, false, 0);
+    let d = port::derive_tf_shift(1, 3, false, false, 0, None);
     assert_eq!(d.shift_factor, 11);
     assert_eq!(d.kf_shift_factor, 11, "MAINLINE: kf shift == tf shift");
     assert!(!d.disable_on_this_frame);
@@ -805,30 +805,58 @@ fn tier4_derive_tf_shift_mainline_arm() {
     // tf_strength 0 -> 14, and on a KEY frame 14 DISABLES TF. This is the
     // switch the measured SVT_FORK_TF_STRENGTH=0 run flipped (frame 0 496 B
     // vs 495 B at RANDOM_ACCESS 2f).
-    let d = port::derive_tf_shift(1, 0, false, true, 0);
+    let d = port::derive_tf_shift(1, 0, false, true, 0, None);
     assert_eq!((d.shift_factor, d.kf_shift_factor), (14, 14));
     assert!(d.disable_on_this_frame);
     // The same shift on a NON-key frame does not disable anything.
-    let d = port::derive_tf_shift(1, 0, false, false, 0);
+    let d = port::derive_tf_shift(1, 0, false, false, 0, None);
     assert!(!d.disable_on_this_frame);
 
     // Tune VQ raises the KEY-frame shift by one, capped at 14 — and NOT the
     // per-frame one.
-    let d = port::derive_tf_shift(1, 3, true, false, 0);
+    let d = port::derive_tf_shift(1, 3, true, false, 0, None);
     assert_eq!((d.shift_factor, d.kf_shift_factor), (11, 12));
-    let d = port::derive_tf_shift(1, 0, true, true, 0);
+    let d = port::derive_tf_shift(1, 0, true, true, 0, None);
     assert_eq!(d.kf_shift_factor, 14, "capped at 14, not 15");
 
     // enable_tf > 1 takes the ADAPTIVE arm off the 64x64 block error:
     // calculate_tf_shift_factor(0) == 14, so kf is CLIP3(0, 14, 15) == 14 and
     // a key frame is disabled.
-    let d = port::derive_tf_shift(2, 3, false, true, 0);
+    let d = port::derive_tf_shift(2, 3, false, true, 0, None);
     assert_eq!((d.shift_factor, d.kf_shift_factor), (14, 14));
     assert!(d.disable_on_this_frame);
     // block_err = (2000 << 12) >> 12 = 2000 -> 12; kf = 13.
-    let d = port::derive_tf_shift(2, 3, false, true, 2000 << 12);
+    let d = port::derive_tf_shift(2, 3, false, true, 2000 << 12, None);
     assert_eq!((d.shift_factor, d.kf_shift_factor), (12, 13));
     assert!(!d.disable_on_this_frame);
+}
+
+#[test]
+fn tier4_derive_tf_shift_fork_arm() {
+    // SVT_HDR_MODE (temporal_filtering.c:2785/3320): `Some(kf_tf_strength)`
+    // selects the fork arm — `kf = 10 + (4 - s)` — replacing the mainline
+    // `tf_shift_factor [+1 under vq_sharpness_tf]` formula ENTIRELY. The
+    // per-frame shift_factor still comes from tf_strength.
+    let d = port::derive_tf_shift(1, 3, false, false, 0, Some(1));
+    assert_eq!(
+        (d.shift_factor, d.kf_shift_factor),
+        (11, 13),
+        "fork default 1 = 4x weaker on key frames"
+    );
+    // The fork arm ignores vq_sharpness_tf — no +1.
+    let d = port::derive_tf_shift(1, 3, true, false, 0, Some(1));
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (11, 13));
+    // s=0 -> 14 -> DISABLED on a key frame; s=4 -> 10 (2x stronger).
+    let d = port::derive_tf_shift(1, 3, false, true, 0, Some(0));
+    assert_eq!(d.kf_shift_factor, 14);
+    assert!(d.disable_on_this_frame);
+    let d = port::derive_tf_shift(1, 3, false, true, 0, Some(4));
+    assert_eq!(d.kf_shift_factor, 10);
+    assert!(!d.disable_on_this_frame);
+    // The adaptive arm is identical under both modes — kf_tf_strength has
+    // no reach there (C applies CLIP3(0, 14, adaptive + 1) unconditionally).
+    let d = port::derive_tf_shift(2, 3, false, true, 2000 << 12, Some(4));
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (12, 13));
 }
 
 #[test]

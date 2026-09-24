@@ -1581,6 +1581,11 @@ impl EncodePipeline {
             qp: u32::from(self.rc_config.qp),
             enable_tf: u8::from(self.enable_tf),
             tf_strength: self.hdr.tf_strength,
+            // `SVT_HDR_MODE` (temporal_filtering.c:2785/3320): the fork's
+            // `kf_tf_strength` replaces the mainline kf arm entirely. `None`
+            // in mainline mode so a stray configured value can't leak in —
+            // mirrors the compile-time `#if`.
+            kf_tf_strength: self.hdr.is_fork().then_some(self.hdr.kf_tf_strength),
             tf_ref_qp_based_th_scaling: self.speed_config.preset > -1,
             vq_sharpness_tf,
             calculate_variance,
@@ -2962,6 +2967,45 @@ impl EncodePipeline {
             return Some(
                 "chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is \
                  reserved (C verify_settings, enc_settings.c:762)",
+            );
+        }
+        // The fork/mainline tuning-knob bounds, `svt_av1_verify_settings`
+        // (enc_settings.c:894-980). Without them a value past C's range
+        // wraps or clamps silently inside a formula (`10 + (4 - s)` goes
+        // negative for s > 4) — C's check exists precisely so the computed
+        // shift factor stays in 0..=14.
+        if self.hdr.tf_strength > 4 {
+            return Some(
+                "tf_strength must be 0..=4 (C verify_settings, enc_settings.c:894)",
+            );
+        }
+        if self.hdr.noise_norm_strength > 4 {
+            return Some(
+                "noise_norm_strength must be 0..=4 (C verify_settings, enc_settings.c:945)",
+            );
+        }
+        if self.hdr.kf_tf_strength > 4 {
+            return Some(
+                "kf_tf_strength must be 0..=4 (C verify_settings, enc_settings.c:950)",
+            );
+        }
+        if self.hdr.sharp_tx > 1 {
+            return Some("sharp_tx must be 0 or 1 (C verify_settings, enc_settings.c:955)");
+        }
+        if self.hdr.tx_bias > 3 {
+            return Some("tx_bias must be 0..=3 (C verify_settings, enc_settings.c:960)");
+        }
+        if self.hdr.complex_hvs > 1 {
+            return Some("complex_hvs must be 0 or 1 (C verify_settings, enc_settings.c:965)");
+        }
+        if self.hdr.noise_adaptive_filtering > 4 {
+            return Some(
+                "noise_adaptive_filtering must be 0..=4 (C verify_settings, enc_settings.c:970)",
+            );
+        }
+        if !(1..=30).contains(&self.hdr.cdef_scaling) {
+            return Some(
+                "cdef_scaling must be 1..=30 (C verify_settings, enc_settings.c:975)",
             );
         }
         // Issue #9 item 8 — the `aq_mode` SEMANTIC divergence, refused rather

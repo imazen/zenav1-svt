@@ -2266,14 +2266,14 @@ pub fn tf_q_decay_fp8(q: i32) -> u32 {
 /// The shift factor and the "TF off on this key frame" decision
 /// (temporal_filtering.c:2739-2800). `static` in C — TIER 4.
 ///
-/// THE SVT_HDR_MODE TRAP LIVES HERE. Under `#if SVT_HDR_MODE` C computes
-/// `kf_tf_shift_factor = 10 + (4 - kf_tf_strength)`. The MAINLINE `#else` —
-/// the arm the oracle compiles, and the only one this port implements — sets
-/// `kf_tf_shift_factor = tf_shift_factor` and raises it by 1 (capped at 14)
-/// only when `vq_ctrls.sharpness_ctrls.tf` is set. Measured confirmation:
-/// sweeping `SVT_FORK_KF_TF_STRENGTH` over 0..4 at RANDOM_ACCESS 2f/8f/16f
-/// leaves frame 0 byte-identical, while sweeping `SVT_FORK_TF_STRENGTH` moves
-/// it.
+/// THE SVT_HDR_MODE SPLIT LIVES HERE. Under `#if SVT_HDR_MODE` C computes
+/// `kf_tf_shift_factor = 10 + (4 - kf_tf_strength)` from the fork's own user
+/// knob. The MAINLINE `#else` sets `kf_tf_shift_factor = tf_shift_factor` and
+/// raises it by 1 (capped at 14) only when `vq_ctrls.sharpness_ctrls.tf` is
+/// set. `kf_tf_strength: Option<u8>` is the runtime mirror of the compile-time
+/// `#if`: `Some(s)` selects the fork arm, `None` the mainline arm. The
+/// adaptive (`enable_tf > 1`) arm is IDENTICAL under both modes — C applies
+/// `CLIP3(0, 14, adaptive + 1)` regardless.
 ///
 /// `enable_tf > 1` selects the ADAPTIVE arm, where the base is
 /// `calculate_tf_shift_factor(tf_64x64_block_error)` and the key-frame variant
@@ -2296,22 +2296,27 @@ pub fn derive_tf_shift(
     vq_sharpness_tf: bool,
     frame_update_is_kf: bool,
     tf_64x64_block_error: u64,
+    kf_tf_strength: Option<u8>,
 ) -> TfShiftDecision {
     let (shift_factor, kf_shift_factor) = if enable_tf > 1 {
         let adaptive = calculate_tf_shift_factor(tf_64x64_block_error);
         debug_assert!(adaptive <= 14);
-        // C: CLIP3(0, 14, adaptive_tf_shift_factor + 1).
+        // C: CLIP3(0, 14, adaptive_tf_shift_factor + 1) — the same under both
+        // compile modes; the fork arm reaches only the fixed-strength path.
         (adaptive, (i32::from(adaptive) + 1).clamp(0, 14) as u8)
     } else {
         // 10 + (4 - tf_strength): 0 -> 14 (8x weaker) .. 4 -> 10 (2x stronger).
         let shift = (10 + (4 - i32::from(tf_strength))) as u8;
-        // MAINLINE (#else): kf_tf_shift_factor = tf_shift_factor, raised by 1
-        // and capped at 14 only under Tune VQ sharpness controls. The
-        // SVT_HDR_MODE arm reads kf_tf_strength instead and is NOT ported.
-        let kf = if vq_sharpness_tf {
-            (shift + 1).min(14)
-        } else {
-            shift
+        let kf = match kf_tf_strength {
+            // SVT_HDR_MODE (temporal_filtering.c:2785/3320): the fork's own
+            // user knob replaces the whole mainline arm —
+            // `kf_tf_shift_factor = 10 + (4 - kf_tf_strength)`, no
+            // vq_sharpness term.
+            Some(s) => (10 + (4 - i32::from(s))) as u8,
+            // MAINLINE (#else): kf_tf_shift_factor = tf_shift_factor, raised
+            // by 1 and capped at 14 only under Tune VQ sharpness controls.
+            None if vq_sharpness_tf => (shift + 1).min(14),
+            None => shift,
         };
         (shift, kf)
     };

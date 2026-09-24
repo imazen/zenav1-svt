@@ -938,6 +938,12 @@ fn main() {
             pipeline = pipeline.with_recon_output(true);
         }
         configure_grain(&mut pipeline);
+        // `SVT_HDR_MODE` / `SVT_FORK_*`: the same env vector the single-frame
+        // path applies below — unset is mainline, so every pre-existing
+        // multi-frame cell is unchanged. Without this the RA path ignored
+        // the fork knobs entirely (`SVT_FORK_KF_TF_STRENGTH` swept to
+        // byte-identical streams, measured 2026-09-24).
+        pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
         apply_enhancement_env(&mut pipeline);
         let frame_len = w * h + 2 * cw * ch;
         let mut all = Vec::new();
