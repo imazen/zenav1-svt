@@ -2331,6 +2331,39 @@ pub const PRED_STRUCT_TEMPORAL_LAYER: [&[u8]; 6] = [
     ],
 ];
 
+/// C `g_prediction_structure_config_array[hier].entry_array[pos].decode_order`
+/// (`pred_structure.c:77-462`), the second column of the same six tables.
+///
+/// For `RANDOM_ACCESS` this is the coded position of each picture inside its
+/// mini-GOP: `pcs->decode_order = decode_base_number +
+/// entry[pred_struct_index]->decode_order` (`pd_process.c:5637-5641`), applied
+/// only while `mini_gop_length == pred_struct_entry_count` — an incomplete MG
+/// keeps `decode_order == picture_number` instead. For `LOW_DELAY` the Ctor
+/// overwrites every entry with its own index (`pred_structure.c:695`), so the
+/// identity permutation here is already the correct low-delay value.
+///
+/// Verified against the tier-2 oracle on real C streams
+/// (`tests/data/picstruct_ra/ra_hl*.obu`): the coded `order_hint` sequence of
+/// an HL3 stream is 8,4,2,1,3,6,5,7 — exactly the sort of
+/// `entry[i].decode_order` below.
+pub const PRED_STRUCT_DECODE_ORDER: [&[u8]; 6] = [
+    // flat_pred_struct
+    &[0],
+    // two_level_hierarchical_pred_struct
+    &[0, 1],
+    // three_level_hierarchical_pred_struct
+    &[0, 2, 1, 3],
+    // four_level_hierarchical_pred_struct
+    &[0, 3, 2, 4, 1, 6, 5, 7],
+    // five_level_hierarchical_pred_struct
+    &[0, 4, 3, 5, 2, 7, 6, 8, 1, 11, 10, 12, 9, 14, 13, 15],
+    // six_level_hierarchical_pred_struct
+    &[
+        0, 5, 4, 6, 3, 8, 7, 9, 2, 12, 11, 13, 10, 15, 14, 16, 1, 20, 19, 21, 18, 23, 22, 24, 17,
+        27, 26, 28, 25, 30, 29, 31,
+    ],
+];
+
 /// The `EncodeContext` fields the mini-GOP and pred-struct derivation reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EncCtxPicParams {
@@ -2350,6 +2383,17 @@ pub struct EncCtxPicParams {
     pub last_idr_picture: u64,
     /// C `enc_ctx->elapsed_non_cra_count`.
     pub elapsed_non_cra_count: u32,
+    /// C `enc_ctx->decode_base_number` — the decode-order base for the
+    /// CURRENT mini-GOP; `+= mini_gop_length` after each MG
+    /// (`pd_process.c:5660-5662`). Only random access reads it — the
+    /// low-delay `decode_order = picture_number` path never does.
+    pub decode_base_number: u64,
+    /// C `enc_ctx->picture_number_alt` — the monotonic decode-order counter
+    /// for pictures the RA permutation does NOT cover (cut-short mini-GOPs,
+    /// IDR-carrying windows): `decode_order = picture_number_alt` there
+    /// (`pd_process.c:5633-5644`). Incremented once per picture in the
+    /// window's second pass whether or not the RA arm took it.
+    pub picture_number_alt: u64,
 }
 
 /// The mini-GOP window state `set_mini_gop_structure` fills.

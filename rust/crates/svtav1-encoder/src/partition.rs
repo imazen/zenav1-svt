@@ -189,6 +189,19 @@ pub struct InterMdEnv {
     pub order_hint_info: crate::inter_mvp::OrderHintInfo,
     pub cur_order_hint: i32,
     pub ref_order_hint: [i32; 8],
+    /// C `pcs->av1_cm->ref_frame_sign_bias[8]` —
+    /// `port_picstruct::set_ref_frame_sign_bias` (`pd_process.c:4894`). 1
+    /// marks a BACKWARD reference, which is how `scan_blk_mbmi` knows to
+    /// sign-flip a neighbour candidate whose ref is on the opposite
+    /// temporal side. All-zero under low delay; live under random access.
+    pub ref_frame_sign_bias: [i32; 8],
+    /// C `pcs->av1_cm->symteric_refs` — `svt_aom_generate_av1_mvp_table`'s
+    /// LAST_BWD shortcut: a RA B picture on a temporal layer above 0 whose
+    /// entire ref list is {LAST, BWDREF, LAST_BWD}
+    /// (`inter_mvp::symmetric_refs_gate`). Stamped by the pipeline once the
+    /// availability-filtered `ref_frame_type_arr` exists; `inter_mvp_fields`
+    /// reads the same value so the coded stack matches MD's.
+    pub symmetric_refs: bool,
     /// C `pcs->tpl_mvs` — every cell `INVALID_MV` (the state
     /// `av1_setup_motion_field`'s reset leaves) until the temporal MV field
     /// is wired. Allocated rather than empty because `add_tpl_ref_mv`
@@ -209,11 +222,13 @@ impl InterMdEnv {
     pub fn mvp_env(&self) -> crate::inter_mvp::InterMvpEnv<'_> {
         crate::inter_mvp::InterMvpEnv {
             global_motion: &self.global_motion,
-            // Every reference of a low-delay P frame is in the past, so no
-            // sign bias. C derives this in `svt_av1_setup_frame_sign_bias`
-            // from the order hints; a future GOP shape with backward refs
-            // must replace this rather than inherit it.
-            ref_frame_sign_bias: [0; 8],
+            // C derives this in `svt_av1_setup_frame_sign_bias` from the
+            // order hints — a backward reference flips the sign of a
+            // spatial candidate's MV before it enters the stack. Computed
+            // once per picture by `port_picstruct::set_ref_frame_sign_bias`
+            // and carried here; all-zero under low delay by that same
+            // derivation.
+            ref_frame_sign_bias: self.ref_frame_sign_bias.map(|v| v as u32),
             allow_high_precision_mv: self.allow_high_precision_mv,
             force_integer_mv: self.force_integer_mv,
             use_ref_frame_mvs: self.use_ref_frame_mvs,
@@ -226,11 +241,10 @@ impl InterMdEnv {
             // block it is about, with `InterMvpEnv::for_block`. Carrying the
             // picture-level bool through would look like an answer.
             sb64_sq_no4xn_geom: false,
-            // C's `symteric_refs` shortcut needs a random-access pred
-            // structure at `temporal_layer_index > 0` with exactly
-            // {LAST, BWDREF, LAST_BWD}; the low-delay P cells this path
-            // encodes are none of those.
-            symmetric_refs: false,
+            // C's `symteric_refs` gate reads the picture's
+            // `ref_frame_type_arr`; the pipeline stamps the derived value
+            // on this env once the availability-filtered list exists.
+            symmetric_refs: self.symmetric_refs,
         }
     }
 }

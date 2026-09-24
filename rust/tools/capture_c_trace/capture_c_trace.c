@@ -377,6 +377,15 @@ int main(int argc, char** argv) {
         cfg.tune = (uint8_t)atoi(tune_env);
     }
 
+    /* SVT_ENABLE_TF=<0|1> -> cfg.enable_tf. Absent => library default.
+     * Exists to isolate MCTF's RD contribution under RANDOM_ACCESS:
+     * running C-RA with enable_tf=0 measures "C's RA without temporal
+     * filtering", the same envelope the port currently implements. */
+    const char* tf_env = getenv("SVT_ENABLE_TF");
+    if (tf_env) {
+        cfg.enable_tf = (uint8_t)atoi(tf_env);
+    }
+
     /* Forced screen-content modes 0/1 survive C's all-intra normalization. */
     const char* scm_env = getenv("SVT_SCM");
     if (scm_env) {

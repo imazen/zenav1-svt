@@ -461,6 +461,41 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
     write_obu(ObuType::TemporalDelimiter, &[])
 }
 
+/// A `show_existing_frame` packet (spec 5.9.2; C `entropy_coding.c:3308-3334`
+/// + `:3849-3907`) — the OBU_FRAME_HEADER a random-access stream emits at a
+/// hidden picture's display position.
+///
+/// C writes ONLY `show_existing_frame = 1` and the 3-bit
+/// `frame_to_show_map_idx` (the DPB slot to re-display), then
+/// `add_trailing_bits`: the payload is the single byte `1 sss 1 000`
+/// (`0x88 | slot << 3`). Verified byte-for-byte against the C driver at
+/// `SVT_PRED_STRUCT=2` — a capture of `SvtAv1EncApp`'s HL3 stream shows
+/// `d8`/`c8`/`98` payloads = slots 5/4/1.
+///
+/// `tiles_log2` is the frame's `log2_tile_rows + log2_tile_cols`: C still
+/// appends the tile-group header to the OBU (`write_tile_group_header`),
+/// which is a zero-length field only when `tiles_log2 == 0` — a multi-tile
+/// encode needs the extra `tile_start_and_end_present_flag = 0` byte.
+#[must_use]
+pub fn write_show_existing_obu(frame_to_show_map_idx: u8, tiles_log2: u8) -> Vec<u8> {
+    debug_assert!(
+        frame_to_show_map_idx < 8,
+        "show_existing_frame names a DPB slot, 0..=7"
+    );
+    let mut wb = BitWriter::new();
+    wb.write_bit(true); // show_existing_frame = 1
+    wb.write_bits(u32::from(frame_to_show_map_idx), 3);
+    // add_trailing_bits: a 1 bit, then zero padding to the byte edge — the
+    // same `1 sss 1 000` byte the C capture shows.
+    wb.write_bit(true);
+    byte_align_zero(&mut wb);
+    if tiles_log2 > 0 {
+        wb.write_bit(false); // tile_start_and_end_present_flag = 0
+        byte_align_zero(&mut wb);
+    }
+    write_obu(ObuType::FrameHeader, &wb.into_data())
+}
+
 /// Write a reduced-header sequence header OBU (still-picture only).
 ///
 /// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation,
@@ -1390,10 +1425,15 @@ fn key_frame_header_bits(
 /// presence decision invisible — and in a frame header one missing bit shifts
 /// every field after it, which is the failure mode `pipeline.rs`'s inter
 /// refusal was written against.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InterSignal {
     /// C update_parameters=0: reuse this DPB slot with the new random seed.
     pub film_grain_ref_idx: Option<u8>,
+    /// FH `show_frame`. `false` on a random-access picture coded ahead of
+    /// its display position (a hidden pyramid layer); the decoder then reads
+    /// `showable_frame` — always 1 here, since every hidden picture is shown
+    /// later through `show_existing_frame`. `true` on every low-delay frame.
+    pub show_frame: bool,
     /// FH `error_resilient_mode`. C derives it; the low-delay CQP GOP this
     /// port encodes writes 0, which is what makes `primary_ref_frame` present.
     pub error_resilient_mode: bool,
@@ -1450,6 +1490,33 @@ pub struct InterSignal {
     /// encoding. [`Self::sync_is_global`] refreshes it after the models are
     /// filled.
     pub is_global: [bool; 7],
+}
+
+impl Default for InterSignal {
+    /// Hand-implemented (not derived) so [`Self::show_frame`] defaults to
+    /// `true`: a `..Default::default()` construction site must describe a
+    /// SHOWN frame, which is every frame the pre-RA port emitted.
+    fn default() -> Self {
+        Self {
+            film_grain_ref_idx: None,
+            show_frame: true,
+            error_resilient_mode: false,
+            order_hint: 0,
+            primary_ref_frame: 0,
+            refresh_frame_flags: 0,
+            ref_frame_idx: [0; 7],
+            allow_high_precision_mv: false,
+            interpolation_filter: None,
+            is_motion_mode_switchable: false,
+            use_ref_frame_mvs: None,
+            reference_select: false,
+            skip_mode_present: None,
+            allow_warped_motion: None,
+            global_motion: Default::default(),
+            ref_global_motion: Default::default(),
+            is_global: [false; 7],
+        }
+    }
 }
 
 impl InterSignal {
@@ -1509,13 +1576,18 @@ fn frame_header_bits_lr(
         wb.write_bit(false); // show_existing_frame = 0
         // frame_type: KEY_FRAME (0) or INTER_FRAME (1).
         wb.write_bits(u32::from(inter.is_some()), 2);
-        wb.write_bit(true); // show_frame = 1
-        // showable_frame: implicit for show_frame = 1.
-        // error_resilient_mode: implicit 1 for KEY_FRAME with show_frame = 1
-        // (and for SWITCH_FRAME); READ for every other frame type. C's
-        // low-delay CQP inter frames carry 0, which is what makes
-        // `primary_ref_frame` present a few fields down.
+        wb.write_bit(inter.map_or(true, |it| it.show_frame)); // show_frame
         if let Some(it) = inter {
+            // showable_frame: read iff show_frame = 0 (C
+            // entropy_coding.c:3344-3347). Every hidden picture this port
+            // codes is shown later through show_existing_frame, so 1.
+            if !it.show_frame {
+                wb.write_bit(true);
+            }
+            // error_resilient_mode: implicit 1 for KEY_FRAME with
+            // show_frame = 1 (and for SWITCH_FRAME); READ for every other
+            // frame type. C's low-delay CQP inter frames carry 0, which is
+            // what makes `primary_ref_frame` present a few fields down.
             wb.write_bit(it.error_resilient_mode);
         }
     }

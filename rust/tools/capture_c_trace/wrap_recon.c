@@ -2993,3 +2993,4 @@ uint32_t __wrap_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeD
     }
     return idx;
 }
+

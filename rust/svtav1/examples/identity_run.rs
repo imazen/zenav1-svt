@@ -911,6 +911,12 @@ fn main() {
         let mut pipeline =
             EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, hier, intra_period)
                 .with_bit_depth(bd);
+        // `SVT_PRED_STRUCT` (C's `-pred-struct`): 1 = low delay (default),
+        // 2 = random access — buffers a mini-GOP and emits in decode order.
+        if std::env::var("SVT_PRED_STRUCT").ok().as_deref() == Some("2") {
+            pipeline = pipeline
+                .with_pred_structure(svtav1_encoder::port_picstruct::PredStructure::RandomAccess);
+        }
         if let Some(d) = timeout {
             pipeline = pipeline.with_timeout(d);
         }
@@ -987,6 +993,23 @@ fn main() {
                             }
                             o
                         }
+                        // Under RandomAccess ONE input call can code a whole
+                        // mini-GOP: `recon_frames` carries every coded frame's
+                        // (display_order, recon), so nothing is lost when
+                        // `last_recon` would already have been overwritten.
+                        // The file is named by the CODED frame's display order
+                        // — under RA a hidden base layer's recon lands on the
+                        // display index it is shown at, exactly where an
+                        // independent decoder's output puts it.
+                        while let Some((dorder, (ry, ru, rv))) = pipeline.recon_frames.pop_front() {
+                            let mut b = crop(&ry, aw, tw2, th2);
+                            if !ru.is_empty() {
+                                b.extend_from_slice(&crop(&ru, acw, tcw2, tch2));
+                                b.extend_from_slice(&crop(&rv, acw, tcw2, tch2));
+                            }
+                            std::fs::write(format!("{path}.f{dorder}"), &b)
+                                .expect("write SVTAV1_FINAL_RECON");
+                        }
                         // AT bd10 THE 10-BIT CANVAS IS THE ONE A DECODER
                         // OUTPUTS. This writer used to dump `last_recon` --
                         // the u8 chain's recon -- whatever the depth, so every
@@ -995,7 +1018,7 @@ fn main() {
                         // as a total mismatch from frame 0. The single-frame
                         // path above has always refused that substitution;
                         // this one now refuses it too.
-                        let b: Vec<u8> = if bd == 10 {
+                        if bd == 10 {
                             let (ry, ru, rv) = pipeline.last_recon10_final.as_ref().expect(
                                 "SVTAV1_FINAL_RECON at bd10: last_recon10_final is None — \
                                  this frame produced no complete 10-bit recon (out of the \
@@ -1009,22 +1032,19 @@ fn main() {
                                 s.extend_from_slice(&crop(ru, acw, tcw2, tch2));
                                 s.extend_from_slice(&crop(rv, acw, tcw2, tch2));
                             }
-                            s.iter().flat_map(|v| v.to_le_bytes()).collect()
-                        } else {
-                            let (ry, ru, rv) = pipeline
-                                .last_recon
-                                .as_ref()
-                                .expect("with_recon_output(true) is set above");
-                            let mut b = crop(ry, aw, tw2, th2);
-                            if !ru.is_empty() {
-                                b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
-                                b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
-                            }
-                            b
-                        };
-                        std::fs::write(format!("{path}.f{f}"), &b)
-                            .expect("write SVTAV1_FINAL_RECON");
+                            let b: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
+                            let dorder = pipeline
+                                .last_recon_display_order
+                                .expect("recon_output set produced a coded frame")
+                                as usize;
+                            std::fs::write(format!("{path}.f{dorder}"), &b)
+                                .expect("write SVTAV1_FINAL_RECON");
+                        }
                     }
+                    // Coded-frame display order for every recon dump below —
+                    // see the FINAL_RECON comment above. `unwrap_or(f)` keeps
+                    // the low-delay naming identical to before.
+                    let dorder = pipeline.last_recon_display_order.map_or(f, |d| d as usize);
                     // SVTAV1_RECON_STAGES=<pfx> on a MULTI-frame run writes
                     // `<pfx>.f<i>.pre.bin` (pre-deblock) beside the final
                     // recon, cropped and packed identically.
@@ -1058,7 +1078,7 @@ fn main() {
                             b.extend_from_slice(&crop(pu, acw, tcw2, tch2));
                             b.extend_from_slice(&crop(pv, acw, tcw2, tch2));
                         }
-                        std::fs::write(format!("{path}.f{f}.pre.bin"), &b)
+                        std::fs::write(format!("{path}.f{dorder}.pre.bin"), &b)
                             .expect("write SVTAV1_RECON_STAGES");
                     }
                     // The 10-bit twin of the `.pre.bin` dump: the post-MD
@@ -1087,7 +1107,7 @@ fn main() {
                         s.extend_from_slice(&crop16(pu, acw, tcw2, tch2));
                         s.extend_from_slice(&crop16(pv, acw, tcw2, tch2));
                         let b: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
-                        std::fs::write(format!("{path}.f{f}.pre10.bin"), &b)
+                        std::fs::write(format!("{path}.f{dorder}.pre10.bin"), &b)
                             .expect("write SVTAV1_RECON_STAGES 10-bit");
                     }
                     all.extend_from_slice(&bytes);
@@ -1105,6 +1125,40 @@ fn main() {
                     eprintln!("identity_run: REFUSED by the encoder at frame {f}: {e}");
                     std::process::exit(3);
                 }
+            }
+        }
+        // Random access buffers a mini-GOP before emitting; the trailing
+        // partial window comes out of `try_flush`, not a frame call.
+        match pipeline.try_flush() {
+            Ok(bytes) => all.extend_from_slice(&bytes),
+            Err(e) => {
+                std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+                eprintln!("identity_run: REFUSED by the encoder at flush: {e}");
+                std::process::exit(3);
+            }
+        }
+        // The trailing partial window's coded frames surface here, not in a
+        // `try_encode_frame_420` call — drain their recons the same way the
+        // per-frame loop does or `SVTAV1_FINAL_RECON` silently drops the
+        // last mini-GOP's reconstructions.
+        if let Ok(path) = std::env::var("SVTAV1_FINAL_RECON") {
+            let aw = pipeline.width as usize;
+            let (tw2, th2) = (pipeline.true_width as usize, pipeline.true_height as usize);
+            let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
+            while let Some((dorder, (ry, ru, rv))) = pipeline.recon_frames.pop_front() {
+                let mut b = Vec::with_capacity(tw2 * th2 + 2 * tcw2 * tch2);
+                for r in 0..th2 {
+                    b.extend_from_slice(&ry[r * aw..r * aw + tw2]);
+                }
+                if !ru.is_empty() {
+                    for r in 0..tch2 {
+                        b.extend_from_slice(&ru[r * acw..r * acw + tcw2]);
+                    }
+                    for r in 0..tch2 {
+                        b.extend_from_slice(&rv[r * acw..r * acw + tcw2]);
+                    }
+                }
+                std::fs::write(format!("{path}.f{dorder}"), &b).expect("write SVTAV1_FINAL_RECON");
             }
         }
         std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");

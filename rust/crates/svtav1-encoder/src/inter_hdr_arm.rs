@@ -236,6 +236,9 @@ pub fn inter_signal(
         // `sync_is_global`; this function has no access to the search.
         is_global: [false; 7],
         film_grain_ref_idx: None,
+        // `pcs->frm_hdr.show_frame` (`set_frame_display_params`) — false on
+        // a hidden random-access picture, which also writes showable_frame.
+        show_frame: pic.show_frame,
         error_resilient_mode,
         order_hint,
         primary_ref_frame,

@@ -523,6 +523,22 @@ jobs:
         # already fetched.
         run: ./tools/video_selfcheck_gate.sh
 
+      - name: RA self-consistency — hierarchical GOP, port recon == aomdec
+        if: matrix.shard == 3
+        working-directory: rust
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
+        # The random-access twin of the gate above. RA reorders: frames code
+        # in decode order and emit show_existing_frame OBUs for hidden
+        # pictures, so a slot/CDF/motion-field binding that is right under
+        # low delay can still be wrong here — the failure mode this job
+        # caught live was a stored-motion-field / adaptive-MVP divergence
+        # that only exists once a frame references the future. It sweeps
+        # hierarchical_levels 1..5 on complete mini-GOPs plus trailing
+        # partial windows (the schedule edge the RPS oracle cannot reach),
+        # and its anti-vacuity pin requires hidden frames in every cell.
+        run: ./tools/ra_selfcheck_gate.sh
+
       - name: 10-bit video self-consistency — port recon == aomdec, 8 frames
         if: matrix.shard == 3
         working-directory: rust

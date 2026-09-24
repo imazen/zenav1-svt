@@ -45,6 +45,11 @@ produce end up in commit messages and `benchmarks/*.meta`.
   parity: the port's final recon must equal `aomdec`'s decode of its own
   stream, per frame, on a pinned cell grid. The 10-bit twin of
   `video_selfcheck_gate.sh`, on the shipped path (no env flags).
+- `tools/ra_selfcheck_gate.sh` — the random-access twin: `SVT_PRED_STRUCT=2`
+  across hierarchical_levels 1..5 on complete mini-GOPs plus trailing partial
+  windows, every display frame's recon byte-identical to `aomdec`. Hidden
+  frames (coded but shown via show_existing) are counted by the gate's
+  anti-vacuity pin.
 - `tools/identity_diff_inter.sh` grew an `IDI_BD` axis (8 or 10) that drives
   BOTH sides: the port writes the widened 16-bit samples it actually encoded to
   `rs.yuv` and the C driver reads that same file at the matching depth, so a

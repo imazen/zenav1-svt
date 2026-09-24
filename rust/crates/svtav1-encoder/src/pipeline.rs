@@ -24,6 +24,20 @@ use alloc::vec::Vec;
 // into scope so the frame-entry cancellation check resolves.
 use enough::Stop;
 
+/// One random-access input frame held for its mini-GOP window.
+///
+/// Planes are tightly packed at TRUE dims (luma `true_width × true_height`,
+/// chroma `⌈true_width/2⌉ × ⌈true_height/2⌉` for 4:2:0) — the same contract
+/// `try_encode_frame_420` hands to `encode_frame_420_prepared`, which pads
+/// per frame at encode time. `u`/`v` are empty on the monochrome arm.
+struct RaBufferedFrame {
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    /// C `pcs->picture_number` — display-order POC.
+    display_order: u64,
+}
+
 /// Encoder pipeline state.
 pub struct EncodePipeline {
     /// Pinned source identity, independent of HDR mode. Legacy constructors
@@ -51,6 +65,25 @@ pub struct EncodePipeline {
     pub dpb: DecodedPictureBuffer,
     /// GOP structure.
     pub gop: GopStructure,
+    /// C `scs->static_config.pred_structure` — `LowDelay` (the default, and
+    /// the only structure the sequential frame-in/frame-out contract can
+    /// express directly) or `RandomAccess`, which buffers input frames into
+    /// `ra_input` until a whole mini-GOP is present, runs the ported
+    /// picture-decision kernel over the window, then encodes the pictures
+    /// in DECODE order (C's `store_mg_picture_arrays` permutation),
+    /// interleaving `show_existing_frame` OBUs at each hidden picture's
+    /// display position. See [`Self::try_encode_frame_420_ra`].
+    pub pred_structure: crate::port_picstruct::PredStructure,
+    /// Random-access input staging, in display order, planes tightly packed
+    /// at TRUE dims (the encode pads per frame). Populated only while
+    /// `pred_structure == RandomAccess`; emptied by
+    /// [`Self::encode_ra_window`].
+    ra_input: alloc::vec::Vec<RaBufferedFrame>,
+    /// The display-order POC the next accepted input takes under random
+    /// access. `frame_count` stays the count of CODED frames (it increments
+    /// inside `encode_frame_impl`); under RA the two orders differ inside a
+    /// mini-GOP, so a separate counter assigns input POCs.
+    ra_display_next: u64,
     /// Frame counter.
     pub frame_count: u64,
     /// ALIGNED (mi-grid) frame width — the true width rounded up to a
@@ -231,6 +264,19 @@ pub struct EncodePipeline {
     /// the deblock and CDEF *application* passes exist ONLY to produce it,
     /// and they cost 27-39 % of the encode. See `with_recon_output`.
     pub last_recon: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// The display order of the coded frame `last_recon`/`last_recon10_final`
+    /// belongs to. Under `PredStructure::RandomAccess` the coded order differs
+    /// from input order — a caller that consumed `last_recon` per input frame
+    /// would alias it to the wrong picture, so the index travels with the
+    /// buffer. Equals the input index under low-delay.
+    pub last_recon_display_order: Option<u64>,
+    /// Every coded frame's `(display_order, recon)` since the caller last
+    /// drained it — the multi-frame counterpart of [`Self::last_recon`].
+    /// Under `PredStructure::RandomAccess` one `try_encode_frame_420` call
+    /// codes several frames (a whole mini-GOP), so the single `last_recon`
+    /// slot silently drops all but the last; this queue loses none. Pushed
+    /// only when [`Self::with_recon_output`] is set.
+    pub recon_frames: alloc::collections::VecDeque<(u64, (Vec<u8>, Vec<u8>, Vec<u8>))>,
     /// The same reconstruction BEFORE the in-loop deblocking filter was
     /// applied (equals `last_recon` when the picked levels are all zero).
     /// Evidence/analysis aid: lets tools quantify what deblocking
@@ -553,6 +599,9 @@ impl EncodePipeline {
             rc_state: RcState::default(),
             dpb: DecodedPictureBuffer::new(),
             gop: GopStructure::new(hierarchical_levels, intra_period),
+            pred_structure: crate::port_picstruct::PredStructure::LowDelay,
+            ra_input: alloc::vec::Vec::new(),
+            ra_display_next: 0,
             frame_count: 0,
             width: dims.aligned_w as u32,
             height: dims.aligned_h as u32,
@@ -581,6 +630,8 @@ impl EncodePipeline {
             chroma_format: None,
             recon_output: false,
             last_recon: None,
+            last_recon_display_order: None,
+            recon_frames: alloc::collections::VecDeque::new(),
             last_recon_unfiltered: None,
             last_recon_pre_cdef: None,
             last_recon10_y: None,
@@ -765,6 +816,410 @@ impl EncodePipeline {
         Ok(pic)
     }
 
+    // ------------------------------------------------------------------
+    // Random access (`SVT_PRED_STRUCT=2`): the mini-GOP window driver
+    // ------------------------------------------------------------------
+    //
+    // C's picture decision never runs on a single frame under random access.
+    // Input frames accumulate in a PRE-ASSIGNMENT BUFFER in display order
+    // until a whole mini-GOP (`1 << hierarchical_levels` pictures) is present
+    // or the end of sequence cuts it short; `set_mini_gop_structure` then
+    // maps the window, the kernel walks it once in display order to assign
+    // each picture's pred-structure position, once more to assign
+    // `decode_order` (`decode_base_number + entry.decode_order` for a
+    // complete mini-GOP, else the `picture_number_alt` counter), and a third
+    // time in DECODE order for the RPS/DPB state (`pd_process.c:5470-5693`).
+    // `process_pics` emits the pictures in that same decode order, with a
+    // `show_existing_frame` OBU_FRAME_HEADER interleaved wherever a hidden
+    // picture's display position is reached.
+    //
+    // `ra_input` is the port's pre-assignment buffer.
+
+    /// The configuration envelope random access adds to `gop_config_error`'s.
+    /// `None` means a window may run.
+    fn ra_config_error(&self) -> Option<&'static str> {
+        if self.gop.intra_period <= 1 {
+            return Some(
+                "pred_structure RandomAccess needs a GOP: intra_period <= 1 makes every \
+                 frame a key frame, so there is no mini-GOP to reorder [C: accepts but \
+                 degenerates to all-intra]",
+            );
+        }
+        if self.superres_denom.is_some() {
+            return Some(
+                "pred_structure RandomAccess with superres is untested: references at \
+                 a different coded width inside the window need decoder verification \
+                 first [C: accepts]",
+            );
+        }
+        if self.film_grain.enabled() || self.hdr.noise_strength > 0 {
+            return Some(
+                "pred_structure RandomAccess with film grain is untested: C's \
+                 show_existing headers would have to re-signal grain state \
+                 [C: accepts]",
+            );
+        }
+        None
+    }
+
+    /// Entry-point guard for the non-420 arms: random access buffers and
+    /// reorders input, which only `try_encode_frame_420` implements today —
+    /// a mono/444/hbd frame fed through the sequential path would silently
+    /// break the mini-GOP's display order, so refuse instead of emitting it.
+    fn ra_entry_error(&self, _entry: &str) -> Option<whereat::At<EncodeError>> {
+        (self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess).then(|| {
+            whereat::at!(EncodeError::UnsupportedConfig(
+                "pred_structure RandomAccess is wired on try_encode_frame_420 only; \
+                 this entry takes the sequential path, which cannot buffer a \
+                 mini-GOP [C: accepts]",
+            ))
+        })
+    }
+
+    /// The random-access arm of [`Self::try_encode_frame_420`].
+    ///
+    /// Buffers one input at `ra_display_next`'s display position, and only
+    /// encodes when a whole mini-GOP is present — returning `Ok(Vec::new())`
+    /// until then. A key frame (intra-period boundary) drains the partial
+    /// window FIRST, then codes itself through the ordinary sequential path,
+    /// exactly like C's `pre_assignment_buffer_idr_count` release.
+    fn try_encode_frame_420_ra(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        if let Some(why) = self.ra_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        let display_order = self.ra_display_next;
+        self.ra_display_next += 1;
+
+        // C `perform_picture_structure` releases the buffer on an intra
+        // picture (`pre_assignment_buffer_intra_count > 0` fires the window).
+        // A mid-stream key drains whatever partial mini-GOP precedes it —
+        // coded low-delay, as `is_pic_cutting_short_ra_mg` decides — then
+        // takes the normal sequential path.
+        if self.gop.is_key_frame(display_order) {
+            let mut out = if self.ra_input.is_empty() {
+                alloc::vec::Vec::new()
+            } else {
+                self.encode_ra_window()?
+            };
+            out.extend_from_slice(&self.encode_frame_420_core(y, u, v, y_stride)?);
+            return Ok(out);
+        }
+
+        // Stage the frame at TRUE dims; the encode pads per picture.
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
+        let mut yb = alloc::vec::Vec::with_capacity(tw * th);
+        for r in 0..th {
+            yb.extend_from_slice(&y[r * y_stride..r * y_stride + tw]);
+        }
+        let ub = u[..cw * ch].to_vec();
+        let vb = v[..cw * ch].to_vec();
+        self.ra_input.push(RaBufferedFrame {
+            y: yb,
+            u: ub,
+            v: vb,
+            display_order,
+        });
+        if self.ra_input.len() as u32 == self.gop.mini_gop_size {
+            return self.encode_ra_window();
+        }
+        Ok(alloc::vec::Vec::new())
+    }
+
+    /// Drain any pending output. Under `PredStructure::RandomAccess` this
+    /// encodes a partial trailing mini-GOP — C's `pre_assignment_buffer_eos_flag`
+    /// release, which `is_pic_cutting_short_ra_mg` codes low-delay. Under the
+    /// default low-delay structure there is never pending output and this is
+    /// a no-op. Must be called after the last input, or the tail of an RA
+    /// stream is silently un-emitted.
+    pub fn try_flush(&mut self) -> EncodeResult<Vec<u8>> {
+        if self.pred_structure != crate::port_picstruct::PredStructure::RandomAccess
+            || self.ra_input.is_empty()
+        {
+            return Ok(alloc::vec::Vec::new());
+        }
+        self.encode_ra_window()
+    }
+
+    /// One random-access pre-assignment buffer's worth of packets.
+    ///
+    /// Runs [`Self::run_ra_picture_decision`] — the ported window kernel —
+    /// then encodes the pictures in DECODE order, appending a
+    /// `show_existing_frame` OBU_FRAME_HEADER right after any picture whose
+    /// decision produced one (`pic.has_show_existing`), which is exactly the
+    /// display-order point C emits it at.
+    fn encode_ra_window(&mut self) -> EncodeResult<Vec<u8>> {
+        let (mut pics, emit) = self.run_ra_picture_decision()?;
+        // Drain the buffer up front: each index is visited exactly once (the
+        // emit order is a permutation), and holding the frames locally keeps
+        // `&mut self` free for the per-picture encode.
+        let mut frames = alloc::vec::Vec::new();
+        core::mem::swap(&mut frames, &mut self.ra_input);
+        let mut out = alloc::vec::Vec::new();
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        let tiles_log2 = self.tile_rows_log2 + self.tile_cols_log2;
+        for idx in emit {
+            let frame = &frames[idx];
+            let pic = pics[idx]
+                .take()
+                .expect("emit order visits each picture once");
+            let display_order = frame.display_order;
+            let has_show_existing = pic.has_show_existing;
+            let show_slot = pic.show_existing_frame;
+            let decided = Some((display_order, pic));
+            if aw == tw && ah == th {
+                out.extend_from_slice(&self.encode_frame_impl(
+                    &frame.y,
+                    tw,
+                    Some((&frame.u, &frame.v)),
+                    decided,
+                )?);
+            } else {
+                let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
+                let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
+                let y_pad = pad_plane_replicate(&frame.y, tw, tw, th, aw, ah)?;
+                let u_pad = pad_plane_replicate(&frame.u, cw, cw, ch, acw, ach)?;
+                let v_pad = pad_plane_replicate(&frame.v, cw, cw, ch, acw, ach)?;
+                out.extend_from_slice(&self.encode_frame_impl(
+                    &y_pad,
+                    aw,
+                    Some((&u_pad, &v_pad)),
+                    decided,
+                )?);
+            }
+            if has_show_existing {
+                // C emits each show_existing as its own temporal unit
+                // (TD + OBU_FRAME_HEADER); without the TD a decoder treats
+                // it as part of the preceding frame's TU and drops it.
+                out.extend_from_slice(&crate::entropy::obu::write_temporal_delimiter());
+                out.extend_from_slice(&crate::entropy::obu::write_show_existing_obu(
+                    show_slot, tiles_log2,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// C `svt_aom_picture_decision_kernel`'s mini-GOP loop
+    /// (`pd_process.c:5489-5693`), transcribed for one full pre-assignment
+    /// buffer. Returns one [`PicParams`] per input picture (indexed by
+    /// `ra_input` position) plus the emit order: buffer indices in DECODE
+    /// order, which `store_mg_picture_arrays` computes per mini-GOP.
+    ///
+    /// The three passes match C exactly: pred-structure/slice-type per
+    /// picture in DISPLAY order, `decode_order` assignment in DISPLAY order,
+    /// then `picture_decision_per_picture` — RPS + DPB + settings — in
+    /// DECODE order, because `update_dpb` applies each picture's refresh
+    /// mask to the toggle ring in coded order.
+    fn run_ra_picture_decision(
+        &mut self,
+    ) -> EncodeResult<(
+        alloc::vec::Vec<Option<crate::port_picstruct::PicParams>>,
+        alloc::vec::Vec<usize>,
+    )> {
+        use crate::port_picstruct as pp;
+        let n = self.ra_input.len() as u32;
+        let hier = self.gop.hierarchical_levels;
+        // C `set_mrp_ctrl` (`enc_handle.c:3574`) — same call as the
+        // low-delay path but with the RANDOM_ACCESS structure, whose caps
+        // differ (backward references are real under RA).
+        let mrp_ctrls = pp::set_mrp_ctrl(
+            self.speed_config.preset,
+            false,
+            hier,
+            pp::PredStructure::RandomAccess,
+            self.bit_depth == 8,
+            pp::RcMode::CqpOrCrf,
+        );
+        self.mrp_ctrls = mrp_ctrls;
+        let seq = pp::SeqPicParams {
+            pred_structure: pp::PredStructure::RandomAccess,
+            rate_control_mode: pp::RcMode::CqpOrCrf,
+            rtc: false,
+            allintra: false,
+            mrp_ctrls,
+            order_hint_info: crate::inter_mvp::OrderHintInfo {
+                enable_order_hint: true,
+                order_hint_bits: crate::entropy::obu::ORDER_HINT_BITS,
+            },
+            hierarchical_levels: hier,
+            max_managed_refs: 0,
+        };
+
+        // The buffer C releases is `pre_assignment_buffer_count` pictures
+        // with no intra pictures inside it (a mid-stream key drains first —
+        // see `try_encode_frame_420_ra`).
+        self.enc_pic.pre_assignment_buffer_count = n;
+        self.enc_pic.pre_assignment_buffer_intra_count = 0;
+        self.enc_pic.pre_assignment_buffer_idr_count = 0;
+        // `set_mini_gop_structure` reads `pic.picture_number` (the first
+        // picture's POC selects previous-MG init) and `pic.hierarchical_levels`
+        // (RTC arm only — `seq.rtc` is false here).
+        let stub = pp::PicParams {
+            picture_number: self.ra_input[0].display_order,
+            hierarchical_levels: hier,
+            ..Default::default()
+        };
+        // `enable_dg = false`: C's dynamic-GOP split is unported and refused
+        // above for the only level that can reach it (hier 5 / 32-pic MG).
+        // `list0_only_base = false`: no long-term anchors in this envelope.
+        let needs_dg = pp::set_mini_gop_structure(
+            &mut self.mg_map,
+            &mut self.enc_pic,
+            &seq,
+            &stub,
+            u32::from(hier),
+            /*startup_mg_size=*/ 0,
+            /*idr_flag=*/ false,
+            /*enable_dg=*/ false,
+            /*list0_only_base=*/ false,
+        );
+        debug_assert!(
+            !needs_dg,
+            "eval_sub_mini_gop is unported; hier < 5 cannot reach it"
+        );
+
+        let mut pics: alloc::vec::Vec<Option<pp::PicParams>> = (0..n).map(|_| None).collect();
+        let mut emit: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+        for mg_idx in 0..self.mg_map.total_number_of_mini_gops {
+            let start = self.mg_map.start_index[mg_idx] as usize;
+            let end = self.mg_map.end_index[mg_idx] as usize;
+            let mg_len = self.mg_map.length[mg_idx];
+            // `pd_process.c:5494-5504`: the first picture's
+            // `hierarchical_layers_diff` vs the PREVIOUS mini-GOP decides
+            // `init_pred_struct_position_flag` (and `is_mini_gop_changed`,
+            // which nothing downstream reads here).
+            let init_pos_flag = self.enc_pic.previous_mini_gop_hierarchical_levels
+                != self.mg_map.hierarchical_levels[mg_idx];
+            self.enc_pic.previous_mini_gop_hierarchical_levels =
+                self.mg_map.hierarchical_levels[mg_idx];
+            self.pd_ctx.cut_short_ra_mg = 0;
+
+            // ---- Pass 1, DISPLAY order (`pd_process.c:5506-5608`) ----
+            // pred structure + slice type + pred_struct_position per picture.
+            let mut pred_struct_index = alloc::vec::Vec::with_capacity(end - start + 1);
+            let mut pic_idx_in_mg = alloc::vec::Vec::with_capacity(end - start + 1);
+            for pic_idx in start..=end {
+                let first = pic_idx == start;
+                let mut pic = pp::PicParams {
+                    picture_number: self.ra_input[pic_idx].display_order,
+                    slice_type: pp::SliceType::B,
+                    pred_struct_type: pp::PredStructure::RandomAccess,
+                    aligned_width: self.width,
+                    aligned_height: self.height,
+                    // `resource_coordination_process.c:414-416`: non-CBR
+                    // `frame_offset = picture_number`. `get_pic_idx_in_mg`
+                    // overwrites it only in low delay.
+                    frame_offset: self.ra_input[pic_idx].display_order,
+                    ..Default::default()
+                };
+                pp::get_pred_struct_for_frame(
+                    &mut pic,
+                    &mut self.mg_map,
+                    mg_idx,
+                    seq.pred_structure,
+                    hier,
+                    /*startup_mg_size=*/ 0,
+                    /*idr_flag=*/ false,
+                    /*cra_flag=*/ false,
+                );
+                // `pred_struct_ptr` follows the (possibly cut-short) type
+                // and the MINI-GOP's level, not the sequence's.
+                pic.pred_struct_entry_count = 1u32 << pic.hierarchical_levels;
+                let _slice = pp::update_pred_struct_and_pic_type(
+                    &mut pic,
+                    &mut self.enc_pic,
+                    &mut self.mg_map,
+                    &mut self.pd_ctx,
+                    mg_idx,
+                    /*pre_assignment_buffer_first_pass_flag=*/ first,
+                    /*idr_flag=*/ false,
+                    /*cra_flag=*/ false,
+                    /*init_pred_struct_position_flag=*/ first && init_pos_flag,
+                    /*init_pic_index=*/ 0,
+                );
+                // `pd_process.c:5563-5590`: a B slice bumps both elapsed
+                // counters, clipped. (`elapsed_non_idr_count` has no reader
+                // in the ported subset; the CRA one feeds the position walk.)
+                self.enc_pic.elapsed_non_cra_count =
+                    self.enc_pic.elapsed_non_cra_count.saturating_add(1);
+                // `pd_process.c:5548/4869/5559`: position AFTER the walk
+                // indexes the entry; the entry carries the temporal layer.
+                let pos = self.enc_pic.pred_struct_position as usize;
+                pred_struct_index.push(pos as u8);
+                pic.temporal_layer_index =
+                    pp::PRED_STRUCT_TEMPORAL_LAYER[usize::from(pic.hierarchical_levels)][pos];
+                pic_idx_in_mg.push(pp::get_pic_idx_in_mg(
+                    &mut pic,
+                    &seq,
+                    &self.enc_pic,
+                    &self.mg_map,
+                    pic_idx as u32,
+                    mg_idx,
+                ));
+                pics[pic_idx] = Some(pic);
+            }
+
+            // ---- Pass 2, DISPLAY order (`pd_process.c:5612-5667`) ----
+            // `picture_number_alt++` every picture; the RA permutation arm
+            // needs a COMPLETE mini-GOP (`length == entry_count`) with no
+            // intra inside; everything else falls to the alt counter.
+            for pic_idx in start..=end {
+                let pic = pics[pic_idx].as_mut().unwrap();
+                let alt = self.enc_pic.picture_number_alt;
+                self.enc_pic.picture_number_alt += 1;
+                pic.decode_order = if self.mg_map.idr_count[mg_idx] == 0
+                    && self.mg_map.length[mg_idx] == pic.pred_struct_entry_count
+                    && seq.pred_structure == pp::PredStructure::RandomAccess
+                {
+                    self.enc_pic.decode_base_number
+                        + u64::from(
+                            pp::PRED_STRUCT_DECODE_ORDER[usize::from(pic.hierarchical_levels)]
+                                [usize::from(pred_struct_index[pic_idx - start])],
+                        )
+                } else {
+                    alt
+                };
+            }
+            // `pd_process.c:5660-5662`: decode base advances by the mini-GOP
+            // length (overlays are off in this envelope — `has_overlay = 0`).
+            self.enc_pic.decode_base_number += u64::from(mg_len);
+
+            // ---- `store_mg_picture_arrays` + pass 3, DECODE order ----
+            let decode_orders: alloc::vec::Vec<u64> = (start..=end)
+                .map(|i| pics[i].as_ref().unwrap().decode_order)
+                .collect();
+            let (decode_perm, _display_perm) = pp::store_mg_picture_arrays(&decode_orders);
+            for &local in &decode_perm {
+                let pic_idx = start + local;
+                let pic = pics[pic_idx].as_mut().unwrap();
+                pp::picture_decision_per_picture(
+                    pic,
+                    &seq,
+                    &mut self.pd_ctx,
+                    pic_idx_in_mg[local],
+                    mg_idx,
+                )
+                .map_err(|_| {
+                    whereat::at!(EncodeError::UnsupportedConfig(
+                        "this GOP shape's reference structure is not implemented \
+                         (port_picstruct::generate_rps_info translates 4 of C's 8 \
+                         branches) [C: accepts]",
+                    ))
+                })?;
+                emit.push(pic_idx);
+            }
+        }
+        Ok((pics, emit))
+    }
+
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: i8) -> (usize, bool) {
         let want = override_
             .filter(|n| matches!(n, 64 | 128))
@@ -915,6 +1370,21 @@ impl EncodePipeline {
     /// refused at encode time.
     pub fn with_chroma_sample_position(mut self, csp: u8) -> Self {
         self.chroma_sample_position = csp;
+        self
+    }
+
+    /// C `scs->static_config.pred_structure` (`SVT_PRED_STRUCT`): `LowDelay`
+    /// (the default) or `RandomAccess`.
+    ///
+    /// Random access changes the public contract: `try_encode_frame*` accepts
+    /// an input frame and returns `Ok(Vec::new())` until a whole mini-GOP is
+    /// buffered, then returns that window's packets concatenated in DECODE
+    /// order (which is also the correct bitstream order — AV1 packets are
+    /// emitted in decode order, with `order_hint` carrying display order).
+    /// Call [`Self::try_flush`] after the last input to drain a partial
+    /// trailing mini-GOP, which C codes low-delay (`is_pic_cutting_short_ra_mg`).
+    pub fn with_pred_structure(mut self, p: crate::port_picstruct::PredStructure) -> Self {
+        self.pred_structure = p;
         self
     }
 
@@ -1073,10 +1543,10 @@ impl EncodePipeline {
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // every mono stream this encoder has ever emitted).
-            return self.encode_frame_impl(y, y_stride, None);
+            return self.encode_frame_impl(y, y_stride, None, None);
         }
         let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
-        self.encode_frame_impl(&y_pad, aw, None)
+        self.encode_frame_impl(&y_pad, aw, None, None)
     }
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
@@ -1319,7 +1789,12 @@ impl EncodePipeline {
         let prepared = self.prepare_film_grain(y, u, v, y_stride)?;
         if self.superres_denom.is_none() {
             if let Some((planes, stride)) = prepared.as_ref() {
-                return self.encode_frame_impl(&planes[0], *stride, Some((&planes[1], &planes[2])));
+                return self.encode_frame_impl(
+                    &planes[0],
+                    *stride,
+                    Some((&planes[1], &planes[2])),
+                    None,
+                );
             }
         }
         let (y, u, v, y_stride) = match prepared.as_ref() {
@@ -1364,7 +1839,7 @@ impl EncodePipeline {
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // the pre-#95 path).
-            return self.encode_frame_impl(y, y_stride, Some((u, v)));
+            return self.encode_frame_impl(y, y_stride, Some((u, v)), None);
         }
         // Pad TRUE -> ALIGNED. C replicates the last valid column, then the
         // last valid row (incl. the new right pad); the per-pixel min-clamp
@@ -1373,7 +1848,7 @@ impl EncodePipeline {
         let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
         let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach)?;
         let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach)?;
-        self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)))
+        self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)), None)
     }
 
     /// Whether the configured [`Self::chroma_format`] is consumable by
@@ -1414,6 +1889,9 @@ impl EncodePipeline {
     /// untouched. Internally this calls the same fallible `encode_frame_impl`;
     /// its configuration, allocation and cancellation errors propagate.
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
+        if let Some(e) = self.ra_entry_error("try_encode_frame") {
+            return Err(e);
+        }
         // (a) Validate the true input extent. Padding is performed in
         // encode_frame_mono_core; both partition paths handle partial SBs.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
@@ -1454,6 +1932,11 @@ impl EncodePipeline {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)",
             )));
+        }
+        // Random access changes the contract: an input may produce no packet
+        // until its mini-GOP completes; `try_flush` drains the tail.
+        if self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess {
+            return self.try_encode_frame_420_ra(y, u, v, y_stride);
         }
         // INTER FRAMES ARE SHIPPED HERE as of 2026-09-11. This used to be a
         // blanket "still/key frames only" refusal, lifted only by
@@ -2136,6 +2619,9 @@ impl EncodePipeline {
                  with_chroma_420(true)",
             )));
         }
+        if let Some(e) = self.ra_entry_error("try_encode_frame_420_hbd") {
+            return Err(e);
+        }
         if self.bit_depth != 10 {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use \
@@ -2277,6 +2763,9 @@ impl EncodePipeline {
                  with_chroma_format(Some(ChromaFormat::Yuv444))",
             )));
         }
+        if let Some(e) = self.ra_entry_error("try_encode_frame_444") {
+            return Err(e);
+        }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let n = tw * th;
         if y.len() < (th - 1) * y_stride + tw || u.len() < n || v.len() < n {
@@ -2311,6 +2800,9 @@ impl EncodePipeline {
                 "try_encode_frame_422 requires the pipeline to be built with \
                  with_chroma_format(Some(ChromaFormat::Yuv422))",
             )));
+        }
+        if let Some(e) = self.ra_entry_error("try_encode_frame_422") {
+            return Err(e);
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (tcw, n) = (tw.div_ceil(2), tw.div_ceil(2) * th);
@@ -2348,6 +2840,9 @@ impl EncodePipeline {
                 "try_encode_frame_hbd is the monochrome entry point; use \
                  try_encode_frame_420_hbd on a 4:2:0 pipeline",
             )));
+        }
+        if let Some(e) = self.ra_entry_error("try_encode_frame_hbd") {
+            return Err(e);
         }
         if self.bit_depth != 10 {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
@@ -2410,6 +2905,7 @@ impl EncodePipeline {
         y_plane: &[u8],
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
+        decided: Option<(u64, crate::port_picstruct::PicParams)>,
     ) -> crate::EncodeResult<Vec<u8>> {
         // `chroma_420` is the configured-format check (refuses 4:4:4 where
         // `chroma.is_some()` would pass); `chroma.is_some()` is the per-frame
@@ -2510,7 +3006,11 @@ impl EncodePipeline {
             }));
         }
         self.validate_film_grain()?;
-        let display_order = self.frame_count;
+        // `decided` carries a random-access frame: its display-order POC and
+        // the `PicParams` the mini-GOP window decision already produced
+        // (`encode_ra_window`). `None` is the sequential contract — display
+        // order is the coded-frame count and picture decision runs inline.
+        let display_order = decided.as_ref().map_or(self.frame_count, |(d, _)| *d);
         // Superres chunk B.3: refuse any combination whose SIGNALLED geometry
         // would not match what this encoder actually produced (see
         // `superres_config_error`). Checked at the single choke point every
@@ -2721,8 +3221,15 @@ impl EncodePipeline {
         // configured, and even when it runs it only writes `self.pd_ctx` and
         // the local `PicParams` — nothing downstream of a KEY frame reads
         // either.
+        let decided_is_some = decided.is_some();
         let pic_decision = if self.gop.intra_period > 1 {
-            Some(self.run_picture_decision(display_order, is_key)?)
+            Some(match decided {
+                // Random access: the window decision already ran RPS + DPB
+                // state for this picture — re-running it per frame would
+                // advance the toggles twice.
+                Some((_, pic)) => pic,
+                None => self.run_picture_decision(display_order, is_key)?,
+            })
         } else {
             None
         };
@@ -2731,6 +3238,14 @@ impl EncodePipeline {
         // the picture decision, not a position-derived paraphrase (the flat
         // GOP's only entry is layer 0, which is also the `None` answer).
         let temporal_layer = pic_decision.as_ref().map_or(0, |p| p.temporal_layer_index);
+        // C reads `ppcs->hierarchical_levels` — the MINI-GOP's level for this
+        // picture, which a cut-short RA window subdivides below the
+        // configured `gop.hierarchical_levels` (`get_pred_struct_for_frame`).
+        // Equals the configured level on every low-delay frame, so this is
+        // byte-inert outside random access.
+        let frame_hier = pic_decision
+            .as_ref()
+            .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels);
 
         // C `av1_lambda_assign_md`'s TWO update-type selectors
         // (`pd0::inter_full_lambda_8bit`): the rdmult BASE reads
@@ -2763,11 +3278,8 @@ impl EncodePipeline {
                 crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
             }
         });
-        let md_lambda_factor_update_type = crate::port_rc_process::lambda_gf_update_type(
-            is_key,
-            self.gop.hierarchical_levels,
-            temporal_layer,
-        );
+        let md_lambda_factor_update_type =
+            crate::port_rc_process::lambda_gf_update_type(is_key, frame_hier, temporal_layer);
         let md_alt_lambda_factors = self.hdr.is_fork() && self.hdr.alt_lambda_factors;
 
         // C `pcs->ref_intra_percentage` (`get_ref_intra_percentage`,
@@ -2823,10 +3335,20 @@ impl EncodePipeline {
                 self.width,
                 self.height,
                 display_order,
-                display_order,
+                // `pcs->decode_order` — the RA window's permutation; display
+                // order under low delay (the same value `pic_decision` carries).
+                pic_decision
+                    .as_ref()
+                    .map_or(display_order, |p| p.decode_order),
                 temporal_layer,
             )
         };
+        // `pcs->frm_hdr.show_frame` — a hidden RA picture is coded but not
+        // shown; `inter_signal` reads it through `pic_decision`, and
+        // anything else wanting it must see the same value.
+        if let Some(pic) = pic_decision.as_ref() {
+            pcs.show_frame = pic.show_frame;
+        }
 
         // C `frm_hdr->refresh_frame_flags = ppcs->rps.refresh_frame_mask`
         // — the SAME value the frame header signals (`inter_hdr_arm.rs`:
@@ -3293,13 +3815,23 @@ impl EncodePipeline {
             // `None` whenever there is no picture decision or this is a
             // base-layer/key frame — the arm is gated on
             // `temporal_layer_index != 0` inside `cqp_qindex_calc` too.
-            let ld_boost = pic_decision.as_ref().and_then(|p| {
-                let rf = self.dpb.get(p.rps.ref_dpb_index[0] as usize)?;
-                Some(crate::rate_control::non_base_boost(
-                    rf.is_islice,
-                    &rf.sb_intra,
-                ))
-            });
+            // C gates the boost on `scs->static_config.pred_structure ==
+            // LOW_DELAY` (rc_crf_cqp.c:439) — the SEQUENCE's configured
+            // structure. A cut-short RA mini-GOP flips its pictures to
+            // `pred_struct_type LowDelay` but the sequence stays
+            // RANDOM_ACCESS, so the boost must not fire under RA even
+            // though the picture's own pred-struct type says low-delay.
+            let ld_boost = (self.pred_structure == crate::port_picstruct::PredStructure::LowDelay)
+                .then(|| {
+                    pic_decision.as_ref().and_then(|p| {
+                        let rf = self.dpb.get(p.rps.ref_dpb_index[0] as usize)?;
+                        Some(crate::rate_control::non_base_boost(
+                            rf.is_islice,
+                            &rf.sb_intra,
+                        ))
+                    })
+                })
+                .flatten();
             base_qindex = crate::rate_control::cqp_qindex_calc(
                 i32::from(base_qindex),
                 allintra,
@@ -3307,13 +3839,20 @@ impl EncodePipeline {
                 /*is_ref=*/ pic_decision.as_ref().is_none_or(|p| p.is_ref),
                 /*idr_flag=*/ is_key,
                 temporal_layer,
-                self.gop.hierarchical_levels,
+                frame_hier,
                 self.bit_depth,
                 ld_boost,
             )
             .clamp(0, 255) as u8;
         }
         let mut picture_qp = crate::rate_control::picture_qp_from_qindex(base_qindex);
+        if std::env::var_os("SVTAV1_QTRACE").is_some() {
+            eprintln!(
+                "QTRACE display={display_order} base_qindex={base_qindex} temporal_layer={temporal_layer} hier={frame_hier} is_ref={:?} update_type={:?}",
+                pic_decision.as_ref().map(|p| p.is_ref),
+                pic_decision.as_ref().map(|p| p.update_type),
+            );
+        }
         // C's EXTENDED-CRF lambda bump (enc_mode_config.c:10109-10114): for
         // CRF 63.25..70 only — `static_config.qp == MAX_QP_VALUE (63)` with a
         // non-zero `extended_crf_qindex_offset` — the frame `lambda_weight`
@@ -3615,7 +4154,7 @@ impl EncodePipeline {
                             // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
                             // here — the `96x96 q20 p6` cell's poc4 is one.
                             frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
-                            hierarchical_levels: self.gop.hierarchical_levels,
+                            hierarchical_levels: frame_hier,
                             // C `me_process.c:214-215` — `pcs->temporal_layer_index`
                             // / `pcs->is_ref`, straight off the picture decision.
                             temporal_layer_index: pic.temporal_layer_index,
@@ -3799,7 +4338,12 @@ impl EncodePipeline {
                                 // rest come from the DPB-keyed slots, which
                                 // are populated only at the presets where
                                 // `gm_level` is non-zero.
-                                if l == 0 && r == 0 {
+                                //
+                                // Under random access (`decided.is_some()`)
+                                // `pa_ref` is the last CODED frame, not the
+                                // last DISPLAY one — (0,0) must resolve
+                                // through the slot like every other ref.
+                                if l == 0 && r == 0 && !decided_is_some {
                                     return Some(ref_plane);
                                 }
                                 let idx = if l == 0 { r } else { 4 + r };
@@ -4278,7 +4822,7 @@ impl EncodePipeline {
                 let pic_lctx = crate::port_rc_process::LambdaContext {
                     frame_type: i32::from(!is_key),
                     temporal_layer_index: temporal_layer,
-                    hierarchical_levels: self.gop.hierarchical_levels,
+                    hierarchical_levels: frame_hier,
                     update_type: md_lambda_base_update_type
                         .unwrap_or(crate::port_rc_process::FrameUpdateType::KfUpdate),
                     alt_lambda_factors: md_alt_lambda_factors,
@@ -4542,7 +5086,7 @@ impl EncodePipeline {
                 base_q_idx: base_qindex,
                 picture_qp: u32::from(pcs.qp),
                 temporal_layer_index: temporal_layer,
-                hierarchical_levels: self.gop.hierarchical_levels,
+                hierarchical_levels: frame_hier,
                 // C `ppcs->update_type` — the picture decision's
                 // `set_frame_update_type` output, which `enc_dec_cand_reduction`
                 // reads as `frame_is_leaf` (`enc_mode_config.c:4100`).
@@ -4811,7 +5355,7 @@ impl EncodePipeline {
         // walk's `av1_copy_frame_mvs` — so it is computed once here and both
         // are carried, rather than derived twice.
         let mut inter_ref_frame_side = [0i8; 8];
-        let inter_mvp_env: Option<crate::partition::InterMdEnv> =
+        let mut inter_mvp_env: Option<crate::partition::InterMdEnv> =
             inter_syntax_state.as_ref().map(|st| {
                 let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
                 let tpl_stride = (mi_cols + 1) >> 1;
@@ -4843,6 +5387,19 @@ impl EncodePipeline {
                         a[1..8].copy_from_slice(&st.ref_order_hint);
                         a
                     },
+                    // C `pcs->av1_cm->ref_frame_sign_bias[8]`
+                    // (`svt_av1_setup_frame_sign_bias`,
+                    // pd_process.c:4894-4909) — already derived into
+                    // `pic_decision` by `port_picstruct::set_ref_frame_sign_bias`
+                    // on every frame; zeroed on a key or when order hints
+                    // are off.
+                    ref_frame_sign_bias: pic_decision
+                        .as_ref()
+                        .map_or([0; 8], |p| p.ref_frame_sign_bias),
+                    // Stamped below, once the availability-filtered
+                    // `inter_ref_types` exists — C's gate reads the same
+                    // list the MVP driver iterates.
+                    symmetric_refs: false,
                     // C `av1_setup_motion_field`, run over this picture's own
                     // DPB references. On a two-frame cell every projection
                     // returns 0 — LAST is the KEY frame and C aborts on
@@ -4902,6 +5459,44 @@ impl EncodePipeline {
                             st.use_ref_frame_mvs,
                             &refs,
                         );
+                        #[cfg(feature = "std")]
+                        if let Some(path) = std::env::var_os("SVTAV1_TPL_OUT") {
+                            // Diagnostic twin of the vendored-libaom `TPL`
+                            // dump (AOM_TPL_OUT): the projected temporal-MV
+                            // field this frame's ref-MV scan consumes,
+                            // emitted in libaom's `as_int` packing
+                            // (row | col<<16) so the two can be diffed.
+                            use std::io::Write as _;
+                            if let Ok(file) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                            {
+                                let mut w = std::io::BufWriter::new(file);
+                                let mut line = alloc::string::String::with_capacity(
+                                    32 + tpl.len() * 12,
+                                );
+                                core::fmt::Write::write_fmt(
+                                    &mut line,
+                                    format_args!("TPL {} {}", st.cur_order_hint, tpl.len()),
+                                )
+                                .ok();
+                                for t in &tpl {
+                                    let c_int = (t.mfmv0.y as u16 as u32)
+                                        | ((t.mfmv0.x as u16 as u32) << 16);
+                                    core::fmt::Write::write_fmt(
+                                        &mut line,
+                                        format_args!(
+                                            " {c_int},{}",
+                                            t.ref_frame_offset as i8
+                                        ),
+                                    )
+                                    .ok();
+                                }
+                                line.push('\n');
+                                let _ = w.write_all(line.as_bytes());
+                            }
+                        }
                         #[cfg(feature = "std")]
                         if crate::dbgenv::mfmv_dbg() {
                             let mut valid = 0usize;
@@ -5029,6 +5624,21 @@ impl EncodePipeline {
                         || inter_padded_by_ref[rf[1].max(0) as usize].is_some())
             })
             .collect();
+        // C `pcs->av1_cm->symteric_refs` (adaptive_mv_pred.c's
+        // `svt_aom_generate_av1_mvp_table` gate :1338-1347): a RA B picture
+        // above temporal layer 0 whose ENTIRE ref list is
+        // {LAST, BWDREF, LAST_BWD} reuses the LAST pass's projected MV as
+        // the BWD pass's, negated. The gate reads the same
+        // `ref_frame_type_arr` the driver iterates — the filtered list —
+        // and lands on the env so both the MD stacks and the entropy-side
+        // `inter_mvp_fields` rebuild see it.
+        if let (Some(env), Some(pic)) = (inter_mvp_env.as_mut(), pic_decision.as_ref()) {
+            env.symmetric_refs = crate::inter_mvp::symmetric_refs_gate(
+                pic.temporal_layer_index,
+                self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess,
+                &inter_ref_types,
+            );
+        }
         #[cfg(feature = "std")]
         if crate::dbgenv::rpsdbg()
             && let Some(pic) = pic_decision.as_ref()
@@ -5320,7 +5930,7 @@ impl EncodePipeline {
                 let lctx = crate::port_rc_process::LambdaContext {
                     frame_type: 1, // not KEY_FRAME
                     temporal_layer_index: temporal_layer,
-                    hierarchical_levels: self.gop.hierarchical_levels,
+                    hierarchical_levels: frame_hier,
                     update_type: imf.base_update_type,
                     alt_lambda_factors: md_alt_lambda_factors,
                     rtc: false,
@@ -5725,7 +6335,7 @@ impl EncodePipeline {
             lambda,
             &self.speed_config,
             ref_frame_data,
-            crate::port_picstruct::is_highest_layer(temporal_layer, self.gop.hierarchical_levels),
+            crate::port_picstruct::is_highest_layer(temporal_layer, frame_hier),
             temporal_layer,
             // The padded twin of the plane above, from the SAME DPB slot.
             ref_padded_luma,
@@ -7008,10 +7618,8 @@ impl EncodePipeline {
         // 6 at <= M9. Both are ENABLED levels; the port used to signal 0.
         let dlf_temporal_layer_index: u8 = temporal_layer;
         let dlf_is_base = dlf_temporal_layer_index == 0;
-        let dlf_is_highest_layer = crate::port_picstruct::is_highest_layer(
-            dlf_temporal_layer_index,
-            self.gop.hierarchical_levels,
-        );
+        let dlf_is_highest_layer =
+            crate::port_picstruct::is_highest_layer(dlf_temporal_layer_index, frame_hier);
         let dlf_is_not_last_layer = u8::from(!dlf_is_highest_layer);
 
         // IBC (chunk 1): C kills the deblock filter at SIGNAL-DERIVATION on
@@ -7157,7 +7765,7 @@ impl EncodePipeline {
             frame_is_leaf: pic_decision
                 .as_ref()
                 .is_some_and(|pic| pic.update_type == crate::port_picstruct::FrameUpdateType::Lf),
-            hierarchical_levels: self.gop.hierarchical_levels,
+            hierarchical_levels: frame_hier,
             temporal_layer_index: dlf_temporal_layer_index,
             input_resolution: dlf_resolution,
             refs: &dlf_refs,
@@ -7557,7 +8165,7 @@ impl EncodePipeline {
             && (crate::port_enc_mode_config::cdef_search::me_based_cdef_skip(
                 &crate::port_enc_mode_config::cdef_search::CdefMeSkipInputs {
                     is_intra_slice: is_key,
-                    hierarchical_levels: self.gop.hierarchical_levels,
+                    hierarchical_levels: frame_hier,
                     temporal_layer_index: dlf_temporal_layer_index,
                     frame_is_boosted: cdef_frame_is_boosted,
                     frame_is_leaf: !cdef_is_not_highest_layer,
@@ -9000,14 +9608,18 @@ impl EncodePipeline {
 
         if self.recon_output {
             // Output-only replay must not alter the DPB or later frame decisions.
-            self.last_recon = Some(match out8 {
+            self.last_recon_display_order = Some(display_order);
+            let rec_planes = match out8 {
                 // Under superres `out8` already holds the upscaled planes of
                 // whichever canvas a decoder displays (replayed filters when
                 // they ran, search recon otherwise).
                 Some(planes) => planes,
                 None => decoder_output8
                     .unwrap_or_else(|| (recon.clone(), u_recon.clone(), v_recon.clone())),
-            });
+            };
+            self.recon_frames
+                .push_back((display_order, rec_planes.clone()));
+            self.last_recon = Some(rec_planes);
             // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all
             // applied to the 10-bit canvas), normatively upscaled to the
             // output geometry under superres (`out10`); the coded canvas is
@@ -9304,6 +9916,45 @@ impl EncodePipeline {
             // low-delay frame.
             temporal_layer,
         };
+        #[cfg(feature = "std")]
+        if let Some(path) = std::env::var_os("SVTAV1_MVS_OUT") {
+            // Diagnostic twin of the vendored-libaom `MVS` dump: the stored
+            // per-8x8 motion field plus the saved ref_order_hint array, so a
+            // field-by-field diff can separate "stored state diverged" from
+            // "projection consumed it differently".
+            use std::io::Write as _;
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let mut w = std::io::BufWriter::new(file);
+                let mut line = alloc::string::String::with_capacity(32 + ref_frame.mvs.len() * 14);
+                core::fmt::Write::write_fmt(
+                    &mut line,
+                    format_args!("MVS {} {}", ref_frame.order_hint, ref_frame.mvs.len()),
+                )
+                .ok();
+                for m in &ref_frame.mvs {
+                    core::fmt::Write::write_fmt(
+                        &mut line,
+                        format_args!(" {},{}", m.ref_frame, m.mv.as_int()),
+                    )
+                    .ok();
+                }
+                line.push('\n');
+                core::fmt::Write::write_fmt(
+                    &mut line,
+                    format_args!("MVSROH {}", ref_frame.order_hint),
+                )
+                .ok();
+                for oh in ref_frame.ref_order_hint {
+                    core::fmt::Write::write_fmt(&mut line, format_args!(" {oh}")).ok();
+                }
+                line.push('\n');
+                let _ = w.write_all(line.as_bytes());
+            }
+        }
         #[cfg(feature = "std")]
         if crate::dbgenv::mfmv_dbg() {
             let mut named = 0usize;
@@ -10335,8 +10986,40 @@ impl EntropyCtx {
             .for_block(env.sb_mi_size as usize * 4, w, h);
         let gm_mv =
             crate::inter_mvp::gm_mv_candidates_for(&mvp_env, ref_frame_type, bsize, mi_col, mi_row);
-        let stack =
-            crate::inter_mvp::setup_ref_mv_list(&grid, &ctx, &mvp_env, ref_frame_type, gm_mv);
+        // C's `symteric_refs` shortcut has the BWDREF / LAST_BWD passes READ
+        // `mv_ref0` slots the LAST_FRAME pass wrote — inside ONE
+        // `svt_aom_generate_av1_mvp_table` call sharing the scratch across
+        // its ref loop. Rebuilding a single ref's stack here with a zeroed
+        // scratch would read `-0` where C (and the decoder) read the LAST
+        // projection, so seed it with a LAST pass first exactly as the
+        // driver does. LAST_FRAME is always in the list when the gate
+        // fired ({LAST, BWDREF, LAST_BWD}).
+        let stack = if mvp_env.symmetric_refs && ref_frame_type != crate::inter_mvp::LAST_FRAME {
+            let gm_last = crate::inter_mvp::gm_mv_candidates_for(
+                &mvp_env,
+                crate::inter_mvp::LAST_FRAME,
+                bsize,
+                mi_col,
+                mi_row,
+            );
+            let last = crate::inter_mvp::setup_ref_mv_list(
+                &grid,
+                &ctx,
+                &mvp_env,
+                crate::inter_mvp::LAST_FRAME,
+                gm_last,
+            );
+            crate::inter_mvp::setup_ref_mv_list_seeded(
+                &grid,
+                &ctx,
+                &mvp_env,
+                ref_frame_type,
+                gm_mv,
+                last.mv_ref0,
+            )
+        } else {
+            crate::inter_mvp::setup_ref_mv_list(&grid, &ctx, &mvp_env, ref_frame_type, gm_mv)
+        };
         let pred = crate::inter_mvp::get_av1_mv_pred_drl(
             &stack,
             d.ref_frame[1] > 0,
@@ -17474,7 +18157,7 @@ mod tests {
             for width in [262_208, 262_272, 524_288] {
                 let mut p = EncodePipeline::new(width, 64, 8, RcConfig::default(), 0, 1)
                     .with_sb_size(Some(sb as usize));
-                let e = p.encode_frame_impl(&[], 0, None).unwrap_err();
+                let e = p.encode_frame_impl(&[], 0, None, None).unwrap_err();
                 assert!(matches!(e.error(), EncodeError::InvalidDimensions { .. }));
                 assert!(e.to_string().contains("262144"), "{e}");
             }
@@ -19397,6 +20080,8 @@ mod inter_decision_probe {
             },
             cur_order_hint: 1,
             ref_order_hint: [0; 8],
+            ref_frame_sign_bias: [0; 8],
+            symmetric_refs: false,
             tpl_mvs: vec![
                 crate::inter_mvp::TplMvRef::default();
                 (((mi_rows + 32) >> 1) * tpl_stride) as usize
