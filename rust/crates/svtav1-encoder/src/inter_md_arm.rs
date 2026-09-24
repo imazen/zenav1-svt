@@ -1160,15 +1160,92 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
         cand.use_wedge_interintra = ii_wedge_mode == 1 || best_rd_wedge < best_rd;
     }
 
-    /// `svt_aom_wm_motion_refinement` at INJECTION time. Unreachable on this
-    /// arm: `wm_ctrls.enabled` is forced false whenever `refine_level == 0`,
-    /// which is the only condition under which the injector calls this.
-    /// Returning `true` here would inject an UNREFINED warp candidate — one C
-    /// never evaluates — so it says so instead.
-    fn wm_motion_refinement(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) -> bool {
-        unreachable!(
-            "injection-time warp MV refinement is not wired; `wm_ctrls.enabled` is              forced false when `refine_level == 0`, which is the only path that calls this"
-        )
+    /// C `svt_aom_wm_motion_refinement` (mode_decision.c:1873-2011) at
+    /// INJECTION time — `inj_non_simple_modes` calls it only for `NEWMV`
+    /// clones when `refinement_iterations != 0 && refine_level == 0`
+    /// (wm_level 1). The same diamond search the MDS1 lane drives through
+    /// [`crate::port_md::mv_refine::wm_motion_refinement`], differing in two
+    /// inputs C passes literally at this call site (mode_decision.c:925):
+    /// `shut_approx` is 0 (the band gate is live, though level 1's band is
+    /// 0/~0) and the rate reference is the candidate's injection-time
+    /// `pred_mv`.
+    fn wm_motion_refinement(&mut self, cand: &mut crate::port_md::inject::InterCandidate) -> bool {
+        let blk = self.blk;
+        let f = self.f;
+        let b = self.b;
+        let rf = cand.ref_frame[0].max(0) as usize;
+        let stack = &blk.stacks[rf];
+        // C `error_per_bit = full_lambda_md[EB_8_BIT_MD] >> RD_EPB_SHIFT`
+        // with the `+= (x == 0)` MAX(1) (mode_decision.c:1884-1886).
+        let epb = (b.full_lambda8 >> crate::intrabc::RD_EPB_SHIFT) as i32;
+        let refine_ctx = crate::port_md::mv_refine::WmRefineCtx {
+            refinement_iterations: blk.refinement_iterations,
+            refine_diag: blk.refine_diag,
+            allow_high_precision_mv: f.allow_high_precision_mv,
+            approx_inter_rate: f.search.approx_inter_rate,
+            corrupted_mv_check: true,
+            error_per_bit: epb + i32::from(epb == 0),
+            drl: crate::port_md::drl::ChooseDrlCtx {
+                shut_fast_rate: false,
+                approx_inter_rate: f.search.approx_inter_rate,
+                ref_mv_stack: &stack.stack,
+                ref_mv_count: blk.ref_mv_count[rf],
+                nmv_cost: &f.nmv,
+                drl_mode_fac_bits: &f.fac.drl_mode,
+            },
+        };
+        let (bw, bh) = (b.bw, b.bh);
+        // C `ctx->scratch_prediction_ptr` — luma only; the candidate's own
+        // prediction is untouched until a winner exists.
+        let mut scratch = crate::vecpool::dirty_pool::<u8>(bw * bh);
+        let padded = f.padded_by_ref[rf]
+            .unwrap_or_else(|| panic!("warp-refined candidate names ref {rf} with no DPB picture"));
+        let src_off = b.org_y * f.src_stride + b.org_x;
+        let mut wm = svtav1_types::motion::WarpedMotionParams::default();
+        let r = crate::port_md::mv_refine::wm_motion_refinement(
+            &refine_ctx,
+            cand.mv[0],
+            cand.pred_mv[0],
+            cand.mode,
+            |test_mv| {
+                wm = svtav1_types::motion::WarpedMotionParams {
+                    wm_type: svtav1_types::motion::TransformationType::Affine,
+                    ..Default::default()
+                };
+                // `shut_approx` is a literal 0 at C's injection call
+                // (mode_decision.c:925) — the band gate is live.
+                blk.warp_params_for(cand.ref_frame[0], test_mv, false, &mut wm)?;
+                unipred_luma8(
+                    &padded.y,
+                    wm,
+                    true,
+                    b.org_x,
+                    b.org_y,
+                    bw,
+                    bh,
+                    test_mv,
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    &mut scratch,
+                );
+                // C `fn_ptr->vf(pred, src, &sse)` — variance, not SSE.
+                Some(svtav1_dsp::variance::variance_diff(
+                    &scratch,
+                    bw,
+                    &f.src[src_off..],
+                    f.src_stride,
+                    bw,
+                    bh,
+                ) as i32)
+            },
+        );
+        cand.mv[0] = r.best_mv;
+        cand.drl_index = r.drl_index;
+        // C copies back `best_pred_mv[0]` only (mode_decision.c:2000) —
+        // `pred_mv[1]` keeps whatever the cloned simple candidate carried.
+        cand.pred_mv[0] = r.pred_mv[0];
+        r.valid
     }
 
     /// C `svt_aom_warped_motion_parameters` (adaptive_mv_pred.c:1776).
@@ -1815,13 +1892,13 @@ pub fn build_inter_candidates(
     // predicts (`wm_level` is 3 at M6 and 0 at M8 for a flat GOP at <= 720p).
     let wmc = crate::port_enc_mode_config::ctrls::set_wm_controls(f.wm_level)
         .expect("set_wm_controls answers None only for a level outside C's switch");
-    // `refine_level == 0` means C refines the MV AT INJECTION
-    // (`svt_aom_wm_motion_refinement` inside `inj_non_simple_modes`), which is
-    // wm_level 1, i.e. presets M0..M1. That refinement is NOT wired, so this
-    // arm keeps those presets at their previous behaviour -- no warp candidate
-    // -- rather than injecting an UNREFINED one, which would be a candidate C
-    // never evaluates and would move bytes with nothing saying so.
-    let wm_injection_wired = wmc.enabled != 0 && wmc.refine_level != 0;
+    // `refine_level == 0` (wm_level 1) means C refines the MV AT INJECTION
+    // (`svt_aom_wm_motion_refinement` inside `inj_non_simple_modes`), but ONLY
+    // on `NEWMV` clones (mode_decision.c:924-926) — non-NEWMV clones skip the
+    // refinement and go straight to `svt_aom_warped_motion_parameters`. The
+    // refinement is wired (`port_md::mv_refine::wm_motion_refinement`), so the
+    // controls reach the injector unmodified at every level.
+    let wm_enabled = wmc.enabled != 0;
     // C `ctx->cand_reduction_ctrls` — the light lane reads the per-SB
     // `sig.cand_reduction` (its `cand_reduction_level` is raised above the
     // picture's), the regular lane the picture-level row.
@@ -1926,8 +2003,8 @@ pub fn build_inter_candidates(
         })
         .unwrap_or_default(),
         wm_ctrls: WmCtrls {
-            enabled: wm_injection_wired,
-            use_wm_for_mvp: wm_injection_wired && wmc.use_wm_for_mvp != 0,
+            enabled: wm_enabled,
+            use_wm_for_mvp: wm_enabled && wmc.use_wm_for_mvp != 0,
             refinement_iterations: wmc.refinement_iterations,
             refine_level: wmc.refine_level,
         },
@@ -1997,7 +2074,7 @@ pub fn build_inter_candidates(
     // funnel having to know why.
     *warp_out = WarpRefineBlock {
         mvp_stacks: core::mem::take(&mut warp_out.mvp_stacks),
-        enabled: wm_injection_wired,
+        enabled: wm_enabled,
         refinement_iterations: wmc.refinement_iterations,
         refine_diag: wmc.refine_diag != 0,
         shut_approx_if_not_mds0: wmc.shut_approx_if_not_mds0 != 0,
