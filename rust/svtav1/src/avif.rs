@@ -25,14 +25,14 @@
 pub mod animation;
 
 pub use crate::policy::{Effort, EncodingPolicy, ResolvedStillPolicy, StillSuitability};
-/// Explicit, uncalibrated Zen experiments for the region beyond native −1.
-pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
-/// Pinned C source identity, separate from speed and policy.
-pub use svtav1_encoder::reference::SvtReference;
 /// `__expert`: fixed per-plane chroma delta-q; see
 /// [`AvifEncoder::with_chroma_q_override`].
 #[cfg(feature = "__expert")]
 pub use svtav1_encoder::chroma_q::ChromaQOverride;
+/// Explicit, uncalibrated Zen experiments for the region beyond native −1.
+pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
+/// Pinned C source identity, separate from speed and policy.
+pub use svtav1_encoder::reference::SvtReference;
 /// Checked C preset domain, including research -1.
 pub use svtav1_encoder::speed_config::NativePreset;
 /// C `--tune` bundles (`--tune 0..4`) for the still/allintra path.

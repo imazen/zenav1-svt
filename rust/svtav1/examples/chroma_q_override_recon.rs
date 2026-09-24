@@ -55,7 +55,11 @@ fn gen_chroma(w: usize, h: usize) -> (Vec<u8>, Vec<u8>) {
     let mut v = vec![0u8; cw * ch];
     for r in 0..ch {
         for c in 0..cw {
-            let edge = if (c / 12 + r / 16).is_multiple_of(2) { 36 } else { 0 };
+            let edge = if (c / 12 + r / 16).is_multiple_of(2) {
+                36
+            } else {
+                0
+            };
             u[r * cw + c] = (64 + (r * 96) / ch.max(1) + edge) as u8;
             v[r * cw + c] = (200 - (c * 110) / cw.max(1) - edge / 2) as u8;
         }
@@ -104,7 +108,11 @@ type Recon = (Vec<u8>, Vec<u8>, Vec<u8>);
 /// Compare a decoder's I420 output with the encoder recon; `None` = equal.
 fn recon_diff(tag: &str, dec: &Recon, enc: &Recon) -> Option<String> {
     let mut out = Vec::new();
-    for (plane, d, e) in [("Y", &dec.0, &enc.0), ("U", &dec.1, &enc.1), ("V", &dec.2, &enc.2)] {
+    for (plane, d, e) in [
+        ("Y", &dec.0, &enc.0),
+        ("U", &dec.1, &enc.1),
+        ("V", &dec.2, &enc.2),
+    ] {
         if d.len() != e.len() {
             out.push(format!("{tag} {plane} len dec={} enc={}", d.len(), e.len()));
         } else if d != e {
@@ -299,7 +307,14 @@ fn main() {
     println!(
         "anti-vacuity (sum over mode-0 cells, mse U/V): none {:.1}/{:.1}  \
          +32/+32 {:.1}/{:.1}  U+48 {:.1}/{:.1}  V+48 {:.1}/{:.1}",
-        base_mse[0], base_mse[1], both_mse[0], both_mse[1], u_only[0], u_only[1], v_only[0], v_only[1]
+        base_mse[0],
+        base_mse[1],
+        both_mse[0],
+        both_mse[1],
+        u_only[0],
+        u_only[1],
+        v_only[0],
+        v_only[1]
     );
     let live = both_mse[0] > base_mse[0]
         && both_mse[1] > base_mse[1]
