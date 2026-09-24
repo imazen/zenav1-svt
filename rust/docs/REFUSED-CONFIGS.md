@@ -4,7 +4,7 @@
 
 **11 CAPABILITY refusals** (unimplemented — this is DEBT) and **67
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **10** name a configuration C v4.2.0 actually encodes — the
+refusals, **9** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -50,7 +50,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a model it could not code. This refusal is RETIRED — `port_entropy_inter::gm:: write_global_motion` codes the frame's real models — and reaching it means a caller constructed the variant by hand |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres on an INTER frame is not implemented: stills are the measured surface and the reference-geometry signaling under a changing coded width is decoder-ungated (C accepts it — this is a port capability gap, not a C envelope) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
+| `crates/svtav1-encoder/src/pipeline.rs` | logs the same config as an error | this GOP shape's reference structure is not implemented: every top-level branch of C's av1_generate_rps_info is translated, so this is a case C itself rejects — LD-CBR outside hierarchical levels 1-2, or a mini-GOP position outside the ported tables |
 
 ## CONTRACT — caller misuse (permanent, correct)
 

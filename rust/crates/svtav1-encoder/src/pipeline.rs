@@ -880,8 +880,11 @@ impl EncodePipeline {
         pp::picture_decision_per_picture(&mut pic, &seq, &mut self.pd_ctx, pic_idx, 0).map_err(
             |_| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "this GOP shape's reference structure is not implemented \
-                     (port_picstruct::generate_rps_info translates 4 of C's 8 branches) [C: accepts]",
+                    "this GOP shape's reference structure is not implemented: every \
+                     top-level branch of C's av1_generate_rps_info is translated, so \
+                     this is a case C itself rejects — LD-CBR outside hierarchical \
+                     levels 1-2, or a mini-GOP position outside the ported tables \
+                     [C: logs the same config as an error]",
                 ))
             },
         )?;
@@ -1476,9 +1479,11 @@ impl EncodePipeline {
                 )
                 .map_err(|_| {
                     whereat::at!(EncodeError::UnsupportedConfig(
-                        "this GOP shape's reference structure is not implemented \
-                         (port_picstruct::generate_rps_info translates 4 of C's 8 \
-                         branches) [C: accepts]",
+                        "this GOP shape's reference structure is not implemented: every \
+                         top-level branch of C's av1_generate_rps_info is translated, \
+                         so this is a case C itself rejects — LD-CBR outside \
+                         hierarchical levels 1-2, or a mini-GOP position outside \
+                         the ported tables [C: logs the same config as an error]",
                     ))
                 })?;
                 emit.push(pic_idx);

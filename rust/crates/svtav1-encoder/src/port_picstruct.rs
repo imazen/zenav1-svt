@@ -1598,27 +1598,31 @@ impl std::error::Error for RpsError {}
 /// has no DPB slot mapping and no refresh mask, so `ref_frame_idx[]` and
 /// `refresh_frame_flags` in every inter frame header are invented.
 ///
-/// **Coverage — 4 of the 8 top-level branches are translated here.**
-/// Translated: the RTC flat branch (`rtc && hierarchical_levels == 0`), the
-/// low-delay CQP/CRF branch, the low-delay CBR branch (hierarchical levels 1
-/// and 2, the only two LD CBR supports), and the random-access flat branch
-/// (`hierarchical_levels == 0`). NOT translated, and refused rather than
-/// guessed: the random-access hierarchical branches at `hierarchical_levels`
-/// 1, 2, 3, 4 and 5 (`pd_process.c:2270-3483`, ~1200 lines of per-layer
-/// per-position tables). Those are needed for random access, not for the
-/// campaign's first cell (low-delay P, flat, CQP).
+/// **Coverage — all 9 of C's top-level branches are translated.**
+/// `pd_process.c:1954-3483` splits on: RTC flat
+/// (`rtc && hierarchical_levels == 0`), low-delay CQP/CRF, low-delay CBR
+/// (hierarchical levels 1 and 2 — C's own ceiling; it logs
+/// "Error in MG indexing" elsewhere), flat RA (`hierarchical_levels == 0`),
+/// and one branch per RA hierarchical level 1..=5 — the last five delegated
+/// to [`crate::port_picstruct_ra`], including the
+/// `pred_struct_ptr->pred_type != RANDOM_ACCESS` cut-short arms inside them.
+/// A `LOW_DELAY` sequence under VBR falls through C's rate-control tests
+/// into the hierarchical branches exactly as it does here. The residual
+/// error surface is therefore the same shapes C rejects: LD-CBR outside
+/// levels 1-2 and mini-GOP positions outside the ported tables.
 ///
-/// Not translated at all, in any branch, because they are outside the port's
-/// envelope: the S-frame paths (`set_sframe_type`, `set_sframe_rps`,
+/// The S-frame paths (`set_sframe_type`, `set_sframe_rps`,
 /// `decide_sframe_mg`) and the app-driven reference-management events
-/// (`apply_ref_mgmt_events`, which can mask `refresh_frame_mask` bits held by
-/// a STORE). Both are no-ops when no S-frame and no STORE/CLEAR/USE event is
-/// pending, which is every configuration this port encodes.
+/// (`apply_ref_mgmt_events`, which can mask `refresh_frame_mask` bits held
+/// by a STORE) are translated too — threaded through
+/// [`generate_rps_info_sframe`]'s optional hooks so the no-S-frame,
+/// no-queued-event configuration this port encodes reduces to C's no-ops.
 ///
 /// # Errors
 ///
-/// Returns [`RpsError`] for a branch this port does not translate, or for a
-/// mini-GOP position the branch's table does not cover.
+/// Returns [`RpsError`] for a shape C itself logs as an error (LD-CBR
+/// outside hierarchical levels 1-2, or a mini-GOP position outside the
+/// ported tables).
 pub fn generate_rps_info(
     pic: &mut PicParams,
     seq: &SeqPicParams,
