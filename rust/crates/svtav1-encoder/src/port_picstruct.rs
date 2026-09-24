@@ -671,6 +671,15 @@ pub struct PicParams {
     pub ref_list0_count_try: u8,
     /// C `pcs->ref_list1_count_try`.
     pub ref_list1_count_try: u8,
+    /// C `pcs->avg_luma` — the input's 1/16-plane mean, `INVALID_LUMA` when
+    /// `calc_hist` is off (`pic_analysis_process.c:628`). Stamped by the
+    /// caller before [`picture_decision_per_picture`]; `send_picture_out`'s
+    /// `get_similar_ref_brightness` compares it against the references'.
+    pub avg_luma: u64,
+    /// C `pcs->similar_brightness_refs` — stamped by `send_picture_out`
+    /// (`pd_process.c:4305`), read by `motion_estimation.c:2231`'s
+    /// safe-limit ME prune.
+    pub similar_brightness_refs: bool,
     /// C `pcs->ref_order_hint[7]` — the written frame-header field.
     pub ref_order_hint: [u32; INTER_REFS_PER_FRAME],
     /// C `pcs->cur_order_hint`.
@@ -776,6 +785,8 @@ impl Default for PicParams {
             ref_list1_count: 0,
             ref_list0_count_try: 0,
             ref_list1_count_try: 0,
+            avg_luma: INVALID_LUMA,
+            similar_brightness_refs: false,
             ref_order_hint: [0; INTER_REFS_PER_FRAME],
             cur_order_hint: 0,
             show_frame: true,
@@ -2162,7 +2173,20 @@ fn rps_random_access_flat(
 /// — the array is indexed by `REF_FRAME_MINUS1` (0..6), while
 /// [`set_ref_frame_sign_bias`] indexes the SAME data by `MvReferenceFrame`
 /// (1..7). Getting the two off by one silently mis-signs every temporal MV.
-pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicDecisionCtx) {
+///
+/// `pa_luma` resolves a reference's PA `avg_luma` — C's
+/// `ref_pa_pic_ptr_array[list][ref]->avg_luma`, which `send_picture_out`'s
+/// `get_similar_ref_brightness` reads after `assign_and_release_pa_refs`.
+/// The caller passes its own poc/slot→PA resolution so the same
+/// in-window/DPB origins are used for ME refs and this lookup. Return
+/// [`INVALID_LUMA`] for a reference that cannot be resolved — C's check is
+/// `!= INVALID_LUMA`, so an unresolvable reference disables the test.
+pub fn init_pic_settings(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pa_luma: &dyn Fn(u64, usize) -> u64,
+) {
     pic.allow_comp_inter_inter = pic.slice_type != SliceType::I;
     pic.reference_mode = if pic.slice_type == SliceType::I {
         ReferenceMode::IntraSentinel
@@ -2210,20 +2234,6 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
 
     update_count_try(pic, seq);
 
-    #[cfg(feature = "std")]
-    if crate::dbgenv::rpsdbg() {
-        eprintln!(
-            "RPSDBG poc={} l0c={} l1c={} l0t={} l1t={} dpb={:?} pocs={:?}",
-            pic.picture_number,
-            pic.ref_list0_count,
-            pic.ref_list1_count,
-            pic.ref_list0_count_try,
-            pic.ref_list1_count_try,
-            pic.rps.ref_dpb_index,
-            pic.rps.ref_poc_array,
-        );
-    }
-
     if ctx.transition_detected == 1 && pic.temporal_layer_index == 0 {
         pic.transition_present = 1;
         ctx.transition_detected = 0;
@@ -2244,14 +2254,51 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
     pic.tot_ref_frame_types = tot;
 
     // C `send_picture_out` (`pd_process.c:5132`) runs the reference-count
-    // prunes at the END of pd_process, after `set_all_ref_frame_type`.
+    // prunes at the END of pd_process, after `set_all_ref_frame_type` and
+    // after `assign_and_release_pa_refs` has resolved this picture's PA
+    // reference objects. `get_similar_ref_brightness` (`:4251`) reads the
+    // FIRST PA reference of each list — `ref_pa_pic_ptr_array[list][0]`,
+    // the object for `ref_poc_array[LAST]` / `ref_poc_array[BWD]` — so
+    // `pa_luma` resolves the same (poc, dpb_slot) pair the caller's own
+    // `ref_pa_pic_ptr_array` resolution uses.
+    pic.similar_brightness_refs = get_similar_ref_brightness(
+        pic.slice_type,
+        pic.hierarchical_levels,
+        pic.ref_list1_count_try,
+        pa_luma(
+            pic.rps.ref_poc_array[LAST],
+            usize::from(pic.rps.ref_dpb_index[LAST]),
+        ),
+        pa_luma(
+            pic.rps.ref_poc_array[BWD],
+            usize::from(pic.rps.ref_dpb_index[BWD]),
+        ),
+        pic.avg_luma,
+    );
     // `hme_dist` is `None`: the RTC early-HME prune needs
     // `mrp_detector_hme_level0` on downsampled refs, and `seq.rtc` is never
-    // set here anyway. `similar_brightness_refs` is `false`: the
-    // `avg_luma` fields it compares are not carried on the port's PA
-    // pictures, and its only gate (`safe_limit_nref == 2 && hier > 0 &&
-    // leaf`) cannot fire on the flat GOP this drives.
-    send_picture_out_ref_counts(pic, seq, None, false);
+    // set here anyway.
+    send_picture_out_ref_counts(pic, seq, None, pic.similar_brightness_refs);
+
+    #[cfg(feature = "std")]
+    if crate::dbgenv::rpsdbg() {
+        eprintln!(
+            "RPSDBG poc={} l0c={} l1c={} l0t={} l1t={} sim={} sln={} l0only={} avg={} tl={} hl={} dpb={:?} pocs={:?}",
+            pic.picture_number,
+            pic.ref_list0_count,
+            pic.ref_list1_count,
+            pic.ref_list0_count_try,
+            pic.ref_list1_count_try,
+            u8::from(pic.similar_brightness_refs),
+            seq.mrp_ctrls.safe_limit_nref,
+            u8::from(ctx.list0_only),
+            pic.avg_luma,
+            pic.temporal_layer_index,
+            pic.hierarchical_levels,
+            pic.rps.ref_dpb_index,
+            pic.rps.ref_poc_array,
+        );
+    }
 }
 
 /// C `MI_SIZE_LOG2`.
@@ -2286,6 +2333,7 @@ pub fn picture_decision_per_picture(
     ctx: &mut PicDecisionCtx,
     pic_idx: u32,
     mg_idx: usize,
+    pa_luma: &dyn Fn(u64, usize) -> u64,
 ) -> Result<(), RpsError> {
     set_gf_group_param(pic);
     generate_rps_info(pic, seq, ctx, pic_idx, mg_idx)?;
@@ -2293,7 +2341,7 @@ pub fn picture_decision_per_picture(
     // see [`PicParams::ref_queue_dpb`].
     pic.ref_queue_dpb = ctx.dpb;
     update_dpb(pic, ctx);
-    init_pic_settings(pic, seq, ctx);
+    init_pic_settings(pic, seq, ctx, pa_luma);
     Ok(())
 }
 

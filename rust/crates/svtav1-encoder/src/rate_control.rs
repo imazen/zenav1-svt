@@ -173,6 +173,14 @@ pub const QUANTIZER_TO_QINDEX: [u8; 64] = [
     192, 196, 200, 204, 208, 212, 216, 220, 224, 228, 232, 236, 240, 244, 249, 255,
 ];
 
+/// C `svt_av1_qp_scale_compress_weight` (rc_process.c:48) — the MAINLINE
+/// `SVT_QP_SCALE_WEIGHT` table (definitions.h:252), indexed by the uint8
+/// `qp_scale_compress_strength` knob. The svt-av1-hdr fork replaces it
+/// with `1.000 + strength * 0.125` on a `double` field
+/// (definitions.h:249, under `SVT_HDR_MODE`) — callers pick the arm on
+/// `hdr.is_fork()`.
+pub const QP_SCALE_COMPRESS_WEIGHT: [f64; 4] = [1.0, 1.125, 1.25, 1.375];
+
 /// Convert a CLI-domain QP (0..63, C `--qp` semantics) to the AV1 qindex
 /// (0..255) via [`QUANTIZER_TO_QINDEX`]. Inputs > 63 are clamped to 63
 /// (the CLI boundary clamp — the only place the 0..63 range is enforced).
@@ -605,7 +613,9 @@ pub struct CrfQindexOutput {
 pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
     use crate::port_rc_process as p;
     let cq_level = qindex;
-    let mut active_best_quality: i32 = 0;
+    // C declares `int32_t active_best_quality` uninitialized; both dispatch
+    // arms assign it before use, so it needs no dead initializer here.
+    let mut active_best_quality: i32;
     let mut active_worst_quality: i32 = qindex;
     let temporal_layer = i.temporal_layer_index;
     let hierarchical_levels = i.hierarchical_levels as usize;
@@ -642,8 +652,7 @@ pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
             r0 /= i.r0_adjust_factor;
             r0 /= p::TPL_HL_BASE_FRAME_DIV_FACTOR[hierarchical_levels];
         }
-        let num_stats_required_for_gfu_boost =
-            i.tpl_group_size + (1u32 << hierarchical_levels);
+        let num_stats_required_for_gfu_boost = i.tpl_group_size + (1u32 << hierarchical_levels);
         let mut min_boost_factor = (1f64) * f64::from(1u32 << (hierarchical_levels >> 1));
         if hierarchical_levels & 1 != 0 {
             min_boost_factor *= core::f64::consts::SQRT_2;
@@ -660,18 +669,27 @@ pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
         let r0_weight_idx = usize::from(!i.is_intra_only) + usize::from(temporal_layer != 0);
         debug_assert!(r0_weight_idx <= 2);
         let mut weight = p::R0_WEIGHT[r0_weight_idx];
-        if i.scs_lad_mg
-            && !i.is_intra_only
-            && i.tpl_group_size < (2u32 << hierarchical_levels)
-        {
+        if i.scs_lad_mg && !i.is_intra_only && i.tpl_group_size < (2u32 << hierarchical_levels) {
             weight = (weight + 0.1).min(1.0);
         }
         let mut qstep_ratio = r0.sqrt() * weight * i.qp_scale_weight;
         if i.qp_scale_on {
             qstep_ratio = weight.min(qstep_ratio);
         }
-        let qindex_from_qstep_ratio =
-            q_index_from_qstep_ratio(qindex, qstep_ratio, bit_depth);
+        let qindex_from_qstep_ratio = q_index_from_qstep_ratio(qindex, qstep_ratio, bit_depth);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_TPLDBG").is_some() {
+            std::eprintln!(
+                "TPLDBG intra={} tl={} r0={} weight={} qstep_ratio={} qstep_q={} qindex={}",
+                i.is_intra_only,
+                temporal_layer,
+                r0,
+                weight,
+                qstep_ratio,
+                qindex_from_qstep_ratio,
+                qindex,
+            );
+        }
         if !i.is_intra_only {
             arf_q = qindex_from_qstep_ratio;
         }
@@ -697,10 +715,8 @@ pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
                 debug_assert!(tmp_layer_delta >= 0);
                 while tmp_layer_delta != 0 {
                     tmp_layer_delta -= 1;
-                    active_best_quality = (w1 * active_best_quality
-                        + (w2 * cq_level)
-                        + ((w1 + w2) / 2))
-                        / (w1 + w2);
+                    active_best_quality =
+                        (w1 * active_best_quality + (w2 * cq_level) + ((w1 + w2) / 2)) / (w1 + w2);
                 }
             }
         }

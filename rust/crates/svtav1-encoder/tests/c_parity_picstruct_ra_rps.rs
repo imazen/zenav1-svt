@@ -573,10 +573,21 @@ fn c_parity_ra_reference_structure() {
                         slots.resolve_row(row)
                     });
 
-                    pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, pic_idx, 0)
-                        .unwrap_or_else(|e| {
-                            panic!("HL{hier} POC {poc} (pic_idx {pic_idx}, TL{tl}): {e}")
-                        });
+                    pp::picture_decision_per_picture(
+                        &mut pic,
+                        &seq,
+                        &mut ctx,
+                        pic_idx,
+                        0,
+                        // The test models no PA objects: `INVALID_LUMA` for
+                        // every reference, so `get_similar_ref_brightness`
+                        // can never fire — matching the C driver harness,
+                        // whose `avg_luma` stays INVALID without `calc_hist`.
+                        &|_, _| pp::INVALID_LUMA,
+                    )
+                    .unwrap_or_else(|e| {
+                        panic!("HL{hier} POC {poc} (pic_idx {pic_idx}, TL{tl}): {e}")
+                    });
 
                     assert_eq!(
                         pic.rps.refresh_frame_mask, refresh_frame_flags,

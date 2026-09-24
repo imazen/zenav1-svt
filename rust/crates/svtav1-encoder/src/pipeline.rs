@@ -60,6 +60,37 @@ struct PendingKey {
     pic: crate::port_picstruct::PicParams,
 }
 
+/// The TPL stage's per-window output: one [`crate::port_tpl::FrameTplIn`]
+/// per emitted `ra_input` member plus one for the held key — C's
+/// `pcs->r0`/`tpl_is_valid`/`tpl_group_size`/`tpl_ctrls` and
+/// `pa_me_data->tpl_beta`/`tpl_rdmult_scaling_factors`/`me_results`, carried
+/// across the stage boundary so `encode_frame_impl` consumes them without
+/// re-deriving.
+struct TplStageOut {
+    /// `FrameTplIn` per `ra_input` slot (`None` = this member ran no TPL —
+    /// e.g. `tpl_ctrls.enable == 0` at its hierarchy level).
+    frames: Vec<Option<crate::port_tpl::FrameTplIn>>,
+    /// The held key's `FrameTplIn` (`Some` when a delayed intra is staged
+    /// and its group ran).
+    key: Option<crate::port_tpl::FrameTplIn>,
+}
+
+/// What the RA emit loop hands `encode_frame_impl` for one picture: the
+/// picture-decision output (replacing the per-frame `run_picture_decision`
+/// call the sequential path still makes) plus, when the TPL stage ran, the
+/// `pa_me_data`-equivalent results C computes in `initial_rc_process` —
+/// `r0`, the per-SB `tpl_beta` offsets, the pre-`sb_setup_lambda` rdmult
+/// grid, and the picture's own open-loop ME results.
+struct FrameDecision {
+    /// Display-order POC (the `pcs->picture_number` analogue).
+    display_order: u64,
+    /// `PicParams` produced by `run_ra_picture_decision`.
+    pic: crate::port_picstruct::PicParams,
+    /// This picture's TPL stage outputs; `None` on every path where C's
+    /// `scs->tpl` is off (still, low delay, `aq_mode == 0`, tiny dims).
+    tpl: Option<crate::port_tpl::FrameTplIn>,
+}
+
 /// Encoder pipeline state.
 pub struct EncodePipeline {
     /// Pinned source identity, independent of HDR mode. Legacy constructors
@@ -137,8 +168,15 @@ pub struct EncodePipeline {
     /// filters it, paired with the `PicParams` the prep stamped — so
     /// `encode_ra_window` can emit it without re-deriving either.
     pending_key: Option<PendingKey>,
-    pending_key_out:
-        Option<(crate::port_tf_driver::TfPicBufs, crate::port_picstruct::PicParams)>,
+    pending_key_out: Option<(
+        crate::port_tf_driver::TfPicBufs,
+        crate::port_picstruct::PicParams,
+    )>,
+    /// The held key's TPL stage output — `run_tpl_stage` produces it from
+    /// the `[key] + window` group while `pending_key_out` is still staged;
+    /// `encode_pending_key` takes it so the key's `initial_rc` results ride
+    /// into its encode exactly like a window member's.
+    pending_key_tpl: Option<crate::port_tpl::FrameTplIn>,
     /// The display-order POC the next accepted input takes under random
     /// access. `frame_count` stays the count of CODED frames (it increments
     /// inside `encode_frame_impl`); under RA the two orders differ inside a
@@ -670,6 +708,7 @@ impl EncodePipeline {
             ra_stats: alloc::vec::Vec::new(),
             pending_key: None,
             pending_key_out: None,
+            pending_key_tpl: None,
             ra_display_next: 0,
             frame_count: 0,
             width: dims.aligned_w as u32,
@@ -828,6 +867,13 @@ impl EncodePipeline {
         };
         let mini_gop = 1u32 << hier;
         self.pd_ctx.mini_gop_length[0] = mini_gop;
+        // C `ctx->list0_only = scs->list0_only_base` (`pd_process.c:846-848`),
+        // which C's `initialize_mini_gop_activity_array` sets inside
+        // `set_mini_gop_structure` — reached on the low-delay path too
+        // (`:5488`), where `send_picture_out` (`:4950`) then zeroes the
+        // tl0 picture's list-1 try count at presets above M2.
+        self.pd_ctx.list0_only =
+            self.speed_config.preset > crate::port_enc_mode_config::enc_mode::M2;
         let mut pic = pp::PicParams {
             picture_number: display_order,
             decode_order: display_order,
@@ -894,7 +940,20 @@ impl EncodePipeline {
         // `(pos - 1) % entry_count` with a special case at 0 — NOT the
         // position itself — and it also writes `frame_offset`.
         let pic_idx = pp::get_pic_idx_in_mg(&mut pic, &seq, &self.enc_pic, &self.mg_map, 0, 0);
-        pp::picture_decision_per_picture(&mut pic, &seq, &mut self.pd_ctx, pic_idx, 0).map_err(
+        // C `ref_pa_pic_ptr_array[list][0]`'s `avg_luma` — the PA reference
+        // object's luma mean (`pic_analysis_process.c:2003`). Every
+        // reference this path can name is an already-encoded frame, so its
+        // DPB-mirrored PA slot holds the value `get_similar_ref_brightness`
+        // reads; `INVALID_LUMA` when the slot's pyramid is stale or absent.
+        let pa_slots = &self.pa_slots;
+        let pa_luma = |poc: u64, slot: usize| -> u64 {
+            pa_slots
+                .get(slot)
+                .and_then(|s| s.as_deref())
+                .filter(|p| p.picture_number == poc)
+                .map_or(pp::INVALID_LUMA, |p| p.avg_luma)
+        };
+        pp::picture_decision_per_picture(&mut pic, &seq, &mut self.pd_ctx, pic_idx, 0, &pa_luma).map_err(
             |_| {
                 whereat::at!(EncodeError::UnsupportedConfig(
                     "this GOP shape's reference structure is not implemented: every \
@@ -1058,9 +1117,25 @@ impl EncodePipeline {
         y_stride: usize,
         display_order: u64,
     ) -> EncodeResult<PendingKey> {
-        let pic = self.run_picture_decision(display_order, /*is_key=*/ true)?;
+        let mut pic = self.run_picture_decision(display_order, /*is_key=*/ true)?;
         let frame = self.pack_ra_frame(y, u, v, y_stride, display_order);
         let stats = self.gather_tf_stats_frame(&frame);
+        // C `pcs->avg_luma` is `INVALID_LUMA` unless `calc_hist` ran
+        // (`pic_analysis_process.c:628-630`); the stats gather above is
+        // unconditional for the TF window's `calc_ahd`, so the stamp — not
+        // the gather — carries the gate. `calc_hist` reduces to "any TF
+        // type enabled" in this envelope (`enc_handle.c:1353`: SCD and the
+        // sharpness scene-transition arm are not ported).
+        let (_, tf_params) = crate::port_picstruct::derive_tf_params(
+            self.pred_structure,
+            self.speed_config.preset,
+            self.gop.hierarchical_levels,
+            self.enable_tf,
+            /*lossless=*/ false,
+        );
+        if tf_params.iter().any(|c| c.enabled) {
+            pic.avg_luma = stats.avg_luma;
+        }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
         let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
@@ -1152,6 +1227,14 @@ impl EncodePipeline {
         // `&mut self` free for the per-picture encode.
         let mut frames = alloc::vec::Vec::new();
         core::mem::swap(&mut frames, &mut self.ra_input);
+        // C `initial_rc_process` (src_ops): TPL runs between picture
+        // decision and the encode loop — `tpl_prep_info` + `tpl_mc_flow` +
+        // `generate_r0beta` per group base, producing each picture's `r0`,
+        // `tpl_beta` and `tpl_rdmult_scaling_factors` plus the open-loop ME
+        // results the encode then reuses. `None` on every configuration
+        // where C's `get_tpl` disables TPL.
+        let mut tpl_stage = self.run_tpl_stage(&frames, &pics, &emit, &frames_tf)?;
+        self.pending_key_tpl = tpl_stage.as_mut().and_then(|s| s.key.take());
         let mut out = alloc::vec::Vec::new();
         // The held key frame's packet belongs ahead of this window's — the
         // IDR is decode-first of the new GOP, and C emits it in that
@@ -1177,7 +1260,11 @@ impl EncodePipeline {
             let show_frame = pic.show_frame;
             let has_show_existing = pic.has_show_existing;
             let show_slot = pic.show_existing_frame;
-            let decided = Some((display_order, pic));
+            let decided = Some(FrameDecision {
+                display_order,
+                pic,
+                tpl: tpl_stage.as_mut().and_then(|s| s.frames[idx].take()),
+            });
             if !tu_open {
                 out.extend_from_slice(&td);
                 tu_open = true;
@@ -1205,7 +1292,11 @@ impl EncodePipeline {
             // `encode_frame_impl` prepends the sequential path's
             // one-TU-per-frame TD; an RA TU spans hidden+shown frames, so the
             // loop above owns TD placement and each packet's copy is dropped.
-            debug_assert_eq!(pkt[..td.len()], td[..], "frame packet must begin with the TD it always emits");
+            debug_assert_eq!(
+                pkt[..td.len()],
+                td[..],
+                "frame packet must begin with the TD it always emits"
+            );
             out.extend_from_slice(&pkt[td.len()..]);
             if show_frame {
                 tu_open = false;
@@ -1296,7 +1387,11 @@ impl EncodePipeline {
         };
         // `enable_dg = false`: C's dynamic-GOP split is unported and refused
         // above for the only level that can reach it (hier 5 / 32-pic MG).
-        // `list0_only_base = false`: no long-term anchors in this envelope.
+        // `list0_only_base = enc_mode > ENC_M2` (`enc_handle.c:4292`) — C's
+        // `scs->list0_only_base`, which `initialize_mini_gop_activity_array`
+        // copies to `ctx->list0_only` (`pd_process.c:846-848`) for
+        // `send_picture_out`'s tl0 list-1 clamp (`:4950`).
+        let list0_only = self.speed_config.preset > crate::port_enc_mode_config::enc_mode::M2;
         let needs_dg = pp::set_mini_gop_structure(
             &mut self.mg_map,
             &mut self.enc_pic,
@@ -1306,8 +1401,9 @@ impl EncodePipeline {
             /*startup_mg_size=*/ 0,
             /*idr_flag=*/ false,
             /*enable_dg=*/ false,
-            /*list0_only_base=*/ false,
+            list0_only,
         );
+        self.pd_ctx.list0_only = list0_only;
         debug_assert!(
             !needs_dg,
             "eval_sub_mini_gop is unported; hier < 5 cannot reach it"
@@ -1405,6 +1501,15 @@ impl EncodePipeline {
                     // `frame_offset = picture_number`. `get_pic_idx_in_mg`
                     // overwrites it only in low delay.
                     frame_offset: self.ra_input[pic_idx].display_order,
+                    // C `pcs->avg_luma` — `svt_aom_gathering_picture_statistics`'s
+                    // output (`pic_analysis_process.c:628-635`), `INVALID_LUMA`
+                    // whenever `calc_hist` is off: `ra_stats` is `None` per slot
+                    // under exactly that gate.
+                    avg_luma: self
+                        .ra_stats
+                        .get(pic_idx)
+                        .and_then(|s| s.as_deref())
+                        .map_or(pp::INVALID_LUMA, |s| s.avg_luma),
                     ..Default::default()
                 };
                 pp::get_pred_struct_for_frame(
@@ -1484,6 +1589,40 @@ impl EncodePipeline {
                 .map(|i| pics[i].as_ref().unwrap().decode_order)
                 .collect();
             let (decode_perm, _display_perm) = pp::store_mg_picture_arrays(&decode_orders);
+            // C `ref_pa_pic_ptr_array[list][0]`'s `avg_luma` — the PA
+            // reference object's luma mean (`pic_analysis_process.c:2003`),
+            // resolved for `get_similar_ref_brightness` inside
+            // `init_pic_settings`. A reference can name three kinds of
+            // picture here: an in-window member (its `ra_stats` slot — the
+            // same gather `avg_luma` was stamped from), the held key
+            // (staged, not yet encoded — its `avg_luma` lives on its
+            // `PicParams`), or a prior window's coded picture (the
+            // DPB-mirrored `pa_slots` pyramid). `INVALID_LUMA` when the
+            // reference can't be resolved — which is also C's answer
+            // whenever `calc_hist` is off, since every arm is gated
+            // upstream. Scoped to pass 3 so the field borrows end before
+            // pass 4's `&mut self` filter prep.
+            let pa_luma = |poc: u64, slot: usize| -> u64 {
+                if let Some(i) = self.ra_input.iter().position(|f| f.display_order == poc) {
+                    return self
+                        .ra_stats
+                        .get(i)
+                        .and_then(|s| s.as_deref())
+                        .map_or(pp::INVALID_LUMA, |s| s.avg_luma);
+                }
+                if let Some(k) = self
+                    .pending_key
+                    .as_ref()
+                    .filter(|k| k.frame.display_order == poc)
+                {
+                    return k.pic.avg_luma;
+                }
+                self.pa_slots
+                    .get(slot)
+                    .and_then(|s| s.as_deref())
+                    .filter(|p| p.picture_number == poc)
+                    .map_or(pp::INVALID_LUMA, |p| p.avg_luma)
+            };
             for &local in &decode_perm {
                 let pic_idx = start + local;
                 let pic = pics[pic_idx].as_mut().unwrap();
@@ -1493,6 +1632,7 @@ impl EncodePipeline {
                     &mut self.pd_ctx,
                     pic_idx_in_mg[local],
                     mg_idx,
+                    &pa_luma,
                 )
                 .map_err(|_| {
                     whereat::at!(EncodeError::UnsupportedConfig(
@@ -1591,8 +1731,8 @@ impl EncodePipeline {
         let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
         // `derive_vq_params`' `vq_ctrls.sharpness_ctrls.tf`
         // (`enc_handle.c:3277-3293`): on for the subjective tunes only.
-        let vq_sharpness_tf = matches!(self.hdr.tune, 0 | 5)
-            || (self.hdr.alt_ssim_tuning && self.hdr.tune == 2);
+        let vq_sharpness_tf =
+            matches!(self.hdr.tune, 0 | 5) || (self.hdr.alt_ssim_tuning && self.hdr.tune == 2);
         // `scs->calculate_variance` (`enc_handle.c:4361-4365`) for the RA
         // envelope: `allintra`, `rtc` and `scene_change_detection` are all
         // off here, `aq_mode != 0` is refused upstream.
@@ -1704,10 +1844,20 @@ impl EncodePipeline {
             let fresh_uv = if ctrls.chroma_lvl != 0 {
                 [
                     crate::port_temporal_filtering::noise_log1p_fp16(
-                        crate::temporal_filter::estimate_noise_fp16(&key.frame.u, tw >> 1, th >> 1, cw),
+                        crate::temporal_filter::estimate_noise_fp16(
+                            &key.frame.u,
+                            tw >> 1,
+                            th >> 1,
+                            cw,
+                        ),
                     ),
                     crate::port_temporal_filtering::noise_log1p_fp16(
-                        crate::temporal_filter::estimate_noise_fp16(&key.frame.v, tw >> 1, th >> 1, cw),
+                        crate::temporal_filter::estimate_noise_fp16(
+                            &key.frame.v,
+                            tw >> 1,
+                            th >> 1,
+                            cw,
+                        ),
                     ),
                 ]
             } else {
@@ -1759,8 +1909,7 @@ impl EncodePipeline {
                     // Only the delayed-intra pred-structure fixup reads this
                     // field, and only on the poc+1 member — which
                     // `first_future_hier` already carries.
-                    hierarchical_levels: first_future_hier
-                        .unwrap_or(self.gop.hierarchical_levels),
+                    hierarchical_levels: first_future_hier.unwrap_or(self.gop.hierarchical_levels),
                     avg_luma: st.map_or(crate::port_preanalysis::INVALID_LUMA, |s| s.avg_luma),
                     picture_histogram: st.map_or(&*empty_hist, |s| &s.picture_histogram),
                 }
@@ -1842,7 +1991,17 @@ impl EncodePipeline {
         let y_f = bufs.extract_luma();
         let u_f = bufs.extract_u();
         let v_f = bufs.extract_v();
-        self.encode_frame_impl(&y_f, aw, Some((&u_f, &v_f)), Some((pic.picture_number, pic)))
+        let tpl = self.pending_key_tpl.take();
+        self.encode_frame_impl(
+            &y_f,
+            aw,
+            Some((&u_f, &v_f)),
+            Some(FrameDecision {
+                display_order: pic.picture_number,
+                pic,
+                tpl,
+            }),
+        )
     }
 
     fn run_ra_tf_prep(
@@ -1875,9 +2034,7 @@ impl EncodePipeline {
             q_weight,
             q_weight_denom,
             frames,
-            pics[0]
-                .as_ref()
-                .map(|p| p.hierarchical_levels),
+            pics[0].as_ref().map(|p| p.hierarchical_levels),
             regions_per_width,
             regions_per_height,
         );
@@ -2041,6 +2198,948 @@ impl EncodePipeline {
             // `:5124` — only an I slice publishes its measured difference.
             pp::tf_publish_filt_to_unfilt_diff(&mut self.pd_ctx, pic);
         }
+    }
+
+    /// The TPL stage for one released window — C's
+    /// `store_extended_group` + `set_tpl_group`/`set_tpl_params` per picture
+    /// (`initial_rc_process.c`), `tpl_prep_info`/`tpl_mc_flow`
+    /// (`src_ops_process.c`), and `svt_aom_generate_r0beta`
+    /// (`rc_init_frame_stats`), all at `scs->tpl_lad_mg == 0`: C's
+    /// lookahead-backed extended group (`ctx->lad_queue`, which is what
+    /// makes a group span `tpl_lad_mg + 1` mini-GOPs) degenerates to exactly
+    /// the in-flight mini-GOP this pipeline already buffers, so the whole
+    /// stage runs inside `encode_ra_window` with no pipeline restructure.
+    ///
+    /// Runs AFTER `run_ra_picture_decision` (every member's `PicParams`
+    /// exists) and BEFORE the emit loop. Two groups are processed, matching
+    /// C's per-BASE-picture processing in `initial_rc_process`:
+    ///
+    /// * The held key frame's group — `[key] + this window in decode order`
+    ///   (C's delayed intra is released into the next mini-GOP's batch, so
+    ///   its `ext_group` is the queue's whole contents;
+    ///   `limited_tpl_group_size` for an I-slice base is
+    ///   `1 + (tpl_lad_mg + 1) * mg_size`).
+    /// * The window base's group — the window in decode order
+    ///   (`(tpl_lad_mg + 1) * mg_size` members).
+    ///
+    /// Each member's OWN `r0`/`tpl_beta`/`tpl_rdmult_scaling_factors` come
+    /// from the group run whose base it is — C recomputes them per base
+    /// picture and later runs overwrite `pa_me_data->tpl_stats`.
+    ///
+    /// The per-member open-loop ME results the dispenser consumes are the
+    /// SAME `FrameMe` the picture's own encode computes — identical current
+    /// and reference pyramids — so each member's [`FrameTplIn`] carries its
+    /// `frame_me` for `encode_frame_impl` to reuse, matching C's
+    /// `pa_me_data->me_results` ownership (PA ME runs once per picture,
+    /// ahead of both src-ops and enc-dec).
+    fn run_tpl_stage(
+        &mut self,
+        frames: &[RaBufferedFrame],
+        pics: &[Option<crate::port_picstruct::PicParams>],
+        emit: &[usize],
+        frames_tf: &[crate::port_tf_driver::TfPicBufs],
+    ) -> EncodeResult<Option<TplStageOut>> {
+        use crate::port_picstruct as pp;
+        use crate::port_tpl as pt;
+
+        // `scs->tpl` (`get_tpl`, enc_handle.c:3657) — the SEQ gate; every
+        // picture's own `tpl_ctrls.enable` is derived below per picture.
+        if !self.scs_tpl() {
+            return Ok(None);
+        }
+        // `scs->tpl_lad_mg` — C's lookahead in mini-GOP units
+        // (`initial_rc_process.c`'s lad-queue window). This pipeline's
+        // one-mini-GOP RA buffer is the `tpl_lad_mg == 0` shape; the
+        // two-mini-GOP `tpl_lad_mg == 1` shape needs a deeper lookahead
+        // queue and is refused upstream for now.
+        let tpl_lad_mg = 0u8;
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        let sb_size = self.sb_size;
+        let enc_mode_allintra = self.gop.intra_period == 1;
+        let input_resolution =
+            crate::port_enc_mode_config::ResolutionRange::from_luma_area((aw * ah) as u32) as u8;
+
+        // `svt_aom_get_tpl_group_level`/`get_tpl_params_level` are
+        // enc_mode-keyed; `eff_enc_mode` applies C's M11 clamp.
+        let tpl_group_level = |is_i: bool| {
+            let sc_arm = if enc_mode_allintra {
+                crate::sc_detect::ScArm::Allintra
+            } else {
+                crate::sc_detect::ScArm::Video { is_islice: is_i }
+            };
+            let em = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
+            pp::get_tpl_group_level(1, em)
+        };
+        let tpl_params_level = |is_i: bool| {
+            let sc_arm = if enc_mode_allintra {
+                crate::sc_detect::ScArm::Allintra
+            } else {
+                crate::sc_detect::ScArm::Video { is_islice: is_i }
+            };
+            let em = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
+            pp::get_tpl_params_level(em)
+        };
+
+        // Per-picture `tpl_ctrls` — `set_tpl_group` + `set_tpl_params` on the
+        // picture's own `TplPicParams`, exactly C's `initial_rc_process`
+        // sequence. `(ctrls, synth_blk_size)` per ra_input member plus the
+        // held key.
+        let pic_tpl = |pic: &pp::PicParams| -> (pp::TplControls, u8) {
+            let (mut t, synth) = pp::set_tpl_group(
+                Some(&pp::TplPicParams {
+                    slice_type: pic.slice_type,
+                    hierarchical_levels: pic.hierarchical_levels,
+                    input_resolution,
+                    tpl_lad_mg,
+                    rate_control_mode: pp::RcMode::CqpOrCrf,
+                }),
+                tpl_group_level(pic.slice_type == pp::SliceType::I),
+                self.width,
+                self.height,
+            );
+            pp::set_tpl_params(
+                &mut t,
+                tpl_params_level(pic.slice_type == pp::SliceType::I),
+                input_resolution,
+            );
+            (t, synth)
+        };
+
+        let n = frames.len();
+        let member_tpl: alloc::vec::Vec<(pp::TplControls, u8)> = (0..n)
+            .map(|i| pic_tpl(pics[i].as_ref().expect("PD ran for every member")))
+            .collect();
+        let key_ctx: Option<(
+            pp::PicParams,
+            pp::TplControls,
+            u8,
+            &crate::inter_me_arm::PaPicture,
+        )> = self.pending_key_out.as_ref().map(|(bufs, pic)| {
+            let (t, synth) = pic_tpl(pic);
+            (pic.clone(), t, synth, &bufs.pa)
+        });
+
+        // ---------------------------------------------------------------
+        // Member PA pyramids — the `EbPaReferenceObject->input_padded_pic`
+        // equivalent. A TF-filtered member reuses `frames_tf[i].pa` (the
+        // filtered pyramid the encode also sees); an unfiltered member gets
+        // its own pyramid built on the true->aligned replicated pad, the
+        // same bytes `encode_frame_impl` pads for it.
+        // ---------------------------------------------------------------
+        let mut owned_pa: alloc::vec::Vec<Option<crate::inter_me_arm::PaPicture>> =
+            (0..n).map(|_| None).collect();
+        for (i, f) in frames.iter().enumerate() {
+            if frames_tf.get(i).is_none() {
+                let y_pad = if aw == tw && ah == th {
+                    f.y.clone()
+                } else {
+                    pad_plane_replicate(&f.y, tw, tw, th, aw, ah)?
+                };
+                owned_pa[i] = Some(crate::inter_me_arm::PaPicture::from_source(
+                    &y_pad,
+                    aw,
+                    aw,
+                    ah,
+                    f.display_order,
+                ));
+            }
+        }
+        let ra_pa: alloc::vec::Vec<&crate::inter_me_arm::PaPicture> = (0..n)
+            .map(|i| {
+                frames_tf
+                    .get(i)
+                    .map(|t| &t.pa)
+                    .or(owned_pa[i].as_ref())
+                    .expect("member PA built above")
+            })
+            .collect();
+
+        // Resolve a reference POC to its PA source: an in-window member's
+        // own `ra_pa` entry, the held key's pyramid (staged but not yet in
+        // `pa_slots` — `run_tpl_stage` runs before `encode_pending_key`),
+        // else the coded picture's `pa_slots` DPB pyramid — the three
+        // origins C's `ref_pa_pic_ptr_array` merges.
+        let pa_for_poc = |poc: u64, slot: usize| -> Option<&crate::inter_me_arm::PaPicture> {
+            ra_pa
+                .iter()
+                .find(|p| p.picture_number == poc)
+                .copied()
+                .or_else(|| key_ctx.as_ref().map(|k| k.3).filter(|p| p.picture_number == poc))
+                .or_else(|| self.pa_slots.get(slot).and_then(|s| s.as_deref()))
+        };
+
+        // ---------------------------------------------------------------
+        // Member open-loop ME — `pa_me`'s output, shared between the TPL
+        // dispenser (as `me_results`) and the picture's own encode.
+        // `run_frame_me_into` on the same reference pyramids the emit path
+        // resolves, so reusing it is byte-identical.
+        // ---------------------------------------------------------------
+        let mut frame_mes: alloc::vec::Vec<Option<crate::inter_me_arm::FrameMe>> =
+            (0..n).map(|_| None).collect();
+        for i in 0..n {
+            let pic = pics[i].as_ref().unwrap();
+            if pic.slice_type == pp::SliceType::I {
+                continue;
+            }
+            let mut refs = crate::inter_me::context::MeRefs::default();
+            for rt in 1i8..=7 {
+                let (li, ri) = (
+                    crate::inter_mvp::get_list_idx(rt),
+                    crate::inter_mvp::get_ref_frame_idx(rt),
+                );
+                let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
+                let poc = pic.rps.ref_poc_array[usize::from(rt as u8 - 1)];
+                if let Some(pa) = pa_for_poc(poc, slot) {
+                    refs.arr[li][ri] = Some(pa.ds_ref());
+                }
+            }
+            let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
+            let complete = (0..2)
+                .all(|li| (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some()));
+            if !complete {
+                continue;
+            }
+            let sc_arm = crate::sc_detect::ScArm::Video { is_islice: false };
+            // The member's own `sc_class5` — `derive_sc` on the same bytes
+            // the encode sees.
+            let y_src = frames_tf
+                .get(i)
+                .map(|t| t.extract_luma())
+                .unwrap_or_else(|| {
+                    owned_pa[i]
+                        .as_ref()
+                        .map(|p| {
+                            let v = &p.full;
+                            let mut out = alloc::vec![0u8; v.width * v.height];
+                            for r in 0..v.height {
+                                out[r * v.width..r * v.width + v.width].copy_from_slice(
+                                    &v.buf[v.org + r * v.stride..v.org + r * v.stride + v.width],
+                                );
+                            }
+                            out
+                        })
+                        .unwrap_or_default()
+                });
+            let sc_derivation =
+                crate::sc_detect::derive_sc(sc_arm, self.speed_config.preset, &y_src, aw, aw, ah);
+            let mut out = self
+                .me_scratch
+                .take()
+                .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
+            crate::inter_me_arm::run_frame_me_into(
+                &mut out,
+                ra_pa[i],
+                &refs,
+                num_to_search,
+                crate::inter_me_arm::FrameMeParams {
+                    enc_mode: crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
+                    qp: self.rc_config.qp,
+                    width: aw,
+                    height: ah,
+                    picture_number: frames[i].display_order,
+                    frame_is_boosted: pp::frame_is_boosted(pic),
+                    hierarchical_levels: pic.hierarchical_levels,
+                    temporal_layer_index: pic.temporal_layer_index,
+                    is_ref: pic.is_ref,
+                    sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                    only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
+                    safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
+                    safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
+                    // C `pcs->similar_brightness_refs` / `frame_is_leaf(pcs)`
+                    // — picture decision's outputs, gating the safe-limit ME
+                    // arm (`motion_estimation.c:2231`).
+                    similar_brightness_refs: pic.similar_brightness_refs,
+                    frame_is_leaf: pp::frame_is_leaf(pic.update_type),
+                },
+            );
+            frame_mes[i] = Some(out);
+        }
+        // The held key's ME — an I slice never searches; C's
+        // `pa_me_data->me_results` for an I picture is untouched and the
+        // dispenser never reads it, so the row carries `None`.
+
+        // ---------------------------------------------------------------
+        // Group flow — one `tpl_prep_info` + `tpl_mc_flow` +
+        // `generate_r0beta` per group base.
+        // ---------------------------------------------------------------
+        let stats_len = |synth: u8| -> usize {
+            let mb_w = aw.div_ceil(16);
+            let mb_h = ah.div_ceil(16);
+            match synth {
+                8 => (mb_w << 1) * (mb_h << 1),
+                32 => aw.div_ceil(32) * ah.div_ceil(32),
+                _ => mb_w * mb_h,
+            }
+        };
+        let factor_grid_len = |synth_blk_32: bool, mi_rows: i32| -> usize {
+            let n = if synth_blk_32 { 8 } else { 4 };
+            let mi_cols_sr = ((aw as i32 + 15) / 16) << 2;
+            let cols = (mi_cols_sr + n - 1) / n;
+            let rows = (mi_rows + n - 1) / n;
+            (rows * cols) as usize
+        };
+        let sb_cnt = aw.div_ceil(sb_size) * ah.div_ceil(sb_size);
+        // The dispenser's 64x64-block geometry — C iterates `scs->b64_geom`
+        // (always 64 px, `is_full_64x64` gates the search level).
+        let b64_geom: alloc::vec::Vec<(u32, u32, bool)> = (0..(aw.div_ceil(64) * ah.div_ceil(64))
+            as u32)
+            .map(|i| {
+                let g = crate::port_pcs_geom::b64_geom(aw as u16, ah as u16, 64, i);
+                (u32::from(g.org_x), u32::from(g.org_y), g.is_complete_b64)
+            })
+            .collect();
+        let sb_orgs: alloc::vec::Vec<(u32, u32)> = (0..sb_cnt as u32)
+            .map(|i| {
+                let g = crate::port_pcs_geom::sb_geom(aw as u16, ah as u16, sb_size as u16, i);
+                (u32::from(g.org_x), u32::from(g.org_y))
+            })
+            .collect();
+
+        // ---------------------------------------------------------------
+        // The two group runs, in C's decode-order processing sequence:
+        // the held key's `[key] + window` group first (its initial_rc runs
+        // first), then the window base's. Each fills its members'
+        // `tpl_stats` grids; the window run is the LAST writer, which is
+        // what `generate_r0beta` for each member then reads — matching C,
+        // where every picture's own initial_rc later re-dispenses the
+        // group and overwrites `pa_me_data->tpl_stats`.
+        // ---------------------------------------------------------------
+
+        /// One member of a TPL group run: its PA source pyramid, its
+        /// picture-decision row, its own `tpl_ctrls`, and its open-loop ME
+        /// results (`None` only for an I slice).
+        struct GroupRow<'a> {
+            pa: &'a crate::inter_me_arm::PaPicture,
+            pic: &'a pp::PicParams,
+            ctrls: &'a pp::TplControls,
+            me: Option<&'a crate::inter_me_arm::FrameMe>,
+        }
+
+        /// `ext_group` + `store_extended_group` over a queue slice — the
+        /// group C's `initial_rc_process` builds when the head of `rows`
+        /// is the base. Every row shares `ext_mg_id` (C's `mg_progress_id`
+        /// is one release batch).
+        fn group_for(rows: &[GroupRow<'_>], ext_mg_id: i64, tpl_lad_mg: u8) -> pp::TplGroup {
+            let ext_group: alloc::vec::Vec<pp::ExtGroupPic> = rows
+                .iter()
+                .map(|r| pp::ExtGroupPic {
+                    picture_number: r.pic.picture_number,
+                    slice_type: r.pic.slice_type,
+                    temporal_layer_index: r.pic.temporal_layer_index,
+                    ext_mg_id,
+                    is_delayed_intra: r.pic.is_delayed_intra,
+                    is_skipped: false,
+                })
+                .collect();
+            pp::store_extended_group(
+                &ext_group,
+                rows[0].pic.slice_type,
+                rows[0].pic.hierarchical_levels,
+                u32::from(tpl_lad_mg),
+                rows[0].ctrls.reduced_tpl_group,
+            )
+        }
+
+        /// `tpl_prep_info` + `tpl_mc_flow` + `generate_r0beta` for ONE
+        /// group base — the `src_ops_process.c`/`rc_init_frame_stats` half.
+        /// `rows` is the picture's `ext_group` in decode order; `rows[0]` is
+        /// the base whose `initial_rc` is being modeled.
+        ///
+        /// C's `tpl_mc_flow` runs the dispenser+synthesizer ONLY when the
+        /// group base's `tpl_data.tpl_temporal_layer_index == 0`; a non-tl0
+        /// base's `initial_rc` builds the group but dispenses nothing, so
+        /// this returns `(group, [])` for those. When the flow does run it
+        /// rewrites EVERY group member's stats (invalid members keep the
+        /// memset zeros), and `generate_r0beta` is evaluated per member —
+        /// exactly the `pa_me_data` state a member's own
+        /// `rc_init_frame_stats` would later read, since the LAST tl0 run
+        /// containing a member is what its stats hold by then.
+        /// Returns `(group, [(rows index, r0beta, factors, beta)])`.
+        #[allow(clippy::too_many_arguments)]
+        fn run_group<'pa>(
+            base_synth: u8,
+            rows: &[GroupRow<'_>],
+            tpl_lad_mg: u8,
+            qp: u8,
+            ext_off: i32,
+            sb_size: usize,
+            aw: usize,
+            ah: usize,
+            tw: usize,
+            th: usize,
+            b64_geom: &[(u32, u32, bool)],
+            sb_orgs: &[(u32, u32)],
+            stats_len: usize,
+            factor_grid_len: usize,
+            sb_cnt: usize,
+            pa_slots: &'pa [Option<alloc::sync::Arc<crate::inter_me_arm::PaPicture>>; 8],
+            ra_pa: &[&'pa crate::inter_me_arm::PaPicture],
+            key_pa: Option<&'pa crate::inter_me_arm::PaPicture>,
+        ) -> (
+            pp::TplGroup,
+            alloc::vec::Vec<(usize, pt::R0Beta, alloc::vec::Vec<f64>, alloc::vec::Vec<f64>)>,
+        ) {
+            let g = group_for(rows, 0, tpl_lad_mg);
+            let mut out: alloc::vec::Vec<(
+                usize,
+                pt::R0Beta,
+                alloc::vec::Vec<f64>,
+                alloc::vec::Vec<f64>,
+            )> = alloc::vec::Vec::new();
+            if g.members.is_empty() {
+                return (g, out);
+            }
+            /// A `PaPicture`'s enhanced luma as a [`pt::TplPic`] view — the
+            /// `EbPaReferenceObject->input_padded_pic` equivalent.
+            fn pa_as_tpl<'pa>(pa: &'pa crate::inter_me_arm::PaPicture) -> pt::TplPic<'pa> {
+                let f = &pa.full;
+                pt::TplPic {
+                    y: &f.buf,
+                    y_stride: f.stride,
+                    width: f.width as u32,
+                    height: f.height as u32,
+                    max_width: (f.width + 2 * f.border) as u32,
+                    max_height: (f.height + 2 * f.border) as u32,
+                    origin: f.org,
+                }
+            }
+            /// Resolve a ref POC to its PA pyramid — an in-window member's
+            /// `ra_pa` entry, the held key's, or the coded picture's
+            /// `pa_slots` DPB pyramid.
+            fn resolve_pa<'pa>(
+                poc: u64,
+                slot: usize,
+                ra_pa: &[&'pa crate::inter_me_arm::PaPicture],
+                key_pa: Option<&'pa crate::inter_me_arm::PaPicture>,
+                pa_slots: &'pa [Option<alloc::sync::Arc<crate::inter_me_arm::PaPicture>>; 8],
+            ) -> Option<&'pa crate::inter_me_arm::PaPicture> {
+                ra_pa
+                    .iter()
+                    .find(|p| p.picture_number == poc)
+                    .copied()
+                    .or_else(|| key_pa.filter(|p| p.picture_number == poc))
+                    .or_else(|| pa_slots.get(slot).and_then(|s| s.as_deref()))
+            }
+
+            // `tpl_ref_ds` PA-source table — every (list, ref) resolves to
+            // its PA pyramid. C stores the `EbPaReferenceObject` directly;
+            // the port carries indices into this dense table.
+            let mut ref_pics: alloc::vec::Vec<pt::TplPic<'_>> = alloc::vec::Vec::new();
+
+            let prep: alloc::vec::Vec<pt::TplPrepPic> = g
+                .members
+                .iter()
+                .map(|&ext_i| {
+                    let row = &rows[ext_i];
+                    let pic = row.pic;
+                    let mut ref_pic_poc = [[0u64; 8]; 2];
+                    let mut ref_pic_index = [[0usize; 8]; 2];
+                    let mut ref_poc_ds = [[0u64; 8]; 2];
+                    for (list, count) in [pic.ref_list0_count_try, pic.ref_list1_count_try]
+                        .iter()
+                        .enumerate()
+                    {
+                        for ri in 0..usize::from(*count) {
+                            let rt = list * 4 + ri;
+                            let poc = pic.rps.ref_poc_array[rt];
+                            let slot = pic.rps.ref_dpb_index[rt] as usize;
+                            ref_pic_poc[list][ri] = poc;
+                            ref_poc_ds[list][ri] = poc;
+                            ref_pic_index[list][ri] =
+                                match resolve_pa(poc, slot, ra_pa, key_pa, pa_slots) {
+                                    Some(pa) => {
+                                        ref_pics.push(pa_as_tpl(pa));
+                                        ref_pics.len() - 1
+                                    }
+                                    None => {
+                                        // A ref the RA structure offered but no
+                                        // source resolves: cannot happen on a
+                                        // consistent RPS — keep a degenerate
+                                        // entry rather than emit wrong stats
+                                        // silently.
+                                        debug_assert!(
+                                            false,
+                                            "tpl: ref poc {poc} slot {slot} unresolved"
+                                        );
+                                        ref_pics.push(pt::TplPic {
+                                            y: &[],
+                                            y_stride: 0,
+                                            width: 0,
+                                            height: 0,
+                                            max_width: 0,
+                                            max_height: 0,
+                                            origin: 0,
+                                        });
+                                        ref_pics.len() - 1
+                                    }
+                                };
+                        }
+                    }
+                    pt::TplPrepPic {
+                        slice_type: pic.slice_type,
+                        temporal_layer_index: pic.temporal_layer_index,
+                        is_ref: pic.is_ref,
+                        decode_order: pic.decode_order as i32,
+                        picture_number: pic.picture_number,
+                        ref_list_count_try: [pic.ref_list0_count_try, pic.ref_list1_count_try],
+                        ref_pic_poc,
+                        ref_pic_index,
+                        ref_poc_ds,
+                    }
+                })
+                .collect();
+            let group_pocs: alloc::vec::Vec<u64> = prep.iter().map(|p| p.picture_number).collect();
+            let tpl_datas = pt::tpl_prep_info(&group_pocs, &prep);
+
+            // C gates the WHOLE dispenser+synthesizer on the BASE's tpl
+            // temporal layer (`src_ops_process.c`: `tpl_group[0]->tpl_data
+            // .tpl_temporal_layer_index == 0`). A non-tl0 base's `initial_rc`
+            // built the group (tpl_group_size is still consumed later) but
+            // rewrote no stats — members keep what the last tl0 run left.
+            if tpl_datas[0].tpl_temporal_layer_index != 0 {
+                return (g, out);
+            }
+
+            // Per-member TplWindowFrame — owned stats grids sized for the
+            // BASE's synth block size (the whole group shares the base's
+            // `tpl_ctrls.synth_blk_size` inside `tpl_mc_flow`).
+            let mut stats_store: alloc::vec::Vec<alloc::vec::Vec<pt::TplStats>> = g
+                .members
+                .iter()
+                .map(|_| alloc::vec![pt::TplStats::default(); stats_len])
+                .collect();
+            let mut src_stats_store: alloc::vec::Vec<alloc::vec::Vec<pt::TplSrcStats>> =
+                g.members.iter().map(|_| alloc::vec::Vec::new()).collect();
+            // Recon planes — the `mc_flow_rec_picture_buffer` pool. One
+            // buffer per member: stride aw+64, 32-px top/left border
+            // (TPL_PAD is 32).
+            let recon_stride = aw + 64;
+            let mut recon_store: alloc::vec::Vec<alloc::vec::Vec<u8>> = g
+                .members
+                .iter()
+                .map(|_| alloc::vec![0u8; recon_stride * (ah + 64)])
+                .collect();
+
+            // The base's `tpl_valid_pic`, MEMBER-ordered — `ref_tpl_group_
+            // idx` is a position in `group_pocs`, not an ext index.
+            let member_valid: alloc::vec::Vec<u8> = g.members.iter().map(|&i| g.valid[i]).collect();
+
+            let qp_qindex = crate::rate_control::QUANTIZER_TO_QINDEX[qp.min(63) as usize];
+            let quant_for = |row: &GroupRow<'_>| -> crate::quant::QuantTable {
+                let qi = pt::tpl_qindex(
+                    qp,
+                    ext_off,
+                    row.ctrls.enable_tpl_qps != 0,
+                    row.pic.slice_type,
+                    row.pic.hierarchical_levels,
+                    row.pic.temporal_layer_index,
+                );
+                crate::quant::build_quant_table(qi.clamp(0, i32::from(u8::MAX)) as u8)
+            };
+
+            // Member metadata the dispense closure binds per frame_idx.
+            struct MemberCtx<'a> {
+                row: &'a GroupRow<'a>,
+                quant: crate::quant::QuantTable,
+            }
+            let member_ctxs: alloc::vec::Vec<MemberCtx<'_>> = g
+                .members
+                .iter()
+                .map(|&ext_i| MemberCtx {
+                    row: &rows[ext_i],
+                    quant: quant_for(&rows[ext_i]),
+                })
+                .collect();
+
+            let mut window: alloc::vec::Vec<pt::TplWindowFrame<'_>> = g
+                .members
+                .iter()
+                .enumerate()
+                .zip(
+                    stats_store
+                        .iter_mut()
+                        .zip(src_stats_store.iter_mut())
+                        .zip(tpl_datas.into_iter()),
+                )
+                .map(
+                    |((k, &ext_i), ((stats, src_stats), tpl_data))| pt::TplWindowFrame {
+                        picture_number: rows[ext_i].pic.picture_number,
+                        valid: member_valid[k] != 0,
+                        tpl_data,
+                        stats,
+                        src_stats,
+                        aligned_width: aw as u32,
+                        mi_rows: rows[ext_i].pic.mi_rows as i32,
+                        mi_cols: rows[ext_i].pic.mi_cols as i32,
+                        tpl_src_data_ready: false,
+                    },
+                )
+                .collect();
+            let mut recons: alloc::vec::Vec<pt::TplPicMut<'_>> = recon_store
+                .iter_mut()
+                .map(|buf| pt::TplPicMut {
+                    y: buf,
+                    y_stride: recon_stride,
+                    width: aw as u32,
+                    height: ah as u32,
+                    border: 32,
+                    origin: 32 * recon_stride + 32,
+                })
+                .collect();
+
+            let mut base_rdmults = alloc::vec![0i32; g.members.len()];
+            let sf_identity = svtav1_dsp::port_scale_factors::ScaleFactors::setup_for_frame(
+                aw as i32, ah as i32, aw as i32, ah as i32,
+            );
+            let qp_cfg = qp;
+            let ext_off_cfg = ext_off;
+            pt::tpl_mc_flow(
+                &mut window,
+                &mut recons,
+                base_synth,
+                rows[0].ctrls.compute_rate != 0,
+                tpl_lad_mg,
+                |args| {
+                    let mc = &member_ctxs[args.frame_idx];
+                    let row = mc.row;
+                    let pic = row.pic;
+                    let me = row.me;
+                    base_rdmults[args.frame_idx] = pt::tpl_mc_flow_dispenser(
+                        qp_cfg,
+                        ext_off_cfg,
+                        b64_geom,
+                        |_sb_index| pt::TplSbCtx {
+                            input_pic: {
+                                let f = &row.pa.full;
+                                pt::TplPic {
+                                    y: &f.buf,
+                                    y_stride: f.stride,
+                                    width: f.width as u32,
+                                    height: f.height as u32,
+                                    max_width: (f.width + 2 * f.border) as u32,
+                                    max_height: (f.height + 2 * f.border) as u32,
+                                    origin: f.org,
+                                }
+                            },
+                            tpl_ctrls: *row.ctrls,
+                            tpl_data: &args.frame.tpl_data,
+                            temporal_layer_index: pic.temporal_layer_index,
+                            hierarchical_levels: pic.hierarchical_levels,
+                            slice_type: pic.slice_type,
+                            update_type: pic.update_type,
+                            qp_qindex,
+                            extended_crf_qindex_offset: ext_off_cfg,
+                            tpl_src_data_ready: args.frame.tpl_src_data_ready,
+                            enable_me_16x16: me.map_or(true, |m| m.enable_me_16x16),
+                            tpl_lad_mg,
+                            sb_origin: (0, 0),
+                            aligned_width: aw as u32,
+                            aligned16_width: aw.div_ceil(16),
+                            mi_rows: pic.mi_rows as i32,
+                            mi_cols: pic.mi_cols as i32,
+                            max_input_luma_width: tw as u32,
+                            max_input_luma_height: th as u32,
+                            super_block_size: sb_size as i32,
+                            sf_identity,
+                            quant: mc.quant,
+                            poc_map_idx: args.poc_map_idx,
+                            base_tpl_valid_pic: &member_valid,
+                        },
+                        args.recon,
+                        args.ref_pics,
+                        &ref_pics,
+                        |sb| {
+                            let Some(me) = me else {
+                                return pt::TplMeResults {
+                                    total_me_candidate_index: &[],
+                                    me_candidate_array: &[],
+                                    me_mv_array: &[],
+                                    max_cand: 0,
+                                    max_refs: 0,
+                                    max_l0: 0,
+                                };
+                            };
+                            let b64 = &me.per_b64[sb];
+                            pt::TplMeResults {
+                                total_me_candidate_index: &b64.total_me_candidate_index,
+                                me_candidate_array: &b64.me_candidate_array,
+                                me_mv_array: &b64.me_mv_array,
+                                max_cand: me.max_cand,
+                                max_refs: me.max_refs,
+                                max_l0: me.max_l0,
+                            }
+                        },
+                        args.frame.src_stats,
+                        args.frame.stats,
+                    );
+                    if std::env::var_os("SVTAV1_DISPDBG").is_some() {
+                        let (mut s, mut r, mut d) = (0i64, 0i64, 0i64);
+                        for st in args.frame.stats.iter() {
+                            s += st.srcrf_dist;
+                            r += st.recrf_dist;
+                            d += st.mc_dep_dist;
+                        }
+                        std::eprintln!(
+                            "DISPDBG idx={} poc={} src={} rec={} dep={} rdmult={} nref={},{}",
+                            args.frame_idx,
+                            pic.picture_number,
+                            s,
+                            r,
+                            d,
+                            base_rdmults[args.frame_idx],
+                            args.frame.tpl_data.tpl_ref0_count,
+                            args.frame.tpl_data.tpl_ref1_count,
+                        );
+                        for l in 0..2 {
+                            for ri in 0..pt::REF_LIST_MAX_DEPTH {
+                                std::eprintln!(
+                                    "  REF l{} r{} poc={} sw={} gidx={}",
+                                    l,
+                                    ri,
+                                    args.frame.tpl_data.tpl_ref_ds[l][ri].picture_number,
+                                    args.frame.tpl_data.ref_in_slide_window[l][ri] as i32,
+                                    args.frame.tpl_data.ref_tpl_group_idx[l][ri],
+                                );
+                            }
+                        }
+                    }
+                    0
+                },
+            );
+
+            // `generate_r0beta` per member — each member's own
+            // `rc_init_frame_stats` reads the stats this run left in ITS
+            // `pa_me_data` (the run only executes for tl0 bases, so these
+            // are the values a member actually sees: the last tl0 run that
+            // contained it).
+            for (k, &ext_i) in g.members.iter().enumerate() {
+                let row = &rows[ext_i];
+                let flags = crate::rate_control::r0_flags(
+                    row.ctrls.enable != 0,
+                    row.ctrls.reduced_tpl_group,
+                    row.pic.temporal_layer_index,
+                    row.pic.hierarchical_levels,
+                    row.pic.slice_type == pp::SliceType::I,
+                );
+                let mut member_factors = alloc::vec![0.0f64; factor_grid_len];
+                let mut member_beta = alloc::vec![0.0f64; sb_cnt];
+                let rb = if flags.r0_gen {
+                    pt::generate_r0beta(
+                        base_synth,
+                        sb_size as u32,
+                        aw as u32,
+                        ah as u32,
+                        aw as u32,
+                        ah as u32,
+                        8,
+                        row.pic.mi_rows as i32,
+                        i64::from(base_rdmults[k]),
+                        &stats_store[k],
+                        sb_orgs,
+                        &mut member_factors,
+                        &mut member_beta,
+                    )
+                } else {
+                    member_factors.clear();
+                    member_beta.clear();
+                    pt::R0Beta {
+                        r0: 0.0,
+                        tpl_is_valid: false,
+                    }
+                };
+                out.push((ext_i, rb, member_factors, member_beta));
+            }
+            (g, out)
+        }
+
+        // ---------------------------------------------------------------
+        // C's ordering: EVERY picture's `initial_rc` builds its own
+        // `tpl_group` from its queue tail, but `tpl_mc_flow` only dispenses
+        // for tl0 bases. A member's `pa_me_data` stats therefore hold
+        // whatever the LAST tl0-base run containing it wrote — the runs
+        // below execute in decode order so later writes win, exactly like
+        // the shared `pa_me_data` buffers in C.
+        // ---------------------------------------------------------------
+        let mut stage = TplStageOut {
+            frames: (0..n).map(|_| None).collect(),
+            key: None,
+        };
+        // Per-member "the stats a member's rc_init_frame_stats would read":
+        // (rb, factors, beta) from the most recent tl0 run containing it.
+        let mut last: alloc::vec::Vec<Option<(pt::R0Beta, alloc::vec::Vec<f64>, alloc::vec::Vec<f64>)>> =
+            (0..n).map(|_| None).collect();
+        // Each member's OWN group shape — `pcs->tpl_group_size` /
+        // `used_tpl_frame_num` come from the member's own
+        // `store_extended_group`, which runs for every picture regardless
+        // of the tl0 flow gate.
+        let mut own: alloc::vec::Vec<(u32, u32)> = (0..n).map(|_| (0, 0)).collect();
+        let make_fti = |row: &GroupRow<'_>,
+                        base_synth: u8,
+                        rb: &pt::R0Beta,
+                        factors: alloc::vec::Vec<f64>,
+                        beta: alloc::vec::Vec<f64>,
+                        own: (u32, u32)|
+         -> pt::FrameTplIn {
+            let pic = row.pic;
+            pt::FrameTplIn {
+                tpl_ctrls: *row.ctrls,
+                synth_blk_size: base_synth,
+                flags: crate::rate_control::r0_flags(
+                    row.ctrls.enable != 0,
+                    row.ctrls.reduced_tpl_group,
+                    pic.temporal_layer_index,
+                    pic.hierarchical_levels,
+                    pic.slice_type == pp::SliceType::I,
+                ),
+                r0: rb.r0,
+                tpl_is_valid: rb.tpl_is_valid,
+                tpl_group_size: own.0,
+                used_tpl_frame_num: own.1,
+                tpl_beta: beta,
+                tpl_rdmult_scaling_factors: factors,
+                // Bound in the post-run sweep — `rows` still borrows
+                // `frame_mes`/`key_frame_me` here.
+                frame_me: None,
+            }
+        };
+
+        // ---------------------------------------------------------------
+        // The held key's group: `[key] + window` — the key's lad-queue
+        // contents when its `initial_rc` ran (a delayed intra leaves the
+        // whole queued mini-GOP behind it).
+        // ---------------------------------------------------------------
+        if let Some((key_pic, key_ctrls, key_synth, key_pa)) = key_ctx.as_ref() {
+            let mut rows: alloc::vec::Vec<GroupRow<'_>> = alloc::vec::Vec::with_capacity(n + 1);
+            rows.push(GroupRow {
+                pa: key_pa,
+                pic: key_pic,
+                ctrls: key_ctrls,
+                me: None,
+            });
+            for &i in emit {
+                rows.push(GroupRow {
+                    pa: ra_pa[i],
+                    pic: pics[i].as_ref().unwrap(),
+                    ctrls: &member_tpl[i].0,
+                    me: frame_mes[i].as_ref(),
+                });
+            }
+            let base_synth = *key_synth;
+            let (g, results) = run_group(
+                base_synth,
+                &rows,
+                tpl_lad_mg,
+                self.rc_config.qp,
+                i32::from(self.rc_config.extended_crf_qindex_offset),
+                sb_size,
+                aw,
+                ah,
+                tw,
+                th,
+                &b64_geom,
+                &sb_orgs,
+                stats_len(base_synth),
+                factor_grid_len(base_synth == 32, key_pic.mi_rows as i32),
+                sb_cnt,
+                &self.pa_slots,
+                &ra_pa,
+                Some(key_pa),
+            );
+            // The key's own `store_extended_group` output IS `g`; member
+            // results land in `last` — a later tl0 run may still overwrite
+            // them (its group contains the whole window).
+            for (ext_i, rb, factors, beta) in results {
+                if ext_i == 0 {
+                    stage.key = Some(make_fti(
+                        &rows[0],
+                        base_synth,
+                        &rb,
+                        factors,
+                        beta,
+                        (g.members.len() as u32, g.used_tpl_frame_num),
+                    ));
+                } else {
+                    last[emit[ext_i - 1]] = Some((rb, factors, beta));
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Per-member runs — every picture's `initial_rc` builds its own
+        // group from the queue tail `emit[k..]`. `run_group` only writes
+        // results for tl0 bases (the `tpl_mc_flow` gate), so `last` ends
+        // holding exactly what C's shared `pa_me_data` would: each member's
+        // stats as the LAST tl0 run containing it left them.
+        // ---------------------------------------------------------------
+        for (k, &i) in emit.iter().enumerate() {
+            let rows: alloc::vec::Vec<GroupRow<'_>> = emit[k..]
+                .iter()
+                .map(|&j| GroupRow {
+                    pa: ra_pa[j],
+                    pic: pics[j].as_ref().unwrap(),
+                    ctrls: &member_tpl[j].0,
+                    me: frame_mes[j].as_ref(),
+                })
+                .collect();
+            let base_synth = member_tpl[i].1;
+            let (g, results) = run_group(
+                base_synth,
+                &rows,
+                tpl_lad_mg,
+                self.rc_config.qp,
+                i32::from(self.rc_config.extended_crf_qindex_offset),
+                sb_size,
+                aw,
+                ah,
+                tw,
+                th,
+                &b64_geom,
+                &sb_orgs,
+                stats_len(base_synth),
+                factor_grid_len(base_synth == 32, rows[0].pic.mi_rows as i32),
+                sb_cnt,
+                &self.pa_slots,
+                &ra_pa,
+                // Out-of-window refs still resolve to the held key — the
+                // base frame's L0 reference is the previous GOP's key
+                // picture, which is not yet in `pa_slots` at stage time.
+                key_ctx.as_ref().map(|k| k.3),
+            );
+            // `g` is member `i`'s OWN group — record its shape for the fti
+            // even when the tl0 gate skipped the flow.
+            own[i] = (g.members.len() as u32, g.used_tpl_frame_num);
+            for (ext_i, rb, factors, beta) in results {
+                last[emit[k + ext_i]] = Some((rb, factors, beta));
+            }
+        }
+
+        // Materialize each member's `FrameTplIn` from `last` + `own`.
+        for (i, f) in stage.frames.iter_mut().enumerate() {
+            if let Some((rb, factors, beta)) = last[i].take() {
+                let row = GroupRow {
+                    pa: ra_pa[i],
+                    pic: pics[i].as_ref().unwrap(),
+                    ctrls: &member_tpl[i].0,
+                    me: None,
+                };
+                *f = Some(make_fti(&row, member_tpl[i].1, &rb, factors, beta, own[i]));
+            }
+        }
+
+        // Move each member's `FrameMe` into its `FrameTplIn` — the group
+        // `rows` are all dropped now, so the borrows have ended.
+        for (i, f) in stage.frames.iter_mut().enumerate() {
+            if let Some(fti) = f {
+                if let Some(me) = frame_mes[i].take() {
+                    fti.frame_me = Some(me);
+                }
+            }
+        }
+        // The held key's `frame_me` stays `None` — an I slice ran no
+        // open-loop ME.
+
+        Ok(Some(stage))
     }
 
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: i8) -> (usize, bool) {
@@ -2877,19 +3976,18 @@ impl EncodePipeline {
     /// ([`crate::inter_hdr_arm::scs_tpl`], a port of `get_tpl`,
     /// `Globals/enc_handle.c:3657`).
     ///
-    /// Always `false` today, and not by coincidence: `knob_config_error`
-    /// refuses `aq_mode != 0`, which is one of C's own five disabling
-    /// conditions. It is computed rather than written as a literal so that
-    /// lifting the `aq_mode` refusal makes the TPL-dependent refusals
-    /// (`mfmv_level >= 2`) come BACK instead of silently coding a wrong bit.
+    /// Computed rather than written as a literal so the TPL-dependent
+    /// refusals (`mfmv_level >= 2`) engage exactly when C's machinery does:
+    /// `aq_mode == 2` under random access, where `run_tpl_stage` now runs
+    /// `tpl_mc_flow` and `generate_r0beta` per base picture.
     fn scs_tpl(&self) -> bool {
         crate::inter_hdr_arm::scs_tpl(
             self.gop.intra_period == 1,
             self.rc_config.aq_mode,
-            // Every inter picture this pipeline builds is LOW_DELAY
-            // (`pred_struct_type: PredStructure::LowDelay` in the picture
-            // decision above), which is C's third disabling condition.
-            true,
+            // C's third disabling condition is `pred_structure == LOW_DELAY`.
+            // The RA window path is the only non-low-delay encode this
+            // pipeline runs, so TPL can engage exactly there.
+            self.pred_structure != crate::port_picstruct::PredStructure::RandomAccess,
             self.superres_denom.is_some(),
         )
     }
@@ -3013,9 +4111,7 @@ impl EncodePipeline {
         // negative for s > 4) — C's check exists precisely so the computed
         // shift factor stays in 0..=14.
         if self.hdr.tf_strength > 4 {
-            return Some(
-                "tf_strength must be 0..=4 (C verify_settings, enc_settings.c:894)",
-            );
+            return Some("tf_strength must be 0..=4 (C verify_settings, enc_settings.c:894)");
         }
         if self.hdr.noise_norm_strength > 4 {
             return Some(
@@ -3023,9 +4119,7 @@ impl EncodePipeline {
             );
         }
         if self.hdr.kf_tf_strength > 4 {
-            return Some(
-                "kf_tf_strength must be 0..=4 (C verify_settings, enc_settings.c:950)",
-            );
+            return Some("kf_tf_strength must be 0..=4 (C verify_settings, enc_settings.c:950)");
         }
         if self.hdr.sharp_tx > 1 {
             return Some("sharp_tx must be 0 or 1 (C verify_settings, enc_settings.c:955)");
@@ -3042,35 +4136,26 @@ impl EncodePipeline {
             );
         }
         if !(1..=30).contains(&self.hdr.cdef_scaling) {
-            return Some(
-                "cdef_scaling must be 1..=30 (C verify_settings, enc_settings.c:975)",
-            );
+            return Some("cdef_scaling must be 1..=30 (C verify_settings, enc_settings.c:975)");
         }
-        // Issue #9 item 8 — the `aq_mode` SEMANTIC divergence, refused rather
-        // than documented, because documentation does not stop a caller from
-        // copying C's default and silently getting different pixels.
+        // Issue #9 item 8 — `aq_mode` semantics. C's `--aq-mode` default is
+        // 2, which selects the TPL-gated per-SB deltaq
+        // (`svt_aom_sb_qp_derivation_tpl_la`, rc_aq.c:899): live wherever
+        // `tpl_ctrls.enable && r0 != 0` — i.e. random-access structures —
+        // and INERT on stills and low-delay, exactly as C's `get_tpl`
+        // disables the machinery there (enc_handle.c:3657). The port now
+        // runs the same dispatch: `run_tpl_stage` produces r0/beta/scaling
+        // for the RA window and the `rc_init_sb_qindex` twin consumes it.
         //
-        // C's `--aq-mode` default is 2, and for a single still it is INERT:
-        // aq-mode-2's deltaq (`svt_aom_sb_qp_derivation_tpl_la`, rc_aq.c:899)
-        // is gated on `tpl_ctrls.enable && r0 != 0`, i.e. TPL lookahead, which
-        // one frame has none of (`r0` inits 0, pcs.c:1299). This port's
-        // non-zero `aq_mode` instead runs a HOMEGROWN frame-level VAQ + TPL
-        // shift (the `rc_config.aq_mode != 0` branch below) that is a port of
-        // nothing — so `aq_mode = 2`, the value a caller copies straight out
-        // of C's documentation, means "C: no change" and "port: shift the
-        // whole frame's qindex". That is the exact shape of divergence this
-        // encoder refuses everywhere else.
-        //
-        // 0 (the default) is the value that MATCHES C for a still. C's
-        // segmentation-side `aq_mode` is a different parameter and stays
-        // C-parity-tested (`segmentation::setup_segmentation`,
-        // tests/c_parity_segmentation.rs).
-        if self.rc_config.aq_mode != 0 {
+        // `aq_mode` 1 (variance AQ) and 3 (complexity AQ) are C's OTHER
+        // per-SB deltaq derivations and are not ported — refuse rather than
+        // silently take the TPL path for a knob that means something else.
+        if !matches!(self.rc_config.aq_mode, 0 | 2) {
             return Some(
-                "aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a \
-                 single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while \
-                 this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift \
-                 that is a port of nothing — see issue #9 item 8",
+                "aq_mode must be 0 or 2: 2 is C's default TPL-gated per-SB deltaq \
+                 (rc_aq.c:899), ported and live under random access; 1 (variance AQ) \
+                 and 3 (complexity AQ) are different C derivations that are not \
+                 ported [C: accepts]",
             );
         }
         None
@@ -3782,7 +4867,7 @@ impl EncodePipeline {
         y_plane: &[u8],
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
-        decided: Option<(u64, crate::port_picstruct::PicParams)>,
+        decided: Option<FrameDecision>,
     ) -> crate::EncodeResult<Vec<u8>> {
         // `chroma_420` is the configured-format check (refuses 4:4:4 where
         // `chroma.is_some()` would pass); `chroma.is_some()` is the per-frame
@@ -3894,7 +4979,9 @@ impl EncodePipeline {
         // the `PicParams` the mini-GOP window decision already produced
         // (`encode_ra_window`). `None` is the sequential contract — display
         // order is the coded-frame count and picture decision runs inline.
-        let display_order = decided.as_ref().map_or(self.frame_count, |(d, _)| *d);
+        let display_order = decided
+            .as_ref()
+            .map_or(self.frame_count, |d| d.display_order);
         // Superres chunk B.3: refuse any combination whose SIGNALLED geometry
         // would not match what this encoder actually produced (see
         // `superres_config_error`). Checked at the single choke point every
@@ -4122,16 +5209,20 @@ impl EncodePipeline {
         // the local `PicParams` — nothing downstream of a KEY frame reads
         // either.
         let decided_is_some = decided.is_some();
-        let pic_decision = if self.gop.intra_period != 1 {
-            Some(match decided {
+        let (pic_decision, mut tpl_in) = if self.gop.intra_period != 1 {
+            match decided {
                 // Random access: the window decision already ran RPS + DPB
                 // state for this picture — re-running it per frame would
-                // advance the toggles twice.
-                Some((_, pic)) => pic,
-                None => self.run_picture_decision(display_order, is_key)?,
-            })
+                // advance the toggles twice. `tpl` is the TPL stage's
+                // per-picture bundle (`None` whenever `scs->tpl` was off).
+                Some(d) => (Some(d.pic), d.tpl),
+                None => (
+                    Some(self.run_picture_decision(display_order, is_key)?),
+                    None,
+                ),
+            }
         } else {
-            None
+            (None, decided.and_then(|d| d.tpl))
         };
         // `pcs->temporal_layer_index = pred_position_ptr->temporal_layer_index`
         // (`pd_process.c:5559`) — the pred-struct ENTRY's layer, read back from
@@ -4616,47 +5707,18 @@ impl EncodePipeline {
         // walk (see `EntropyCtx::tx_mode_select`).
         let frame_tx_mode_select = self.frame_tx_mode_select(temporal_layer);
 
-        // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
+        // Step 3c: the CLI-domain qp `svt_av1_rc_calc_qindex_crf_cqp`
+        // reads (`scs_qp`, rc_crf_cqp.c:471-473 — no `startup_qp_offset`
+        // in this port's envelope). C's `aq_mode` does not shift this
+        // value: `aq-mode` is TPL's enable, and TPL's output lands in the
+        // QINDEX domain below (`crf_qindex_calc` / `sb_qp_derivation_tpl_
+        // la`), never back on `static_config.qp`.
         //
-        // aq_mode == 0 (the default, matching the C encoder's
-        // `--rc 0 --aq-mode 0` CQP semantics) means the assigned QP is used
-        // UNCHANGED: C's CQP path is a straight `quantizer_to_qindex[qp]`
-        // lookup with no content-adaptive shift (rc_process.c CQP branch).
-        // The frame-level VAQ + TPL adjustments below are homegrown
-        // heuristics (not ports of C's segment-based aq-mode 1/2) and used
-        // to fire unconditionally, shifting base_q_idx on every stream —
-        // the F1 divergence in docs/IDENTITY-STATUS.md.
+        // There USED to be a homegrown VAQ + "TPL" qp shift here behind
+        // `aq_mode != 0` — a port of nothing, kept only while `aq_mode !=
+        // 0` was refused outright. The real TPL path replaces it.
         #[allow(unused_mut)]
-        let mut tpl_adjusted_qp = if self.rc_config.aq_mode != 0 {
-            // Compute VAQ activity map for adaptive QP
-            let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
-
-            // Adjust QP based on frame-level activity (VAQ)
-            let vaq_adjusted_qp = if activity_map.frame_avg > 0.0 {
-                let frame_activity_factor = (activity_map.frame_avg / 10.0).log2().clamp(-2.0, 2.0);
-                (pcs.qp as f64 + frame_activity_factor).clamp(0.0, 63.0) as u8
-            } else {
-                pcs.qp
-            };
-
-            // TPL temporal complexity adjustment for inter frames:
-            // Compare source to reference to estimate motion complexity,
-            // then adjust QP — static scenes get lower QP (better quality),
-            // high-motion scenes get higher QP (save bits for key frames).
-            if !is_key && self.dpb.occupied_slots() > 0 {
-                if let Some(rf) = self.dpb.get(0) {
-                    let tpl_delta =
-                        crate::rate_control::tpl_qp_adjustment(&encode_input, &rf.y_plane, w, h, w);
-                    (vaq_adjusted_qp as i16 + tpl_delta as i16).clamp(0, 63) as u8
-                } else {
-                    vaq_adjusted_qp
-                }
-            } else {
-                vaq_adjusted_qp
-            }
-        } else {
-            pcs.qp
-        };
+        let mut tpl_adjusted_qp = pcs.qp;
 
         // THE single CLI-qp -> qindex conversion (C: quantizer_to_qindex
         // lookup on picture_qp, rc_crf_cqp.c). Everything above this line
@@ -4716,42 +5778,143 @@ impl EncodePipeline {
         // the non-base temporal-layer arm needs a DPB the port does not have,
         // and `cqp_qindex_calc` documents that it must not be used there yet.
         let allintra = self.gop.intra_period == 1;
+        // C `svt_av1_rc_calc_qindex_crf_cqp`'s dispatch
+        // (rc_crf_cqp.c:481-489): `enable_qp_scaling_flag` is `!allintra`
+        // (enc_handle.c:4390) with `use_fixed_qindex_offsets == 1` as the
+        // one subtract — that config is refused upstream — and inside it
+        // `tpl_ctrls.enable` selects `crf_qindex_calc` over
+        // `cqp_qindex_calc`. `tpl_r0` carries `ppcs->r0` through the
+        // in-place adjustments `crf_qindex_calc` makes, because
+        // `sb_qp_derivation_tpl_la` gates on the POST-adjust value
+        // (rc_aq.c:899).
+        let tpl_fti = tpl_in.as_ref().filter(|f| f.tpl_ctrls.enable != 0);
+        // `R0Flags` is Copy — hoist the four capability flags so `tpl_in`'s
+        // `frame_me` can be taken by the ME site below while the flags stay
+        // readable for the lambda context and the ref-object stamp.
+        let tpl_flags = tpl_fti.map(|f| f.flags);
+        let r0_delta_qp_md = tpl_flags.is_some_and(|f| f.r0_delta_qp_md);
+        let mut tpl_r0 = tpl_fti.map_or(0.0, |f| f.r0);
         if !allintra {
-            // rc_crf_cqp.c:439-444 — the LOW_DELAY non-base boost reads the
-            // L0 reference's per-SB intra counts (`get_ref_obj(pcs,
-            // REF_LIST_0, 0)` == the picture `ref_dpb_index[LAST]` names).
-            // `None` whenever there is no picture decision or this is a
-            // base-layer/key frame — the arm is gated on
-            // `temporal_layer_index != 0` inside `cqp_qindex_calc` too.
-            // C gates the boost on `scs->static_config.pred_structure ==
-            // LOW_DELAY` (rc_crf_cqp.c:439) — the SEQUENCE's configured
-            // structure. A cut-short RA mini-GOP flips its pictures to
-            // `pred_struct_type LowDelay` but the sequence stays
-            // RANDOM_ACCESS, so the boost must not fire under RA even
-            // though the picture's own pred-struct type says low-delay.
-            let ld_boost = (self.pred_structure == crate::port_picstruct::PredStructure::LowDelay)
-                .then(|| {
-                    pic_decision.as_ref().and_then(|p| {
-                        let rf = self.dpb.get(p.rps.ref_dpb_index[0] as usize)?;
-                        Some(crate::rate_control::non_base_boost(
-                            rf.is_islice,
-                            &rf.sb_intra,
-                        ))
+            let new_qindex: i32 = if let Some(fti) = tpl_fti {
+                // `rc->active_worst_quality` — `scs_qindex` forever in the
+                // 1-pass envelope: `svt_av1_rc_init` seeds it at
+                // `scs_qindex` (rc_crf_cqp.c:486-488) and the ONLY writer
+                // past that point is `svt_aom_crf_assign_max_rate`, the
+                // `max_bit_rate` arm that is refused upstream.
+                let pic = pic_decision.as_ref();
+                let ref0 = pic.and_then(|p| self.dpb.get(p.rps.ref_dpb_index[0] as usize));
+                let ref1 = pic.and_then(|p| {
+                    (p.slice_type == crate::port_picstruct::SliceType::B
+                        && p.ref_list1_count_try != 0)
+                        .then(|| self.dpb.get(p.rps.ref_dpb_index[4] as usize))
+                        .flatten()
+                });
+                let crf_out = crate::rate_control::crf_qindex_calc(
+                    i32::from(base_qindex),
+                    &crate::rate_control::CrfQindexInputs {
+                        is_intra_only: is_key,
+                        temporal_layer_index: temporal_layer,
+                        hierarchical_levels: frame_hier,
+                        is_highest_layer: crate::port_picstruct::is_highest_layer(
+                            temporal_layer,
+                            frame_hier,
+                        ),
+                        r0_qps: fti.flags.r0_qps,
+                        r0: fti.r0,
+                        r0_adjust_factor: fti.tpl_ctrls.r0_adjust_factor,
+                        used_tpl_frame_num: fti.used_tpl_frame_num,
+                        tpl_group_size: fti.tpl_group_size,
+                        // `scs->lad_mg != 0` — the lookahead queue this
+                        // pipeline does not have (tpl_lad_mg == 0 shape).
+                        scs_lad_mg: false,
+                        input_resolution: i32::from(
+                            crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                                self.width * self.height,
+                            ) as u8,
+                        ),
+                        bit_depth: self.bit_depth,
+                        sc_class1: sc_derivation.classes.sc_class1,
+                        // `SVT_QP_SCALE_WEIGHT`/`_ON` (definitions.h:245-253)
+                        // — mainline's 4-entry table vs the fork's linear
+                        // formula on `hdr.qp_scale_compress_strength`.
+                        qp_scale_weight: if self.hdr.is_fork() {
+                            1.0 + self.hdr.qp_scale_compress_strength * 0.125
+                        } else {
+                            crate::rate_control::QP_SCALE_COMPRESS_WEIGHT
+                                [self.hdr.qp_scale_compress_strength.clamp(0.0, 3.0) as usize]
+                        },
+                        // Mainline's field is a `uint8_t` index — sub-1.0
+                        // values truncate to 0, i.e. OFF, exactly like C.
+                        qp_scale_on: if self.hdr.is_fork() {
+                            self.hdr.qp_scale_compress_strength > 0.0
+                        } else {
+                            self.hdr.qp_scale_compress_strength >= 1.0
+                        },
+                        // `rc->best_quality`/`worst_quality` =
+                        // `quantizer_to_qindex[min/max_qp_allowed]` — C's
+                        // defaults are 0..63, i.e. the full u8 range.
+                        best_quality: 0,
+                        worst_quality: 255,
+                        // `rc->arf_q` = `ref_base_q_idx[L0][0]`, max'd
+                        // with L1[0] for a B slice with list1 refs
+                        // (rc_crf_cqp.c:200-204).
+                        arf_q: ref0
+                            .map_or(i32::from(base_qindex), |r| i32::from(r.base_q_idx))
+                            .max(ref1.map_or(0, |r| i32::from(r.base_q_idx))),
+                        ref0_tmp_layer: ref0.map_or(0, |r| r.temporal_layer),
+                        ref1_tmp_layer: ref1.map(|r| r.temporal_layer),
+                        ref_intra_percentage: i32::from(md_ref_intra_percentage),
+                    },
+                );
+                tpl_r0 = crf_out.r0;
+                crf_out.qindex
+            } else {
+                // rc_crf_cqp.c:439-444 — the LOW_DELAY non-base boost reads
+                // the L0 reference's per-SB intra counts (`get_ref_obj(pcs,
+                // REF_LIST_0, 0)` == the picture `ref_dpb_index[LAST]` names).
+                // `None` whenever there is no picture decision or this is a
+                // base-layer/key frame — the arm is gated on
+                // `temporal_layer_index != 0` inside `cqp_qindex_calc` too.
+                // C gates the boost on `scs->static_config.pred_structure ==
+                // LOW_DELAY` (rc_crf_cqp.c:439) — the SEQUENCE's configured
+                // structure. A cut-short RA mini-GOP flips its pictures to
+                // `pred_struct_type LowDelay` but the sequence stays
+                // RANDOM_ACCESS, so the boost must not fire under RA even
+                // though the picture's own pred-struct type says low-delay.
+                let ld_boost = (self.pred_structure
+                    == crate::port_picstruct::PredStructure::LowDelay)
+                    .then(|| {
+                        pic_decision.as_ref().and_then(|p| {
+                            let rf = self.dpb.get(p.rps.ref_dpb_index[0] as usize)?;
+                            Some(crate::rate_control::non_base_boost(
+                                rf.is_islice,
+                                &rf.sb_intra,
+                            ))
+                        })
                     })
-                })
-                .flatten();
-            base_qindex = crate::rate_control::cqp_qindex_calc(
-                i32::from(base_qindex),
-                allintra,
-                /*slice_is_intra=*/ is_key,
-                /*is_ref=*/ pic_decision.as_ref().is_none_or(|p| p.is_ref),
-                /*idr_flag=*/ is_key,
-                temporal_layer,
-                frame_hier,
-                self.bit_depth,
-                ld_boost,
-            )
-            .clamp(0, 255) as u8;
+                    .flatten();
+                crate::rate_control::cqp_qindex_calc(
+                    i32::from(base_qindex),
+                    allintra,
+                    /*slice_is_intra=*/ is_key,
+                    /*is_ref=*/ pic_decision.as_ref().is_none_or(|p| p.is_ref),
+                    /*idr_flag=*/ is_key,
+                    temporal_layer,
+                    frame_hier,
+                    self.bit_depth,
+                    ld_boost,
+                )
+            };
+            base_qindex = new_qindex.clamp(0, 255) as u8;
+            // C's extended-CRF arm (rc_crf_cqp.c:510-513) applies to the
+            // POST-dispatch qindex whenever `qp == 63` and the offset is
+            // nonzero — outside the `enable_qp_scaling_flag` gate, so it
+            // covers the TPL arm's output too.
+            if self.rc_config.qp == 63 && self.rc_config.extended_crf_qindex_offset != 0 {
+                let off = i32::from(self.rc_config.extended_crf_qindex_offset);
+                base_qindex = (i32::from(base_qindex) + (255 - i32::from(base_qindex)) * off / 56)
+                    .clamp(0, 255) as u8;
+            }
         }
         let mut picture_qp = crate::rate_control::picture_qp_from_qindex(base_qindex);
         if std::env::var_os("SVTAV1_QTRACE").is_some() {
@@ -4780,7 +5943,7 @@ impl EncodePipeline {
         // consumer (lambda, CDF bucket, deblock, FH) — C order: rc_aq runs
         // in rc_init_sb_qindex ahead of MD. picture_qp follows C's
         // (base+2)>>2 update.
-        let sb_plan = if self.hdr.enable_variance_boost {
+        let mut sb_plan = if self.hdr.enable_variance_boost {
             let sb_cols_p = w.div_ceil(64);
             let sb_rows_p = h.div_ceil(64);
             // C iterates the per-SB plan `sb_addr < scs->sb_total_count`
@@ -4857,6 +6020,207 @@ impl EncodePipeline {
             None
         };
 
+        // C `svt_av1_rc_init_sb_qindex`'s TPL arm (rc_aq.c:897-901): under
+        // `aq_mode == 2 && tpl_ctrls.enable && ppcs->r0 != 0` — the r0 the
+        // qindex dispatch just adjusted, not the stage's raw one — each
+        // superblock takes `get_deltaq_offset(beta)` on top of whatever
+        // qindex map is live (the frame base, or the variance plan's), and
+        // `sb_setup_lambda` folds the SB's rdmult ratio into
+        // `tpl_sb_rdmult_scaling_factors`, the grid `blk_lambda_tuning`
+        // reads per block. `delta_q_present` flips ONLY on
+        // `r0_delta_qp_quant` (rc_aq.c:790-791); the SB loop itself needs
+        // `r0_delta_qp_md && tpl_is_valid` (:799). `r0_delta_qp_md` without
+        // `r0_delta_qp_quant` still quantizes at the per-SB qindex while
+        // signalling nothing — C's own encoder/decoder disagreement,
+        // reproduced rather than "fixed".
+        let mut delta_q_present = sb_plan.is_some();
+        let mut tpl_rdmult: Option<alloc::sync::Arc<crate::port_md_lambda::TplRdmult>> = None;
+        if let Some(fti) = tpl_fti
+            && self.rc_config.aq_mode == 2
+            && tpl_r0 != 0.0
+        {
+            if fti.flags.r0_delta_qp_quant {
+                delta_q_present = true;
+            }
+            if fti.flags.r0_delta_qp_md && fti.tpl_is_valid {
+                let sb_cols = w.div_ceil(self.sb_size);
+                let sb_rows = h.div_ceil(self.sb_size);
+                let sb_cnt = sb_cols * sb_rows;
+                debug_assert_eq!(fti.tpl_beta.len(), sb_cnt);
+                // The SB map starts from whatever `rc_init_sb_qindex`
+                // left: the variance plan's post-normalization values, else
+                // the frame base on every SB.
+                let mut sb_qindex: Vec<u8> = sb_plan
+                    .as_ref()
+                    .map_or_else(|| alloc::vec![base_qindex; sb_cnt], |p| p.sb_qindex.clone());
+                crate::sb_qindex::sb_qp_derivation_tpl_la(
+                    self.bit_depth,
+                    is_key,
+                    &fti.tpl_beta,
+                    &mut sb_qindex,
+                );
+                // `generate_b64_me_qindex_map` (rc_process.c:747) feeds
+                // `svt_aom_get_me_qindex`, `sb_setup_lambda`'s `me_qindex`
+                // input. Under `r0_delta_qp_md` `update_lambda`'s arm reads
+                // `q_index` so the value is inert INSIDE this pass — but
+                // the same map is live for the frame's per-SB MD lambdas
+                // below, which is why it is built here and not skipped.
+                let b64_me_qindex = fti.frame_me.as_ref().map(|me| {
+                    let mev: Vec<u32> = me.per_b64.iter().map(|o| o.me_8x8_cost_variance).collect();
+                    crate::port_rc_process::generate_b64_me_qindex_map(
+                        &mev,
+                        i32::from(base_qindex),
+                        is_key,
+                    )
+                });
+                let lctx = crate::port_rc_process::LambdaContext {
+                    frame_type: i32::from(!is_key),
+                    temporal_layer_index: temporal_layer,
+                    hierarchical_levels: frame_hier,
+                    update_type: md_lambda_base_update_type
+                        .unwrap_or(crate::port_rc_process::FrameUpdateType::KfUpdate),
+                    alt_lambda_factors: md_alt_lambda_factors,
+                    rtc: false,
+                    stats_based_sb_lambda_modulation:
+                        crate::port_rc_process::stats_based_sb_lambda_modulation(
+                            crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
+                            false,
+                        ),
+                    base_q_idx: i32::from(base_qindex),
+                    delta_q_present,
+                    r0_delta_qp_md: true,
+                    // `scs->static_config.lambda_scale_factors` — the port
+                    // does not expose the knob; 128 is C's identity.
+                    lambda_scale_factors: [128; 7],
+                };
+                // `pcs->hbd_md` (enc_mode_config.c:2151-2164): bd10 &&
+                // preset <= M5 selects the 10-bit MD quantizer for the
+                // `compute_rd_mult` inside `sb_setup_lambda`; 8 elsewhere.
+                let hbd_md_depth = match self.bit_depth {
+                    10 if self.speed_config.preset <= 5 => 10,
+                    _ => 8,
+                };
+                let mi_rows = (h >> 2) as i32;
+                let mut sb_factors = fti.tpl_rdmult_scaling_factors.clone();
+                for sb_row in 0..sb_rows {
+                    for sb_col in 0..sb_cols {
+                        crate::stop_check(&stop)?;
+                        let sb_idx = sb_row * sb_cols + sb_col;
+                        let me_q = b64_me_qindex.as_ref().map_or(base_qindex, |m| {
+                            crate::port_md_rate_estimation::get_me_qindex(
+                                m,
+                                u16::try_from(w).unwrap_or(u16::MAX),
+                                u16::try_from(h).unwrap_or(u16::MAX),
+                                u32::try_from(sb_idx).unwrap_or(u32::MAX),
+                                u32::try_from(sb_col * self.sb_size).unwrap_or(u32::MAX),
+                                u32::try_from(sb_row * self.sb_size).unwrap_or(u32::MAX),
+                                self.sb_size == 128,
+                            )
+                        });
+                        crate::sb_qindex::sb_setup_lambda(
+                            u32::try_from(sb_col * self.sb_size).unwrap_or(u32::MAX),
+                            u32::try_from(sb_row * self.sb_size).unwrap_or(u32::MAX),
+                            self.superres_denom.unwrap_or(8),
+                            u32::try_from(w).unwrap_or(u32::MAX),
+                            self.sb_size == 128,
+                            fti.synth_blk_size,
+                            mi_rows,
+                            base_qindex,
+                            sb_qindex[sb_idx],
+                            me_q,
+                            &lctx,
+                            hbd_md_depth,
+                            &fti.tpl_rdmult_scaling_factors,
+                            &mut sb_factors,
+                        );
+                    }
+                }
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_TPLQP").is_some() {
+                    let poc = pic_decision
+                        .as_ref()
+                        .map_or(u32::MAX, |p| p.picture_number as u32);
+                    let res_dbg = sb_plan.as_ref().map_or_else(
+                        || crate::sb_qindex::delta_q_res_for(self.rc_config.qp, false),
+                        |p| p.delta_q_res,
+                    );
+                    std::eprintln!(
+                        "TPLQP pic={poc} dq={} res={} qmd={} qquant={} valid={} n_sb={}",
+                        u8::from(delta_q_present),
+                        res_dbg,
+                        u8::from(fti.flags.r0_delta_qp_md),
+                        u8::from(fti.flags.r0_delta_qp_quant),
+                        u8::from(fti.tpl_is_valid),
+                        sb_cnt
+                    );
+                    for (i, (&q, &b)) in sb_qindex.iter().zip(fti.tpl_beta.iter()).enumerate() {
+                        std::eprintln!("SBQP pic={poc} sb={i} qindex={q} beta={b:.10}");
+                    }
+                    for (i, (&bse, &sbf)) in fti
+                        .tpl_rdmult_scaling_factors
+                        .iter()
+                        .zip(sb_factors.iter())
+                        .enumerate()
+                    {
+                        std::eprintln!("SBF pic={poc} i={i} base={bse:.10} sb={sbf:.10}");
+                    }
+                }
+                // `reset_enc_dec`'s picture lambdas
+                // (enc_dec_process.c:176-187): `svt_aom_lambda_assign` at
+                // the FH base qindex, `multiply_lambda=true`, at both MD
+                // depths. These are the bases `svt_aom_set_tuned_blk_lambda`
+                // scales per block — NO `lambda_weight`, no per-SB stats
+                // modulation (its `q_index == base_q_idx` makes the qdiff
+                // factor the identity under every arm).
+                let (pic_fast8, pic_full8) =
+                    crate::port_rc_process::lambda_assign(&lctx, 8, base_qindex, true);
+                let (_pic_fast10, pic_full10) =
+                    crate::port_rc_process::lambda_assign(&lctx, 10, base_qindex, true);
+                tpl_rdmult = Some(alloc::sync::Arc::new(crate::port_md_lambda::TplRdmult {
+                    factors: sb_factors,
+                    mi_rows,
+                    unscaled_width: w as i32,
+                    superres_denom: i32::from(self.superres_denom.unwrap_or(8)),
+                    synth_blk_32: fti.synth_blk_size == 32,
+                    sb_size_is_128: self.sb_size == 128,
+                    pic_full8,
+                    pic_full10,
+                    pic_fast8,
+                }));
+                // C's ONE normalize call in `generate_sb_qindex`
+                // (rc_process.c:741-744) sees the map AFTER TPL modified
+                // it. The variance arm normalized inside its own port, so
+                // applying TPL on top undoes the residue snap — a live
+                // `delta_q_res != 1` re-normalizes here. On the
+                // variance+TPL combination this sits within one res step
+                // of C's var(raw) -> tpl -> normalize order; the measured
+                // parity envelope is variance-off cells.
+                let res = sb_plan.as_ref().map_or_else(
+                    || crate::sb_qindex::delta_q_res_for(self.rc_config.qp, false),
+                    |p| p.delta_q_res,
+                );
+                if delta_q_present && res != 1 {
+                    let mut map_i32: Vec<i32> = sb_qindex.iter().map(|&q| i32::from(q)).collect();
+                    crate::sb_qindex::normalize_sb_delta_q(base_qindex, res, &mut map_i32);
+                    sb_qindex = map_i32.iter().map(|&q| q.clamp(0, 255) as u8).collect();
+                }
+                match sb_plan.as_mut() {
+                    Some(p) => p.sb_qindex = sb_qindex,
+                    None => {
+                        sb_plan = Some(crate::sb_qindex::SbQindexPlan {
+                            base_qindex,
+                            sb_qindex,
+                            // `get_delta_q_res(qp, enable_variance_boost =
+                            // false)` is `DEFAULT_DELTA_Q_RES` — 1. This
+                            // field only reaches the FH when
+                            // `delta_q_present` (i.e. `r0_delta_qp_quant`).
+                            delta_q_res: 1,
+                        });
+                    }
+                }
+            }
+        }
+
         // Issue #5: `base_qindex == 0` signals CODED-LOSSLESS in the frame
         // header (spec 5.9.2 — with the zero chroma deltas and no
         // segmentation of this port's mainline path, base_q_idx 0 IS
@@ -4878,7 +6242,19 @@ impl EncodePipeline {
         // the frame qindex whenever delta_q_present is false, even if the
         // variance planner produced positive per-SB indices. Preserve that
         // planner, but only feed a signaled plan to MD, quantization and pack.
-        let delta_q_plan = sb_plan.as_ref().filter(|_| !coded_lossless);
+        //
+        // TWO plans, C's split: `delta_q_plan` is the SIGNAL side — what the
+        // frame header's `delta_q_present` and the per-SB delta-q symbols
+        // carry — while `md_sb_qindex` is `pcs->sb_ptr_array[..].qindex` at
+        // the end of `generate_sb_qindex`, the map MD and quantization
+        // consume (`ctx->qp_index = delta_q_present || r0_delta_qp_md ?
+        // sb_qp : base_q_idx`, md_process.c:800-803). They differ exactly
+        // when `r0_delta_qp_md` is on without `r0_delta_qp_quant`: C
+        // quantizes per-SB and signals nothing.
+        let delta_q_plan = sb_plan
+            .as_ref()
+            .filter(|_| delta_q_present && !coded_lossless);
+        let md_sb_qindex = sb_plan.as_ref().filter(|_| !coded_lossless);
 
         // C-exact coding quantizer for the still/PD1 path (quant.rs): the
         // frame-level rdoq_level from `derive_intra_coeff_level`
@@ -4965,7 +6341,7 @@ impl EncodePipeline {
         // nothing can ever reference this frame, and the pyramid is a padded
         // copy plus two decimations of the whole luma plane — real work to
         // spend on a buffer with no reader.
-        let pa_cur = (self.gop.intra_period != 1).then(|| match self.pa_scratch.take() {
+        let mut pa_cur = (self.gop.intra_period != 1).then(|| match self.pa_scratch.take() {
             // Recycle the frame-before-last's pyramid. `refill_from_source`
             // rewrites every byte and every descriptor field, so this is
             // byte-identical to the fresh allocation it replaces.
@@ -4981,104 +6357,133 @@ impl EncodePipeline {
                 display_order,
             )),
         });
-        let frame_me = match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
-            (false, Some(cur), Some(pic)) => {
-                // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
-                // the picture decision offered, resolved to its DPB slot's PA
-                // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
-                // This used to feed only `pa_ref` — the PREVIOUS frame — to
-                // both lists, which is the [1,1] shape frame 1 happens to
-                // produce but leaves a frame with `ref_list0_count_try > 1`
-                // (frame 2 onward on a flat GOP) searching LAST2's MV slot
-                // against LAST's picture.
-                let mut refs = crate::inter_me::context::MeRefs::default();
-                for rt in 1i8..=7 {
-                    let (li, ri) = (
-                        crate::inter_mvp::get_list_idx(rt),
-                        crate::inter_mvp::get_ref_frame_idx(rt),
-                    );
-                    let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
-                    if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
-                        refs.arr[li][ri] = Some(pa.ds_ref());
+        // C `pa_ref_obj->avg_luma = input_pcs->avg_luma`
+        // (`pic_analysis_process.c:2003`) — stamped onto the reference object
+        // a later picture's `get_similar_ref_brightness` reads through
+        // `pa_slots`. `INVALID_LUMA` whenever `calc_hist` was off, because
+        // the picture decision's `avg_luma` was already gated there.
+        if let Some(pa) = pa_cur.as_mut() {
+            pa.avg_luma = pic_decision.as_ref().map_or(
+                crate::port_picstruct::INVALID_LUMA,
+                |p| p.avg_luma,
+            );
+        }
+        // The TPL stage already ran this picture's open-loop ME against the
+        // same reference pyramids with the same `FrameMeParams` — C's
+        // `pa_me_data->me_results`, shared between `tpl_mc_flow` and the
+        // picture's own encode. Reuse it verbatim; a member the stage
+        // skipped (I slice, or a reference pyramid it could not resolve)
+        // falls through to the sequential computation, whose `None`/`Some`
+        // answer is then identical.
+        let frame_me = match tpl_in.as_mut().and_then(|f| f.frame_me.take()) {
+            me @ Some(_) => me,
+            None => match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
+                (false, Some(cur), Some(pic)) => {
+                    // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
+                    // the picture decision offered, resolved to its DPB slot's PA
+                    // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
+                    // This used to feed only `pa_ref` — the PREVIOUS frame — to
+                    // both lists, which is the [1,1] shape frame 1 happens to
+                    // produce but leaves a frame with `ref_list0_count_try > 1`
+                    // (frame 2 onward on a flat GOP) searching LAST2's MV slot
+                    // against LAST's picture.
+                    let mut refs = crate::inter_me::context::MeRefs::default();
+                    for rt in 1i8..=7 {
+                        let (li, ri) = (
+                            crate::inter_mvp::get_list_idx(rt),
+                            crate::inter_mvp::get_ref_frame_idx(rt),
+                        );
+                        let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
+                        if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
+                            refs.arr[li][ri] = Some(pa.ds_ref());
+                        }
+                    }
+                    #[cfg(feature = "std")]
+                    if crate::dbgenv::medbg() {
+                        let mut s = alloc::string::String::new();
+                        for (i, sl) in self.pa_slots.iter().enumerate() {
+                            s.push_str(&alloc::format!(
+                                "{i}:{} ",
+                                sl.as_deref().map_or(-1, |p| p.picture_number as i64)
+                            ));
+                        }
+                        std::eprintln!(
+                            "PASLOTS poc={} dpb={:?} slots=[{s}]",
+                            pic.picture_number,
+                            pic.rps.ref_dpb_index
+                        );
+                    }
+                    // `me_process.c:212-213` — the counts the picture decision
+                    // offered. `MeRefs::get` panics on a hole a search reaches,
+                    // so a missing pyramid means no ME rather than a wrong one —
+                    // the same shape the `pa_ref == None` arm produced before.
+                    let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
+                    let complete = (0..2).all(|li| {
+                        (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
+                    });
+                    if !complete {
+                        None
+                    } else {
+                        // Recycle the previous frame's result set.
+                        // `run_frame_me_into` resets every per-b64 entry to
+                        // exactly what `MeB64Output::new` builds and reassigns
+                        // every scalar, so this is byte-identical to a fresh
+                        // `run_frame_me`.
+                        let mut out = self
+                            .me_scratch
+                            .take()
+                            .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
+                        crate::inter_me_arm::run_frame_me_into(
+                            &mut out,
+                            cur,
+                            &refs,
+                            num_to_search,
+                            crate::inter_me_arm::FrameMeParams {
+                                // C `pcs->enc_mode` — post-clamp
+                                // (enc_handle.c:4433): the `sig_deriv_me`
+                                // ladders branch at M11 (search area, prehme).
+                                enc_mode: crate::rate_arm::eff_enc_mode(
+                                    sc_arm,
+                                    self.speed_config.preset,
+                                ),
+                                qp: self.rc_config.qp,
+                                width: w,
+                                height: h,
+                                picture_number: display_order,
+                                // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
+                                // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
+                                // update. A flat low-delay P GOP DOES still emit
+                                // GF_UPDATE frames (picture_decision marks the
+                                // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
+                                // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
+                                // here — the `96x96 q20 p6` cell's poc4 is one.
+                                frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
+                                hierarchical_levels: frame_hier,
+                                // C `me_process.c:214-215` — `pcs->temporal_layer_index`
+                                // / `pcs->is_ref`, straight off the picture decision.
+                                temporal_layer_index: pic.temporal_layer_index,
+                                is_ref: pic.is_ref,
+                                sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                                // C `scs->mrp_ctrls` — set this frame by
+                                // `run_picture_decision` above.
+                                only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
+                                safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
+                                safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
+                                // C `pcs->similar_brightness_refs` /
+                                // `frame_is_leaf(pcs)` — picture decision's
+                                // outputs, gating the safe-limit ME arm
+                                // (`motion_estimation.c:2231`).
+                                similar_brightness_refs: pic.similar_brightness_refs,
+                                frame_is_leaf: crate::port_picstruct::frame_is_leaf(
+                                    pic.update_type,
+                                ),
+                            },
+                        );
+                        Some(out)
                     }
                 }
-                #[cfg(feature = "std")]
-                if crate::dbgenv::medbg() {
-                    let mut s = alloc::string::String::new();
-                    for (i, sl) in self.pa_slots.iter().enumerate() {
-                        s.push_str(&alloc::format!(
-                            "{i}:{} ",
-                            sl.as_deref().map_or(-1, |p| p.picture_number as i64)
-                        ));
-                    }
-                    std::eprintln!(
-                        "PASLOTS poc={} dpb={:?} slots=[{s}]",
-                        pic.picture_number,
-                        pic.rps.ref_dpb_index
-                    );
-                }
-                // `me_process.c:212-213` — the counts the picture decision
-                // offered. `MeRefs::get` panics on a hole a search reaches,
-                // so a missing pyramid means no ME rather than a wrong one —
-                // the same shape the `pa_ref == None` arm produced before.
-                let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
-                let complete = (0..2).all(|li| {
-                    (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
-                });
-                if !complete {
-                    None
-                } else {
-                    // Recycle the previous frame's result set.
-                    // `run_frame_me_into` resets every per-b64 entry to
-                    // exactly what `MeB64Output::new` builds and reassigns
-                    // every scalar, so this is byte-identical to a fresh
-                    // `run_frame_me`.
-                    let mut out = self
-                        .me_scratch
-                        .take()
-                        .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
-                    crate::inter_me_arm::run_frame_me_into(
-                        &mut out,
-                        cur,
-                        &refs,
-                        num_to_search,
-                        crate::inter_me_arm::FrameMeParams {
-                            // C `pcs->enc_mode` — post-clamp
-                            // (enc_handle.c:4433): the `sig_deriv_me`
-                            // ladders branch at M11 (search area, prehme).
-                            enc_mode: crate::rate_arm::eff_enc_mode(
-                                sc_arm,
-                                self.speed_config.preset,
-                            ),
-                            qp: self.rc_config.qp,
-                            width: w,
-                            height: h,
-                            picture_number: display_order,
-                            // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
-                            // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
-                            // update. A flat low-delay P GOP DOES still emit
-                            // GF_UPDATE frames (picture_decision marks the
-                            // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
-                            // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
-                            // here — the `96x96 q20 p6` cell's poc4 is one.
-                            frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
-                            hierarchical_levels: frame_hier,
-                            // C `me_process.c:214-215` — `pcs->temporal_layer_index`
-                            // / `pcs->is_ref`, straight off the picture decision.
-                            temporal_layer_index: pic.temporal_layer_index,
-                            is_ref: pic.is_ref,
-                            sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                            // C `scs->mrp_ctrls` — set this frame by
-                            // `run_picture_decision` above.
-                            only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
-                            safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
-                            safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
-                        },
-                    );
-                    Some(out)
-                }
-            }
-            _ => None,
+                _ => None,
+            },
         };
 
         // GLOBAL MOTION, decided per FRAME (see `gm_level_for_frame` /
@@ -5747,8 +7152,12 @@ impl EncodePipeline {
                             false,
                         ),
                     base_q_idx: i32::from(base_qindex),
-                    delta_q_present: false,
-                    r0_delta_qp_md: false,
+                    // The picture lambda evaluates `update_lambda` at
+                    // `q_index == base`, where the qdiff factor is the
+                    // identity under every arm — these flags are still the
+                    // frame's real ones, not literals.
+                    delta_q_present,
+                    r0_delta_qp_md,
                     // `scs->static_config.lambda_scale_factors` — the port
                     // does not expose the knob; 128 is the identity C ships.
                     lambda_scale_factors: [128; 7],
@@ -6857,10 +8266,15 @@ impl EncodePipeline {
                     // here would be a second spelling of the same rule.
                     stats_based_sb_lambda_modulation: true,
                     base_q_idx: i32::from(base_qindex),
-                    delta_q_present: false,
-                    r0_delta_qp_md: false,
+                    delta_q_present,
+                    r0_delta_qp_md,
                     lambda_scale_factors: [128; 7],
                 };
+                // C `svt_aom_mode_decision_configure_sb` (md_process.c:800-803):
+                // `ctx->qp_index = delta_q_present || r0_delta_qp_md ?
+                // sb_qp : base_q_idx`. `sb_qp` is the `generate_sb_qindex`
+                // map — TPL-derived when `r0_delta_qp_md` ran.
+                let qp_mod_arm = delta_q_present || r0_delta_qp_md;
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
                 for sb_row in 0..sb_rows {
                     for sb_col in 0..sb_cols {
@@ -6875,39 +8289,49 @@ impl EncodePipeline {
                             u32::try_from(sb_row * sb_size).unwrap_or(u32::MAX),
                             sb_size == 128,
                         );
-                        let me_qdiff = i32::from(me_q) - i32::from(base_qindex);
-                        let raw = crate::port_rc_process::compute_fast_lambda(
-                            &lctx,
-                            base_qindex,
-                            me_q,
-                            8,
-                        );
+                        let qp_idx = if qp_mod_arm {
+                            md_sb_qindex.map_or(base_qindex, |p| p.sb_qindex[sb_idx])
+                        } else {
+                            base_qindex
+                        };
+                        // `update_lambda` picks its stats-factor arm on the
+                        // lctx flags: `delta_q_present || r0_delta_qp_md`
+                        // uses `q_index - base` at +-8 (rc_process.c:430-441),
+                        // else `me_q_index - base` at +-4 (:442-446) — the
+                        // same factor PD0's lambda fold below carries as
+                        // `me_qdiff`.
+                        let me_qdiff = if qp_mod_arm {
+                            i32::from(qp_idx) - i32::from(base_qindex)
+                        } else {
+                            i32::from(me_q) - i32::from(base_qindex)
+                        };
+                        let raw =
+                            crate::port_rc_process::compute_fast_lambda(&lctx, qp_idx, me_q, 8);
                         // C scales `fast_lambda_md` by the same
                         // LAMBDA_MOD_INTRA arm before `lambda_weight`
                         // (md_process.c:740).
                         let raw = ((u64::from(raw) * lambda_mod_intra as u64) >> 7) as u32;
-                        let full_8bit = crate::pd0::inter_full_lambda_8bit(
-                            base_qindex,
-                            imf.base_update_type,
-                            md_lambda_factor_update_type,
-                            md_alt_lambda_factors,
-                            me_qdiff,
-                            lambda_mod_intra,
-                            lw,
-                        );
-                        // `full_lambda_md[EB_10_BIT_MD]` — the same
-                        // `av1_lambda_assign_md` chain at 10 bits, ending in
-                        // `*16` (md_process.c:728/753). The bd10 encode pass
-                        // re-quantizes against this per-SB value.
-                        let full_10bit = crate::pd0::inter_full_lambda_bd10(
-                            base_qindex,
-                            imf.base_update_type,
-                            md_lambda_factor_update_type,
-                            md_alt_lambda_factors,
-                            me_qdiff,
-                            lambda_mod_intra,
-                            lw,
-                        );
+                        // `full_lambda_md[0]` — `svt_aom_compute_rd_mult`
+                        // then LAMBDA_MOD_INTRA then `lambda_weight`
+                        // (md_process.c:725-751).
+                        let mut full_8bit = ((u64::from(crate::port_rc_process::compute_rd_mult(
+                            &lctx, qp_idx, me_q, 8,
+                        )) * lambda_mod_intra as u64)
+                            >> 7) as u32;
+                        if lw != 0 {
+                            full_8bit = ((u64::from(full_8bit) * u64::from(lw)) >> 7) as u32;
+                        }
+                        // `full_lambda_md[EB_10_BIT_MD]` — the same chain at
+                        // 10 bits, ending in `*16` (md_process.c:728/753).
+                        let mut full_10bit = ((u64::from(crate::port_rc_process::compute_rd_mult(
+                            &lctx, qp_idx, me_q, 10,
+                        )) * lambda_mod_intra as u64)
+                            >> 7) as u32;
+                        if lw != 0 {
+                            full_10bit = ((u64::from(full_10bit) * u64::from(lw)) >> 7) as u32;
+                        }
+                        // `*full_lambda *= 16` on C's `uint32_t` wraps.
+                        let full_10bit = full_10bit.wrapping_mul(16);
                         #[cfg(feature = "std")]
                         if crate::dbgenv::lamdump() {
                             std::eprintln!(
@@ -7012,9 +8436,14 @@ impl EncodePipeline {
                                 level: sigs.pic_depth_removal_level,
                                 is_islice: false,
                                 fast_lambda_8bit: fast_lambda,
-                                delta_q_present: false,
-                                r0_delta_qp_md: false,
-                                sb_qindex: i32::from(base_qindex),
+                                delta_q_present,
+                                r0_delta_qp_md,
+                                // `sb_ptr->qindex` — the generate_sb_qindex
+                                // map — vs the signalled frame base; the
+                                // level modulation arm reads their diff.
+                                sb_qindex: md_sb_qindex.map_or(i32::from(base_qindex), |p| {
+                                    i32::from(p.sb_qindex[sb_idx])
+                                }),
                                 picture_qindex: i32::from(base_qindex),
                                 picture_qp: i32::from(picture_qp),
                                 dist_64: b.map_or(0, |o| o.me_64x64_distortion),
@@ -7214,7 +8643,8 @@ impl EncodePipeline {
             qindex_u,
             qindex_v,
             ac_bias_eff,
-            delta_q_plan.map(|p| p.sb_qindex.as_slice()),
+            md_sb_qindex.map(|p| p.sb_qindex.as_slice()),
+            tpl_rdmult.clone(),
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
             sharp_tx_active,
             if self.hdr.is_fork() {
@@ -8193,13 +9623,17 @@ impl EncodePipeline {
                         crate::stop_check(&stop)?;
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
-                        // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
-                        // drives both the delta symbol and (via the search, which
-                        // used the same plan) the coded coefficients. Chroma dequant
-                        // per SB = sb_qindex + the FRAME chroma deltas.
-                        if let Some(plan) = delta_q_plan {
+                        // Per-SB delta-q / TPL: the SB's qindex drives the
+                        // delta symbol (only when `delta_q_present` armed the
+                        // state), the chroma dequant, and (via the search,
+                        // which used the same map) the coded coefficients.
+                        // `md_sb_qindex` is the QUANT map — live under
+                        // `r0_delta_qp_md` even when nothing is signalled.
+                        if let Some(plan) = md_sb_qindex {
                             let sbq = i32::from(plan.sb_qindex[sb_idx]);
-                            ectx.delta_q_sb_qindex = sbq;
+                            if delta_q_plan.is_some() {
+                                ectx.delta_q_sb_qindex = sbq;
+                            }
                             if delta_q_lf_armed {
                                 ectx.delta_lf_sb =
                                     i32::from(sb_delta_lf.as_ref().expect("armed above")[sb_idx]);
@@ -10781,6 +12215,12 @@ impl EncodePipeline {
                 .unwrap_or_default(),
             // C `EbReferenceObject::slice_type`.
             is_islice: is_key,
+            // C `enc_dec_process.c:1248-1252` — the ref object takes the
+            // signalled `base_q_idx` and `ppcs->r0` (post `crf_qindex_calc`
+            // adjustment; 0 when TPL did not run this frame) so a LATER
+            // frame's `ref_base_q_idx`/`ref_pic_r0` reads them back.
+            base_q_idx: base_qindex,
+            r0: tpl_r0,
             cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
             cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
             // C `packetization_process.c:741-744`: reset the CDF symbol
@@ -15583,7 +17023,15 @@ fn encode_tile_rows(
     ac_bias_eff: f64,
     // [SVT_HDR_MODE] per-SB qindex plan (variance boost) + frame chroma
     // AC deltas: the search must quantize each SB at its planned qindex.
+    // Also the TPL `r0_delta_qp_md` map — `ctx->qp_index` reads it even
+    // when the header signals no delta-q.
     sb_qindex_plan: Option<&[u8]>,
+    // C `ppcs->blk_lambda_tuning` payload — `pa_me_data->tpl_sb_rdmult_
+    // scaling_factors` after `sb_setup_lambda` folded each superblock's
+    // rdmult ratio in. `evaluate_leaf` scales the per-BLOCK lambda by the
+    // geometric mean over the synth-block cells it covers
+    // (`svt_aom_set_tuned_blk_lambda`, coding_loop.c:368).
+    tpl_rdmult: Option<alloc::sync::Arc<crate::port_md_lambda::TplRdmult>>,
     chroma_ac_deltas: (i8, i8),
     sharp_tx_active: bool,
     hdr_noise_norm: u8,
@@ -16238,6 +17686,11 @@ fn encode_tile_rows(
                 // — `evaluate_leaf` computes the per-BLOCK scale under the
                 // SSIM/IQ/MS_SSIM tunes (coding_loop.c:373-382).
                 ssim_rdmult: ssim_rdmult.cloned().map(alloc::sync::Arc::new),
+                // `blk_lambda_tuning` — `svt_aom_set_tuned_blk_lambda`'s
+                // post-`sb_setup_lambda` factor grid (coding_loop.c:368),
+                // built by the TPL arm in `generate_sb_qindex` when
+                // `r0_delta_qp_md` ran; `None` elsewhere.
+                tpl_rdmult: tpl_rdmult.clone(),
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 // `ctx->rdoq_ctrls` for the regular lane —

@@ -471,6 +471,17 @@ pub struct ReferenceFrame {
     /// reference is not allowed to demote a lower-layer picture. 0 on every
     /// flat low-delay picture, where the comparison is `0 <= 0`.
     pub temporal_layer: u8,
+    /// C `EbReferenceObject::base_q_idx` (`reference_object.h:29`, stamped
+    /// at enc_dec_process.c:1248 with the frame header's signalled
+    /// `base_q_idx`). A later frame's `ref_base_q_idx[list][ref]`
+    /// (pic_manager_process.c:840) reads it into `rc->arf_q`, the anchor
+    /// `crf_qindex_calc`'s non-qstep arm interpolates from.
+    pub base_q_idx: u8,
+    /// C `EbReferenceObject::r0` (enc_dec_process.c:1252) — `ppcs->r0`
+    /// AFTER `crf_qindex_calc`'s in-place adjustments. Read through
+    /// `ref_pic_r0` by the mfmv `r0_th` comparisons (TPL-era); 0.0 on any
+    /// frame whose TPL did not run.
+    pub r0: f64,
 }
 
 impl DecodedPictureBuffer {
@@ -633,6 +644,8 @@ mod tests {
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],
             temporal_layer: 0,
+            base_q_idx: 0,
+            r0: 0.0,
             y_plane: alloc::vec![128u8; 64 * 64],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
@@ -673,6 +686,8 @@ mod tests {
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],
             temporal_layer: 0,
+            base_q_idx: 0,
+            r0: 0.0,
             y_plane: alloc::vec![128u8; 16],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],

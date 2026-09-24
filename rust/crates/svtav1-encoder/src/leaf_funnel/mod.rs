@@ -278,15 +278,23 @@ pub(crate) fn evaluate_leaf(
     // whose geometry repeats.
     crate::obmc_pred_arm::begin_leaf();
     let rates = fx.rates;
-    // C `aom_av1_set_ssim_rdmult` (coding_loop.c:373-382 and
-    // product_coding_loop.c:9054/:9371 -> mode_decision.c:4060-4110):
-    // under the SSIM/IQ/MS_SSIM tunes THIS BLOCK's geometric-mean scale
-    // over the 16x16 factor grid replaces `full_lambda_md` /
-    // `fast_lambda_md` at both depths. The base is the PICTURE lambda
-    // (`ed_ctx->pic_*_lambda` — no `lambda_weight`, no per-SB
-    // modulation), and `(double)v * geom + 0.5` truncates like C's
-    // uint32_t cast. C's `blk_lambda_tuning` arm (TPL rdmult) precedes
-    // the ssim arm and is always off in the port's envelope.
+    // C `svt_aom_set_tuned_blk_lambda` then `aom_av1_set_ssim_rdmult`
+    // (coding_loop.c:368-382 and product_coding_loop.c:9041-9054/:9353-9371
+    // -> mode_decision.c:4105/:4060):
+    //
+    // `blk_lambda_tuning` (TPL rdmult) runs FIRST: THIS BLOCK's log-domain
+    // geometric-mean scale over the post-`sb_setup_lambda`
+    // `tpl_sb_rdmult_scaling_factors` grid replaces the CONTEXT's current
+    // `full_lambda_md`/`fast_lambda_md` at both depths — i.e. the SB-
+    // modulated values `mode_decision_configure_sb` installed, not the
+    // picture bases. A `None` scale is C's superres-degenerate arm
+    // (SUPERRES_INVALID_STATE in all four lambdas).
+    //
+    // The SSIM/IQ/MS_SSIM arm runs SECOND and scales the PICTURE lambdas
+    // (`ed_ctx->pic_*_lambda`) when `blk_lambda_tuning` is off, or the
+    // CONTEXT's current (tuned) lambdas when it is on
+    // (mode_decision.c:4163 `blk_lambda_tuning` arm). `(double)v * geom +
+    // 0.5` truncates like C's uint32_t cast.
     //
     // The swap is C's `ctx->full_lambda_md`/`fast_lambda_md` overwrite for
     // the whole block evaluation, so the port mirrors it as a per-leaf
@@ -294,24 +302,82 @@ pub(crate) fn evaluate_leaf(
     // serves this function's own binding (fx is borrowed `&mut` below),
     // `fx.frame_ssim` serves every downstream `fx.frame()` reader (the
     // u8 tx pipeline's RDOQ rdmult included) without a signature change.
-    let frame_owned: Option<FunnelFrame> = fx.frame.ssim_rdmult.as_ref().map(|s| {
-        let scale = crate::tune::ssim_scale_for_block(
-            &s.factors,
-            s.num_cols,
-            s.num_rows,
-            abs_y >> 2,
-            abs_x >> 2,
-            w >> 2,
-            h >> 2,
-        );
-        let sc = |v: u32| (f64::from(v) * scale + 0.5) as u64;
-        let mut f = (*fx.frame).clone();
-        f.lambda = sc(s.pic_full8);
-        f.lambda10 = sc(s.pic_full10);
-        f.inter_fast_lambda = sc(s.pic_fast8) as u32;
-        f.ssim_rdmult = None;
+    let frame_owned: Option<FunnelFrame> = {
+        let mut f: Option<FunnelFrame> = fx.frame.tpl_rdmult.as_ref().map(|t| {
+            let mut f = (*fx.frame).clone();
+            match t.scale_for(
+                (abs_y >> 2) as i32,
+                (abs_x >> 2) as i32,
+                (w >> 2) as i32,
+                (h >> 2) as i32,
+            ) {
+                Some(scale) => {
+                    // C `svt_aom_set_tuned_blk_lambda` (mode_decision.c
+                    // :4144-4151): the geom mean scales the PICTURE lambdas
+                    // (`ed_ctx->pic_*_lambda`, `reset_enc_dec`'s
+                    // `svt_aom_lambda_assign` outputs — no `lambda_weight`,
+                    // no per-SB modulation) into `full_lambda_md`/
+                    // `fast_lambda_md`, replacing the per-SB
+                    // `av1_lambda_assign_md` values outright.
+                    f.lambda =
+                        u64::from(crate::port_md_lambda::scale_lambda(t.pic_full8, scale));
+                    f.lambda10 =
+                        u64::from(crate::port_md_lambda::scale_lambda(t.pic_full10, scale));
+                    f.inter_fast_lambda =
+                        crate::port_md_lambda::scale_lambda(t.pic_fast8, scale);
+                }
+                None => {
+                    f.lambda = u64::from(crate::port_md_lambda::SUPERRES_INVALID_STATE);
+                    f.lambda10 = u64::from(crate::port_md_lambda::SUPERRES_INVALID_STATE);
+                    f.inter_fast_lambda = crate::port_md_lambda::SUPERRES_INVALID_STATE;
+                }
+            }
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_BLKLAMBDA").is_some() {
+                std::eprintln!(
+                    "BLKL mi=({},{}) wh={}x{} picfl8={} picfa8={} -> fl8={} fa8={} fl10={}",
+                    abs_y >> 2,
+                    abs_x >> 2,
+                    w,
+                    h,
+                    t.pic_full8,
+                    t.pic_fast8,
+                    f.lambda,
+                    f.inter_fast_lambda,
+                    f.lambda10
+                );
+            }
+            f.tpl_rdmult = None;
+            f
+        });
+        if let Some(s) = fx.frame.ssim_rdmult.as_ref() {
+            let scale = crate::tune::ssim_scale_for_block(
+                &s.factors,
+                s.num_cols,
+                s.num_rows,
+                abs_y >> 2,
+                abs_x >> 2,
+                w >> 2,
+                h >> 2,
+            );
+            let sc = |v: u32| (f64::from(v) * scale + 0.5) as u64;
+            if let Some(tuned) = f.as_mut() {
+                // `blk_lambda_tuning` on: scale the CONTEXT's current lambdas.
+                tuned.lambda = sc(tuned.lambda as u32);
+                tuned.lambda10 = sc(tuned.lambda10 as u32);
+                tuned.inter_fast_lambda = sc(tuned.inter_fast_lambda) as u32;
+                tuned.ssim_rdmult = None;
+            } else {
+                let mut fo = (*fx.frame).clone();
+                fo.lambda = sc(s.pic_full8);
+                fo.lambda10 = sc(s.pic_full10);
+                fo.inter_fast_lambda = sc(s.pic_fast8) as u32;
+                fo.ssim_rdmult = None;
+                f = Some(fo);
+            }
+        }
         f
-    });
+    };
     fx.frame_ssim = frame_owned.clone().map(alloc::sync::Arc::new);
     let frame = frame_owned.as_ref().unwrap_or(fx.frame);
     let lambda = frame.lambda;

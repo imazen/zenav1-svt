@@ -732,6 +732,8 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         inter_fast_lambda: 0,
         // Default-tune fixture: no SSIM/IQ/MS_SSIM rdmult runs.
         ssim_rdmult: None,
+        // Still fixture: `blk_lambda_tuning` is a TPL-gated inter arm.
+        tpl_rdmult: None,
         sb_mi_size: 16,
         lambda: 100_000,
         // Key-frame fixture: the MDS3 hbd_md=2 bump is an inter-frame arm.

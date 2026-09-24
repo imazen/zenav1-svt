@@ -353,7 +353,6 @@ pub fn variance_adjust_qp(
     }
 }
 
-
 // =============================================================================
 // TPL-LA per-SB qindex — C `svt_aom_sb_qp_derivation_tpl_la` + `sb_setup_lambda`
 // (rc_aq.c:695-780, 789-825)
@@ -388,20 +387,16 @@ pub fn get_deltaq_offset(bit_depth: u8, qindex: i32, beta: f64, is_intra: bool) 
     }
     let mut qindex = qindex;
     if newq < q {
-        let mut q = q;
         while qindex > 0 {
             qindex -= 1;
-            q = dc_quant(qindex);
-            if newq >= q {
+            if newq >= dc_quant(qindex) {
                 break;
             }
         }
     } else {
-        let mut q = q;
         while qindex < MAXQ {
             qindex += 1;
-            q = dc_quant(qindex);
-            if newq <= q {
+            if newq <= dc_quant(qindex) {
                 break;
             }
         }
@@ -427,8 +422,7 @@ pub fn sb_qp_derivation_tpl_la(
 ) {
     debug_assert_eq!(tpl_beta.len(), sb_qindex.len());
     for (sb, &beta) in sb_qindex.iter_mut().zip(tpl_beta.iter()) {
-        let offset =
-            get_deltaq_offset(bit_depth, i32::from(*sb), beta, is_intra).clamp(-35, 35);
+        let offset = get_deltaq_offset(bit_depth, i32::from(*sb), beta, is_intra).clamp(-35, 35);
         // `CLIP3(1, MAXQ, qindex + offset)` — qindex 0 is lossless, unused.
         *sb = (i32::from(*sb) + offset).clamp(1, MAXQ) as u8;
     }
@@ -471,12 +465,15 @@ pub fn sb_setup_lambda(
         if sb_size_is_128 { 32 } else { 16 },
         i32::from(superres_denom),
     );
-    let (num_mi_w, num_mi_h) = if synth_blk_size == 32 { (8i32, 8i32) } else { (4, 4) };
+    let (num_mi_w, num_mi_h) = if synth_blk_size == 32 {
+        (8i32, 8i32)
+    } else {
+        (4, 4)
+    };
     let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
     let num_rows = (mi_rows + num_mi_h - 1) / num_mi_h;
     let num_bcols = (sb_mi_width_sr + num_mi_w - 1) / num_mi_w;
-    let num_brows =
-        ((if sb_size_is_128 { 32i32 } else { 16 }) + num_mi_h - 1) / num_mi_h;
+    let num_brows = ((if sb_size_is_128 { 32i32 } else { 16 }) + num_mi_h - 1) / num_mi_h;
 
     let mut base_block_count = 0i32;
     let mut log_sum = 0.0f64;
@@ -500,10 +497,7 @@ pub fn sb_setup_lambda(
         bit_depth,
     ));
     let new_rdmult = f64::from(crate::port_rc_process::compute_rd_mult(
-        lctx,
-        sb_qindex,
-        me_qindex,
-        bit_depth,
+        lctx, sb_qindex, me_qindex, bit_depth,
     ));
     let scaling_factor = new_rdmult / orig_rdmult;
     let scale_adj = scaling_factor / (log_sum / f64::from(base_block_count)).exp();
@@ -511,8 +505,7 @@ pub fn sb_setup_lambda(
     for row in row0..num_rows.min(row0 + num_brows) {
         for col in col0..num_cols.min(col0 + num_bcols) {
             let index = (row * num_cols + col) as usize;
-            tpl_sb_rdmult_scaling_factors[index] =
-                scale_adj * tpl_rdmult_scaling_factors[index];
+            tpl_sb_rdmult_scaling_factors[index] = scale_adj * tpl_rdmult_scaling_factors[index];
         }
     }
     // C `ppcs->blk_lambda_tuning = true`.

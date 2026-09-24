@@ -363,7 +363,7 @@ fn traced_low_delay_flat_cqp_five_frames() {
     // generate_rps_info: I slice + key -> refresh_frame_mask = 0xFF, toggles
     // reset to 0, counts zeroed, EARLY RETURN (no branch runs).
     let mut f0 = key_frame(0);
-    pp::picture_decision_per_picture(&mut f0, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f0, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(f0.rps.refresh_frame_mask, 0xFF);
     assert_eq!((f0.ref_list0_count, f0.ref_list1_count), (0, 0));
     assert_eq!(f0.reference_mode, pp::ReferenceMode::IntraSentinel);
@@ -387,7 +387,7 @@ fn traced_low_delay_flat_cqp_five_frames() {
     // prune_refs(1, 1) then folds LAST2/LAST3/GOLD onto LAST and ALT/ALT2
     // onto BWD.
     let mut f1 = inter_frame(1, 0);
-    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(
         f1.update_type,
         pp::FrameUpdateType::Lf,
@@ -426,7 +426,7 @@ fn traced_low_delay_flat_cqp_five_frames() {
     // prune_refs(2, 0) keeps LAST2 and folds everything else onto LAST/BWD,
     // with BWD itself already folded onto LAST.
     let mut f2 = inter_frame(2, 0);
-    pp::picture_decision_per_picture(&mut f2, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f2, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(
         f2.update_type,
         pp::FrameUpdateType::IntnlArf,
@@ -463,7 +463,7 @@ fn traced_low_delay_flat_cqp_five_frames() {
     // list 1: BWD row starts LAST2; j=1 in range, poc equal (0 == 0) ->
     // breakout, count 0.
     let mut f3 = inter_frame(3, 0);
-    pp::picture_decision_per_picture(&mut f3, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f3, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(f3.rps.refresh_frame_mask, 0x01);
     assert_eq!(ctx.lay0_toggle, 0, "CIRC_INC(2, 0, 2) wraps to 0");
     assert_eq!(f3.rps.ref_poc_array[LAST], 2);
@@ -480,7 +480,7 @@ fn traced_low_delay_flat_cqp_five_frames() {
     // GOLD=slot1=1, BWD=slot3=0, ALT2=slot4=0, ALT=slot2=2.
     // list 0: LAST2 0 != 3 -> 2; LAST3 0 == LAST2 -> breakout. count 2.
     let mut f4 = inter_frame(4, 0);
-    pp::picture_decision_per_picture(&mut f4, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f4, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(
         f4.update_type,
         pp::FrameUpdateType::Gf,
@@ -514,14 +514,14 @@ fn traced_long_base_ref_refresh_at_128() {
 
     // POC 127: 127 - 0 < 128, so bit 7 is NOT set.
     let mut p127 = inter_frame(127, 0);
-    pp::picture_decision_per_picture(&mut p127, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut p127, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(p127.rps.refresh_frame_mask & 0x80, 0);
     assert_eq!(ctx.last_long_base_pic, 0);
 
     // POC 128: 128 - 0 >= 128, so bit 7 is ORed in and the marker moves.
     let mut ctx = pp::PicDecisionCtx::default();
     let mut p128 = inter_frame(128, 0);
-    pp::picture_decision_per_picture(&mut p128, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut p128, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_ne!(p128.rps.refresh_frame_mask & 0x80, 0);
     assert_eq!(ctx.last_long_base_pic, 128);
 
@@ -530,7 +530,7 @@ fn traced_long_base_ref_refresh_at_128() {
     let mut nb = inter_frame(500, 0);
     nb.temporal_layer_index = 1;
     nb.hierarchical_levels = 1;
-    pp::picture_decision_per_picture(&mut nb, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut nb, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(nb.rps.refresh_frame_mask & 0x80, 0);
     assert_eq!(ctx.last_long_base_pic, 0);
 }
@@ -554,11 +554,11 @@ fn traced_random_access_flat_toggle_order() {
     let mut ctx = pp::PicDecisionCtx::default();
     let mut kf = key_frame(0);
     kf.pred_struct_type = pp::PredStructure::RandomAccess;
-    pp::picture_decision_per_picture(&mut kf, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut kf, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
 
     let mut f1 = inter_frame(1, 0);
     f1.pred_struct_type = pp::PredStructure::RandomAccess;
-    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(f1.rps.refresh_frame_mask, 0x02);
     assert_eq!(ctx.lay0_toggle, 1);
     // Flat RA always shows the frame (C overrides set_frame_display_params).
@@ -570,7 +570,7 @@ fn traced_random_access_flat_toggle_order() {
     // Second inter frame: base0 = 1 (POC 1), base1 = CIRC_DEC(1,0,7) = 0.
     let mut f2 = inter_frame(2, 0);
     f2.pred_struct_type = pp::PredStructure::RandomAccess;
-    pp::picture_decision_per_picture(&mut f2, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f2, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(
         f2.rps.ref_poc_array[LAST], 1,
         "slot 1 was refreshed by frame 1"
@@ -609,7 +609,7 @@ fn out_of_range_hierarchy_and_bad_mg_index_refuse() {
         pic.hierarchical_levels = hier;
         pic.temporal_layer_index = 0;
         assert_eq!(
-            pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 0, 0),
+            pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA),
             Err(pp::RpsError::UnsupportedBranch {
                 hierarchical_levels: hier,
                 temporal_layer: 0
@@ -626,7 +626,7 @@ fn out_of_range_hierarchy_and_bad_mg_index_refuse() {
     pic.hierarchical_levels = 3;
     pic.temporal_layer_index = 2;
     assert_eq!(
-        pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 3, 0),
+        pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 3, 0, &|_, _| pp::INVALID_LUMA),
         Err(pp::RpsError::MiniGopIndex {
             hierarchical_levels: 3,
             temporal_layer: 2,
@@ -639,14 +639,14 @@ fn out_of_range_hierarchy_and_bad_mg_index_refuse() {
     let ld = ld_flat_cqp_seq();
     let mut ctx = pp::PicDecisionCtx::default();
     let mut pic = inter_frame(1, 0);
-    assert!(pp::picture_decision_per_picture(&mut pic, &ld, &mut ctx, 0, 0).is_ok());
+    assert!(pp::picture_decision_per_picture(&mut pic, &ld, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).is_ok());
 
     let mut ctx = pp::PicDecisionCtx::default();
     let mut pic = inter_frame(1, 0);
     pic.pred_struct_type = pp::PredStructure::RandomAccess;
     pic.hierarchical_levels = 3;
     pic.temporal_layer_index = 2;
-    assert!(pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 1, 0).is_ok());
+    assert!(pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 1, 0, &|_, _| pp::INVALID_LUMA).is_ok());
 }
 
 /// The RTC flat branch (`pd_process.c:1954-1986`) — the refresh mask includes
@@ -663,7 +663,7 @@ fn traced_rtc_flat_refresh_mask_covers_unused_slots() {
     seq.mrp_ctrls.flat_max_refs = 4;
     let mut ctx = pp::PicDecisionCtx::default();
     let mut f1 = inter_frame(1, 0);
-    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(f1.rps.refresh_frame_mask, 0x02 | 0xf0);
     // Slots 0..3 in decreasing recency; list 1 mirrors LAST pre-prune.
     assert_eq!(ctx.lay0_toggle, 1);
@@ -671,7 +671,7 @@ fn traced_rtc_flat_refresh_mask_covers_unused_slots() {
     seq.mrp_ctrls.flat_max_refs = 2;
     let mut ctx = pp::PicDecisionCtx::default();
     let mut f1 = inter_frame(1, 0);
-    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0).unwrap();
+    pp::picture_decision_per_picture(&mut f1, &seq, &mut ctx, 0, 0, &|_, _| pp::INVALID_LUMA).unwrap();
     assert_eq!(f1.rps.refresh_frame_mask, 0x02 | 0xfc);
     assert_eq!(ctx.lay0_toggle, 1, "CIRC_INC(0, 0, 1) = 1");
 }

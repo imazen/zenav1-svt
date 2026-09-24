@@ -47,9 +47,9 @@ pub const TPL_PAD: i32 = 32;
 pub const REF_LIST_MAX_DEPTH: usize = 8;
 /// C `MAX_TPL_LA_SW` == `MAX_TPL_GROUP_SIZE` (definitions.h:57/67).
 pub const MAX_TPL_LA_SW: usize = 512;
-/// C `TPL_DEP_COST_SCALE_LOG2` (pcs.h or definitions) — fixed-point scale of
+/// C `TPL_DEP_COST_SCALE_LOG2` (definitions.h:65) — fixed-point scale of
 /// the stored stats.
-pub const TPL_DEP_COST_SCALE_LOG2: u32 = 7;
+pub const TPL_DEP_COST_SCALE_LOG2: u32 = 4;
 /// C `NEWMV` as a `PredictionMode` value (definitions.h:1205).
 pub const NEWMV: u8 = svtav1_types::prediction::PredictionMode::NewMv as u8;
 /// C `DC_PRED` re-export for stat fields.
@@ -428,7 +428,11 @@ pub fn update_neighbor_samples_open_loop(
             // pad unknown left-bottom pixels with value at (-1, -15):
             // left_ref[bheight+1 ..= 2*bheight] = left_ref[bheight].
             let v = left_ref[bheight];
-            for l in left_ref.iter_mut().take(1 + block_height_neigh).skip(1 + bheight) {
+            for l in left_ref
+                .iter_mut()
+                .take(1 + block_height_neigh)
+                .skip(1 + bheight)
+            {
                 *l = v;
             }
         }
@@ -463,7 +467,11 @@ pub fn update_neighbor_samples_open_loop(
         // pad unknown top-right pixels with value at (15, -1)
         if use_top_right_bottom_left && src_origin_x != 0 {
             let v = above_ref[bwidth];
-            for a in above_ref.iter_mut().take(1 + block_width_neigh).skip(1 + bwidth) {
+            for a in above_ref
+                .iter_mut()
+                .take(1 + block_width_neigh)
+                .skip(1 + bwidth)
+            {
                 *a = v;
             }
         }
@@ -510,7 +518,13 @@ pub struct TplXd {
 impl TplXd {
     /// `init_xd_tpl` — `mi_row`/`mi_col` are the block's position, the edges
     /// are `(0,0)`-relative distance-to-frame-edge in pixels.
-    pub fn new(mi_rows: i32, mi_cols: i32, block_size: BlockSize, mb_origin_x: u32, mb_origin_y: u32) -> Self {
+    pub fn new(
+        mi_rows: i32,
+        mi_cols: i32,
+        block_size: BlockSize,
+        mb_origin_x: u32,
+        mb_origin_y: u32,
+    ) -> Self {
         const MI_SIZE: i32 = 4;
         let bw = svtav1_dsp::port_obmc_pred::MI_SIZE_WIDE[block_size as usize] as i32;
         let bh = svtav1_dsp::port_obmc_pred::MI_SIZE_HIGH[block_size as usize] as i32;
@@ -541,10 +555,7 @@ impl TplXd {
 /// uses `MV_COST_NONE` (no rate update inside the dispenser). C also writes
 /// `full_ref_mv` and `sad_per_bit`, which no `mcomp.c` consumer reads —
 /// the port's [`crate::md_subpel::MvCostParams`] omits both on purpose.
-pub fn tpl_init_mv_cost_params(
-    ref_mv: Mv,
-    rdmult: u32,
-) -> crate::md_subpel::MvCostParams<'static> {
+pub fn tpl_init_mv_cost_params(ref_mv: Mv, rdmult: u32) -> crate::md_subpel::MvCostParams<'static> {
     crate::md_subpel::MvCostParams {
         ref_mv,
         mv_cost_type: crate::md_subpel::MvCostType::None,
@@ -609,25 +620,40 @@ pub fn tpl_subpel_search(
     let qindex = i32::from(qp_qindex) + extended_crf_qindex_offset;
     let qindex = qindex.min(crate::port_rc_vbr_cbr_qpick::MAXQ);
     let rc_update_type = match update_type {
-        crate::port_picstruct::FrameUpdateType::Kf => crate::port_rc_process::FrameUpdateType::KfUpdate,
-        crate::port_picstruct::FrameUpdateType::Lf => crate::port_rc_process::FrameUpdateType::LfUpdate,
-        crate::port_picstruct::FrameUpdateType::Gf => crate::port_rc_process::FrameUpdateType::GfUpdate,
-        crate::port_picstruct::FrameUpdateType::Arf => crate::port_rc_process::FrameUpdateType::ArfUpdate,
-        crate::port_picstruct::FrameUpdateType::Overlay => crate::port_rc_process::FrameUpdateType::OverlayUpdate,
-        crate::port_picstruct::FrameUpdateType::IntnlOverlay => crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate,
-        crate::port_picstruct::FrameUpdateType::IntnlArf => crate::port_rc_process::FrameUpdateType::IntnlArfUpdate,
+        crate::port_picstruct::FrameUpdateType::Kf => {
+            crate::port_rc_process::FrameUpdateType::KfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Lf => {
+            crate::port_rc_process::FrameUpdateType::LfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Gf => {
+            crate::port_rc_process::FrameUpdateType::GfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Arf => {
+            crate::port_rc_process::FrameUpdateType::ArfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Overlay => {
+            crate::port_rc_process::FrameUpdateType::OverlayUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
+            crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::IntnlArf => {
+            crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+        }
     };
-    let rdmult = crate::port_rc_process::compute_rd_mult_based_on_qindex(
-        8, rc_update_type, qindex,
-    ) / TPL_RDMULT_SCALING_FACTOR;
+    let rdmult = crate::port_rc_process::compute_rd_mult_based_on_qindex(8, rc_update_type, qindex)
+        / TPL_RDMULT_SCALING_FACTOR;
     let mv_cost_params = tpl_init_mv_cost_params(ref_mv, rdmult.max(0) as u32);
 
     let (w, h) = (
         svtav1_dsp::port_obmc_data::block_size_wide(block_size),
         svtav1_dsp::port_obmc_data::block_size_high(block_size),
     );
-    let ref_origin = ref_pic.origin + mb_origin_x as usize + mb_origin_y as usize * ref_pic.y_stride;
-    let src_origin = input_pic.origin + mb_origin_x as usize + mb_origin_y as usize * input_pic.y_stride;
+    let ref_origin =
+        ref_pic.origin + mb_origin_x as usize + mb_origin_y as usize * ref_pic.y_stride;
+    let src_origin =
+        input_pic.origin + mb_origin_x as usize + mb_origin_y as usize * input_pic.y_stride;
 
     let var_params = crate::md_subpel::SubpelSearchVarParams {
         src: input_pic.y,
@@ -943,29 +969,21 @@ fn tpl_filter_intra_edge(
             ip::filter_intra_edge_corner(above, left, origin);
         }
         if need_above && n_top_px > 0 {
-            let strength =
-                ip::intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, 0);
-            let n_px =
-                n_top_px as usize + ab_le + if need_right { txhpx as usize } else { 0 };
+            let strength = ip::intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, 0);
+            let n_px = n_top_px as usize + ab_le + if need_right { txhpx as usize } else { 0 };
             ip::filter_intra_edge(above, origin - ab_le, n_px, strength);
         }
         if need_left && n_left_px > 0 {
-            let strength =
-                ip::intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, 0);
-            let n_px =
-                n_left_px as usize + ab_le + if need_bottom { txwpx as usize } else { 0 };
+            let strength = ip::intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, 0);
+            let n_px = n_left_px as usize + ab_le + if need_bottom { txwpx as usize } else { 0 };
             ip::filter_intra_edge(left, origin - ab_le, n_px, strength);
         }
     }
-    if need_above
-        && ip::use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, 0)
-    {
+    if need_above && ip::use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, 0) {
         let n_px = txwpx as usize + if need_right { txhpx as usize } else { 0 };
         ip::upsample_intra_edge(above, origin, n_px);
     }
-    if need_left
-        && ip::use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, 0)
-    {
+    if need_left && ip::use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, 0) {
         let n_px = txhpx as usize + if need_bottom { txwpx as usize } else { 0 };
         ip::upsample_intra_edge(left, origin, n_px);
     }
@@ -1047,28 +1065,29 @@ fn tpl_predict_intra(
     pred_stride: usize,
 ) {
     let mode = tpl_mode(mode_u8).expect("TPL iterates DC..=PAETH");
-    let (above_row, left_row, corner): (&[u8], &[u8], u8) = if crate::intra_open_loop::is_directional_mode(mode) {
-        scratch_above.copy_from_slice(above0);
-        scratch_left.copy_from_slice(left0);
-        // above0 is a `TPL_NEIGH_SZ` slice with the corner at index 0 and
-        // the row at 1.. — but C's arrays put the corner at
-        // `data[MAX_TPL_SIZE-1]`, row at `data+MAX_TPL_SIZE`. The scratch
-        // copies keep the same layout, and `tpl_filter_intra_edge` takes
-        // `origin` = the row start index inside the slice.
-        tpl_filter_intra_edge(
-            p_angle,
-            max_w,
-            max_h,
-            mb_origin_x,
-            mb_origin_y,
-            scratch_above,
-            scratch_left,
-            1, // corner at [0], row at [1..]
-        );
-        (&scratch_above[1..], &scratch_left[1..], scratch_above[0])
-    } else {
-        (&above0[1..], &left0[1..], above0[0])
-    };
+    let (above_row, left_row, corner): (&[u8], &[u8], u8) =
+        if crate::intra_open_loop::is_directional_mode(mode) {
+            scratch_above.copy_from_slice(above0);
+            scratch_left.copy_from_slice(left0);
+            // above0 is a `TPL_NEIGH_SZ` slice with the corner at index 0 and
+            // the row at 1.. — but C's arrays put the corner at
+            // `data[MAX_TPL_SIZE-1]`, row at `data+MAX_TPL_SIZE`. The scratch
+            // copies keep the same layout, and `tpl_filter_intra_edge` takes
+            // `origin` = the row start index inside the slice.
+            tpl_filter_intra_edge(
+                p_angle,
+                max_w,
+                max_h,
+                mb_origin_x,
+                mb_origin_y,
+                scratch_above,
+                scratch_left,
+                1, // corner at [0], row at [1..]
+            );
+            (&scratch_above[1..], &scratch_left[1..], scratch_above[0])
+        } else {
+            (&above0[1..], &left0[1..], above0[0])
+        };
     let n = crate::intra_open_loop::Neighbours {
         above: &above_row[..size],
         left: &left_row[..size],
@@ -1080,7 +1099,13 @@ fn tpl_predict_intra(
     // angle — unreachable here because `p_angle` comes from
     // `mode_to_angle_map` exactly as in C.
     let _ = crate::intra_open_loop::intra_prediction_open_loop_mb(
-        mode, p_angle, n, size, size, pred, pred_stride,
+        mode,
+        p_angle,
+        n,
+        size,
+        size,
+        pred,
+        pred_stride,
     );
 }
 
@@ -1153,7 +1178,13 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
             continue;
         }
 
-        let xd = TplXd::new(ctx.mi_rows, ctx.mi_cols, block_size, mb_origin_x, mb_origin_y);
+        let xd = TplXd::new(
+            ctx.mi_rows,
+            ctx.mi_cols,
+            block_size,
+            mb_origin_x,
+            mb_origin_y,
+        );
         let edges = xd.edges();
 
         let dst_mb_offset =
@@ -1169,8 +1200,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
         let mut tpl_stats = TplStats::default();
         let mut best_intra_mode: u8 = DC_PRED;
 
-        let src_stats_idx = ((mb_origin_y as usize) >> 4) * ctx.aligned16_width
-            + ((mb_origin_x as usize) >> 4);
+        let src_stats_idx =
+            ((mb_origin_y as usize) >> 4) * ctx.aligned16_width + ((mb_origin_x as usize) >> 4);
 
         let mut predictor = [0u8; MAX_TPL_SAMPLES_PER_BLOCK * 2];
         let mut src_diff = [0i16; MAX_TPL_SAMPLES_PER_BLOCK];
@@ -1203,10 +1234,13 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                             bsize,
                         );
                     } else {
+                        // C's `input_pic->y_buffer` is the frame-origin
+                        // pointer — `TplPic.y` is the whole padded
+                        // allocation, so hand over the origin-shifted slice.
                         update_neighbor_samples_open_loop(
                             true,
                             true,
-                            input_pic.y,
+                            &input_pic.y[input_pic.origin..],
                             src_stride,
                             input_pic.width,
                             input_pic.height,
@@ -1253,7 +1287,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     update_neighbor_samples_open_loop(
                         true,
                         true,
-                        input_pic.y,
+                        &input_pic.y[input_pic.origin..],
                         src_stride,
                         input_pic.width,
                         input_pic.height,
@@ -1317,9 +1351,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                                 8,
                                 false,
                             );
-                            i64::from(aom_satd(
-                                &coeff[..(size * size) >> subsample_tx],
-                            )) << subsample_tx
+                            i64::from(aom_satd(&coeff[..(size * size) >> subsample_tx]))
+                                << subsample_tx
                         };
                         if intra_cost < best_intra_cost {
                             best_mode = ois_intra_mode;
@@ -1336,13 +1369,20 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
             if !ctx.enable_me_16x16 {
                 me_mb_offset = (me_mb_offset - 1) / 4;
             }
-            let total_me_cnt = if ctx.slice_type == crate::port_picstruct::SliceType::I {
+            let total_me_cnt = if ctx.slice_type == crate::port_picstruct::SliceType::I
+                || me_results.total_me_candidate_index.is_empty()
+            {
+                // I slices never run ME; an empty result set is the port's
+                // "no ME ran" (a ref pyramid no source resolved to), which
+                // the emit path also treats as absent rather than searched.
                 0
             } else {
                 me_results.total_me_candidate_index[me_mb_offset] as usize
             };
-            let me_block_results =
-                &me_results.me_candidate_array[me_mb_offset * me_results.max_cand..];
+            let me_block_results = me_results
+                .me_candidate_array
+                .get(me_mb_offset * me_results.max_cand..)
+                .unwrap_or(&[]);
 
             for me_cand in me_block_results.iter().take(total_me_cnt) {
                 // consider only single refs
@@ -1356,23 +1396,27 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     me_cand.ref_idx_l1() as usize
                 };
                 // exclude this cand if the reference is within the sliding
-                // window and does not have valid TPL recon data
-                let ref_grp_idx =
-                    ctx.tpl_data.ref_tpl_group_idx[list_index][ref_pic_index] as usize;
-                if ref_grp_idx > 0
-                    && ctx.base_tpl_valid_pic[ref_grp_idx] == 0
-                {
+                // window and does not have valid TPL recon data. C's field
+                // is an int8_t where -1 means "out of window"; the index is
+                // only read once `> 0` proves it in-window.
+                let ref_grp_idx = ctx.tpl_data.ref_tpl_group_idx[list_index][ref_pic_index];
+                if ref_grp_idx > 0 && ctx.base_tpl_valid_pic[ref_grp_idx as usize] == 0 {
                     continue;
                 }
-                let rf_idx =
-                    crate::port_picstruct::get_ref_frame_type(list_index as u8, ref_pic_index as u8)
-                        as i32
-                        - 1;
+                let rf_idx = crate::port_picstruct::get_ref_frame_type(
+                    list_index as u8,
+                    ref_pic_index as u8,
+                ) as i32
+                    - 1;
                 let me_offset = me_mb_offset * me_results.max_refs
-                    + if list_index != 0 { me_results.max_l0 } else { 0 }
+                    + if list_index != 0 {
+                        me_results.max_l0
+                    } else {
+                        0
+                    }
                     + ref_pic_index;
-                let ref_pic = ref_pics
-                    [ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].pic_index];
+                let ref_pic =
+                    ref_pics[ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].pic_index];
 
                 let mut x_curr_mv = i32::from(me_results.me_mv_array[me_offset].x) * 8;
                 let mut y_curr_mv = i32::from(me_results.me_mv_array[me_offset].y) * 8;
@@ -1383,7 +1427,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 if mb_origin_x as i32 + bsize as i32 + (x_curr_mv >> 3)
                     > TPL_PAD + ref_pic.max_width as i32 - 1
                 {
-                    x_curr_mv = (TPL_PAD + ref_pic.max_width as i32 - 1
+                    x_curr_mv = (TPL_PAD + ref_pic.max_width as i32
+                        - 1
                         - (mb_origin_x as i32 + bsize as i32))
                         * 8;
                 }
@@ -1393,7 +1438,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 if mb_origin_y as i32 + bsize as i32 + (y_curr_mv >> 3)
                     > TPL_PAD + ref_pic.max_height as i32 - 1
                 {
-                    y_curr_mv = (TPL_PAD + ref_pic.max_height as i32 - 1
+                    y_curr_mv = (TPL_PAD + ref_pic.max_height as i32
+                        - 1
                         - (mb_origin_y as i32 + bsize as i32))
                         * 8;
                 }
@@ -1442,7 +1488,10 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         &mut conv_buf,
                         mb_origin_y as i32,
                         mb_origin_x as i32,
-                        svtav1_dsp::port_subpel_params::Mv { x: best_mv.x, y: best_mv.y },
+                        svtav1_dsp::port_subpel_params::Mv {
+                            x: best_mv.x,
+                            y: best_mv.y,
+                        },
                         &ctx.sf_identity,
                         &cp,
                         0, // interp_filters
@@ -1465,7 +1514,11 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     i64::from(crate::inter_me::sad::nxm_sad_kernel(
                         &input_pic.y[src_mb..],
                         src_stride,
-                        if subpel_mv { &compensated_blk } else { &ref_pic.y[ref_origin_index..] },
+                        if subpel_mv {
+                            &compensated_blk
+                        } else {
+                            &ref_pic.y[ref_origin_index..]
+                        },
                         if subpel_mv { size } else { ref_pic.y_stride },
                         size,
                         size,
@@ -1478,7 +1531,11 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         size << subsample_tx,
                         &input_pic.y[src_mb..],
                         src_stride << subsample_tx,
-                        if subpel_mv { &compensated_blk } else { &ref_pic.y[ref_origin_index..] },
+                        if subpel_mv {
+                            &compensated_blk
+                        } else {
+                            &ref_pic.y[ref_origin_index..]
+                        },
                         (if subpel_mv { size } else { ref_pic.y_stride }) << subsample_tx,
                     );
                     svtav1_dsp::fwd_txfm_pf::wht_fwd_txfm(
@@ -1490,15 +1547,15 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         8,
                         false,
                     );
-                    i64::from(aom_satd(&coeff[..(size * size) >> subsample_tx]))
-                        << subsample_tx
+                    i64::from(aom_satd(&coeff[..(size * size) >> subsample_tx])) << subsample_tx
                 };
 
                 if inter_cost < best_inter_cost {
                     if tpl_ctrls.use_sad_in_src_search == 0 {
                         best_coeff.copy_from_slice(&coeff);
                     }
-                    best_ref_poc = ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].picture_number;
+                    best_ref_poc =
+                        ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].picture_number;
                     best_rf_idx = rf_idx;
                     best_inter_cost = inter_cost;
                     final_best_mv = best_mv;
@@ -1515,18 +1572,20 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     // Re-derive the winning prediction (the SAD path did not
                     // keep its coeff block).
                     let list_index = if best_rf_idx < 4 { 0 } else { 1 };
-                    let ref_pic_index =
-                        if best_rf_idx >= 4 { best_rf_idx - 4 } else { best_rf_idx } as usize;
-                    let ref_pic = ref_pics
-                        [ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].pic_index];
+                    let ref_pic_index = if best_rf_idx >= 4 {
+                        best_rf_idx - 4
+                    } else {
+                        best_rf_idx
+                    } as usize;
+                    let ref_pic =
+                        ref_pics[ctx.tpl_data.tpl_ref_ds[list_index][ref_pic_index].pic_index];
                     let ref_origin_index = (ref_pic.origin as i32
                         + mb_origin_x as i32
                         + (final_best_mv.x as i32 >> 3)
                         + (mb_origin_y as i32 + (final_best_mv.y as i32 >> 3))
                             * ref_pic.y_stride as i32)
                         as usize;
-                    let subpel_mv =
-                        (final_best_mv.x & 0x7) != 0 || (final_best_mv.y & 0x7) != 0;
+                    let subpel_mv = (final_best_mv.x & 0x7) != 0 || (final_best_mv.y & 0x7) != 0;
                     if subpel_mv {
                         let mut conv_buf = [0u16; MAX_TPL_SAMPLES_PER_BLOCK];
                         let cp = svtav1_dsp::port_convolve::ConvolveParams::no_round(
@@ -1539,14 +1598,15 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                             svtav1_dsp::port_enc_make_pred::SrcPlanes::Lbd(ref_pic.y),
                             ref_pic.origin,
                             ref_pic.y_stride,
-                            svtav1_dsp::port_enc_make_pred::DstPlane::Lbd(
-                                &mut compensated_blk,
-                            ),
+                            svtav1_dsp::port_enc_make_pred::DstPlane::Lbd(&mut compensated_blk),
                             size,
                             &mut conv_buf,
                             mb_origin_y as i32,
                             mb_origin_x as i32,
-                            svtav1_dsp::port_subpel_params::Mv { x: final_best_mv.x, y: final_best_mv.y },
+                            svtav1_dsp::port_subpel_params::Mv {
+                                x: final_best_mv.x,
+                                y: final_best_mv.y,
+                            },
                             &ctx.sf_identity,
                             &cp,
                             0, // interp_filters
@@ -1571,7 +1631,11 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         size << subsample_tx,
                         &input_pic.y[src_mb..],
                         src_stride << subsample_tx,
-                        if subpel_mv { &compensated_blk } else { &ref_pic.y[ref_origin_index..] },
+                        if subpel_mv {
+                            &compensated_blk
+                        } else {
+                            &ref_pic.y[ref_origin_index..]
+                        },
                         (if subpel_mv { size } else { ref_pic.y_stride }) << subsample_tx,
                     );
                     svtav1_dsp::fwd_txfm_pf::wht_fwd_txfm(
@@ -1600,10 +1664,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 } else {
                     0
                 };
-                tpl_stats.srcrf_rate =
-                    (rate_cost << TPL_DEP_COST_SCALE_LOG2) << subsample_tx;
-                tpl_stats.srcrf_dist =
-                    (recon_error << TPL_DEP_COST_SCALE_LOG2) << subsample_tx;
+                tpl_stats.srcrf_rate = (rate_cost << TPL_DEP_COST_SCALE_LOG2) << subsample_tx;
+                tpl_stats.srcrf_dist = (recon_error << TPL_DEP_COST_SCALE_LOG2) << subsample_tx;
             }
             if ctx.tpl_lad_mg > 0 {
                 // store src based stats
@@ -1640,13 +1702,10 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 best_rf_idx as usize
             };
 
-            let ref_pic: TplPic<'_> = if ctx.tpl_data.ref_in_slide_window[list_index]
-                [ref_pic_index]
+            let ref_pic: TplPic<'_> = if ctx.tpl_data.ref_in_slide_window[list_index][ref_pic_index]
             {
                 let mut ref_frame_idx = 0usize;
-                while ref_frame_idx < MAX_TPL_LA_SW
-                    && ctx.poc_map_idx[ref_frame_idx] != ref_poc
-                {
+                while ref_frame_idx < MAX_TPL_LA_SW && ctx.poc_map_idx[ref_frame_idx] != ref_poc {
                     ref_frame_idx += 1;
                 }
                 assert!(
@@ -1677,14 +1736,15 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     svtav1_dsp::port_enc_make_pred::SrcPlanes::Lbd(ref_pic.y),
                     ref_pic.origin,
                     ref_pic.y_stride,
-                    svtav1_dsp::port_enc_make_pred::DstPlane::Lbd(
-                        &mut recon.y[dst_mb_offset..],
-                    ),
+                    svtav1_dsp::port_enc_make_pred::DstPlane::Lbd(&mut recon.y[dst_mb_offset..]),
                     dst_buffer_stride,
                     &mut conv_buf,
                     mb_origin_y as i32,
                     mb_origin_x as i32,
-                    svtav1_dsp::port_subpel_params::Mv { x: final_best_mv.x, y: final_best_mv.y },
+                    svtav1_dsp::port_subpel_params::Mv {
+                        x: final_best_mv.x,
+                        y: final_best_mv.y,
+                    },
                     &ctx.sf_identity,
                     &cp,
                     0, // interp_filters
@@ -1729,10 +1789,13 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         bsize,
                     );
                 } else {
+                    // `recon.y` is the whole padded allocation — C's
+                    // `recon_pic->y_buffer` is the frame-origin pointer, so
+                    // pass the origin-shifted slice.
                     update_neighbor_samples_open_loop(
                         true,
                         true,
-                        recon.y,
+                        &recon.y[recon.origin..],
                         dst_buffer_stride,
                         input_pic.width,
                         input_pic.height,
@@ -1743,6 +1806,17 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         &mut above0,
                         &mut left0,
                     );
+                    if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_y == 0 {
+                        eprintln!(
+                            "  NDBG x={} y={} after-openloop corner={} a0={} l0={} l1={}",
+                            mb_origin_x,
+                            mb_origin_y,
+                            above0[0],
+                            above0[1],
+                            left0[0],
+                            left0[1]
+                        );
+                    }
                 }
                 let n = crate::intra_open_loop::Neighbours {
                     above: &above0[1..1 + size],
@@ -1751,7 +1825,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     has_left: mb_origin_x > 0,
                     has_above: mb_origin_y > 0,
                 };
-                let _ = crate::intra_open_loop::intra_prediction_open_loop_mb(
+                let pred_rc = crate::intra_open_loop::intra_prediction_open_loop_mb(
                     svtav1_types::prediction::PredictionMode::DcPred,
                     0,
                     n,
@@ -1760,11 +1834,22 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     &mut recon.y[dst_mb_offset..],
                     dst_buffer_stride,
                 );
+                if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_y == 0 {
+                    eprintln!(
+                        "  PDBG x={} y={} rc={:?} p0={} p15={} p240={}",
+                        mb_origin_x,
+                        mb_origin_y,
+                        pred_rc,
+                        recon.y[dst_mb_offset],
+                        recon.y[dst_mb_offset + 15],
+                        recon.y[dst_mb_offset + 15 * dst_buffer_stride],
+                    );
+                }
             } else {
                 update_neighbor_samples_open_loop(
                     true,
                     true,
-                    recon.y,
+                    &recon.y[recon.origin..],
                     dst_buffer_stride,
                     input_pic.width,
                     input_pic.height,
@@ -1797,6 +1882,35 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     // predict straight into the recon buffer — C's dst_buffer
                     &mut recon.y[dst_mb_offset..],
                     dst_buffer_stride,
+                );
+            }
+
+            if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_x < 32 && mb_origin_y == 0
+            {
+                let mut psum = 0u64;
+                for r in 0..size {
+                    for c in 0..size {
+                        psum += u64::from(recon.y[dst_mb_offset + r * dst_buffer_stride + c])
+                            * (r * size + c + 1) as u64;
+                    }
+                }
+                eprintln!(
+                    "  PREDBG x={} y={} corner={} above0={} above1={} above15={} leftm1={} left0={} left14={} psum={} dcsad={} bim={} dip={} size={} bsize={}",
+                    mb_origin_x,
+                    mb_origin_y,
+                    above0[0],
+                    above0[1],
+                    above0[2],
+                    above0[16],
+                    left0[0],
+                    left0[1],
+                    left0[15],
+                    psum,
+                    intra_dc_sad_path,
+                    best_intra_mode,
+                    disable_intra_pred,
+                    size,
+                    bsize,
                 );
             }
         }
@@ -1856,10 +1970,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         for k in 1..=3usize {
                             let src_row = dst_mb_offset + i * dst_buffer_stride;
                             let dst_row = dst_mb_offset + (i + k) * dst_buffer_stride;
-                            let row: [u8; MAX_TPL_SIZE] = recon.y
-                                [src_row..src_row + size]
-                                .try_into()
-                                .unwrap();
+                            let row: [u8; MAX_TPL_SIZE] =
+                                recon.y[src_row..src_row + size].try_into().unwrap();
                             recon.y[dst_row..dst_row + size].copy_from_slice(&row[..size]);
                         }
                     }
@@ -1867,9 +1979,8 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     for i in (0..size).step_by(2) {
                         let src_row = dst_mb_offset + i * dst_buffer_stride;
                         let dst_row = dst_mb_offset + (i + 1) * dst_buffer_stride;
-                        let row: [u8; MAX_TPL_SIZE] = recon.y[src_row..src_row + size]
-                            .try_into()
-                            .unwrap();
+                        let row: [u8; MAX_TPL_SIZE] =
+                            recon.y[src_row..src_row + size].try_into().unwrap();
                         recon.y[dst_row..dst_row + size].copy_from_slice(&row[..size]);
                     }
                 }
@@ -1885,10 +1996,39 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
 
         tpl_stats.recrf_dist = tpl_stats.srcrf_dist.max(tpl_stats.recrf_dist);
         tpl_stats.recrf_rate = tpl_stats.srcrf_rate.max(tpl_stats.recrf_rate);
-        if ctx.tpl_data.tpl_slice_type != crate::port_picstruct::SliceType::I && best_rf_idx != -1
-        {
+        if ctx.tpl_data.tpl_slice_type != crate::port_picstruct::SliceType::I && best_rf_idx != -1 {
             tpl_stats.mv = final_best_mv;
             tpl_stats.ref_frame_poc = best_ref_poc;
+        }
+
+        if std::env::var_os("SVTAV1_BLKDBG").is_some() {
+            let mut rsum = 0u64;
+            for r in 0..size {
+                for c in 0..size {
+                    rsum += u64::from(recon.y[dst_mb_offset + r * dst_buffer_stride + c])
+                        * (r * size + c + 1) as u64;
+                }
+            }
+            let mut ssum = 0u64;
+            for r in 0..size {
+                for c in 0..size {
+                    ssum += u64::from(input_pic.y[src_mb + r * src_stride + c])
+                        * (r * size + c + 1) as u64;
+                }
+            }
+            eprintln!(
+                "  BLKDBG x={} y={} sz={} src={} rec={} mode={} brf={} err={} rsum={} ssum={}",
+                mb_origin_x,
+                mb_origin_y,
+                size,
+                tpl_stats.srcrf_dist,
+                tpl_stats.recrf_dist,
+                best_mode as i32,
+                best_rf_idx,
+                recon_error,
+                rsum,
+                ssum
+            );
         }
 
         // Motion flow dependency dispenser.
@@ -1947,11 +2087,7 @@ pub struct TplPrepPic {
 /// C `tpl_regular_setup_me_refs`: for each non-I picture's two ref lists,
 /// record the ref count, mark window membership, and fill `tpl_ref_ds` with
 /// (poc, ref-picture index).
-pub fn tpl_regular_setup_me_refs(
-    group_pocs: &[u64],
-    pic: &TplPrepPic,
-    tpl_data: &mut TplData,
-) {
+pub fn tpl_regular_setup_me_refs(group_pocs: &[u64], pic: &TplPrepPic, tpl_data: &mut TplData) {
     for list_index in 0..2usize {
         let ref_list_count = pic.ref_list_count_try[list_index];
         if list_index == 0 {
@@ -2055,8 +2191,7 @@ pub fn generate_lambda_scaling_factor(
                             + (mi_col >> tpl_synth_size_offset))
                             as usize;
                         let st = &tpl_stats[index1];
-                        let mc_dep_delta =
-                            rdcost_tpl(base_rdmult, st.mc_dep_rate, st.mc_dep_dist);
+                        let mc_dep_delta = rdcost_tpl(base_rdmult, st.mc_dep_rate, st.mc_dep_dist);
                         recrf_dist_sum += st.recrf_dist;
                         mc_dep_delta_sum += mc_dep_delta;
                     }
@@ -2111,8 +2246,9 @@ pub fn tpl_qindex(
         } else {
             crate::rate_control::compute_qdelta(
                 q_val,
-                q_val * DELTA_RATE_NEW[hierarchical_levels as usize]
-                    [tpl_temporal_layer_index as usize],
+                q_val
+                    * DELTA_RATE_NEW[hierarchical_levels as usize]
+                        [tpl_temporal_layer_index as usize],
                 8,
             )
         };
@@ -2154,17 +2290,31 @@ pub fn tpl_mc_flow_dispenser<'a>(
         ctx0.tpl_data.tpl_temporal_layer_index,
     );
     let rc_update_type = match ctx0.update_type {
-        crate::port_picstruct::FrameUpdateType::Kf => crate::port_rc_process::FrameUpdateType::KfUpdate,
-        crate::port_picstruct::FrameUpdateType::Lf => crate::port_rc_process::FrameUpdateType::LfUpdate,
-        crate::port_picstruct::FrameUpdateType::Gf => crate::port_rc_process::FrameUpdateType::GfUpdate,
-        crate::port_picstruct::FrameUpdateType::Arf => crate::port_rc_process::FrameUpdateType::ArfUpdate,
-        crate::port_picstruct::FrameUpdateType::Overlay => crate::port_rc_process::FrameUpdateType::OverlayUpdate,
-        crate::port_picstruct::FrameUpdateType::IntnlOverlay => crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate,
-        crate::port_picstruct::FrameUpdateType::IntnlArf => crate::port_rc_process::FrameUpdateType::IntnlArfUpdate,
+        crate::port_picstruct::FrameUpdateType::Kf => {
+            crate::port_rc_process::FrameUpdateType::KfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Lf => {
+            crate::port_rc_process::FrameUpdateType::LfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Gf => {
+            crate::port_rc_process::FrameUpdateType::GfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Arf => {
+            crate::port_rc_process::FrameUpdateType::ArfUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::Overlay => {
+            crate::port_rc_process::FrameUpdateType::OverlayUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
+            crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+        }
+        crate::port_picstruct::FrameUpdateType::IntnlArf => {
+            crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+        }
     };
-    let base_rdmult = crate::port_rc_process::compute_rd_mult_based_on_qindex(
-        8, rc_update_type, qindex,
-    ) / TPL_RDMULT_SCALING_FACTOR;
+    let base_rdmult =
+        crate::port_rc_process::compute_rd_mult_based_on_qindex(8, rc_update_type, qindex)
+            / TPL_RDMULT_SCALING_FACTOR;
 
     for (sb_index, &(org_x, org_y, is_full)) in sb_geom.iter().enumerate() {
         let mut ctx = make_ctx(sb_index);
@@ -2200,7 +2350,6 @@ pub fn tpl_mc_flow_dispenser<'a>(
     );
     base_rdmult
 }
-
 
 // =============================================================================
 // tpl_mc_flow_synthesizer + generate_r0beta (src_ops_process.c:1409-1690)
@@ -2244,10 +2393,22 @@ fn get_overlap_area(
     bh: i32,
 ) -> i32 {
     let (width, height) = match block {
-        0 => (grid_pos_col + bw - ref_pos_col, grid_pos_row + bh - ref_pos_row),
-        1 => (ref_pos_col + bw - grid_pos_col, grid_pos_row + bh - ref_pos_row),
-        2 => (grid_pos_col + bw - ref_pos_col, ref_pos_row + bh - grid_pos_row),
-        _ => (ref_pos_col + bw - grid_pos_col, ref_pos_row + bh - grid_pos_row),
+        0 => (
+            grid_pos_col + bw - ref_pos_col,
+            grid_pos_row + bh - ref_pos_row,
+        ),
+        1 => (
+            ref_pos_col + bw - grid_pos_col,
+            grid_pos_row + bh - ref_pos_row,
+        ),
+        2 => (
+            grid_pos_col + bw - ref_pos_col,
+            ref_pos_row + bh - grid_pos_row,
+        ),
+        _ => (
+            ref_pos_col + bw - grid_pos_col,
+            ref_pos_row + bh - grid_pos_row,
+        ),
     };
     width * height
 }
@@ -2259,8 +2420,8 @@ fn delta_rate_cost(delta_rate: i64, recrf_dist: i64, srcrf_dist: i64, pix_num: i
     if srcrf_dist <= 128 {
         return delta_rate;
     }
-    let dr = (delta_rate >> (TPL_DEP_COST_SCALE_LOG2 + AV1_PROB_COST_SHIFT)) as f64
-        / pix_num as f64;
+    let dr =
+        (delta_rate >> (TPL_DEP_COST_SCALE_LOG2 + AV1_PROB_COST_SHIFT)) as f64 / pix_num as f64;
     let log_den = beta.ln() / 2.0f64.ln() + 2.0 * dr;
     let rate_cost = if log_den > 10.0f64.ln() / 2.0f64.ln() {
         let rc = ((1.0f64 / beta).ln() * pix_num as f64) / 2.0f64.ln() / 2.0;
@@ -2348,10 +2509,10 @@ fn tpl_model_update_b(
                 let mut idx = 0;
                 while idx < mi_width {
                     let cell = (((ref_mi_row + idy) >> shift) * (mi_cols_sr >> shift)
-                        + ((ref_mi_col + idx) >> shift))
-                        as usize;
+                        + ((ref_mi_col + idx) >> shift)) as usize;
                     let st = &mut ref_pic.stats[cell];
-                    st.mc_dep_dist += ((cur_dep_dist + mc_dep_dist) * overlap_area as i64) / pix_num;
+                    st.mc_dep_dist +=
+                        ((cur_dep_dist + mc_dep_dist) * overlap_area as i64) / pix_num;
                     st.mc_dep_rate += ((delta_rate + mc_dep_rate) * overlap_area as i64) / pix_num;
                     idx += step;
                 }
@@ -2531,8 +2692,7 @@ pub fn generate_r0beta(
     while row < cm_mi_rows {
         let mut col = 0;
         while col < mi_cols_sr {
-            let st =
-                &tpl_stats[((row >> shift) * (mi_cols_sr >> shift) + (col >> shift)) as usize];
+            let st = &tpl_stats[((row >> shift) * (mi_cols_sr >> shift) + (col >> shift)) as usize];
             let mc_dep_delta = rdcost_tpl(base_rdmult, st.mc_dep_rate, st.mc_dep_dist);
             recrf_dist_base_sum += st.recrf_dist;
             mc_dep_delta_base_sum += mc_dep_delta;
@@ -2546,9 +2706,18 @@ pub fn generate_r0beta(
     }
 
     let mc_dep_cost_base = (recrf_dist_base_sum << RDDIV_BITS) + mc_dep_delta_base_sum;
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_R0DBG").is_some() {
+        std::eprintln!(
+            "R0DBG recrf={} mcdep={} count={} rdmult={}",
+            recrf_dist_base_sum,
+            mc_dep_delta_base_sum,
+            count,
+            base_rdmult,
+        );
+    }
     let (r0, tpl_is_valid) = if mc_dep_cost_base != 0 {
-        let mut r0 =
-            ((recrf_dist_base_sum << RDDIV_BITS) as f64) / (mc_dep_cost_base as f64);
+        let mut r0 = ((recrf_dist_base_sum << RDDIV_BITS) as f64) / (mc_dep_cost_base as f64);
         if max_dist > (mc_dep_delta_base_sum / count) * 100
             && max_dist > (mc_dep_delta_base_sum * 9 / 10)
         {
@@ -2593,11 +2762,10 @@ pub fn generate_r0beta(
                 let mut col = mi_col_sr;
                 while col < mi_col_end_sr {
                     if row < mi_rows && col < mi_cols_sr {
-                        let index = ((row >> shift) * (mi_cols_sr >> shift) + (col >> shift))
-                            as usize;
+                        let index =
+                            ((row >> shift) * (mi_cols_sr >> shift) + (col >> shift)) as usize;
                         let st = &tpl_stats[index];
-                        let mc_dep_delta =
-                            rdcost_tpl(base_rdmult, st.mc_dep_rate, st.mc_dep_dist);
+                        let mc_dep_delta = rdcost_tpl(base_rdmult, st.mc_dep_rate, st.mc_dep_dist);
                         recrf_dist_sum += st.recrf_dist;
                         mc_dep_delta_sum += mc_dep_delta;
                     }
@@ -2617,7 +2785,6 @@ pub fn generate_r0beta(
 
     R0Beta { r0, tpl_is_valid }
 }
-
 
 // =============================================================================
 // tpl_mc_flow (src_ops_process.c:1793-1975)
@@ -2775,6 +2942,9 @@ pub fn tpl_mc_flow<'a>(
             }
             let (_, right) = window.split_at_mut(frame_idx);
             let frame = &mut right[0];
+            if std::env::var_os("SVTAV1_BLKDBG").is_some() {
+                eprintln!("RUN poc={} tl={}", frame.picture_number, frame.tpl_data.tpl_temporal_layer_index);
+            }
             dispense(TplDispenseArgs {
                 frame_idx,
                 frame,
@@ -2792,8 +2962,7 @@ pub fn tpl_mc_flow<'a>(
     // Synthesizer — REVERSE order over valid pics, propagating each frame's
     // dependency deltas onto its references' grids.
     {
-        let valid: alloc::vec::Vec<bool> =
-            window[..frames_in_sw].iter().map(|w| w.valid).collect();
+        let valid: alloc::vec::Vec<bool> = window[..frames_in_sw].iter().map(|w| w.valid).collect();
         let mut synth: alloc::vec::Vec<TplSynthPic<'_>> = window[..frames_in_sw]
             .iter_mut()
             .map(|w| TplSynthPic {
@@ -2818,6 +2987,54 @@ pub fn tpl_mc_flow<'a>(
     }
 
     frames_in_sw
+}
+
+/// The TPL results a picture carries into its own encode — C's
+/// `pcs->tpl_ctrls`, the four `r0_*` flags, `pcs->r0`,
+/// `pcs->tpl_is_valid`, `pa_me_data->tpl_beta`/`tpl_rdmult_scaling_factors`,
+/// `tpl_group_size`/`used_tpl_frame_num`, plus the member's open-loop ME
+/// results (`pa_me_data->me_results`) which the TPL dispenser computes and
+/// the picture's own encode reuses verbatim.
+///
+/// Produced per released mini-GOP by `EncodePipeline::run_tpl_stage` — the
+/// pipeline wiring that replaces `initial_rc_process.c`'s
+/// `store_extended_group`/`set_tpl_group`/`set_tpl_params`,
+/// `src_ops_process.c`'s `tpl_prep_info`/`tpl_mc_flow`, and
+/// `rc_init_frame_stats`' `svt_aom_generate_r0beta`, at `tpl_lad_mg == 0`
+/// (the only lookahead shape the one-mini-GOP RA buffer can express).
+pub struct FrameTplIn {
+    /// `pcs->tpl_ctrls` — this picture's own copy, from `set_tpl_group` +
+    /// `set_tpl_params` on its `PicParams`.
+    pub tpl_ctrls: crate::port_picstruct::TplControls,
+    /// `pcs->synth_blk_size` for the GROUP BASE that produced this
+    /// picture's stats — the synthesizer block size `tpl_mc_flow` used
+    /// (the base's `tpl_ctrls.synth_blk_size`, not necessarily this
+    /// picture's own).
+    pub synth_blk_size: u8,
+    /// `pcs->r0_gen`/`r0_qps`/`r0_delta_qp_md`/`r0_delta_qp_quant`
+    /// (`initial_rc_process.c:733-762`).
+    pub flags: crate::rate_control::R0Flags,
+    /// `pcs->r0` — the group's geometric-mean base factor; `0` when
+    /// `!tpl_is_valid`.
+    pub r0: f64,
+    /// `pcs->tpl_is_valid` — `svt_aom_generate_r0beta`'s validity verdict.
+    pub tpl_is_valid: bool,
+    /// `pcs->tpl_group_size` — nonzero only on the group base picture.
+    pub tpl_group_size: u32,
+    /// `pcs->used_tpl_frame_num` — nonzero only on the group base.
+    pub used_tpl_frame_num: u32,
+    /// `pa_me_data->tpl_beta` — per-superblock beta (indexed by SB index).
+    pub tpl_beta: alloc::vec::Vec<f64>,
+    /// `pa_me_data->tpl_rdmult_scaling_factors` — the PRE-
+    /// `sb_setup_lambda` grid; the SB loop folds it through
+    /// [`crate::sb_qindex::sb_setup_lambda`] before use.
+    pub tpl_rdmult_scaling_factors: alloc::vec::Vec<f64>,
+    /// The member's open-loop ME results — the same `FrameMe` the
+    /// picture's own encode computes against the same reference planes,
+    /// reused so PA ME runs once per picture (`pa_me` equivalent).
+    /// `None` when the member ran no open-loop ME (I slice, or a
+    /// reference pyramid the search needs was missing).
+    pub frame_me: Option<crate::inter_me_arm::FrameMe>,
 }
 
 #[cfg(test)]
@@ -2993,16 +3210,7 @@ mod tests {
                 },
             ];
             // Outer bsize for synth 16 is BLOCK_16X16; walk only block (4,4).
-            tpl_model_update(
-                &mut pics,
-                1,
-                4,
-                4,
-                BlockSize::Block16x16,
-                2,
-                16,
-                false,
-            );
+            tpl_model_update(&mut pics, 1, 4, 4, BlockSize::Block16x16, 2, 16, false);
             // mv (0,0): ref_pos (16,16) sits exactly on grid cell (16,16) ->
             // only quadrant 0 overlaps, area 256 = pix_num.
             let ref_cell = &pics[0].stats[5];

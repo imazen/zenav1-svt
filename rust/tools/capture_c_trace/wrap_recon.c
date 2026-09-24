@@ -2997,3 +2997,138 @@ uint32_t __wrap_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeD
     return idx;
 }
 
+
+/* ---------------------------------------------------------------------------
+ * svt_av1_get_q_index_from_qstep_ratio — the TPL qstep-ratio probe.
+ *
+ * WHY: crf_qindex_calc's intra/qstep arm maps
+ *   qstep_ratio = sqrt(ppcs->r0) * r0_weight * qp_scale_weight
+ * to a qindex through this function. When the port's base_q_idx differs by
+ * one, the cause is either a different r0 (upstream TPL stats) or a different
+ * mapping — watching the call pair (ratio in, qindex out) separates them.
+ *
+ * Env: SVT_QSTEP_OUT (file). Pure pass-through when unset. Appends.
+ * ------------------------------------------------------------------------- */
+int __real_svt_av1_get_q_index_from_qstep_ratio(int leaf_qindex, double qstep_ratio, int bit_depth);
+
+int __wrap_svt_av1_get_q_index_from_qstep_ratio(int leaf_qindex, double qstep_ratio, int bit_depth) {
+    const int ret = __real_svt_av1_get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, bit_depth);
+    const char*  path = getenv("SVT_QSTEP_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f) {
+        f = fopen(path, "a");
+    }
+    if (f) {
+        fprintf(f,
+                "QSTEP leaf=%d ratio=%.10f bd=%d -> %d\n",
+                leaf_qindex,
+                qstep_ratio,
+                bit_depth,
+                ret);
+        fflush(f);
+    }
+    return ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * svt_aom_sb_qp_derivation_tpl_la — per-SB TPL qindex/lambda probe.
+ *
+ * WHY: at aq_mode=2 the key frame's OBU diverges while TPL stats and qindex
+ * match — the remaining inputs to MD are the per-SB qindex map
+ * (`sb_ptr->qindex`), the per-synth-block rdmult factors
+ * (`tpl_rdmult_scaling_factors` -> `tpl_sb_rdmult_scaling_factors`), and the
+ * `blk_lambda_tuning` flag. Dump all of them once per call so the port's
+ * plan can be diffed cell-by-cell.
+ *
+ * Env: SVT_TPLQP_OUT (file). Pure pass-through when unset. Appends.
+ * ------------------------------------------------------------------------- */
+void __real_svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct SequenceControlSet* scs);
+
+void __wrap_svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct SequenceControlSet* scs) {
+    __real_svt_av1_rc_init_sb_qindex(pcs, scs);
+    const char*  path = getenv("SVT_TPLQP_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f)
+        f = fopen(path, "a");
+    if (f) {
+        PictureParentControlSet* ppcs = pcs->ppcs;
+        FrameHeader*             fh   = &ppcs->frm_hdr;
+        fprintf(f,
+                "TPLQP pic=%u dq=%d res=%d qmd=%d qquant=%d valid=%d lambdatune=%d n_sb=%u\n",
+                (unsigned)pcs->picture_number,
+                (int)fh->delta_q_params.delta_q_present,
+                (int)fh->delta_q_params.delta_q_res,
+                (int)ppcs->r0_delta_qp_md,
+                (int)ppcs->r0_delta_qp_quant,
+                (int)ppcs->tpl_is_valid,
+                (int)ppcs->blk_lambda_tuning,
+                (unsigned)pcs->sb_total_count);
+        for (uint32_t i = 0; i < pcs->sb_total_count; ++i) {
+            fprintf(f,
+                    "SBQP pic=%u sb=%u qindex=%u beta=%.10f\n",
+                    (unsigned)pcs->picture_number,
+                    i,
+                    (unsigned)pcs->sb_ptr_array[i]->qindex,
+                    ppcs->pa_me_data && ppcs->pa_me_data->tpl_beta ? ppcs->pa_me_data->tpl_beta[i]
+                                                                 : -1.0);
+        }
+        /* Synth-block factor grids: index layout mirrors sb_setup_lambda's
+         * (num_cols = mi_cols/num_mi_w). Print the full arrays so the port's
+         * grid can be diffed positionally. */
+        {
+            const int nb     = ppcs->tpl_ctrls.synth_blk_size == 32 ? 8 : 4;
+            int       mi_w   = (int)((pcs->frame_width + 3) >> 2);
+            int       mi_h   = (int)((pcs->frame_height + 3) >> 2);
+            int       ncols  = (mi_w + nb - 1) / nb;
+            int       nrows  = (mi_h + nb - 1) / nb;
+            for (int i = 0; i < ncols * nrows; ++i) {
+                fprintf(f,
+                        "SBF pic=%u i=%d base=%.10f sb=%.10f\n",
+                        (unsigned)pcs->picture_number,
+                        i,
+                        ppcs->pa_me_data && ppcs->pa_me_data->tpl_rdmult_scaling_factors
+                            ? ppcs->pa_me_data->tpl_rdmult_scaling_factors[i]
+                            : -1.0,
+                        ppcs->pa_me_data && ppcs->pa_me_data->tpl_sb_rdmult_scaling_factors
+                            ? ppcs->pa_me_data->tpl_sb_rdmult_scaling_factors[i]
+                            : -1.0);
+            }
+        }
+        fflush(f);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * svt_aom_set_tuned_blk_lambda — per-block MD lambda probe (aq_mode=2).
+ *
+ * The per-SB plan (SVT_TPLQP) matches exactly yet block decisions diverge:
+ * the remaining MD input is the per-block lambda this function writes into
+ * `ctx->full_lambda_md`/`fast_lambda_md`. Dump block origin + bsize + the
+ * two 8-bit lambdas so the port's per-leaf lambda can be diffed directly.
+ *
+ * Env: SVT_BLKLAMBDA_OUT (file). Pure pass-through when unset. Appends.
+ * ------------------------------------------------------------------------- */
+void __real_svt_aom_set_tuned_blk_lambda(struct ModeDecisionContext* ctx, struct PictureControlSet* pcs);
+
+void __wrap_svt_aom_set_tuned_blk_lambda(struct ModeDecisionContext* ctx, struct PictureControlSet* pcs) {
+    __real_svt_aom_set_tuned_blk_lambda(ctx, pcs);
+    const char*  path = getenv("SVT_BLKLAMBDA_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f)
+        f = fopen(path, "a");
+    if (f) {
+        fprintf(f,
+                "BLKL pic=%u mi=(%d,%d) bsize=%d picfl8=%u picfa8=%u -> fl8=%u fa8=%u fl10=%u fa10=%u\n",
+                (unsigned)pcs->picture_number,
+                (int)ctx->blk_org_y / 4,
+                (int)ctx->blk_org_x / 4,
+                (int)ctx->blk_geom->bsize,
+                (unsigned)ctx->ed_ctx->pic_full_lambda[EB_8_BIT_MD],
+                (unsigned)ctx->ed_ctx->pic_fast_lambda[EB_8_BIT_MD],
+                (unsigned)ctx->full_lambda_md[EB_8_BIT_MD],
+                (unsigned)ctx->fast_lambda_md[EB_8_BIT_MD],
+                (unsigned)ctx->full_lambda_md[EB_10_BIT_MD],
+                (unsigned)ctx->fast_lambda_md[EB_10_BIT_MD]);
+        fflush(f);
+    }
+}

@@ -177,7 +177,7 @@ pub struct Lambdas {
 /// rounded product, NOT a rounding cast. Negative products cannot occur (both
 /// factors are non-negative), so the two agree here.
 #[inline]
-fn scale_lambda(v: u32, scale: f64) -> u32 {
+pub(crate) fn scale_lambda(v: u32, scale: f64) -> u32 {
     (f64::from(v) * scale + 0.5) as u32
 }
 
@@ -266,6 +266,58 @@ pub struct TplLambdaGeom {
     pub sb_size_is_128: bool,
 }
 
+/// `svt_aom_set_tuned_blk_lambda`'s scaling-factor geometry in mi units —
+/// the log-domain geometric mean of the TPL rdmult factors covering one
+/// block, without the lambda application. Callers that know the block's
+/// mi dims but not its [`BlockSize`] (the leaf funnel's per-block lambda
+/// path) use this; [`set_tuned_blk_lambda`] is this plus the scale.
+///
+/// Returns `None` for C's superres degenerate case (`base_block_count ==
+/// 0`) exactly as [`set_tuned_blk_lambda`] does.
+#[allow(clippy::too_many_arguments)]
+pub fn tpl_scale_for_block(
+    factors: &[f64],
+    mi_row: i32,
+    mi_col: i32,
+    bw_mi: i32,
+    bh_mi: i32,
+    mi_rows: i32,
+    unscaled_width: i32,
+    superres_denom: i32,
+    synth_blk_32: bool,
+    sb_size_is_128: bool,
+) -> Option<f64> {
+    let mi_col_sr = coded_to_superres_mi(mi_col, superres_denom);
+    // C `((width + 15) / 16) << 2` — the picture's column bound in mi units.
+    let mi_cols_sr = ((unscaled_width + 15) / 16) << 2;
+    let block_mi_width_sr = coded_to_superres_mi(bw_mi, superres_denom);
+    // C `bsize_base` is BLOCK_32X32 or BLOCK_16X16 -> 8 or 4 mi units.
+    let num_mi_w = if synth_blk_32 { 8 } else { 4 };
+    let num_mi_h = num_mi_w;
+    let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
+    let num_rows = (mi_rows + num_mi_h - 1) / num_mi_h;
+    let num_bcols = (block_mi_width_sr + num_mi_w - 1) / num_mi_w;
+    let num_brows = (bh_mi + num_mi_h - 1) / num_mi_h;
+    let sb_bcol_end = superblock_tpl_column_end(sb_size_is_128, superres_denom, mi_col, num_mi_w);
+
+    let mut base_block_count = 0i32;
+    let mut geom_mean_of_scale = 0.0f64;
+    let row_start = mi_row / num_mi_w;
+    let col_start = mi_col_sr / num_mi_h;
+    for row in row_start..num_rows.min(row_start + num_brows) {
+        let col_end = num_cols.min(col_start + num_bcols).min(sb_bcol_end);
+        for col in col_start..col_end {
+            let index = (row * num_cols + col) as usize;
+            geom_mean_of_scale += factors[index].ln();
+            base_block_count += 1;
+        }
+    }
+    if base_block_count == 0 {
+        return None;
+    }
+    Some((geom_mean_of_scale / f64::from(base_block_count)).exp())
+}
+
 /// C `svt_aom_set_tuned_blk_lambda` (mode_decision.c:4105, EXPORTED).
 ///
 /// The geometric mean of the TPL rdmult scaling factors over the block,
@@ -287,38 +339,20 @@ pub fn set_tuned_blk_lambda(
     factors: &[f64],
     pic_lambdas: &Lambdas,
 ) -> Option<Lambdas> {
-    let mi_col_sr = coded_to_superres_mi(g.mi_col, g.superres_denom);
-    // C `((width + 15) / 16) << 2` — the picture's column bound in mi units.
-    let mi_cols_sr = ((g.unscaled_width + 15) / 16) << 2;
     let bw_mi = i32::from(NUM_4X4_BLOCKS_WIDE[g.bsize.as_index()]);
     let bh_mi = i32::from(NUM_4X4_BLOCKS_HIGH[g.bsize.as_index()]);
-    let block_mi_width_sr = coded_to_superres_mi(bw_mi, g.superres_denom);
-    // C `bsize_base` is BLOCK_32X32 or BLOCK_16X16 -> 8 or 4 mi units.
-    let num_mi_w = if g.synth_blk_32 { 8 } else { 4 };
-    let num_mi_h = num_mi_w;
-    let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
-    let num_rows = (g.mi_rows + num_mi_h - 1) / num_mi_h;
-    let num_bcols = (block_mi_width_sr + num_mi_w - 1) / num_mi_w;
-    let num_brows = (bh_mi + num_mi_h - 1) / num_mi_h;
-    let sb_bcol_end =
-        superblock_tpl_column_end(g.sb_size_is_128, g.superres_denom, g.mi_col, num_mi_w);
-
-    let mut base_block_count = 0i32;
-    let mut geom_mean_of_scale = 0.0f64;
-    let row_start = g.mi_row / num_mi_w;
-    let col_start = mi_col_sr / num_mi_h;
-    for row in row_start..num_rows.min(row_start + num_brows) {
-        let col_end = num_cols.min(col_start + num_bcols).min(sb_bcol_end);
-        for col in col_start..col_end {
-            let index = (row * num_cols + col) as usize;
-            geom_mean_of_scale += factors[index].ln();
-            base_block_count += 1;
-        }
-    }
-    if base_block_count == 0 {
-        return None;
-    }
-    let geom_mean_of_scale = (geom_mean_of_scale / f64::from(base_block_count)).exp();
+    let geom_mean_of_scale = tpl_scale_for_block(
+        factors,
+        g.mi_row,
+        g.mi_col,
+        bw_mi,
+        bh_mi,
+        g.mi_rows,
+        g.unscaled_width,
+        g.superres_denom,
+        g.synth_blk_32,
+        g.sb_size_is_128,
+    )?;
     Some(Lambdas {
         full: [
             scale_lambda(pic_lambdas.full[0], geom_mean_of_scale),
@@ -329,6 +363,70 @@ pub fn set_tuned_blk_lambda(
             scale_lambda(pic_lambdas.fast[1], geom_mean_of_scale),
         ],
     })
+}
+
+/// The `blk_lambda_tuning` carrier for the leaf funnel — C's
+/// `ppcs->pa_me_data->tpl_rdmult_scaling_factors` AFTER
+/// `svt_aom_sb_qp_derivation_tpl_la`/`sb_setup_lambda` folded the
+/// `sb_setup_lambda` rdmult into it (`rc_aq.c`), plus the picture geometry
+/// `set_tuned_blk_lambda` needs. `evaluate_leaf` calls
+/// [`TplRdmult::scale_for`] per block, mirroring the
+/// `svt_aom_set_tuned_blk_lambda` call sites at `coding_loop.c:368` and
+/// `product_coding_loop.c:9041`/`:9353`.
+#[derive(Debug)]
+pub struct TplRdmult {
+    /// The whole-picture POST-`sb_setup_lambda` factor grid, indexed
+    /// `row * num_cols + col` over the 16- or 32-px synth-block grid.
+    /// C mutates this array per superblock inside `sb_qp_derivation_tpl_la`
+    /// before MD reads it; the pipeline runs that pass over every SB before
+    /// the funnel starts, so the grid is complete here.
+    pub factors: alloc::vec::Vec<f64>,
+    /// C `cm->mi_rows`.
+    pub mi_rows: i32,
+    /// C `ppcs->enhanced_unscaled_pic->width`.
+    pub unscaled_width: i32,
+    /// C `ppcs->superres_denom`.
+    pub superres_denom: i32,
+    /// C `ppcs->tpl_ctrls.synth_blk_size == 32`.
+    pub synth_blk_32: bool,
+    /// C `scs->seq_header.sb_size == BLOCK_128X128`.
+    pub sb_size_is_128: bool,
+    /// `ed_ctx->pic_full_lambda[EB_8_BIT_MD]` — `reset_enc_dec`'s
+    /// `svt_aom_lambda_assign(pcs, .., EB_EIGHT_BIT, base_q_idx,
+    /// multiply_lambda=true)` output (enc_dec_process.c:176-182): the
+    /// `compute_rd_mult` chain with NO `lambda_weight` and no per-SB
+    /// stats/qindex modulation. `svt_aom_set_tuned_blk_lambda` scales THIS
+    /// by the block geom mean into `full_lambda_md[0]`
+    /// (mode_decision.c:4144) — not the `av1_lambda_assign_md` value.
+    pub pic_full8: u32,
+    /// `ed_ctx->pic_full_lambda[EB_10_BIT_MD]` (enc_dec_process.c:183-187).
+    pub pic_full10: u32,
+    /// `ed_ctx->pic_fast_lambda[EB_8_BIT_MD]` — the raw
+    /// `av1_lambda_mode_decision8_bit_sad[base_q_idx]` table entry times
+    /// `lambda_scale_factors[update_type]` (it does NOT go through
+    /// `update_lambda`). `pic_fast_lambda[EB_10_BIT_MD]` exists in C but
+    /// its only readers are inter paths (product_coding_loop.c:1924/:2371),
+    /// which this funnel never reaches at 10 bits.
+    pub pic_fast8: u32,
+}
+
+impl TplRdmult {
+    /// `svt_aom_set_tuned_blk_lambda`'s scaling factor for one block —
+    /// `tpl_scale_for_block` on this grid.
+    pub fn scale_for(&self, mi_row: i32, mi_col: i32, bw_mi: i32, bh_mi: i32) -> Option<f64> {
+        tpl_scale_for_block(
+            &self.factors,
+            mi_row,
+            mi_col,
+            bw_mi,
+            bh_mi,
+            self.mi_rows,
+            self.unscaled_width,
+            self.superres_denom,
+            self.synth_blk_32,
+            self.sb_size_is_128,
+        )
+    }
 }
 
 /// The value C writes into all four lambdas in the degenerate superres case,

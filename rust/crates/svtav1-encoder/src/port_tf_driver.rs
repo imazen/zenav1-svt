@@ -39,38 +39,36 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use svtav1_dsp::port_convolve::{ConvolveParams, InterpFilterKind};
-use svtav1_dsp::port_enc_make_pred::{enc_make_inter_predictor, DstPlane, SrcPlanes};
+use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
 use svtav1_dsp::port_inter_predictor::{broadcast_interp_filter, make_interp_filters};
 use svtav1_dsp::port_scale_factors::ScaleFactors;
 use svtav1_dsp::port_subpel_params::{MbEdges as DspEdges, Mv, RefGeometry};
-use svtav1_dsp::port_tf_pred::{simple_luma_unipred, TfDst, TfSrc};
+use svtav1_dsp::port_tf_pred::{TfDst, TfSrc, simple_luma_unipred};
 use svtav1_dsp::variance::variance_diff;
 
 use crate::inter_me::context::{
-    MeB64Output, MeContext, MePicParams, MeRefs, MeSrcBufs, MeType, FULL_SAD_SEARCH,
+    FULL_SAD_SEARCH, MeB64Output, MeContext, MePicParams, MeRefs, MeSrcBufs, MeType,
 };
 use crate::inter_me::motion_estimation_b64;
 use crate::inter_me::sad::{mvxt, mvyt};
 use crate::inter_me::tables::TAB8X8;
-use crate::inter_me_arm::{PaPicture, PaPlane, PA_BORDER};
+use crate::inter_me_arm::{PA_BORDER, PaPicture, PaPlane};
+use crate::port_enc_mode_config::ResolutionRange;
 use crate::port_enc_mode_config::leaf::get_enable_me_8x8;
 use crate::port_enc_mode_config::me::{apply_me_tf_signals, sig_deriv_me_tf};
-use crate::port_enc_mode_config::ResolutionRange;
 use crate::port_picstruct::{
-    tf_motion_direction, FrameUpdateType, PicParams, SliceType, TfMemberPool,
+    FrameUpdateType, PicParams, SliceType, TfMemberPool, tf_motion_direction,
 };
 use crate::port_preanalysis as pre;
 use crate::port_temporal_filtering as tf;
 use crate::port_temporal_filtering::{
-    apply_filtering_block_plane_wise_offsets, apply_filtering_central,
+    IDX_32X32_TO_IDX_16X16, TF_BH, TF_BW, TfKernelCtx, TfPredictionRequest, TfSearchCtrls,
+    TfSplitCtx, apply_filtering_block_plane_wise_offsets, apply_filtering_central,
     apply_temporal_filter_planewise_medium, convert_64x64_info_to_32x32_info_mvs,
-    derive_tf_32x32_block_split_flag, derive_tf_shift, get_final_filtered_pixels,
-    init_tf_chroma, init_tf_mv_dist_th, pad_and_decimate_filtered_pic,
-    subpel_idx_16x16, subpel_idx_32x32, subpel_idx_8x8, subpel_params_for_block,
-    subpel_search,
-    tf_32x32_inter_prediction_requests, tf_64x64_inter_prediction_request, tf_block_grid,
-    tf_use_64x64_pred, TfKernelCtx, TfPredictionRequest, TfSearchCtrls, TfSplitCtx,
-    IDX_32X32_TO_IDX_16X16, TF_BW, TF_BH,
+    derive_tf_32x32_block_split_flag, derive_tf_shift, get_final_filtered_pixels, init_tf_chroma,
+    init_tf_mv_dist_th, pad_and_decimate_filtered_pic, subpel_idx_8x8, subpel_idx_16x16,
+    subpel_idx_32x32, subpel_params_for_block, subpel_search, tf_32x32_inter_prediction_requests,
+    tf_64x64_inter_prediction_request, tf_block_grid, tf_use_64x64_pred,
 };
 
 /// `BLK_PELS` — one 64x64 TF block.
@@ -264,8 +262,16 @@ pub struct RaTfScs {
 /// output (per-block state is fully re-initialised; `tf_tot_*` is a
 /// commutative sum).
 pub fn tf_segment_counts(aligned_width: u32, aligned_height: u32) -> (u32, u32) {
-    let rows = if ((aligned_height + 32) / 64) < 6 { 1 } else { 8 };
-    let cols = if ((aligned_width + 32) / 64) < 10 { 1 } else { 6 };
+    let rows = if ((aligned_height + 32) / 64) < 6 {
+        1
+    } else {
+        8
+    };
+    let cols = if ((aligned_width + 32) / 64) < 10 {
+        1
+    } else {
+        6
+    };
     (rows, cols)
 }
 
@@ -319,12 +325,7 @@ impl Default for TfSearchState {
 impl TfSearchState {
     /// The [`TfKernelCtx`] view the medium kernel and the 32x32 prediction
     /// requests read.
-    fn kernel_ctx(
-        &self,
-        tf_mv_dist_th: u32,
-        tf_chroma: bool,
-        decay: [u32; 3],
-    ) -> TfKernelCtx {
+    fn kernel_ctx(&self, tf_mv_dist_th: u32, tf_chroma: bool, decay: [u32; 3]) -> TfKernelCtx {
         TfKernelCtx {
             tf_block_col: 0,
             tf_block_row: 0,
@@ -470,9 +471,7 @@ pub fn ra_mctf_filter(
     // Split `frames` around the centre so the centre is mutable and the
     // members stay readable.
     let (head, tail) = frames.split_at_mut(centre_slot);
-    let (centre_buf, after) = tail
-        .split_first_mut()
-        .expect("centre_slot indexes frames");
+    let (centre_buf, after) = tail.split_first_mut().expect("centre_slot indexes frames");
     let member_bufs = |i: usize| -> &TfPicBufs {
         if i < centre_slot {
             &head[i]
@@ -549,15 +548,10 @@ pub fn ra_mctf_filter(
         centre.is_key_frame,
         i32::from(centre.temporal_layer_index),
     );
-    let q_val_fp8 =
-        crate::var_boost::convert_qindex_to_q_fp8(active_worst_quality, scs.bit_depth);
-    let qtarget = tf::tf_q_val_target_fp8(
-        q_val_fp8,
-        offset_idx,
-        u32::from(centre.hierarchical_levels),
-    );
-    let delta_qindex_f =
-        crate::var_boost::compute_qdelta_fp(q_val_fp8, qtarget, scs.bit_depth);
+    let q_val_fp8 = crate::var_boost::convert_qindex_to_q_fp8(active_worst_quality, scs.bit_depth);
+    let qtarget =
+        tf::tf_q_val_target_fp8(q_val_fp8, offset_idx, u32::from(centre.hierarchical_levels));
+    let delta_qindex_f = crate::var_boost::compute_qdelta_fp(q_val_fp8, qtarget, scs.bit_depth);
     let q = active_worst_quality + delta_qindex_f;
     let q_decay_fp8 = tf::tf_q_decay_fp8(q);
     const CONST_0DOT7_FP16: i32 = 45875;
@@ -603,23 +597,35 @@ pub fn ra_mctf_filter(
     // --- `produce_temporally_filtered_pic` --------------------------------
     let grid = tf_block_grid(scs.aligned_width, scs.aligned_height, 1, 1);
     let (blk_cols, blk_rows) = (grid.blk_cols as usize, grid.blk_rows as usize);
-    let stride_pred = [TF_BW, grid.blk_width_ch as usize, grid.blk_width_ch as usize];
+    let stride_pred = [
+        TF_BW,
+        grid.blk_width_ch as usize,
+        grid.blk_width_ch as usize,
+    ];
     let (ss_x, ss_y) = (1u32, 1u32);
 
-    let mut pred: [Vec<u8>; 3] =
-        [alloc::vec![0u8; BLK_PELS], alloc::vec![0u8; BLK_PELS], alloc::vec![0u8; BLK_PELS]];
-    let mut accum: [Vec<u32>; 3] =
-        [alloc::vec![0u32; BLK_PELS], alloc::vec![0u32; BLK_PELS], alloc::vec![0u32; BLK_PELS]];
-    let mut count: [Vec<u16>; 3] =
-        [alloc::vec![0u16; BLK_PELS], alloc::vec![0u16; BLK_PELS], alloc::vec![0u16; BLK_PELS]];
+    let mut pred: [Vec<u8>; 3] = [
+        alloc::vec![0u8; BLK_PELS],
+        alloc::vec![0u8; BLK_PELS],
+        alloc::vec![0u8; BLK_PELS],
+    ];
+    let mut accum: [Vec<u32>; 3] = [
+        alloc::vec![0u32; BLK_PELS],
+        alloc::vec![0u32; BLK_PELS],
+        alloc::vec![0u32; BLK_PELS],
+    ];
+    let mut count: [Vec<u16>; 3] = [
+        alloc::vec![0u16; BLK_PELS],
+        alloc::vec![0u16; BLK_PELS],
+        alloc::vec![0u16; BLK_PELS],
+    ];
     let mut conv_buf = alloc::vec![0u16; 128 * 128];
 
     let centre_pic = tf_pic_params(scs, centre, update_type);
     let mut me_out = MeB64Output::default();
     let mut st = TfSearchState::default();
 
-    let total_segments =
-        (scs.tf_segment_row_count * scs.tf_segment_column_count).max(1) as usize;
+    let total_segments = (scs.tf_segment_row_count * scs.tf_segment_column_count).max(1) as usize;
     let geom = RefGeometry {
         super_block_size: scs.sb_size,
         frame_width: scs.aligned_width as i32,
@@ -635,278 +641,221 @@ pub fn ra_mctf_filter(
             blk_rows,
         );
         for blk_row in y_lo..y_hi {
-        for blk_col in x_lo..x_hi {
-            let sb_origin_x = (blk_col * TF_BW) as u32;
-            let sb_origin_y = (blk_row * TF_BH) as u32;
+            for blk_col in x_lo..x_hi {
+                let sb_origin_x = (blk_col * TF_BW) as u32;
+                let sb_origin_y = (blk_row * TF_BH) as u32;
 
-            let stride = [
-                centre_buf.pa.full.stride,
-                centre_buf.u.stride,
-                centre_buf.v.stride,
-            ];
-            let blk_y_src_offset = blk_col * TF_BW + blk_row * TF_BH * stride[0];
-            let blk_ch_src_offset = blk_col * grid.blk_width_ch as usize
-                + blk_row * grid.blk_height_ch as usize * stride[1];
+                let stride = [
+                    centre_buf.pa.full.stride,
+                    centre_buf.u.stride,
+                    centre_buf.v.stride,
+                ];
+                let blk_y_src_offset = blk_col * TF_BW + blk_row * TF_BH * stride[0];
+                let blk_ch_src_offset = blk_col * grid.blk_width_ch as usize
+                    + blk_row * grid.blk_height_ch as usize * stride[1];
 
-            for a in accum.iter_mut() {
-                a.fill(0);
-            }
-            for c in count.iter_mut() {
-                c.fill(0);
-            }
+                for a in accum.iter_mut() {
+                    a.fill(0);
+                }
+                for c in count.iter_mut() {
+                    c.fill(0);
+                }
 
-            // `apply_filtering_central` — the centre picture's own weight.
-            {
-                let (org_y, org_c) = (centre_buf.pa.full.org, centre_buf.u.org);
-                apply_filtering_central(
-                    tf_chroma,
-                    &centre_buf.pa.full.buf[org_y + blk_y_src_offset..],
-                    &centre_buf.u.buf[org_c + blk_ch_src_offset..],
-                    &centre_buf.v.buf[org_c + blk_ch_src_offset..],
-                    stride[0],
-                    &mut accum,
-                    &mut count,
-                    TF_BW,
-                    TF_BH,
-                    ss_x,
-                    ss_y,
-                );
-            }
+                // `apply_filtering_central` — the centre picture's own weight.
+                {
+                    let (org_y, org_c) = (centre_buf.pa.full.org, centre_buf.u.org);
+                    apply_filtering_central(
+                        tf_chroma,
+                        &centre_buf.pa.full.buf[org_y + blk_y_src_offset..],
+                        &centre_buf.u.buf[org_c + blk_ch_src_offset..],
+                        &centre_buf.v.buf[org_c + blk_ch_src_offset..],
+                        stride[0],
+                        &mut accum,
+                        &mut count,
+                        TF_BW,
+                        TF_BH,
+                        ss_x,
+                        ss_y,
+                    );
+                }
 
-            // The three frame segments: past (0..past-1), centre (skipped —
-            // C still walks it and hits `frame_index == index_center`),
-            // future (past+1..past+future).
-            let start_frame_index = [0usize, index_center, index_center + 1];
-            let end_frame_index = [
-                index_center.saturating_sub(1),
-                index_center,
-                index_center + window.future_altref_nframes,
-            ];
-            for seg in 0..3 {
-                let mut frame_index = start_frame_index[seg];
-                while frame_index <= end_frame_index[seg] {
-                    let next = frame_index + usize::from(ctrls.ref_frame_factor.max(1));
-                    if frame_index != index_center {
-                        let m = window.members[frame_index]
-                            .as_ref()
-                            .expect("TF window slot unfilled");
-                        // The ahd-error and bright-region skips
-                        // (`:2864-2914`).
-                        let low_ahd_err = centre.aligned_width * centre.aligned_height;
-                        let th: i64 = if centre.slice_type == SliceType::I { 20 } else { 40 };
-                        let ahd = i64::from(m.ahd_error_to_central);
-                        let avg = i64::from(centre.tf_avg_ahd_error);
-                        if ahd > i64::from(low_ahd_err)
-                            && (ahd - avg) * 100 > th * avg
-                        {
-                            frame_index = next;
-                            continue;
-                        }
-                        let mut bright_change_region_cnt = 0usize;
-                        let m_stats = stats[m.index].as_deref();
-                        let (m_regions, c_regions) = (
-                            m_stats.map(|s| &s.average_intensity_per_region),
-                            centre_stats.map(|s| &s.average_intensity_per_region),
-                        );
-                        for w in 0..scs.regions_per_width {
-                            for h in 0..scs.regions_per_height {
-                                let (mv, cv) = (
-                                    m_regions.map_or(0, |r| r[w][h]) as i64,
-                                    c_regions.map_or(0, |r| r[w][h]) as i64,
-                                );
-                                if (mv - cv).abs() > 2 && m.avg_luma != centre.tf_avg_luma {
-                                    bright_change_region_cnt += 1;
+                // The three frame segments: past (0..past-1), centre (skipped —
+                // C still walks it and hits `frame_index == index_center`),
+                // future (past+1..past+future).
+                let start_frame_index = [0usize, index_center, index_center + 1];
+                let end_frame_index = [
+                    index_center.saturating_sub(1),
+                    index_center,
+                    index_center + window.future_altref_nframes,
+                ];
+                for seg in 0..3 {
+                    let mut frame_index = start_frame_index[seg];
+                    while frame_index <= end_frame_index[seg] {
+                        let next = frame_index + usize::from(ctrls.ref_frame_factor.max(1));
+                        if frame_index != index_center {
+                            let m = window.members[frame_index]
+                                .as_ref()
+                                .expect("TF window slot unfilled");
+                            // The ahd-error and bright-region skips
+                            // (`:2864-2914`).
+                            let low_ahd_err = centre.aligned_width * centre.aligned_height;
+                            let th: i64 = if centre.slice_type == SliceType::I {
+                                20
+                            } else {
+                                40
+                            };
+                            let ahd = i64::from(m.ahd_error_to_central);
+                            let avg = i64::from(centre.tf_avg_ahd_error);
+                            if ahd > i64::from(low_ahd_err) && (ahd - avg) * 100 > th * avg {
+                                frame_index = next;
+                                continue;
+                            }
+                            let mut bright_change_region_cnt = 0usize;
+                            let m_stats = stats[m.index].as_deref();
+                            let (m_regions, c_regions) = (
+                                m_stats.map(|s| &s.average_intensity_per_region),
+                                centre_stats.map(|s| &s.average_intensity_per_region),
+                            );
+                            for w in 0..scs.regions_per_width {
+                                for h in 0..scs.regions_per_height {
+                                    let (mv, cv) = (
+                                        m_regions.map_or(0, |r| r[w][h]) as i64,
+                                        c_regions.map_or(0, |r| r[w][h]) as i64,
+                                    );
+                                    if (mv - cv).abs() > 2 && m.avg_luma != centre.tf_avg_luma {
+                                        bright_change_region_cnt += 1;
+                                    }
                                 }
                             }
-                        }
-                        if bright_change_region_cnt
-                            >= (14 * scs.regions_per_width * scs.regions_per_height) / 16
-                        {
-                            frame_index = next;
-                            continue;
-                        }
+                            if bright_change_region_cnt
+                                >= (14 * scs.regions_per_width * scs.regions_per_height) / 16
+                            {
+                                frame_index = next;
+                                continue;
+                            }
 
-                        // `create_me_context_and_picture_control` + the
-                        // per-ref me_ctx stamps (:2921-2947).
-                        let member = member_bufs(member_of(frame_index));
-                        let src_bufs = MeSrcBufs {
-                            b64: &centre_buf.pa.full.buf[centre_buf.pa.full.org
-                                + sb_origin_y as usize * stride[0]
-                                + sb_origin_x as usize..],
-                            b64_stride: centre_buf.pa.full.stride,
-                            quarter: &centre_buf.pa.quarter.buf[centre_buf.pa.quarter.org
-                                + (sb_origin_y as usize >> 1) * centre_buf.pa.quarter.stride
-                                + (sb_origin_x as usize >> 1)..],
-                            quarter_stride: centre_buf.pa.quarter.stride,
-                            sixteenth: &centre_buf.pa.sixteenth.buf[centre_buf.pa.sixteenth.org
-                                + (sb_origin_y as usize >> 2) * centre_buf.pa.sixteenth.stride
-                                + (sb_origin_x as usize >> 2)..],
-                            sixteenth_stride: centre_buf.pa.sixteenth.stride,
-                        };
-                        let mut refs = MeRefs::default();
-                        refs.arr[0][0] = Some(member.pa.ds_ref());
-                        me_ctx.num_of_list_to_search = 1;
-                        me_ctx.num_of_ref_pic_to_search = [1, 0];
-                        me_ctx.temporal_layer_index = centre.temporal_layer_index;
-                        me_ctx.is_ref = centre.is_ref;
-                        me_ctx.tf_me_exit_th = ctrls.me_exit_th;
-                        me_ctx.tf_use_pred_64x64_only_th = ctrls.use_pred_64x64_only_th;
-                        let tf_subpel_early_exit_th = u32::from(ctrls.subpel_early_exit_th);
-                        // `set_hme_search_params_mctf(ctx, 0)`.
-                        let def_tf = tf::SearchAreaMinMax {
-                            sa_min: (
-                                me_ctx.hme_l0_sa_default_tf.sa_min.width,
-                                me_ctx.hme_l0_sa_default_tf.sa_min.height,
-                            ),
-                            sa_max: (
-                                me_ctx.hme_l0_sa_default_tf.sa_max.width,
-                                me_ctx.hme_l0_sa_default_tf.sa_max.height,
-                            ),
-                        };
-                        let hme_l0 = tf::set_hme_search_params_mctf(def_tf, 0)
-                            .expect("hme_search_level 0 is always valid");
-                        me_ctx.hme_l0_sa.sa_min.width = hme_l0.sa_min.0;
-                        me_ctx.hme_l0_sa.sa_min.height = hme_l0.sa_min.1;
-                        me_ctx.hme_l0_sa.sa_max.width = hme_l0.sa_max.0;
-                        me_ctx.hme_l0_sa.sa_max.height = hme_l0.sa_max.1;
+                            // `create_me_context_and_picture_control` + the
+                            // per-ref me_ctx stamps (:2921-2947).
+                            let member = member_bufs(member_of(frame_index));
+                            let src_bufs = MeSrcBufs {
+                                b64: &centre_buf.pa.full.buf[centre_buf.pa.full.org
+                                    + sb_origin_y as usize * stride[0]
+                                    + sb_origin_x as usize..],
+                                b64_stride: centre_buf.pa.full.stride,
+                                quarter: &centre_buf.pa.quarter.buf[centre_buf.pa.quarter.org
+                                    + (sb_origin_y as usize >> 1) * centre_buf.pa.quarter.stride
+                                    + (sb_origin_x as usize >> 1)..],
+                                quarter_stride: centre_buf.pa.quarter.stride,
+                                sixteenth: &centre_buf.pa.sixteenth.buf[centre_buf
+                                    .pa
+                                    .sixteenth
+                                    .org
+                                    + (sb_origin_y as usize >> 2)
+                                        * centre_buf.pa.sixteenth.stride
+                                    + (sb_origin_x as usize >> 2)..],
+                                sixteenth_stride: centre_buf.pa.sixteenth.stride,
+                            };
+                            let mut refs = MeRefs::default();
+                            refs.arr[0][0] = Some(member.pa.ds_ref());
+                            me_ctx.num_of_list_to_search = 1;
+                            me_ctx.num_of_ref_pic_to_search = [1, 0];
+                            me_ctx.temporal_layer_index = centre.temporal_layer_index;
+                            me_ctx.is_ref = centre.is_ref;
+                            me_ctx.tf_me_exit_th = ctrls.me_exit_th;
+                            me_ctx.tf_use_pred_64x64_only_th = ctrls.use_pred_64x64_only_th;
+                            let tf_subpel_early_exit_th = u32::from(ctrls.subpel_early_exit_th);
+                            // `set_hme_search_params_mctf(ctx, 0)`.
+                            let def_tf = tf::SearchAreaMinMax {
+                                sa_min: (
+                                    me_ctx.hme_l0_sa_default_tf.sa_min.width,
+                                    me_ctx.hme_l0_sa_default_tf.sa_min.height,
+                                ),
+                                sa_max: (
+                                    me_ctx.hme_l0_sa_default_tf.sa_max.width,
+                                    me_ctx.hme_l0_sa_default_tf.sa_max.height,
+                                ),
+                            };
+                            let hme_l0 = tf::set_hme_search_params_mctf(def_tf, 0)
+                                .expect("hme_search_level 0 is always valid");
+                            me_ctx.hme_l0_sa.sa_min.width = hme_l0.sa_min.0;
+                            me_ctx.hme_l0_sa.sa_min.height = hme_l0.sa_min.1;
+                            me_ctx.hme_l0_sa.sa_max.width = hme_l0.sa_max.0;
+                            me_ctx.hme_l0_sa.sa_max.height = hme_l0.sa_max.1;
 
-                        motion_estimation_b64(
-                            &centre_pic,
-                            sb_origin_x,
-                            sb_origin_y,
-                            &mut me_ctx,
-                            &src_bufs,
-                            &refs,
-                            &mut me_out,
-                        );
-
-                        // --- the 64x64 / 32x32 / 16x16 / 8x8 ladder ---------
-                        let search_interp = if ctrls.use_2tap {
-                            make_interp_filters(InterpFilterKind::Bilinear, InterpFilterKind::Bilinear)
-                        } else {
-                            make_interp_filters(
-                                InterpFilterKind::EightTapRegular,
-                                InterpFilterKind::EightTapRegular,
-                            )
-                        };
-                        let src_y_block =
-                            &centre_buf.pa.full.buf[centre_buf.pa.full.org + blk_y_src_offset..];
-
-                        let use_64 = me_ctx.tf_use_pred_64x64_only_th != 0
-                            && (me_ctx.tf_use_pred_64x64_only_th == u8::MAX
-                                || tf_use_64x64_pred(
-                                    me_ctx.p_sb_best_sad[0][0][PU_64X64],
-                                    &[
-                                        me_ctx.p_sb_best_sad[0][0][PU_32X32_0],
-                                        me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 1],
-                                        me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 2],
-                                        me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 3],
-                                    ],
-                                    i64::from(me_ctx.tf_use_pred_64x64_only_th),
-                                ) != 0);
-
-                        // `tf_64x64_sub_pel_search` — always runs (both arms
-                        // refine the 64x64 candidate).
-                        st.err_64x64 = BLOCK_ERROR_INT_MAX;
-                        st.mv_64x64_x = if me_ctx.tf_use_pred_64x64_only_th == u8::MAX {
-                            (i32::from(me_ctx.search_results[0][0].hme_sc_x) * 8) as i16
-                        } else {
-                            (i32::from(mvxt(me_ctx.p_sb_best_mv[0][0][PU_64X64])) * 8) as i16
-                        };
-                        st.mv_64x64_y = if me_ctx.tf_use_pred_64x64_only_th == u8::MAX {
-                            (i32::from(me_ctx.search_results[0][0].hme_sc_y) * 8) as i16
-                        } else {
-                            (i32::from(mvyt(me_ctx.p_sb_best_mv[0][0][PU_64X64])) * 8) as i16
-                        };
-                        run_subpel(
-                            64,
-                            0,
-                            0,
-                            sb_origin_x,
-                            sb_origin_y,
-                            &ctrls,
-                            search_interp,
-                            member,
-                            src_y_block,
-                            stride[0],
-                            &mut pred[0],
-                            stride_pred[0],
-                            &geom,
-                            mi_cols,
-                            mi_rows,
-                            tf_subpel_early_exit_th,
-                            &mut st.err_64x64,
-                            &mut st.mv_64x64_x,
-                            &mut st.mv_64x64_y,
-                        );
-
-                        if use_64 {
-                            tf_64x64_predict(
-                                member,
-                                &mut pred,
+                            motion_estimation_b64(
+                                &centre_pic,
                                 sb_origin_x,
                                 sb_origin_y,
-                                tf_chroma,
+                                &mut me_ctx,
+                                &src_bufs,
+                                &refs,
+                                &mut me_out,
+                            );
+
+                            // --- the 64x64 / 32x32 / 16x16 / 8x8 ladder ---------
+                            let search_interp = if ctrls.use_2tap {
+                                make_interp_filters(
+                                    InterpFilterKind::Bilinear,
+                                    InterpFilterKind::Bilinear,
+                                )
+                            } else {
+                                make_interp_filters(
+                                    InterpFilterKind::EightTapRegular,
+                                    InterpFilterKind::EightTapRegular,
+                                )
+                            };
+                            let src_y_block = &centre_buf.pa.full.buf
+                                [centre_buf.pa.full.org + blk_y_src_offset..];
+
+                            let use_64 = me_ctx.tf_use_pred_64x64_only_th != 0
+                                && (me_ctx.tf_use_pred_64x64_only_th == u8::MAX
+                                    || tf_use_64x64_pred(
+                                        me_ctx.p_sb_best_sad[0][0][PU_64X64],
+                                        &[
+                                            me_ctx.p_sb_best_sad[0][0][PU_32X32_0],
+                                            me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 1],
+                                            me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 2],
+                                            me_ctx.p_sb_best_sad[0][0][PU_32X32_0 + 3],
+                                        ],
+                                        i64::from(me_ctx.tf_use_pred_64x64_only_th),
+                                    ) != 0);
+
+                            // `tf_64x64_sub_pel_search` — always runs (both arms
+                            // refine the 64x64 candidate).
+                            st.err_64x64 = BLOCK_ERROR_INT_MAX;
+                            st.mv_64x64_x = if me_ctx.tf_use_pred_64x64_only_th == u8::MAX {
+                                (i32::from(me_ctx.search_results[0][0].hme_sc_x) * 8) as i16
+                            } else {
+                                (i32::from(mvxt(me_ctx.p_sb_best_mv[0][0][PU_64X64])) * 8) as i16
+                            };
+                            st.mv_64x64_y = if me_ctx.tf_use_pred_64x64_only_th == u8::MAX {
+                                (i32::from(me_ctx.search_results[0][0].hme_sc_y) * 8) as i16
+                            } else {
+                                (i32::from(mvyt(me_ctx.p_sb_best_mv[0][0][PU_64X64])) * 8) as i16
+                            };
+                            run_subpel(
+                                64,
+                                0,
+                                0,
+                                sb_origin_x,
+                                sb_origin_y,
+                                &ctrls,
+                                search_interp,
+                                member,
+                                src_y_block,
+                                stride[0],
+                                &mut pred[0],
+                                stride_pred[0],
                                 &geom,
                                 mi_cols,
                                 mi_rows,
-                                st.mv_64x64_x,
-                                st.mv_64x64_y,
-                                &mut conv_buf,
+                                tf_subpel_early_exit_th,
+                                &mut st.err_64x64,
+                                &mut st.mv_64x64_x,
+                                &mut st.mv_64x64_y,
                             );
-                            convert_64x64_info(
-                                &mut st,
-                                &pred[0],
-                                stride_pred[0],
-                                src_y_block,
-                                stride[0],
-                                ctrls.sub_sampling_shift,
-                            );
-                        } else {
-                            // 32x32 sub-pel, all four quadrants.
-                            for idx_32x32 in 0..4usize {
-                                let (idx_x, idx_y) = subpel_idx_32x32(idx_32x32 as u32);
-                                st.err_32x32[idx_32x32] = BLOCK_ERROR_INT_MAX;
-                                let mv = me_ctx.p_sb_best_mv[0][0][PU_32X32_0 + idx_32x32];
-                                st.mv_32x32_x[idx_32x32] =
-                                    (i32::from(mvxt(mv)) * 8) as i16;
-                                st.mv_32x32_y[idx_32x32] =
-                                    (i32::from(mvyt(mv)) * 8) as i16;
-                                let (mut bx, mut by) =
-                                    (st.mv_32x32_x[idx_32x32], st.mv_32x32_y[idx_32x32]);
-                                let mut be = st.err_32x32[idx_32x32];
-                                run_subpel(
-                                    32,
-                                    idx_x,
-                                    idx_y,
-                                    sb_origin_x,
-                                    sb_origin_y,
-                                    &ctrls,
-                                    search_interp,
-                                    member,
-                                    src_y_block,
-                                    stride[0],
-                                    &mut pred[0],
-                                    stride_pred[0],
-                                    &geom,
-                                    mi_cols,
-                                    mi_rows,
-                                    tf_subpel_early_exit_th,
-                                    &mut be,
-                                    &mut bx,
-                                    &mut by,
-                                );
-                                st.err_32x32[idx_32x32] = be;
-                                st.mv_32x32_x[idx_32x32] = bx;
-                                st.mv_32x32_y[idx_32x32] = by;
-                            }
-                            let sum_32x32 = st.err_32x32[0]
-                                + st.err_32x32[1]
-                                + st.err_32x32[2]
-                                + st.err_32x32[3];
-                            if st.err_64x64 * 14 < sum_32x32 * 16
-                                && st.err_64x64 < (1 << 18)
-                            {
+
+                            if use_64 {
                                 tf_64x64_predict(
                                     member,
                                     &mut pred,
@@ -929,30 +878,74 @@ pub fn ra_mctf_filter(
                                     ctrls.sub_sampling_shift,
                                 );
                             } else {
+                                // 32x32 sub-pel, all four quadrants.
                                 for idx_32x32 in 0..4usize {
-                                    if st.err_32x32[idx_32x32] < ctrls.pred_error_32x32_th {
-                                        st.split_32x32[idx_32x32] = 0;
-                                        st.split_16x16[idx_32x32] = [0; 4];
-                                    } else {
-                                        tf_16x16_subpel(
-                                            idx_32x32,
-                                            sb_origin_x,
-                                            sb_origin_y,
-                                            &ctrls,
-                                            member,
-                                            src_y_block,
-                                            stride[0],
-                                            &mut pred[0],
-                                            stride_pred[0],
-                                            &geom,
-                                            mi_cols,
-                                            mi_rows,
-                                            tf_subpel_early_exit_th,
-                                            &me_ctx,
-                                            &mut st,
-                                        );
-                                        if ctrls.enable_8x8_pred {
-                                            tf_8x8_subpel(
+                                    let (idx_x, idx_y) = subpel_idx_32x32(idx_32x32 as u32);
+                                    st.err_32x32[idx_32x32] = BLOCK_ERROR_INT_MAX;
+                                    let mv = me_ctx.p_sb_best_mv[0][0][PU_32X32_0 + idx_32x32];
+                                    st.mv_32x32_x[idx_32x32] = (i32::from(mvxt(mv)) * 8) as i16;
+                                    st.mv_32x32_y[idx_32x32] = (i32::from(mvyt(mv)) * 8) as i16;
+                                    let (mut bx, mut by) =
+                                        (st.mv_32x32_x[idx_32x32], st.mv_32x32_y[idx_32x32]);
+                                    let mut be = st.err_32x32[idx_32x32];
+                                    run_subpel(
+                                        32,
+                                        idx_x,
+                                        idx_y,
+                                        sb_origin_x,
+                                        sb_origin_y,
+                                        &ctrls,
+                                        search_interp,
+                                        member,
+                                        src_y_block,
+                                        stride[0],
+                                        &mut pred[0],
+                                        stride_pred[0],
+                                        &geom,
+                                        mi_cols,
+                                        mi_rows,
+                                        tf_subpel_early_exit_th,
+                                        &mut be,
+                                        &mut bx,
+                                        &mut by,
+                                    );
+                                    st.err_32x32[idx_32x32] = be;
+                                    st.mv_32x32_x[idx_32x32] = bx;
+                                    st.mv_32x32_y[idx_32x32] = by;
+                                }
+                                let sum_32x32 = st.err_32x32[0]
+                                    + st.err_32x32[1]
+                                    + st.err_32x32[2]
+                                    + st.err_32x32[3];
+                                if st.err_64x64 * 14 < sum_32x32 * 16 && st.err_64x64 < (1 << 18) {
+                                    tf_64x64_predict(
+                                        member,
+                                        &mut pred,
+                                        sb_origin_x,
+                                        sb_origin_y,
+                                        tf_chroma,
+                                        &geom,
+                                        mi_cols,
+                                        mi_rows,
+                                        st.mv_64x64_x,
+                                        st.mv_64x64_y,
+                                        &mut conv_buf,
+                                    );
+                                    convert_64x64_info(
+                                        &mut st,
+                                        &pred[0],
+                                        stride_pred[0],
+                                        src_y_block,
+                                        stride[0],
+                                        ctrls.sub_sampling_shift,
+                                    );
+                                } else {
+                                    for idx_32x32 in 0..4usize {
+                                        if st.err_32x32[idx_32x32] < ctrls.pred_error_32x32_th {
+                                            st.split_32x32[idx_32x32] = 0;
+                                            st.split_16x16[idx_32x32] = [0; 4];
+                                        } else {
+                                            tf_16x16_subpel(
                                                 idx_32x32,
                                                 sb_origin_x,
                                                 sb_origin_y,
@@ -969,115 +962,130 @@ pub fn ra_mctf_filter(
                                                 &me_ctx,
                                                 &mut st,
                                             );
+                                            if ctrls.enable_8x8_pred {
+                                                tf_8x8_subpel(
+                                                    idx_32x32,
+                                                    sb_origin_x,
+                                                    sb_origin_y,
+                                                    &ctrls,
+                                                    member,
+                                                    src_y_block,
+                                                    stride[0],
+                                                    &mut pred[0],
+                                                    stride_pred[0],
+                                                    &geom,
+                                                    mi_cols,
+                                                    mi_rows,
+                                                    tf_subpel_early_exit_th,
+                                                    &me_ctx,
+                                                    &mut st,
+                                                );
+                                            }
+                                            let mut split_ctx = TfSplitCtx {
+                                                idx_32x32,
+                                                enable_8x8_pred: ctrls.enable_8x8_pred,
+                                                tf_32x32_block_error: st.err_32x32,
+                                                tf_16x16_block_error: st.err_16x16,
+                                                tf_8x8_block_error: st.err_8x8,
+                                                tf_32x32_block_split_flag: st.split_32x32,
+                                                tf_16x16_block_split_flag: st.split_16x16,
+                                            };
+                                            derive_tf_32x32_block_split_flag(&mut split_ctx);
+                                            st.err_16x16 = split_ctx.tf_16x16_block_error;
+                                            st.split_32x32 = split_ctx.tf_32x32_block_split_flag;
+                                            st.split_16x16 = split_ctx.tf_16x16_block_split_flag;
                                         }
-                                        let mut split_ctx = TfSplitCtx {
+                                        tf_32x32_predict(
+                                            member,
+                                            &mut pred,
+                                            sb_origin_x,
+                                            sb_origin_y,
+                                            tf_chroma,
+                                            &geom,
+                                            mi_cols,
+                                            mi_rows,
+                                            &st,
                                             idx_32x32,
-                                            enable_8x8_pred: ctrls.enable_8x8_pred,
-                                            tf_32x32_block_error: st.err_32x32,
-                                            tf_16x16_block_error: st.err_16x16,
-                                            tf_8x8_block_error: st.err_8x8,
-                                            tf_32x32_block_split_flag: st.split_32x32,
-                                            tf_16x16_block_split_flag: st.split_16x16,
-                                        };
-                                        derive_tf_32x32_block_split_flag(&mut split_ctx);
-                                        st.err_16x16 = split_ctx.tf_16x16_block_error;
-                                        st.split_32x32 = split_ctx.tf_32x32_block_split_flag;
-                                        st.split_16x16 = split_ctx.tf_16x16_block_split_flag;
+                                            &mut conv_buf,
+                                        );
                                     }
-                                    tf_32x32_predict(
-                                        member,
-                                        &mut pred,
-                                        sb_origin_x,
-                                        sb_origin_y,
-                                        tf_chroma,
-                                        &geom,
-                                        mi_cols,
-                                        mi_rows,
-                                        &st,
-                                        idx_32x32,
-                                        &mut conv_buf,
+                                }
+                            }
+
+                            // Accumulate this reference's contribution, one
+                            // 32x32 quadrant at a time.
+                            for block_row in 0..2usize {
+                                for block_col in 0..2usize {
+                                    let mut kctx = st.kernel_ctx(tf_mv_dist_th, tf_chroma, decay);
+                                    kctx.tf_block_col = block_col as i32;
+                                    kctx.tf_block_row = block_row as i32;
+                                    let off = apply_filtering_block_plane_wise_offsets(
+                                        block_row,
+                                        block_col,
+                                        &stride,
+                                        &stride_pred,
+                                        TF_BW >> 1,
+                                        TF_BH >> 1,
+                                        ss_x,
+                                        ss_y,
+                                    );
+                                    let [ay, au, av] = &mut accum;
+                                    let [cy, cu, cv] = &mut count;
+                                    apply_temporal_filter_planewise_medium(
+                                        &kctx,
+                                        &centre_buf.pa.full.buf[centre_buf.pa.full.org
+                                            + blk_y_src_offset
+                                            + off.src[0]..],
+                                        stride[0],
+                                        &pred[0][off.block[0]..],
+                                        stride_pred[0],
+                                        &centre_buf.u.buf
+                                            [centre_buf.u.org + blk_ch_src_offset + off.src[1]..],
+                                        &centre_buf.v.buf
+                                            [centre_buf.v.org + blk_ch_src_offset + off.src[2]..],
+                                        stride[1],
+                                        &pred[1][off.block[1]..],
+                                        &pred[2][off.block[2]..],
+                                        stride_pred[1],
+                                        TF_BW >> 1,
+                                        TF_BH >> 1,
+                                        ss_x,
+                                        ss_y,
+                                        &mut ay[off.block[0]..],
+                                        &mut cy[off.block[0]..],
+                                        &mut au[off.block[1]..],
+                                        &mut cu[off.block[1]..],
+                                        &mut av[off.block[2]..],
+                                        &mut cv[off.block[2]..],
                                     );
                                 }
                             }
                         }
-
-                        // Accumulate this reference's contribution, one
-                        // 32x32 quadrant at a time.
-                        for block_row in 0..2usize {
-                            for block_col in 0..2usize {
-                                let mut kctx = st.kernel_ctx(
-                                    tf_mv_dist_th,
-                                    tf_chroma,
-                                    decay,
-                                );
-                                kctx.tf_block_col = block_col as i32;
-                                kctx.tf_block_row = block_row as i32;
-                                let off = apply_filtering_block_plane_wise_offsets(
-                                    block_row,
-                                    block_col,
-                                    &stride,
-                                    &stride_pred,
-                                    TF_BW >> 1,
-                                    TF_BH >> 1,
-                                    ss_x,
-                                    ss_y,
-                                );
-                                let [ay, au, av] = &mut accum;
-                                let [cy, cu, cv] = &mut count;
-                                apply_temporal_filter_planewise_medium(
-                                    &kctx,
-                                    &centre_buf.pa.full.buf
-                                        [centre_buf.pa.full.org + blk_y_src_offset + off.src[0]..],
-                                    stride[0],
-                                    &pred[0][off.block[0]..],
-                                    stride_pred[0],
-                                    &centre_buf.u.buf
-                                        [centre_buf.u.org + blk_ch_src_offset + off.src[1]..],
-                                    &centre_buf.v.buf
-                                        [centre_buf.v.org + blk_ch_src_offset + off.src[2]..],
-                                    stride[1],
-                                    &pred[1][off.block[1]..],
-                                    &pred[2][off.block[2]..],
-                                    stride_pred[1],
-                                    TF_BW >> 1,
-                                    TF_BH >> 1,
-                                    ss_x,
-                                    ss_y,
-                                    &mut ay[off.block[0]..],
-                                    &mut cy[off.block[0]..],
-                                    &mut au[off.block[1]..],
-                                    &mut cu[off.block[1]..],
-                                    &mut av[off.block[2]..],
-                                    &mut cv[off.block[2]..],
-                                );
-                            }
-                        }
+                        frame_index = next;
                     }
-                    frame_index = next;
+                }
+
+                // `get_final_filtered_pixels` — normalise the accumulated sums
+                // back into the centre's source planes.
+                {
+                    let (org_y, org_c) = (centre_buf.pa.full.org, centre_buf.u.org);
+                    get_final_filtered_pixels(
+                        tf_chroma,
+                        [
+                            &mut centre_buf.pa.full.buf[org_y..],
+                            &mut centre_buf.u.buf[org_c..],
+                            &mut centre_buf.v.buf[org_c..],
+                        ],
+                        &accum,
+                        &count,
+                        &stride,
+                        blk_y_src_offset,
+                        blk_ch_src_offset,
+                        grid.blk_width_ch as usize,
+                        grid.blk_height_ch as usize,
+                    );
                 }
             }
-
-            // `get_final_filtered_pixels` — normalise the accumulated sums
-            // back into the centre's source planes.
-            {
-                let (org_y, org_c) = (centre_buf.pa.full.org, centre_buf.u.org);
-                get_final_filtered_pixels(
-                    tf_chroma,
-                    [
-                        &mut centre_buf.pa.full.buf[org_y..],
-                        &mut centre_buf.u.buf[org_c..],
-                        &mut centre_buf.v.buf[org_c..],
-                    ],
-                    &accum,
-                    &count,
-                    &stride,
-                    blk_y_src_offset,
-                    blk_ch_src_offset,
-                    grid.blk_width_ch as usize,
-                    grid.blk_height_ch as usize,
-                );
-            }
-        }
         }
     }
 
@@ -1146,8 +1154,7 @@ pub fn ra_mctf_filter(
         }
     }
 
-    let motion_direction =
-        tf_motion_direction(me_ctx.tf_tot_horz_blks, me_ctx.tf_tot_vert_blks);
+    let motion_direction = tf_motion_direction(me_ctx.tf_tot_horz_blks, me_ctx.tf_tot_vert_blks);
     RaMctfOut {
         tf_tot_horz_blks: me_ctx.tf_tot_horz_blks,
         tf_tot_vert_blks: me_ctx.tf_tot_vert_blks,
@@ -1175,7 +1182,10 @@ fn tf_pic_params(scs: &RaTfScs, centre: &PicParams, update_type: FrameUpdateType
         hierarchical_levels: centre.hierarchical_levels,
         similar_brightness_refs: false,
         frame_is_boosted: centre.is_intra_only
-            || matches!(update_type, FrameUpdateType::Arf | FrameUpdateType::Gf | FrameUpdateType::Kf),
+            || matches!(
+                update_type,
+                FrameUpdateType::Arf | FrameUpdateType::Gf | FrameUpdateType::Kf
+            ),
         frame_is_leaf: update_type == FrameUpdateType::Lf,
         gm_enabled: false,
         only_l_bwd: false,
@@ -1332,7 +1342,10 @@ fn tf_16x16_subpel(
     me_ctx: &MeContext,
     st: &mut TfSearchState,
 ) {
-    let interp = make_interp_filters(InterpFilterKind::EightTapRegular, InterpFilterKind::EightTapRegular);
+    let interp = make_interp_filters(
+        InterpFilterKind::EightTapRegular,
+        InterpFilterKind::EightTapRegular,
+    );
     for idx_16x16 in 0..4usize {
         let pu_index = IDX_32X32_TO_IDX_16X16[idx_32x32][idx_16x16] as usize;
         // `subpel_idx_16x16` returns `(idx_x, idx_y)` (its header's
@@ -1396,7 +1409,10 @@ fn tf_8x8_subpel(
     me_ctx: &MeContext,
     st: &mut TfSearchState,
 ) {
-    let interp = make_interp_filters(InterpFilterKind::EightTapRegular, InterpFilterKind::EightTapRegular);
+    let interp = make_interp_filters(
+        InterpFilterKind::EightTapRegular,
+        InterpFilterKind::EightTapRegular,
+    );
     for idx_16x16 in 0..4usize {
         for idx_8x8 in 0..4usize {
             let pu_index = tf::IDX_32X32_TO_IDX_8X8[idx_32x32][idx_16x16][idx_8x8] as usize;
@@ -1490,7 +1506,9 @@ fn tf_64x64_predict(
     conv_buf: &mut [u16],
 ) {
     let req = tf_64x64_inter_prediction_request(sb_origin_x, sb_origin_y, mv_x, mv_y);
-    tf_predict_one(member, pred, &req, tf_chroma, geom, mi_cols, mi_rows, conv_buf);
+    tf_predict_one(
+        member, pred, &req, tf_chroma, geom, mi_cols, mi_rows, conv_buf,
+    );
 }
 
 /// `tf_32x32_inter_prediction` (`temporal_filtering.c:2199`) — the request
@@ -1538,7 +1556,9 @@ fn tf_32x32_predict(
         sb_origin_y,
     );
     for req in &reqs {
-        tf_predict_one(member, pred, req, tf_chroma, geom, mi_cols, mi_rows, conv_buf);
+        tf_predict_one(
+            member, pred, req, tf_chroma, geom, mi_cols, mi_rows, conv_buf,
+        );
     }
 }
 

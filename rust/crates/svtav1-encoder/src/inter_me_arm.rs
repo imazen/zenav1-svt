@@ -186,6 +186,11 @@ pub struct PaPicture {
     pub quarter: PaPlane,
     pub sixteenth: PaPlane,
     pub picture_number: u64,
+    /// C `EbPaReferenceObject->avg_luma` — the input's `pcs->avg_luma`
+    /// stamped onto its PA reference object (`pic_analysis_process.c:2003`),
+    /// read by `get_similar_ref_brightness`. `INVALID_LUMA` until stamped;
+    /// C's is INVALID_LUMA whenever `calc_hist` is off.
+    pub avg_luma: u64,
 }
 
 impl PaPicture {
@@ -208,6 +213,7 @@ impl PaPicture {
             quarter,
             sixteenth,
             picture_number,
+            avg_luma: crate::port_preanalysis::INVALID_LUMA,
         }
     }
 
@@ -237,11 +243,15 @@ impl PaPicture {
             quarter,
             sixteenth,
             picture_number: pn,
+            avg_luma,
         } = self;
         full.refill_from_plane(y, y_stride, width, height, PA_BORDER);
         quarter.refill_decimate(full, 2, PA_BORDER_QUARTER);
         sixteenth.refill_decimate(quarter, 2, PA_BORDER_SIXTEENTH);
         *pn = picture_number;
+        // C restamps `pa_ref_obj->avg_luma` from the new input's `pcs->avg_luma`
+        // (`pic_analysis_process.c:2003`) — INVALID until the caller does.
+        *avg_luma = crate::port_preanalysis::INVALID_LUMA;
     }
 
     /// This picture as one entry of C's `me_ds_ref_array` — what
@@ -568,6 +578,13 @@ pub struct FrameMeParams {
     pub safe_limit_nref: u8,
     /// C `scs->mrp_ctrls.safe_limit_zz_th`.
     pub safe_limit_zz_th: u32,
+    /// C `pcs->similar_brightness_refs` — picture decision's
+    /// `get_similar_ref_brightness` result (`pd_process.c:4305`), read by
+    /// the safe-limit ME arm (`motion_estimation.c:2231`).
+    pub similar_brightness_refs: bool,
+    /// C `frame_is_leaf(pcs)` — `update_type == SVT_AV1_LF_UPDATE`
+    /// (`enc_mode_config.h:113`); gates the same safe-limit arm.
+    pub frame_is_leaf: bool,
 }
 
 /// The `svt_aom_sig_deriv_me` INPUT set for one frame, split out of
@@ -681,9 +698,9 @@ pub fn run_frame_me_into(
         enable_me_16x16: true,
         max_number_of_pus_per_sb: 85,
         hierarchical_levels: p.hierarchical_levels,
-        similar_brightness_refs: false,
+        similar_brightness_refs: p.similar_brightness_refs,
         frame_is_boosted: p.frame_is_boosted,
-        frame_is_leaf: false,
+        frame_is_leaf: p.frame_is_leaf,
         // C `pcs->gm_ctrls.enabled` (`motion_estimation.c:2959`), which gates
         // `perform_gm_detection` and therefore `pcs->rc_me_allow_gm[b64]`.
         //
@@ -916,6 +933,8 @@ mod tests {
                 only_l_bwd: true,
                 safe_limit_nref: 2,
                 safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (1, 1));
@@ -960,6 +979,8 @@ mod tests {
                 only_l_bwd: true,
                 safe_limit_nref: 2,
                 safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
             },
         );
         assert_eq!(
@@ -1038,6 +1059,8 @@ mod tests {
                 only_l_bwd: true,
                 safe_limit_nref: 2,
                 safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (3, 3));
@@ -1133,6 +1156,8 @@ mod tests {
                 only_l_bwd: true,
                 safe_limit_nref: 2,
                 safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (2, 2));
@@ -1199,6 +1224,8 @@ mod tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
         };
         for (qp, sa_min, sa_max, l0sa) in [
             (
@@ -1508,6 +1535,8 @@ mod recycle_tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
@@ -1613,6 +1642,8 @@ mod recycle_tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
+                similar_brightness_refs: false,
+                frame_is_leaf: false,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);

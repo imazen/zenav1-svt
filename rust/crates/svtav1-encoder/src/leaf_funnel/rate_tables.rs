@@ -399,6 +399,18 @@ pub struct FunnelFrame {
     /// fewer 16x16 cells), not per SB. `Arc` so the per-leaf override
     /// clone is a refcount bump.
     pub ssim_rdmult: Option<alloc::sync::Arc<crate::tune::SsimRdmult>>,
+    /// C's `blk_lambda_tuning` carrier — the POST-`sb_setup_lambda`
+    /// `tpl_rdmult_scaling_factors` grid plus the geometry
+    /// `svt_aom_set_tuned_blk_lambda` walks (`coding_loop.c:368`,
+    /// `product_coding_loop.c:9041`). `Some` exactly when C's
+    /// `blk_lambda_tuning` flag is live (`r0_delta_qp_md` on a TPL-valid
+    /// picture); `evaluate_leaf` then derives THIS leaf's log-domain
+    /// geometric-mean scale and replaces the four lambdas, taking
+    /// precedence over `ssim_rdmult` (C applies the SSIM rdmult on TOP of
+    /// the tuned lambdas — `aom_av1_set_ssim_rdmult`'s
+    /// `blk_lambda_tuning` arm scales the context's current values — and
+    /// this port's TPL path does not run the SSIM tunes).
+    pub tpl_rdmult: Option<alloc::sync::Arc<crate::port_md_lambda::TplRdmult>>,
     /// C `pcs->slice_type != I_SLICE`. It selects which luma-mode rate table
     /// an INTRA candidate is priced with — `mb_mode_fac_bits[size_group]`
     /// versus the key-frame `y_mode_fac_bits[top][left]`, which are

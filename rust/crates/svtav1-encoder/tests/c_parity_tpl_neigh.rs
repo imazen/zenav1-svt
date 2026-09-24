@@ -54,30 +54,11 @@ fn run_port(
     (above, left)
 }
 
-fn run_c(
-    buf: &[u8],
-    trbl: bool,
-    top: bool,
-    x: u32,
-    y: u32,
-    bw: u8,
-    bh: u8,
-) -> (Vec<u8>, Vec<u8>) {
+fn run_c(buf: &[u8], trbl: bool, top: bool, x: u32, y: u32, bw: u8, bh: u8) -> (Vec<u8>, Vec<u8>) {
     let mut above = vec![0xAAu8; 1 + 2 * bw as usize];
     let mut left = vec![0xAAu8; 1 + 2 * bh as usize];
     cref_po::update_neighbor_samples_open_loop_recon(
-        trbl,
-        top,
-        &mut above,
-        &mut left,
-        buf,
-        STRIDE,
-        x,
-        y,
-        bw,
-        bh,
-        W as u32,
-        H as u32,
+        trbl, top, &mut above, &mut left, buf, STRIDE, x, y, bw, bh, W as u32, H as u32,
     );
     (above, left)
 }
@@ -95,11 +76,11 @@ fn neighbor_samples_open_loop_matches_c() {
         (0, 48),
         (16, 16),
         (48, 32),
-        (64, 16),  // x + 2*32 > 96 for bsize 32 — right-edge clamp arm
-        (16, 64),  // y + 2*16 > 80 for bsize 16 — bottom-edge clamp arm
+        (64, 16), // x + 2*32 > 96 for bsize 32 — right-edge clamp arm
+        (16, 64), // y + 2*16 > 80 for bsize 16 — bottom-edge clamp arm
         (0, 64),
         (64, 64),
-        (8, 8),    // non-16-aligned origin
+        (8, 8), // non-16-aligned origin
     ];
     for &(x, y) in positions {
         for &bs in &[8u8, 16, 32] {

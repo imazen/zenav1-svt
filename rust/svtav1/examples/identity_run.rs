@@ -902,6 +902,14 @@ fn main() {
         let rc = RcConfig {
             mode: RcMode::Cqp,
             qp,
+            // `SVT_AQ_MODE` (C's `--aq-mode`): 2 selects the TPL-gated
+            // per-SB deltaq — live on the random-access path, inert on
+            // low-delay, exactly as `get_tpl` gates it in C
+            // (enc_handle.c:3657). Default 0 keeps every existing cell.
+            aq_mode: std::env::var("SVT_AQ_MODE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             ..RcConfig::default()
         };
         // `mono` is derived here rather than read from the later binding:
@@ -1203,6 +1211,12 @@ fn main() {
     let rc = RcConfig {
         mode: RcMode::Cqp,
         qp, // CLI domain 0..63, same as the C driver's cfg.qp
+        // `SVT_AQ_MODE` (C's `--aq-mode`) — see the multi-frame block above.
+        // Inert on a still either way (TPL is off without lookahead).
+        aq_mode: std::env::var("SVT_AQ_MODE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         ..RcConfig::default()
     };
     // task #86: real tile rows. SVTAV1_TILE_ROWS_LOG2 (default 0) is the

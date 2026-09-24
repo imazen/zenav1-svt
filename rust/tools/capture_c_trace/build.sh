@@ -210,6 +210,9 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_quantize_inv_quantize_light \
     -Wl,--wrap=svt_aom_inv_transform_recon_wrapper \
     -Wl,--wrap=svt_aom_product_full_mode_decision \
+    -Wl,--wrap=svt_av1_get_q_index_from_qstep_ratio \
+    -Wl,--wrap=svt_av1_rc_init_sb_qindex \
+    -Wl,--wrap=svt_aom_set_tuned_blk_lambda \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT (SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"

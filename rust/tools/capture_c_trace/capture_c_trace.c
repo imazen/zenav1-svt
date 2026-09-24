@@ -308,6 +308,17 @@ int main(int argc, char** argv) {
         if (ps_env && *ps_env)
             cfg.pred_structure = (PredStructure)atoi(ps_env);
     }
+    /* SVT_LOOKAHEAD forces `cfg.look_ahead_distance` (C's `--lookahead`).
+     * Exists to pin `tpl_lad_mg`: with the API default `(uint32_t)~0` C
+     * computes a distance >= one mini-GOP, which makes `tpl_lad_mg = 1`
+     * under RA (enc_handle.c:4044-4056) — TPL groups then span TWO
+     * mini-GOPs. A value < mg_size pins `tpl_lad_mg = 0`, the one-mini-GOP
+     * shape the port's RA buffer implements. Absent => untouched (~0). */
+    {
+        const char* lad_env = getenv("SVT_LOOKAHEAD");
+        if (lad_env && *lad_env)
+            cfg.look_ahead_distance = (uint32_t)atoi(lad_env);
+    }
     cfg.level_of_parallelism   = 1;   /* --lp 1 */
     cfg.encoder_bit_depth      = bit_depth;
     cfg.encoder_color_format   = EB_YUV420;
