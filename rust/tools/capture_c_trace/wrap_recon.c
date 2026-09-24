@@ -127,10 +127,13 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
     if (t->tested_blk[PART_N][0] && t->block_data[PART_N][0]) {
         const BlkStruct* n = t->block_data[PART_N][0];
         fprintf(f,
-                "CSQ mi=(%d,%d) bsize=%d cost=%llu mode=%d uv=%d txd=%d nz=%u ye=[%u,%u,%u,%u] dcq=[%u,%u,%u,%u]"
+                "CSQ mi=(%d,%d) bsize=%d cost=%llu mode=%d uv=%d txd=%d nz=%u mv=[%d,%d|%d,%d] rf=[%d,%d] ye=[%u,%u,%u,%u] dcq=[%u,%u,%u,%u]"
                 " ady=%d aduv=%d rate=%llu dist=%llu\n",
                 t->mi_row, t->mi_col, (int)t->bsize, (unsigned long long)n->cost, (int)n->block_mi.mode,
-                (int)n->block_mi.uv_mode, (int)n->block_mi.tx_depth, (unsigned)n->cnt_nz_coeff, n->eob.y[0],
+                (int)n->block_mi.uv_mode, (int)n->block_mi.tx_depth, (unsigned)n->cnt_nz_coeff,
+                (int)n->block_mi.mv[0].y, (int)n->block_mi.mv[0].x,
+                (int)n->block_mi.mv[1].y, (int)n->block_mi.mv[1].x,
+                (int)n->block_mi.ref_frame[0], (int)n->block_mi.ref_frame[1], n->eob.y[0],
                 n->eob.y[1], n->eob.y[2], n->eob.y[3], (unsigned)n->quant_dc.y[0], (unsigned)n->quant_dc.y[1],
                 (unsigned)n->quant_dc.y[2], (unsigned)n->quant_dc.y[3], (int)n->block_mi.angle_delta[0],
                 (int)n->block_mi.angle_delta[1], (unsigned long long)n->total_rate, (unsigned long long)n->full_dist);

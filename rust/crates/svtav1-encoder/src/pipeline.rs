@@ -4038,9 +4038,16 @@ impl EncodePipeline {
         // configured `gop.hierarchical_levels` (`get_pred_struct_for_frame`).
         // Equals the configured level on every low-delay frame, so this is
         // byte-inert outside random access.
-        let frame_hier = pic_decision
-            .as_ref()
-            .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels);
+        // `pd_process.c:968`: IDR pictures are stamped the CONFIGURED level,
+        // not their (possibly subdivided) mini-gop level — this is the value
+        // `cqp_qindex_calc`'s `percents[hier <= 4]` row select reads.
+        let frame_hier = if is_key {
+            self.gop.hierarchical_levels
+        } else {
+            pic_decision
+                .as_ref()
+                .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels)
+        };
 
         // C `av1_lambda_assign_md`'s TWO update-type selectors
         // (`pd0::inter_full_lambda_8bit`): the rdmult BASE reads
