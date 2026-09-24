@@ -867,13 +867,17 @@ impl EncodePipeline {
         };
         let mini_gop = 1u32 << hier;
         self.pd_ctx.mini_gop_length[0] = mini_gop;
-        // C `ctx->list0_only = scs->list0_only_base` (`pd_process.c:846-848`),
-        // which C's `initialize_mini_gop_activity_array` sets inside
-        // `set_mini_gop_structure` — reached on the low-delay path too
-        // (`:5488`), where `send_picture_out` (`:4950`) then zeroes the
-        // tl0 picture's list-1 try count at presets above M2.
-        self.pd_ctx.list0_only =
-            self.speed_config.preset > crate::port_enc_mode_config::enc_mode::M2;
+        // C `ctx->list0_only` is a persistent `PictureDecisionContext` field
+        // written ONLY inside `initialize_mini_gop_activity_array`
+        // (`pd_process.c:846-848`), which runs only when the pre-assignment
+        // buffer holds more than one picture or a non-intra RA buffer
+        // (`:4756-4758`). Low delay releases one picture at a time, so the
+        // init never runs and the field keeps its ctor value 0 —
+        // `send_picture_out`'s tl0 list-1 clamp (`:4950-4952`) never fires
+        // for low delay and `ref_list1_count_try` keeps the
+        // `update_count_try` value. `mg_map.list0_only` is the port's copy of
+        // the same persistent field; mirror it here.
+        self.pd_ctx.list0_only = self.mg_map.list0_only;
         let mut pic = pp::PicParams {
             picture_number: display_order,
             decode_order: display_order,
@@ -1401,7 +1405,10 @@ impl EncodePipeline {
         // `list0_only_base = enc_mode > ENC_M2` (`enc_handle.c:4292`) — C's
         // `scs->list0_only_base`, which `initialize_mini_gop_activity_array`
         // copies to `ctx->list0_only` (`pd_process.c:846-848`) for
-        // `send_picture_out`'s tl0 list-1 clamp (`:4950`).
+        // `send_picture_out`'s tl0 list-1 clamp (`:4950`). That init only
+        // runs when the pre-assignment buffer holds more than one picture
+        // (`:4756-4758`), so the field persists otherwise — mirror the map's
+        // value rather than re-deriving it.
         let list0_only = self.speed_config.preset > crate::port_enc_mode_config::enc_mode::M2;
         let needs_dg = pp::set_mini_gop_structure(
             &mut self.mg_map,
@@ -1414,7 +1421,7 @@ impl EncodePipeline {
             /*enable_dg=*/ false,
             list0_only,
         );
-        self.pd_ctx.list0_only = list0_only;
+        self.pd_ctx.list0_only = self.mg_map.list0_only;
         debug_assert!(
             !needs_dg,
             "eval_sub_mini_gop is unported; hier < 5 cannot reach it"
