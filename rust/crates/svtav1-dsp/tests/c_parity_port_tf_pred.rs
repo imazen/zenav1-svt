@@ -312,6 +312,9 @@ fn simple_luma_unipred_matches_c() {
 
                     simple_luma_unipred(
                         TfSrc::Lbd(&src),
+                        // `src` is the active-origin buffer (matching C's
+                        // `src_ptr`), so the origin inside it is 0.
+                        0,
                         stride,
                         TfDst::Lbd(&mut r_dst),
                         dst_stride,

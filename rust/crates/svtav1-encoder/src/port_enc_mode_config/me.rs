@@ -1100,3 +1100,121 @@ pub fn apply_me_signals(me_ctx: &mut crate::inter_me::context::MeContext, s: &Me
     me_ctx.me_static_b64_th = s.me_static_b64_th;
     me_ctx.me_safe_limit_zz_th = s.me_safe_limit_zz_th;
 }
+
+/// The TF sibling of [`apply_me_signals`]: copy the signals
+/// [`sig_deriv_me_tf`] derived onto the [`MeContext`] — C's
+/// `svt_aom_sig_deriv_me_tf(pcs, me_ctx)` (enc_mode_config.c:848), which
+/// `mctf_frame`'s ME-context setup runs before the first
+/// `svt_aom_motion_estimation_b64`.
+///
+/// Two differences from the encode-path bridge:
+/// * `params.hme_l0_sa_default_tf` lands on `me_ctx->hme_l0_sa_default_tf`,
+///   NOT `hme_l0_sa` — the TF driver's `set_hme_search_params_mctf` copies it
+///   into `hme_l0_sa` per reference, possibly shifted; the encode path's
+///   `hme_l0_sa` value is left alone entirely.
+/// * There is no `prune_me_candidates_th`/`use_best_unipred_cand_only`/
+///   `me_static_b64_th` on [`MeTfSignals`] — C does not assign them in
+///   `sig_deriv_me_tf`, so this bridge does not either.
+pub fn apply_me_tf_signals(me_ctx: &mut crate::inter_me::context::MeContext, s: &MeTfSignals) {
+    use crate::inter_me::context as ime;
+
+    debug_assert!(
+        s.me_hme_prune_ctrls.zz_sad_pct <= u32::from(u16::MAX)
+            && s.me_hme_prune_ctrls.phme_sad_pct <= u32::from(u16::MAX)
+            && s.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th <= u32::from(u16::MAX)
+            && s.me_sr_adjustment_ctrls
+                .reduce_me_sr_based_on_hme_sad_abs_th
+                <= u32::from(u16::MAX),
+        "a TF derivation row now exceeds C's uint16_t field width — the cast below \
+         would reproduce C's truncation, but say so instead of doing it silently"
+    );
+
+    #[inline]
+    fn sa(a: SearchArea) -> ime::SearchArea {
+        ime::SearchArea {
+            width: a.width,
+            height: a.height,
+        }
+    }
+    #[inline]
+    fn samm(a: SearchAreaMinMax) -> ime::SearchAreaMinMax {
+        ime::SearchAreaMinMax {
+            sa_min: sa(a.sa_min),
+            sa_max: sa(a.sa_max),
+        }
+    }
+
+    me_ctx.me_sa = samm(s.params.me_sa);
+    me_ctx.num_hme_sa_w = u16::from(s.params.num_hme_sa_w);
+    me_ctx.num_hme_sa_h = u16::from(s.params.num_hme_sa_h);
+    me_ctx.hme_l0_sa_default_tf = samm(s.params.hme_l0_sa_default_tf);
+    me_ctx.hme_l1_sa = sa(s.params.hme_l1_sa);
+    me_ctx.hme_l2_sa = sa(s.params.hme_l2_sa);
+
+    me_ctx.enable_hme_flag = s.enable_hme_flag != 0;
+    me_ctx.enable_hme_level0_flag = s.enable_hme_level0_flag != 0;
+    me_ctx.enable_hme_level1_flag = s.enable_hme_level1_flag != 0;
+    me_ctx.enable_hme_level2_flag = s.enable_hme_level2_flag != 0;
+    me_ctx.hme_search_method = s.hme_search_method;
+    me_ctx.me_search_method = s.me_search_method;
+    me_ctx.reduce_hme_l0_sr_th_min = s.reduce_hme_l0_sr_th_min;
+    me_ctx.reduce_hme_l0_sr_th_max = s.reduce_hme_l0_sr_th_max;
+
+    me_ctx.prehme_ctrl = ime::PreHmeCtrls {
+        enable: s.prehme_ctrl.enable,
+        prehme_sa_cfg: [
+            samm(s.prehme_ctrl.prehme_sa_cfg_vert),
+            samm(s.prehme_ctrl.prehme_sa_cfg_horz),
+        ],
+        skip_search_line: s.prehme_ctrl.skip_search_line,
+        l1_early_exit: s.prehme_ctrl.l1_early_exit,
+    };
+
+    me_ctx.me_hme_prune_ctrls = ime::MeHmeRefPruneCtrls {
+        enable_me_hme_ref_pruning: s.me_hme_prune_ctrls.enable_me_hme_ref_pruning != 0,
+        prune_ref_if_hme_sad_dev_bigger_than_th: s
+            .me_hme_prune_ctrls
+            .prune_ref_if_hme_sad_dev_bigger_than_th,
+        prune_ref_if_me_sad_dev_bigger_than_th: s
+            .me_hme_prune_ctrls
+            .prune_ref_if_me_sad_dev_bigger_than_th,
+        zz_sad_th: s.me_hme_prune_ctrls.zz_sad_th,
+        zz_sad_pct: s.me_hme_prune_ctrls.zz_sad_pct as u16,
+        phme_sad_th: s.me_hme_prune_ctrls.phme_sad_th,
+        phme_sad_pct: s.me_hme_prune_ctrls.phme_sad_pct as u16,
+    };
+
+    me_ctx.me_sr_adjustment_ctrls = ime::MeSrCtrls {
+        enable_me_sr_adjustment: s.me_sr_adjustment_ctrls.enable_me_sr_adjustment,
+        reduce_me_sr_based_on_mv_length_th: s
+            .me_sr_adjustment_ctrls
+            .reduce_me_sr_based_on_mv_length_th,
+        stationary_hme_sad_abs_th: s.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th as u16,
+        stationary_me_sr_divisor: s.me_sr_adjustment_ctrls.stationary_me_sr_divisor,
+        reduce_me_sr_based_on_hme_sad_abs_th: s
+            .me_sr_adjustment_ctrls
+            .reduce_me_sr_based_on_hme_sad_abs_th
+            as u16,
+        me_sr_divisor_for_low_hme_sad: s.me_sr_adjustment_ctrls.me_sr_divisor_for_low_hme_sad,
+        distance_based_hme_resizing: s.me_sr_adjustment_ctrls.distance_based_hme_resizing,
+    };
+
+    me_ctx.mv_based_sa_adj = ime::MvBasedSearchAdj {
+        enabled: s.mv_based_sa_adj.enabled != 0,
+        nearest_ref_only: s.mv_based_sa_adj.nearest_ref_only != 0,
+        mv_size_th: s.mv_based_sa_adj.mv_size_th,
+        sa_multiplier: u16::from(s.mv_based_sa_adj.sa_multiplier),
+    };
+
+    me_ctx.me_8x8_var_ctrls = ime::Me8x8VarCtrls {
+        enabled: s.me_8x8_var_ctrls.enabled,
+        me_sr_div4_th: s.me_8x8_var_ctrls.me_sr_div4_th,
+        me_sr_div2_th: s.me_8x8_var_ctrls.me_sr_div2_th,
+        me_sr_mult2_th: s.me_8x8_var_ctrls.me_sr_mult2_th,
+    };
+
+    me_ctx.sc_class_me_boost = s.sc_class_me_boost;
+    me_ctx.me_early_exit_th = s.me_early_exit_th;
+    me_ctx.me_safe_limit_zz_th = s.me_safe_limit_zz_th;
+    me_ctx.prev_me_stage_based_exit_th = s.prev_me_stage_based_exit_th;
+}

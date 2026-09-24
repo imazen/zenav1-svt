@@ -397,7 +397,7 @@ pub fn apply_filtering_central_highbd(
 #[allow(clippy::too_many_arguments)]
 pub fn get_final_filtered_pixels(
     tf_chroma: bool,
-    src_center: &mut [Vec<u8>; 3],
+    src_center: [&mut [u8]; 3],
     accum: &[Vec<u32>; 3],
     count: &[Vec<u16>; 3],
     stride: &[usize; 3],

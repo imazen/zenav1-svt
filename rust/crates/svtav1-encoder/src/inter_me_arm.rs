@@ -80,7 +80,7 @@ impl PaPlane {
     }
 
     /// A zero-sized plane, to be filled by `refill_*`.
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             buf: Vec::new(),
             org: 0,
@@ -101,7 +101,7 @@ impl PaPlane {
     /// copies a whole `stride`-long already-padded row). `resize` only
     /// reallocates when the geometry changes, which within one encode it does
     /// not — so after the first frame this is a pure overwrite.
-    fn refill_from_plane(
+    pub(crate) fn refill_from_plane(
         &mut self,
         src: &[u8],
         src_stride: usize,
@@ -129,7 +129,7 @@ impl PaPlane {
     /// The same full-overwrite argument as [`refill_from_plane`](Self::refill_from_plane)
     /// applies: `downsample_2d` writes every interior pixel and
     /// `generate_padding` writes every border byte.
-    fn refill_decimate(&mut self, src: &PaPlane, step: usize, border: usize) {
+    pub(crate) fn refill_decimate(&mut self, src: &PaPlane, step: usize, border: usize) {
         let (dw, dh) = (src.width / step, src.height / step);
         let stride = dw + 2 * border;
         let org = border * stride + border;
@@ -151,7 +151,7 @@ impl PaPlane {
         self.border = border;
     }
 
-    fn view(&self) -> Plane<'_> {
+    pub(crate) fn view(&self) -> Plane<'_> {
         Plane {
             data: &self.buf,
             org: self.org,
@@ -159,6 +159,21 @@ impl PaPlane {
             width: self.width as u16,
             height: self.height as u16,
             border: self.border as u16,
+        }
+    }
+
+    /// The same plane as a [`crate::port_preanalysis::Plane`] view — the type
+    /// `pad_and_decimate_filtered_pic` / `generate_padding` /
+    /// `downsample_filtering_input_picture` read and write through. Its `buf`
+    /// is `&mut` even for read-only callers; pass `&view` there.
+    pub(crate) fn pre_view(&mut self) -> crate::port_preanalysis::Plane<'_> {
+        crate::port_preanalysis::Plane {
+            buf: &mut self.buf,
+            origin: self.org,
+            stride: self.stride,
+            width: self.width,
+            height: self.height,
+            border: self.border,
         }
     }
 }

@@ -318,9 +318,10 @@ fn get_final_filtered_pixels_matches_c() {
             );
 
             let mut r_src = [base_y.clone(), base_c.clone(), base_c.clone()];
+            let [ry, ru, rv] = &mut r_src;
             port::get_final_filtered_pixels(
                 tf_chroma,
-                &mut r_src,
+                [&mut ry[..], &mut ru[..], &mut rv[..]],
                 &accum,
                 &count,
                 &[stride_y, stride_c, stride_c],

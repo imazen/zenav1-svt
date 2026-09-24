@@ -153,6 +153,7 @@ pub const SIMPLE_UNIPRED_CONV_STRIDE: usize = 128;
 #[allow(clippy::too_many_arguments)]
 pub fn simple_luma_unipred(
     src: TfSrc<'_>,
+    src_origin: usize,
     src_stride: usize,
     dst: TfDst<'_>,
     dst_stride: usize,
@@ -183,7 +184,7 @@ pub fn simple_luma_unipred(
     };
     tf_inter_predictor(
         src,
-        0,
+        src_origin,
         src_stride,
         dst,
         dst_stride,

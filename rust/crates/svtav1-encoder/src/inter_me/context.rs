@@ -455,6 +455,11 @@ pub struct MeContext {
     pub num_hme_sa_h: u16,
     /// C `hme_l0_sa`.
     pub hme_l0_sa: SearchAreaMinMax,
+    /// C `hme_l0_sa_default_tf` — TF's OWN default search area, copied into
+    /// `hme_l0_sa` by `set_hme_search_params_mctf` (temporal_filtering.c:2571).
+    /// A DIFFERENT field from `hme_l0_sa`: `sig_deriv_me_tf` writes only this
+    /// one, and the encode-path `sig_deriv_me` never touches it.
+    pub hme_l0_sa_default_tf: SearchAreaMinMax,
     /// C `hme_l1_sa`.
     pub hme_l1_sa: SearchArea,
     /// C `hme_l2_sa`.
@@ -569,6 +574,7 @@ impl Default for MeContext {
             num_hme_sa_w: 1,
             num_hme_sa_h: 1,
             hme_l0_sa: SearchAreaMinMax::default(),
+            hme_l0_sa_default_tf: SearchAreaMinMax::default(),
             hme_l1_sa: SearchArea::default(),
             hme_l2_sa: SearchArea::default(),
             search_results: [[SearchResults::default(); REF_LIST_MAX_DEPTH];
