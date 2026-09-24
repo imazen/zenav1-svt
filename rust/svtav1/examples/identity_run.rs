@@ -917,6 +917,11 @@ fn main() {
             pipeline = pipeline
                 .with_pred_structure(svtav1_encoder::port_picstruct::PredStructure::RandomAccess);
         }
+        // `SVT_ENABLE_TF` (C's `--enable-tf`): 0 disables motion-compensated
+        // temporal filtering on the random-access path.
+        if std::env::var("SVT_ENABLE_TF").ok().as_deref() == Some("0") {
+            pipeline.enable_tf = false;
+        }
         if let Some(d) = timeout {
             pipeline = pipeline.with_timeout(d);
         }

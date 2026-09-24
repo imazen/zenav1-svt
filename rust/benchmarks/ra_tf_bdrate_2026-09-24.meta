@@ -23,6 +23,15 @@ result (BD-rate, positive = port worse):
   vidyo4        -0.03%
   fourpeople    +0.55%
 
+TF-engaged check (same cells, TF on vs off per side — positive = TF helps):
+  clip        port notf-vs-tf   C notf-vs-tf
+  johnny          +1.82%           +2.08%
+  vidyo4          +2.59%           +3.17%
+  fourpeople      +2.43%           +4.27%
+  The port's filter captures 60-90% of C's TF benefit; the residual is the
+  generic inter envelope (ME/MD divergence compounds over the filtered
+  references), not a disabled or degenerate filter.
+
 per-point notes:
   - qp25: the port spends MORE bits (+2%..+32%) at HIGHER PSNR (+0.1..+0.6dB)
   - qp55: the port spends FEWER bits (-10%..-23%) at LOWER PSNR (-0.8..-2.1dB)

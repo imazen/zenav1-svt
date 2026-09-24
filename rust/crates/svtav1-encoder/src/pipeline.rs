@@ -100,8 +100,6 @@ pub struct EncodePipeline {
     /// filtering may run at all. C's default is 1 (`enc_settings.c`), and
     /// `derive_tf_params` additionally requires RANDOM_ACCESS and
     /// `hierarchical_levels >= 1`, so this is inert on a low-delay pipeline.
-    /// Only inert-until-wired today: the parameter tables and per-picture
-    /// `tf_ctrls` are derived, but no filtered picture is produced yet.
     pub enable_tf: bool,
     /// C `static_config.enable_tf_key` — whether a key frame may be
     /// temporally filtered (`copy_tf_params`, `pd_process.c:4483`). C's
