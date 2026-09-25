@@ -287,6 +287,12 @@ fn hadamard_satd_into(
 /// depth. `src` is the block-local 10-bit source (task #6 chunk 1 — real u16
 /// samples on a native-HBD encode, the `u8 << 2` widening otherwise; the
 /// widening used to live in this loop, so the arithmetic is unchanged).
+///
+/// This whole function is the `SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)` arm of C's
+/// `hadamard_path` (product_coding_loop.c). Ghost Robot `1e3da1d7` selects
+/// the `svt_aom_highbd_hadamard_*` kernels there — the regular ones wrap
+/// int16 on a 10-bit residual's second pass. `Mainline420`/`Hybrid3115`
+/// keep the pre-commit kernels (the port's AVX2-semantics copies).
 pub(super) fn hadamard_satd_hbd(
     src: &[u16],
     src_stride: usize,
@@ -294,9 +300,10 @@ pub(super) fn hadamard_satd_hbd(
     pred: &[u16],
     w: usize,
     h: usize,
+    reference: crate::reference::SvtReference,
 ) -> u64 {
     with_hadamard_scratch(w.min(h).min(32), |res, coeff| {
-        hadamard_satd_hbd_into(src, src_stride, src_off, pred, w, h, res, coeff)
+        hadamard_satd_hbd_into(src, src_stride, src_off, pred, w, h, res, coeff, reference)
     })
 }
 
@@ -311,7 +318,9 @@ fn hadamard_satd_hbd_into(
     h: usize,
     res: &mut [i16],
     coeff: &mut [i32],
+    reference: crate::reference::SvtReference,
 ) -> u64 {
+    let ghost = reference == crate::reference::SvtReference::GhostRobot;
     let tx = w.min(h).min(32);
     let mut satd: u64 = 0;
     for ty in (0..h).step_by(tx) {
@@ -324,9 +333,14 @@ fn hadamard_satd_hbd_into(
                 }
             }
             match tx {
+                // `1e3da1d7` leaves TX_4X4 on `svt_aom_hadamard_4x4` in both
+                // arms — no highbd 4x4 kernel exists.
                 4 => svtav1_dsp::hadamard::aom_hadamard_4x4(res, tx, coeff),
+                8 if ghost => svtav1_dsp::hadamard::aom_highbd_hadamard_8x8(res, tx, coeff),
                 8 => svtav1_dsp::hadamard::aom_hadamard_8x8(res, tx, coeff),
+                16 if ghost => svtav1_dsp::hadamard::aom_highbd_hadamard_16x16(res, tx, coeff),
                 16 => svtav1_dsp::hadamard::aom_hadamard_16x16(res, tx, coeff),
+                32 if ghost => svtav1_dsp::hadamard::aom_highbd_hadamard_32x32(res, tx, coeff),
                 32 => svtav1_dsp::hadamard::aom_hadamard_32x32(res, tx, coeff),
                 _ => unreachable!("hadamard tile {tx}"),
             }

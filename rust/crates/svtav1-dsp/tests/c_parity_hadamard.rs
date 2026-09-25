@@ -274,6 +274,174 @@ fn c_and_avx2_hadamard_diverge_at_bd10_range() {
     );
 }
 
+// --- Ghost Robot `1e3da1d7`: highbd Hadamard kernels ---------------------
+//
+// `hadamard_path` runs these on the `SVT_EFFECTIVE_HBD_MD` arm for
+// 8x8/16x16/32x32 tiles. `svt_aom_highbd_hadamard_8x8` binds to `_avx2` on
+// x86 (both passes int32); `svt_aom_highbd_hadamard_{16x16,32x32}` are
+// SET_ONLY_C and call `svt_aom_highbd_hadamard_8x8_c` (truncating first
+// pass) by name — and neither larger kernel exists in the mainline
+// oracle, so the larger pins are COMPOSITIONAL: the C `8x8_c` for the
+// sub-transforms plus the commit's own `>> 1` / `>> 2` int32 combine.
+
+fn oracle_highbd_16x16(src: &[i16], stride: usize, coeff: &mut [i32]) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 8 * stride + (idx & 1) * 8;
+        cref::highbd_hadamard_8x8_c(&src[off..], stride, &mut coeff[idx * 64..]);
+    }
+    for i in 0..64usize {
+        let a0 = coeff[i];
+        let a1 = coeff[i + 64];
+        let a2 = coeff[i + 128];
+        let a3 = coeff[i + 192];
+        let b0 = (a0 + a1) >> 1;
+        let b1 = (a0 - a1) >> 1;
+        let b2 = (a2 + a3) >> 1;
+        let b3 = (a2 - a3) >> 1;
+        coeff[i] = b0 + b2;
+        coeff[i + 64] = b1 + b3;
+        coeff[i + 128] = b0 - b2;
+        coeff[i + 192] = b1 - b3;
+    }
+}
+
+fn oracle_highbd_32x32(src: &[i16], stride: usize, coeff: &mut [i32]) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 16 * stride + (idx & 1) * 16;
+        oracle_highbd_16x16(&src[off..], stride, &mut coeff[idx * 256..]);
+    }
+    for i in 0..256usize {
+        let a0 = coeff[i];
+        let a1 = coeff[i + 256];
+        let a2 = coeff[i + 512];
+        let a3 = coeff[i + 768];
+        let b0 = (a0 + a1) >> 2;
+        let b1 = (a0 - a1) >> 2;
+        let b2 = (a2 + a3) >> 2;
+        let b3 = (a2 - a3) >> 2;
+        coeff[i] = b0 + b2;
+        coeff[i + 256] = b1 + b3;
+        coeff[i + 512] = b0 - b2;
+        coeff[i + 768] = b1 - b3;
+    }
+}
+
+fn fuzz_highbd(dim: usize, iters: usize, seed: u64, bd10: bool) {
+    let mut rng = Rng(seed);
+    for it in 0..iters {
+        let stride = dim + (rng.next() as usize % 3) * 8;
+        let mut src = vec![0i16; stride * dim + 8];
+        for v in src.iter_mut() {
+            *v = if bd10 {
+                rng.residual_bd10()
+            } else {
+                rng.residual()
+            };
+        }
+        let mut c_out = vec![0i32; dim * dim];
+        let mut r_out = vec![0i32; dim * dim];
+        match dim {
+            16 => {
+                oracle_highbd_16x16(&src, stride, &mut c_out);
+                hadamard::aom_highbd_hadamard_16x16(&src, stride, &mut r_out);
+            }
+            32 => {
+                oracle_highbd_32x32(&src, stride, &mut c_out);
+                hadamard::aom_highbd_hadamard_32x32(&src, stride, &mut r_out);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            c_out, r_out,
+            "highbd hadamard {dim}x{dim} iter {it} stride {stride} bd10={bd10}"
+        );
+        assert_eq!(
+            cref::satd(&c_out),
+            hadamard::aom_satd(&r_out),
+            "satd(highbd) {dim}x{dim} iter {it} bd10={bd10}"
+        );
+    }
+}
+
+/// `aom_highbd_hadamard_8x8` pins `svt_aom_highbd_hadamard_8x8_avx2` — the
+/// RTCD binding on x86. Its coefficient ORDER differs from the `_c` form
+/// (only `svt_aom_satd` consumes them), so parity is multiset + SATD.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn highbd_hadamard_8x8_matches_avx2() {
+    let _tier = archmage::testing::lock_token_testing();
+    let mut rng = Rng(0x8bd8_a7f2_0808_0808);
+    for it in 0..300 {
+        let stride = 8 + (rng.next() as usize % 3) * 8;
+        let mut src = vec![0i16; stride * 8 + 8];
+        for v in src.iter_mut() {
+            *v = if it % 2 == 0 {
+                rng.residual_bd10()
+            } else {
+                rng.residual()
+            };
+        }
+        let mut c_out = vec![0i32; 64];
+        let mut r_out = vec![0i32; 64];
+        cref::highbd_hadamard_8x8_avx2(&src, stride, &mut c_out);
+        hadamard::aom_highbd_hadamard_8x8(&src, stride, &mut r_out);
+        let mut c_sorted = c_out.clone();
+        let mut r_sorted = r_out.clone();
+        c_sorted.sort_unstable();
+        r_sorted.sort_unstable();
+        assert_eq!(
+            c_sorted, r_sorted,
+            "highbd hadamard 8x8(avx2) iter {it} stride {stride} (coeff multiset)"
+        );
+        assert_eq!(
+            cref::satd(&c_out),
+            hadamard::aom_satd(&r_out),
+            "satd(highbd avx2) iter {it}"
+        );
+    }
+}
+
+/// At bd10 residual magnitudes the truncating first pass of `_c` and the
+/// full-i32 `_avx2` agree (pass-1 max 8184 < 32767), so `aom_highbd_
+/// hadamard_8x8` must equal `svt_aom_highbd_hadamard_8x8_c` coefficient-
+/// for-coefficient there — the multiset already covers order differences.
+#[test]
+fn highbd_hadamard_8x8_matches_c_bd10_range() {
+    let _tier = archmage::testing::lock_token_testing();
+    let mut rng = Rng(0x8bd8_cccc_0808_0808);
+    for it in 0..200 {
+        let stride = 8 + (rng.next() as usize % 3) * 8;
+        let mut src = vec![0i16; stride * 8 + 8];
+        for v in src.iter_mut() {
+            *v = rng.residual_bd10();
+        }
+        let mut c_out = vec![0i32; 64];
+        let mut r_out = vec![0i32; 64];
+        cref::highbd_hadamard_8x8_c(&src, stride, &mut c_out);
+        hadamard::aom_highbd_hadamard_8x8(&src, stride, &mut r_out);
+        let mut c_sorted = c_out.clone();
+        let mut r_sorted = r_out.clone();
+        c_sorted.sort_unstable();
+        r_sorted.sort_unstable();
+        assert_eq!(
+            c_sorted, r_sorted,
+            "highbd hadamard 8x8(_c) iter {it} stride {stride} (coeff multiset)"
+        );
+    }
+}
+
+#[test]
+fn highbd_hadamard_16x16_matches_composed_c() {
+    let _tier = archmage::testing::lock_token_testing();
+    fuzz_highbd(16, 150, 0x8bd8_1616_1616_1616, true);
+}
+
+#[test]
+fn highbd_hadamard_32x32_matches_composed_c() {
+    let _tier = archmage::testing::lock_token_testing();
+    fuzz_highbd(32, 80, 0x8bd8_3232_3232_3232, true);
+}
+
 /// Positional coefficient parity, including padded slices and i16 wrap.
 #[test]
 fn hadamard_8x8_padded_full_range_all_tiers_match_c() {

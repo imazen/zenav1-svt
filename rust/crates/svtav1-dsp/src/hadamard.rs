@@ -1284,6 +1284,155 @@ fn hadamard_compose32_neon(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ghost Robot `1e3da1d7` (svt-av1-hdr 2026-08-03, "Fix HBD Hadamard
+// overflow in all-intra MDS0") — highbd_picture_operators_c.c.
+//
+// On the `SVT_EFFECTIVE_HBD_MD` arm of `hadamard_path`
+// (product_coding_loop.c), the 8x8/16x16/32x32 tiles run these kernels:
+// the regular `svt_aom_hadamard_*` keep every intermediate in 16-bit
+// lanes, which a 10-bit residual overflows in the second pass.
+//
+// * `svt_aom_highbd_hadamard_8x8` is RTCD-bound to
+//   `svt_aom_highbd_hadamard_8x8_avx2` on x86 (SET_AVX2,
+//   common_dsp_rtcd.c): both passes in 32-bit lanes.
+// * `svt_aom_highbd_hadamard_{16x16,32x32}` are SET_ONLY_C, and the `_c`
+//   16x16 calls `svt_aom_highbd_hadamard_8x8_c` BY NAME (truncating first
+//   pass, int32 second) — not the RTCD pointer — so the sub-transforms
+//   below use [`highbd_hadamard_8x8_c`].
+// * TX_4X4 keeps `svt_aom_hadamard_4x4` on both arms — no highbd 4x4
+//   exists.
+// ---------------------------------------------------------------------------
+
+/// The shared [`hadamard_col8`] butterfly in `i32`, with its permuted
+/// output order. `hadamard_highbd_col8_second_pass` uses it verbatim; the
+/// AVX2 kernel's `highbd_hadamard_col8_avx2` is the same arithmetic in
+/// 32-bit lanes for BOTH passes.
+#[inline]
+fn hadamard_col8_butterfly_i32(s: [i32; 8]) -> [i32; 8] {
+    let b0 = s[0] + s[1];
+    let b1 = s[0] - s[1];
+    let b2 = s[2] + s[3];
+    let b3 = s[2] - s[3];
+    let b4 = s[4] + s[5];
+    let b5 = s[4] - s[5];
+    let b6 = s[6] + s[7];
+    let b7 = s[6] - s[7];
+
+    let c0 = b0 + b2;
+    let c1 = b1 + b3;
+    let c2 = b0 - b2;
+    let c3 = b1 - b3;
+    let c4 = b4 + b6;
+    let c5 = b5 + b7;
+    let c6 = b4 - b6;
+    let c7 = b5 - b7;
+
+    [
+        c0 + c4,
+        c2 - c6,
+        c0 - c4,
+        c2 + c6,
+        c3 + c7,
+        c3 - c7,
+        c1 - c5,
+        c1 + c5,
+    ]
+}
+
+/// `svt_aom_highbd_hadamard_8x8_c`: first pass truncates to `int16`
+/// (`buffer`), second pass `int32` (`hadamard_highbd_col8_second_pass`).
+///
+/// This is NOT the kernel `hadamard_path` executes on x86 AVX2 hosts — the
+/// RTCD pointer there selects `_avx2` ([`aom_highbd_hadamard_8x8`]). It
+/// stays live because `svt_aom_highbd_hadamard_{16x16,32x32}_c` call it by
+/// name for their sub-transforms.
+fn highbd_hadamard_8x8_c(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    let mut buffer = [0i16; 64];
+    for idx in 0..8 {
+        let mut out = [0i16; 8];
+        hadamard_col8(&src_diff[idx..], src_stride, &mut out);
+        buffer[idx * 8..idx * 8 + 8].copy_from_slice(&out);
+    }
+    for idx in 0..8 {
+        let col = core::array::from_fn(|i| i32::from(buffer[idx + i * 8]));
+        coeff[idx * 8..idx * 8 + 8].copy_from_slice(&hadamard_col8_butterfly_i32(col));
+    }
+}
+
+/// `svt_aom_highbd_hadamard_8x8` as bound on x86 AVX2 hosts
+/// (`svt_aom_highbd_hadamard_8x8_avx2`, highbd_hadamard_avx2.c): the i16
+/// input is widened to 32-bit lanes and BOTH passes run in `int32` —
+/// nothing truncates between passes.
+///
+/// It agrees with [`highbd_hadamard_8x8_c`] whenever the first pass fits
+/// `int16`, which every real residual guarantees (|src-pred| <= 1023 at
+/// 10 bits -> pass-1 max 8184); the forms diverge only above the
+/// `int16`-buffer range.
+pub fn aom_highbd_hadamard_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    let mut buffer = [0i32; 64];
+    for idx in 0..8 {
+        let col = core::array::from_fn(|i| i32::from(src_diff[idx + i * src_stride]));
+        buffer[idx * 8..idx * 8 + 8].copy_from_slice(&hadamard_col8_butterfly_i32(col));
+    }
+    for idx in 0..8 {
+        let col = core::array::from_fn(|i| buffer[idx + i * 8]);
+        coeff[idx * 8..idx * 8 + 8].copy_from_slice(&hadamard_col8_butterfly_i32(col));
+    }
+}
+
+/// `svt_aom_highbd_hadamard_16x16_c` (SET_ONLY_C — the `_c` form IS what
+/// the encoder binds on every tier): four [`highbd_hadamard_8x8_c`]
+/// sub-transforms plus an `int32` cross-combine with `>> 1`. No truncation
+/// and no saturation anywhere past the 8x8 first pass — unlike
+/// [`aom_hadamard_16x16`], which ports the AVX2 kernel's wrapping-16-bit
+/// combine.
+pub fn aom_highbd_hadamard_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+        highbd_hadamard_8x8_c(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
+    }
+    for i in 0..64usize {
+        let a0 = coeff[i];
+        let a1 = coeff[i + 64];
+        let a2 = coeff[i + 128];
+        let a3 = coeff[i + 192];
+        let b0 = (a0 + a1) >> 1;
+        let b1 = (a0 - a1) >> 1;
+        let b2 = (a2 + a3) >> 1;
+        let b3 = (a2 - a3) >> 1;
+        coeff[i] = b0 + b2;
+        coeff[i + 64] = b1 + b3;
+        coeff[i + 128] = b0 - b2;
+        coeff[i + 192] = b1 - b3;
+    }
+}
+
+/// `svt_aom_highbd_hadamard_32x32_c` (SET_ONLY_C): four
+/// [`aom_highbd_hadamard_16x16`] sub-transforms plus an `int32`
+/// cross-combine with `>> 2` — plain 32-bit add/sub, none of the AVX2
+/// kernel's `packs_epi32` saturation or 16-bit wrap.
+pub fn aom_highbd_hadamard_32x32(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        aom_highbd_hadamard_16x16(&src_diff[off..], src_stride, &mut coeff[idx * 256..]);
+    }
+    for i in 0..256usize {
+        let a0 = coeff[i];
+        let a1 = coeff[i + 256];
+        let a2 = coeff[i + 512];
+        let a3 = coeff[i + 768];
+        let b0 = (a0 + a1) >> 2;
+        let b1 = (a0 - a1) >> 2;
+        let b2 = (a2 + a3) >> 2;
+        let b3 = (a2 - a3) >> 2;
+        coeff[i] = b0 + b2;
+        coeff[i + 256] = b1 + b3;
+        coeff[i + 512] = b0 - b2;
+        coeff[i + 768] = b1 - b3;
+    }
+}
+
 /// C `svt_aom_satd_c` (common_dsp_rtcd.c:48): sum of absolute coefficients.
 pub fn aom_satd(coeff: &[i32]) -> i32 {
     // The AVX2 vector loop consumes 32 coefficients per iteration. Keep

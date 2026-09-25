@@ -1147,7 +1147,7 @@ pub(super) fn inject_candidates(
                         h,
                     )
                 } else if mds0_use_hadamard {
-                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h, frame.reference)
                 } else {
                     residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
                 };
@@ -1485,7 +1485,7 @@ pub(super) fn inject_candidates(
                         h,
                     )
                 } else if mds0_use_hadamard {
-                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h, frame.reference)
                 } else {
                     residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
                 }
@@ -1930,7 +1930,7 @@ pub(super) fn inject_candidates(
                             h,
                         )
                     } else if mds0_use_hadamard {
-                        hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h)
+                        hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h, frame.reference)
                     } else {
                         residual_variance_hbd(blk_y_src10, w, 0, 0, &pred10, w, h)
                     }
@@ -2293,7 +2293,7 @@ pub(super) fn inject_candidates(
                         h,
                     )
                 } else if mds0_use_hadamard {
-                    hadamard_satd_hbd(blk_y_src10, w, 0, &c.y_pred10, w, h)
+                    hadamard_satd_hbd(blk_y_src10, w, 0, &c.y_pred10, w, h, frame.reference)
                 } else {
                     residual_variance_hbd(blk_y_src10, w, 0, 0, &c.y_pred10, w, h)
                 };

@@ -23,6 +23,11 @@ unsafe extern "C" {
         coeff: *mut i32,
     );
     pub(super) fn svt_aom_satd_c(coeff: *const i32, length: i32) -> i32;
+    pub(super) fn svt_aom_highbd_hadamard_8x8_c(
+        src_diff: *const i16,
+        src_stride: isize,
+        coeff: *mut i32,
+    );
 }
 
 // The AVX2 Hadamard kernels exist only in an x86_64 build of the C library.
@@ -38,6 +43,11 @@ unsafe extern "C" {
         coeff: *mut i32,
     );
     pub(super) fn svt_aom_hadamard_32x32_avx2(
+        src_diff: *const i16,
+        src_stride: isize,
+        coeff: *mut i32,
+    );
+    pub(super) fn svt_aom_highbd_hadamard_8x8_avx2(
         src_diff: *const i16,
         src_stride: isize,
         coeff: *mut i32,
@@ -90,6 +100,31 @@ pub fn hadamard(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i3
 /// Reference `svt_aom_satd_c`.
 pub fn satd(coeff: &[i32]) -> i32 {
     unsafe { svt_aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
+}
+
+/// Reference `svt_aom_highbd_hadamard_8x8_c`: int16-truncating first pass,
+/// int32 second pass. Exists in every oracle (pre-`1e3da1d7` it lived in
+/// picture_operators_c.c); Ghost Robot moved it to
+/// highbd_picture_operators_c.c and made it the inner kernel of the new
+/// `svt_aom_highbd_hadamard_{16x16,32x32}_c`, which no other oracle ships —
+/// so it is the compositional oracle those are pinned against.
+pub fn highbd_hadamard_8x8_c(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    assert!(coeff.len() >= 64);
+    unsafe {
+        svt_aom_highbd_hadamard_8x8_c(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr());
+    }
+}
+
+/// `svt_aom_highbd_hadamard_8x8_avx2` — the kernel Ghost Robot's
+/// `hadamard_path` binds on x86 for TX_8X8 after `1e3da1d7`
+/// (`SET_AVX2(svt_aom_highbd_hadamard_8x8, _c, _avx2)`, common_dsp_rtcd.c):
+/// both passes in 32-bit lanes, nothing truncates.
+#[cfg(target_arch = "x86_64")]
+pub fn highbd_hadamard_8x8_avx2(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    assert!(coeff.len() >= 64);
+    unsafe {
+        svt_aom_highbd_hadamard_8x8_avx2(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr());
+    }
 }
 
 /// `svt_aom_hadamard_{16x16,32x32}_avx2` — the kernel the ENCODER actually
