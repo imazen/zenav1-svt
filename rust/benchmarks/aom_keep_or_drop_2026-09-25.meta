@@ -1,0 +1,130 @@
+Snapshot 2026-09-25 (i265): keep-or-drop RD measurement of the three
+previously-unmeasured libaom-derived `ZenEnhancement` variants —
+`AomIntraEdgeFilter` (ie), `AomRestorationUnitSearch` (ru),
+`AomScreenTools` (st). 7092 cells, 0 encode errors, 0 decode errors,
+0 dimension mismatches. Evidence for the lead's keep/drop call; no
+recommendation beyond the numbers.
+
+host:   i265 — Intel; wall = GNU time %e, cpu = %U+%S around each
+        identity_run spawn (overhead identical in every arm), 6 workers
+        under run-heavy --mem 8G --jobs 6.
+build:  release `identity_run` built from c2f1ffc7eab8 + the new
+        SVTAV1_ZEN_RESTORATION_UNIT_SEARCH hook (the hook itself landed
+        as c72955d1 on later main). All 7092 cells used this one binary —
+        internally consistent. The build predates the concurrent
+        refactor/four-variant-removal series on main; the three measured
+        arms are independent opt-in flags unaffected by that removal.
+data:   benchmarks/aom_keep_or_drop_2026-09-25.csv (7092 rows)
+        benchmarks/aom_keep_or_drop_sweep_2026-09-25.py (harness +
+        `analyze` mode that produced every number below)
+        streams persisted by sha256: ~/tmp/aom-keep-or-drop-2026-09-25/
+        (3512 unique .obu, 57 MB)
+
+===================== 1. SWEEP DESIGN =====================
+
+Same cell protocol as aom_features_sweep_2026-09-20.py: `identity_run
+crop:<png> 512 512 <qp> <preset>`, aomdec decode, inverse-BT.601 PNG,
+fast-ssim2 (`Score:` 0–100) vs the source crop, plus PSNR-Y on the coded
+Y planes. qp ∈ {8, 16, 24, 32, 40, 46, 52, 58, 63} — all nine points;
+no image or qp was dropped for cost.
+
+Photo class = the 42-image `still_image_tune_v1_subset_2026-09-19.tsv`
+subset. **38 of the 42 rows were git-LFS pointers on this host** (only
+1000-lilith-photos-general and 8000-lilith-mobile-screenshots are
+materialized in imazen-26-png-v3). The objects were fetched through the
+GitHub LFS batch API into ~/tmp/aom_kod_images/<oid>.png and sha256-
+verified; the harness resolves a pointer row to the cached object, so
+the content is byte-identical to what the TSV names. Nothing outside
+this workspace and ~/tmp was written.
+
+Screen class = codec-corpus/gb82-sc (local checkout, 10 PNGs;
+gmessages at the gates' crop@384,384 content window).
+
+Arms (each vs its own base at the same class/tune/preset/qp):
+  photo: p-1 {base, ie, ru, ie+ru ("both"), st};  p6 {base, st}
+  screen: p-1 {base, ie, ru, st};  p4 {base, st};  p6 {base, st}
+  supplemental: screen p8 {base, st} — see §3 note on why.
+  x tune {t1 default, t3 = SVTAV1_TUNE=3}
+Env arms: ie=SVTAV1_ZEN_INTRA_EDGE_FILTER=1,
+ru=SVTAV1_ZEN_RESTORATION_UNIT_SEARCH=1, st=SVTAV1_SCREEN_TOOLS=1.
+
+BD-rate: per image, log-rate vs quality linear interpolation between qp
+points, 40-sample integral over the common quality range (same method as
+still_image_tune_v1_analyze_bd.py). win/loss = per-image BD < −0.3% /
+> +0.3%. cpuRatio = mean over images of Σ cpu_ms(arm)/Σ cpu_ms(base)
+over the 9 qps. err = encode+decode failures (0 everywhere).
+
+===================== 2. RESULTS =====================
+
+  class tune   p   arm  BDs2 mean    p25     p50     p75 | BDpy mean    p25     p50     p75 |  n win loss cpu
+  photo   t1  -1  both    +0.33  -0.91   +0.03   +0.90 |   +0.51  -0.17   +0.00   +0.67 | 42  19  20  1.09
+  photo   t1  -1  ie      +0.35  -0.90   +0.12   +1.07 |   +0.53  -0.13   +0.01   +0.67 | 42  18  20  1.04
+  photo   t1  -1  ru      -0.01  -0.01    0.00   +0.01 |   -0.03  -0.02    0.00    0.00 | 42   0   1  1.05
+  photo   t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
+  photo   t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
+  photo   t3  -1  both    +1.04  -0.35   +0.50   +1.18 |   +0.33  -0.13   +0.05   +0.63 | 42  11  25  1.13
+  photo   t3  -1  ie      +1.05  -0.35   +0.51   +1.18 |   +0.36  -0.08   +0.07   +0.62 | 42  11  26  1.04
+  photo   t3  -1  ru      +0.07  -0.01    0.00    0.00 |   -0.04  -0.03   -0.00    0.00 | 42   0   1  1.09
+  photo   t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
+  photo   t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
+  screen  t1  -1  ie      +0.95  -0.55   +0.91   +2.55 |   +0.62  +0.20   +0.60   +0.97 | 10   5   5  1.02
+  screen  t1  -1  ru      +0.00   0.00    0.00    0.00 |   +0.01   0.00    0.00    0.00 | 10   0   0  1.02
+  screen  t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
+  screen  t1   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
+  screen  t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97
+  screen  t1   8  st     -22.99 -25.02  -22.30  -19.87 |  -28.85 -34.59  -31.88  -24.54 | 10   9   0  1.31
+  screen  t3  -1  ie      -0.20  -0.46   -0.22   +0.11 |   +0.59  +0.24   +0.52   +1.07 | 10   5   2  1.01
+  screen  t3  -1  ru      -0.00   0.00    0.00    0.00 |   +0.00   0.00    0.00    0.00 | 10   0   0  1.03
+  screen  t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
+  screen  t3   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97
+  screen  t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.99
+  screen  t3   8  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.98
+
+Byte-identity vs base (same class/tune/preset/qp), confirming the zeros:
+  ie:   0/378 photo + 0/90 screen cells identical — always active.
+  ru:   314-316/378 photo, 88-89/90 screen — mostly inert, small diffs.
+  st:   100% identical at p-1/4/6 everywhere; 9/90 at p8 t1; 90/90 at
+        p8 t3.
+
+===================== 3. READ =====================
+
+- **AomIntraEdgeFilter**: every cell differs from base; the RD effect is
+  a small net loss on photo content — median +0.12% (t1) / +0.51% (t3)
+  ssim2 BD, PSNR-Y medians +0.01%/+0.07%, means pulled up by a p75 tail
+  of ~+1.1%. 18/42 and 11/42 images improve at t1/t3. On gb82-sc it is
+  split (t1 median +0.91% ssim2; t3 median −0.22% ssim2 but +0.52%
+  PSNR-Y). Encode +1..+4%. Zero failures.
+- **AomRestorationUnitSearch**: RD-neutral. Byte-identical in 83% of
+  photo and ~98% of screen cells; median BD 0.000 on both axes in every
+  arm, means within ±0.07%. Costs +1.6..+9% encode time for no measured
+  gain on this grid.
+- **AomScreenTools**: byte-identical in every cell of the *briefed*
+  grid — the arm only fills palette/IntraBC when the allintra ladder
+  killed BOTH (sc_class5 && palette_level==0 && intrabc_level==0),
+  which first happens at preset 8; at p-1/4/6 at least one tool is
+  already on, so the arm is structurally inert there. The supplemental
+  screen p8 arm measures its active zone: under default tune it saves
+  −23.0% mean / −22.3% median ssim2 BD and −28.8% mean / −31.9% median
+  PSNR-Y BD, improving 9/10 images, at +31% encode time. Under tune IQ
+  at p8 it is again byte-identical — the IQ bundle's
+  screen_content_mode=3 already derives tools at min(preset,7), leaving
+  no dead-tool state to fill. On photos it cannot act unless the screen
+  detector fires.
+
+===================== 4. HONEST LIMITS =====================
+
+- All-intra 512×512 crops only; presets -1/4/6/8 (and photo p6); no
+  inter claims. Screen n=10; per-image spreads are small-sample.
+- Two quality axes only (ssim2 0-100, PSNR-Y). The st@p8/t1 win is on
+  screenshot content where palette/IntraBC are designed to pay; its
+  cost on non-screen content at p8+ is unmeasured (detector-gated by
+  design, and at p-1/4/6 it is a proven no-op on photos).
+- The first sweep run produced 4788 ENC-ERR rows on the 38 LFS-pointer
+  inputs (PNG decode InvalidSignature — a harness/data issue, not an
+  encoder fault); after materializing the objects those cells encoded
+  and decoded clean, and the committed CSV contains only the final
+  deduped 7092 rows. Reproducing the photo arm needs
+  ~/tmp/aom_kod_images/ (or a materialized imazen-26-png-v3).
+- Encode-time ratios are wall/cpu of a spawned-process cell incl.
+  ~40-90 ms decode/PNG work per cell excluded — they measure the
+  identity_run encode process only.
