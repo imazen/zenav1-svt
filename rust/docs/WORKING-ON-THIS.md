@@ -26,6 +26,17 @@ token permutations; doctests run separately. Never relax expectations or
 turn missing fixtures into passing cells. Push each locally verified coherent
 change to main, and verify remote ancestry. Do not wait on CI unless requested.
 
+## Before you push, and after
+
+Run `cargo fmt --all --check` and `tools/clippy_inventory.sh --check` (both
+cheap; CI's first job runs exactly these, and a red fmt step hides every step
+after it). After pushing, look at `gh run list` once the run finishes: CI was
+red from 2026-09-21 to 2026-09-25 while local gates stayed green, because
+nobody read it. The failures were fmt drift, six new clippy lint kinds, a
+monochrome-inter recon bug only the animation job exercised, a test that
+needed a submodule the pure-Rust jobs do not check out, and a corpus image the
+sparse checkout did not fetch.
+
 ## The three measurement harnesses added 2026-09-10
 
 Each is a committed script, not a scratch one-liner, because the numbers they
