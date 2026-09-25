@@ -1,0 +1,289 @@
+oracle	content	size	preset	qp	bd	verdict	stage	detail
+ghost-robot	gradient	64	2	20	8	DIFFERS	tile	tile payload C=654B Rust=656B
+ghost-robot	gradient	64	4	20	8	DIFFERS	FH	cdef_y_pri_strength[5] C=11 Rust=9
+ghost-robot	gradient	64	6	20	8	DIFFERS	tile	tile payload C=612B Rust=614B
+ghost-robot	gradient	64	8	20	8	DIFFERS	tile	tile payload C=609B Rust=611B
+ghost-robot	gradient	64	10	20	8	DIFFERS	tile	tile payload C=693B Rust=698B
+ghost-robot	gradient	64	13	20	8	DIFFERS	tile	tile payload C=693B Rust=698B
+ghost-robot	gradient	64	2	32	8	IDENTICAL	-	-
+ghost-robot	gradient	64	4	32	8	DIFFERS	tile-op	op 2814 C=CDF4:s2 Rust=CDF4:s3
+ghost-robot	gradient	64	6	32	8	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	8	32	8	DIFFERS	tile-op	op 2816 C=CDF4:s2 Rust=CDF4:s3
+ghost-robot	gradient	64	10	32	8	DIFFERS	tile-op	op 523 C=CDF4:s2 Rust=CDF4:s3
+ghost-robot	gradient	64	13	32	8	DIFFERS	tile-op	op 523 C=CDF4:s2 Rust=CDF4:s3
+ghost-robot	gradient	64	2	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	4	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	6	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	8	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	10	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	13	45	8	IDENTICAL	-	-
+ghost-robot	gradient	64	2	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	4	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	6	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	8	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	10	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	13	55	8	IDENTICAL	-	-
+ghost-robot	gradient	64	2	20	10	DIFFERS	FH	cdef_uv_sec_strength[2] C=3 Rust=2
+ghost-robot	gradient	64	4	20	10	DIFFERS	FH	cdef_y_sec_strength[4] C=1 Rust=0
+ghost-robot	gradient	64	6	20	10	IDENTICAL	-	-
+ghost-robot	gradient	64	8	20	10	IDENTICAL	-	-
+ghost-robot	gradient	64	10	20	10	IDENTICAL	-	-
+ghost-robot	gradient	64	13	20	10	IDENTICAL	-	-
+ghost-robot	gradient	64	2	32	10	DIFFERS	tile-op	op 29 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	4	32	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	6	32	10	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1
+ghost-robot	gradient	64	8	32	10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	10	32	10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	13	32	10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	gradient	64	2	45	10	DIFFERS	tile-op	op 4 C=CDF13:s11 Rust=CDF13:s0
+ghost-robot	gradient	64	4	45	10	DIFFERS	tile-op	op 128 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	6	45	10	DIFFERS	tile-op	op 4 C=CDF13:s0 Rust=CDF13:s2
+ghost-robot	gradient	64	8	45	10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	10	45	10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	13	45	10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	2	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	4	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	6	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	8	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	10	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	64	13	55	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	128	2	20	8	DIFFERS	FH	lr_type[1] C=1 Rust=0
+ghost-robot	gradient	128	4	20	8	DIFFERS	FH	cdef_y_pri_strength[5] C=14 Rust=4
+ghost-robot	gradient	128	6	20	8	DIFFERS	FH	cdef_uv_pri_strength[0] C=9 Rust=11
+ghost-robot	gradient	128	8	20	8	DIFFERS	tile	tile payload C=2389B Rust=2393B
+ghost-robot	gradient	128	10	20	8	DIFFERS	tile	tile payload C=2441B Rust=2445B
+ghost-robot	gradient	128	13	20	8	DIFFERS	tile	tile payload C=2441B Rust=2445B
+ghost-robot	gradient	128	2	32	8	DIFFERS	tile-op	op 9862 C=CDF10:s0 Rust=CDF10:s1
+ghost-robot	gradient	128	4	32	8	IDENTICAL	-	-
+ghost-robot	gradient	128	6	32	8	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1
+ghost-robot	gradient	128	8	32	8	DIFFERS	tile-op	op 7090 C=CDF4:s2 Rust=CDF4:s3
+ghost-robot	gradient	128	10	32	8	DIFFERS	tile-op	op 2592 C=CDF4:s1 Rust=CDF4:s2
+ghost-robot	gradient	128	13	32	8	DIFFERS	tile-op	op 2592 C=CDF4:s1 Rust=CDF4:s2
+ghost-robot	gradient	128	2	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	128	4	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	128	6	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	128	8	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	128	10	45	8	DIFFERS	tile-op	op 848 C=B:v0 Rust=B:v1
+ghost-robot	gradient	128	13	45	8	DIFFERS	tile-op	op 848 C=B:v0 Rust=B:v1
+ghost-robot	gradient	128	2	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	4	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	6	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	8	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	10	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	13	55	8	IDENTICAL	-	-
+ghost-robot	gradient	128	2	20	10	DIFFERS	FH	loop_filter_level[1] C=16 Rust=17
+ghost-robot	gradient	128	4	20	10	DIFFERS	FH	cdef_y_sec_strength[4] C=3 Rust=0
+ghost-robot	gradient	128	6	20	10	DIFFERS	tile	tile payload C=2426B Rust=2408B
+ghost-robot	gradient	128	8	20	10	DIFFERS	FH	tx_mode_select C=0 Rust=1
+ghost-robot	gradient	128	10	20	10	DIFFERS	tile	tile payload C=2413B Rust=2391B
+ghost-robot	gradient	128	13	20	10	DIFFERS	tile	tile payload C=2413B Rust=2391B
+ghost-robot	gradient	128	2	32	10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	gradient	128	4	32	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	gradient	128	6	32	10	DIFFERS	tile-op	op 18 C=B:v0 Rust=B:v1
+ghost-robot	gradient	128	8	32	10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	128	10	32	10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	128	13	32	10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	128	2	45	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	128	4	45	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	128	6	45	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	128	8	45	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	128	10	45	10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s7
+ghost-robot	gradient	128	13	45	10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s7
+ghost-robot	gradient	128	2	55	10	DIFFERS	tile-op	op 0 C=CDF10:s1 Rust=B:v1
+ghost-robot	gradient	128	4	55	10	DIFFERS	tile-op	op 0 C=CDF10:s0 Rust=B:v1
+ghost-robot	gradient	128	6	55	10	DIFFERS	tile-op	op 0 C=CDF10:s0 Rust=B:v1
+ghost-robot	gradient	128	8	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9
+ghost-robot	gradient	128	10	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9
+ghost-robot	gradient	128	13	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9
+ghost-robot	gradient	256	2	20	8	DIFFERS	tile	tile payload C=6920B Rust=6687B
+ghost-robot	gradient	256	4	20	8	DIFFERS	FH	loop_filter_level[2] C=33 Rust=1
+ghost-robot	gradient	256	6	20	8	DIFFERS	FH	cdef_uv_pri_strength[0] C=13 Rust=11
+ghost-robot	gradient	256	8	20	8	DIFFERS	tile	tile payload C=7354B Rust=7033B
+ghost-robot	gradient	256	10	20	8	DIFFERS	tile	tile payload C=7953B Rust=7996B
+ghost-robot	gradient	256	13	20	8	DIFFERS	tile	tile payload C=7953B Rust=7996B
+ghost-robot	gradient	256	2	32	8	DIFFERS	tile-op	op 2147 C=CDF7:s3 Rust=CDF7:s2
+ghost-robot	gradient	256	4	32	8	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3
+ghost-robot	gradient	256	6	32	8	DIFFERS	tile-op	op 6047 C=CDF4:s1 Rust=CDF4:s2
+ghost-robot	gradient	256	8	32	8	DIFFERS	tile-op	op 6049 C=CDF4:s1 Rust=CDF4:s2
+ghost-robot	gradient	256	10	32	8	DIFFERS	tile-op	op 1372 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	256	13	32	8	DIFFERS	tile-op	op 1372 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	256	2	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	256	4	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	256	6	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	gradient	256	8	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	256	10	45	8	IDENTICAL	-	-
+ghost-robot	gradient	256	13	45	8	IDENTICAL	-	-
+ghost-robot	gradient	256	2	55	8	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	4	55	8	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	6	55	8	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	gradient	256	8	55	8	DIFFERS	tile-op	op 2430 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	256	10	55	8	IDENTICAL	-	-
+ghost-robot	gradient	256	13	55	8	IDENTICAL	-	-
+ghost-robot	gradient	256	2	20	10	DIFFERS	FH	loop_filter_level[1] C=17 Rust=16
+ghost-robot	gradient	256	4	20	10	DIFFERS	FH	loop_filter_level[2] C=33 Rust=1
+ghost-robot	gradient	256	6	20	10	DIFFERS	tile	tile payload C=7122B Rust=6630B
+ghost-robot	gradient	256	8	20	10	DIFFERS	FH	tx_mode_select C=0 Rust=1
+ghost-robot	gradient	256	10	20	10	DIFFERS	tile	tile payload C=7652B Rust=7691B
+ghost-robot	gradient	256	13	20	10	DIFFERS	tile	tile payload C=7652B Rust=7691B
+ghost-robot	gradient	256	2	32	10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	gradient	256	4	32	10	DIFFERS	tile-op	op 8 C=B:v1 Rust=B:v0
+ghost-robot	gradient	256	6	32	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	gradient	256	8	32	10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	256	10	32	10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	256	13	32	10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	256	2	45	10	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	4	45	10	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	6	45	10	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	8	45	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	gradient	256	10	45	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	256	13	45	10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	gradient	256	2	55	10	DIFFERS	tile-op	op 6 C=B:v1 Rust=B:v0
+ghost-robot	gradient	256	4	55	10	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	6	55	10	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1
+ghost-robot	gradient	256	8	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8
+ghost-robot	gradient	256	10	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8
+ghost-robot	gradient	256	13	55	10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8
+ghost-robot	photo	64	2	20	8	DIFFERS	FH	loop_filter_level[2] C=32 Rust=8
+ghost-robot	photo	64	4	20	8	DIFFERS	tile	tile payload C=840B Rust=844B
+ghost-robot	photo	64	6	20	8	DIFFERS	tile	tile payload C=751B Rust=735B
+ghost-robot	photo	64	8	20	8	DIFFERS	tile	tile payload C=773B Rust=798B
+ghost-robot	photo	64	10	20	8	DIFFERS	tile	tile payload C=790B Rust=795B
+ghost-robot	photo	64	13	20	8	DIFFERS	tile	tile payload C=790B Rust=795B
+ghost-robot	photo	64	2	32	8	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	4	32	8	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0
+ghost-robot	photo	64	6	32	8	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	8	32	8	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	10	32	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	13	32	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	2	45	8	DIFFERS	tile-op	op 1805 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	4	45	8	IDENTICAL	-	-
+ghost-robot	photo	64	6	45	8	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	64	8	45	8	DIFFERS	tile-op	op 1621 C=CDF10:s0 Rust=CDF10:s3
+ghost-robot	photo	64	10	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	13	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	2	55	8	DIFFERS	tile-op	op 504 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	4	55	8	IDENTICAL	-	-
+ghost-robot	photo	64	6	55	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1
+ghost-robot	photo	64	8	55	8	DIFFERS	tile-op	op 581 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	10	55	8	IDENTICAL	-	-
+ghost-robot	photo	64	13	55	8	IDENTICAL	-	-
+ghost-robot	photo	64	2	20	10	DIFFERS	FH	cdef_bits C=2 Rust=0
+ghost-robot	photo	64	4	20	10	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=0
+ghost-robot	photo	64	6	20	10	DIFFERS	tile	tile payload C=847B Rust=770B
+ghost-robot	photo	64	8	20	10	DIFFERS	tile	tile payload C=826B Rust=784B
+ghost-robot	photo	64	10	20	10	DIFFERS	tile	tile payload C=794B Rust=766B
+ghost-robot	photo	64	13	20	10	DIFFERS	tile	tile payload C=794B Rust=766B
+ghost-robot	photo	64	2	32	10	DIFFERS	tile-op	op 24 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	4	32	10	DIFFERS	tile-op	op 15 C=B:v1 Rust=B:v0
+ghost-robot	photo	64	6	32	10	DIFFERS	tile-op	op 25 C=B:v0 Rust=B:v1
+ghost-robot	photo	64	8	32	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	10	32	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	13	32	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	2	45	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	4	45	10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3
+ghost-robot	photo	64	6	45	10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3
+ghost-robot	photo	64	8	45	10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s8
+ghost-robot	photo	64	10	45	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	13	45	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	64	2	55	10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	64	4	55	10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	64	6	55	10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	64	8	55	10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	64	10	55	10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	64	13	55	10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0
+ghost-robot	photo	128	2	20	8	DIFFERS	FH	cdef_damping_minus_3 C=2 Rust=0
+ghost-robot	photo	128	4	20	8	DIFFERS	FH	cdef_bits C=0 Rust=2
+ghost-robot	photo	128	6	20	8	DIFFERS	FH	cdef_uv_pri_strength[0] C=10 Rust=8
+ghost-robot	photo	128	8	20	8	DIFFERS	tile	tile payload C=3465B Rust=3343B
+ghost-robot	photo	128	10	20	8	DIFFERS	tile	tile payload C=3231B Rust=3243B
+ghost-robot	photo	128	13	20	8	DIFFERS	tile	tile payload C=3231B Rust=3243B
+ghost-robot	photo	128	2	32	8	DIFFERS	tile-op	op 15 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	4	32	8	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	6	32	8	DIFFERS	tile-op	op 24 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	8	32	8	DIFFERS	tile-op	op 824 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	10	32	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	13	32	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	2	45	8	DIFFERS	tile-op	op 27 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	4	45	8	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	6	45	8	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	8	45	8	DIFFERS	tile-op	op 1569 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	10	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	13	45	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	2	55	8	DIFFERS	tile-op	op 1298 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	4	55	8	DIFFERS	tile-op	op 14 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	6	55	8	DIFFERS	tile-op	op 13 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	8	55	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	10	55	8	DIFFERS	tile-op	op 1090 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	13	55	8	DIFFERS	tile-op	op 1090 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	2	20	10	DIFFERS	FH	loop_filter_level[2] C=0 Rust=48
+ghost-robot	photo	128	4	20	10	DIFFERS	tile	tile payload C=3856B Rust=3710B
+ghost-robot	photo	128	6	20	10	DIFFERS	FH	cdef_uv_sec_strength[1] C=0 Rust=1
+ghost-robot	photo	128	8	20	10	DIFFERS	tile	tile payload C=3648B Rust=3375B
+ghost-robot	photo	128	10	20	10	DIFFERS	tile	tile payload C=3389B Rust=3317B
+ghost-robot	photo	128	13	20	10	DIFFERS	tile	tile payload C=3389B Rust=3317B
+ghost-robot	photo	128	2	32	10	DIFFERS	tile-op	op 31 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	4	32	10	DIFFERS	tile-op	op 26 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	6	32	10	DIFFERS	tile-op	op 17 C=B:v0 Rust=B:v1
+ghost-robot	photo	128	8	32	10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	10	32	10	DIFFERS	tile-op	op 10 C=CDF9:s8 Rust=CDF9:s7
+ghost-robot	photo	128	13	32	10	DIFFERS	tile-op	op 10 C=CDF9:s8 Rust=CDF9:s7
+ghost-robot	photo	128	2	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	4	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	6	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	8	45	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	10	45	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	13	45	10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	2	55	10	DIFFERS	tile-op	op 6 C=B:v1 Rust=B:v0
+ghost-robot	photo	128	4	55	10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s0
+ghost-robot	photo	128	6	55	10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s0
+ghost-robot	photo	128	8	55	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	10	55	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	128	13	55	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	2	20	8	DIFFERS	FH	loop_filter_level[2] C=24 Rust=40
+ghost-robot	photo	256	4	20	8	DIFFERS	FH	loop_filter_sharpness C=0 Rust=4
+ghost-robot	photo	256	6	20	8	DIFFERS	tile	tile payload C=10889B Rust=10441B
+ghost-robot	photo	256	8	20	8	DIFFERS	tile	tile payload C=10946B Rust=10639B
+ghost-robot	photo	256	10	20	8	DIFFERS	tile	tile payload C=10565B Rust=10600B
+ghost-robot	photo	256	13	20	8	DIFFERS	tile	tile payload C=10565B Rust=10600B
+ghost-robot	photo	256	2	32	8	DIFFERS	tile-op	op 45 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	4	32	8	DIFFERS	tile-op	op 24 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	6	32	8	DIFFERS	tile-op	op 45 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	8	32	8	DIFFERS	tile-op	op 777 C=CDF10:s0 Rust=CDF10:s3
+ghost-robot	photo	256	10	32	8	DIFFERS	tile-op	op 153 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	13	32	8	DIFFERS	tile-op	op 153 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	2	45	8	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	4	45	8	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	6	45	8	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	8	45	8	DIFFERS	tile-op	op 534 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	10	45	8	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	13	45	8	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	2	55	8	DIFFERS	tile-op	op 6 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	4	55	8	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	6	55	8	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	8	55	8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	10	55	8	DIFFERS	tile-op	op 1046 C=CDF10:s0 Rust=CDF10:s3
+ghost-robot	photo	256	13	55	8	DIFFERS	tile-op	op 1046 C=CDF10:s0 Rust=CDF10:s3
+ghost-robot	photo	256	2	20	10	DIFFERS	FH	loop_filter_sharpness C=4 Rust=5
+ghost-robot	photo	256	4	20	10	DIFFERS	FH	cdef_uv_pri_strength[0] C=8 Rust=10
+ghost-robot	photo	256	6	20	10	DIFFERS	FH	cdef_uv_pri_strength[0] C=12 Rust=10
+ghost-robot	photo	256	8	20	10	DIFFERS	tile	tile payload C=11302B Rust=10680B
+ghost-robot	photo	256	10	20	10	DIFFERS	tile	tile payload C=10961B Rust=12012B
+ghost-robot	photo	256	13	20	10	DIFFERS	tile	tile payload C=10961B Rust=12012B
+ghost-robot	photo	256	2	32	10	DIFFERS	tile-op	op 24 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	4	32	10	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	6	32	10	DIFFERS	tile-op	op 25 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	8	32	10	DIFFERS	tile-op	op 9 C=CDF13:s2 Rust=CDF13:s1
+ghost-robot	photo	256	10	32	10	DIFFERS	tile-op	op 13 C=CDF11:s7 Rust=CDF11:s3
+ghost-robot	photo	256	13	32	10	DIFFERS	tile-op	op 13 C=CDF11:s7 Rust=CDF11:s3
+ghost-robot	photo	256	2	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	4	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	6	45	10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	8	45	10	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	10	45	10	DIFFERS	tile-op	op 13 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	photo	256	13	45	10	DIFFERS	tile-op	op 13 C=CDF4:s1 Rust=CDF4:s0
+ghost-robot	photo	256	2	55	10	DIFFERS	tile-op	op 6 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	4	55	10	DIFFERS	tile-op	op 6 C=B:v1 Rust=B:v0
+ghost-robot	photo	256	6	55	10	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1
+ghost-robot	photo	256	8	55	10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0
+ghost-robot	photo	256	10	55	10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s7
+ghost-robot	photo	256	13	55	10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s7

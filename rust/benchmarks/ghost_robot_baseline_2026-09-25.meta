@@ -1,0 +1,46 @@
+Snapshot: ghost-robot still-grid baseline, 2026-09-25 — port vs the
+Ghost Robot C oracle on the shared still matrix: 32/288 cells
+byte-identical; control run under mainline-4.2.0 is 288/288.
+
+This is the phase-3.1 baseline of docs/PLAN-ORACLES-AND-CLEANUP.md: the
+per-cell divergence map the phase-3.2 ports are measured against. A
+dated record — re-measure rather than reading this as current state.
+
+host:    i265 (Core Ultra 7 265K, 20 threads / 30 GB; run-heavy --mem 8G --jobs 6)
+oracle:  ghost-robot = reference/svt-av1-hdr @ 9dabe3ca04390e2e19267bf87a48c6cab44d6111
+         ("Ghost Robot" = mainline v4.2.0 + 144 master + 73 fork commits)
+control: mainline-4.2.0 = reference/svt-av1 @ 9292ec8e32bce26f781f277ec8739b53426c4300
+port:    893f6823 (Ghost Robot defaults: HdrForkConfig::ghost_robot(),
+         reference-keyed resolution — plan 1.3) plus the docs tick.
+command: tools/oracle_still_grid.sh <oracle> <out.tsv>
+         (exports SVT_ORACLE; each cell runs tools/identity_diff.sh, which
+         drives both encoders on the one .yuv and reports the first
+         divergent tile op + stage)
+grid:    contents {gradient, photo=crop:CID22-512/training/1001682.png}
+         x sizes {64,128,256} x bd {8,10} x qp {20,32,45,55}
+         x presets {2,4,6,8,10,13} = 288 cells/oracle.
+data:    benchmarks/ghost_robot_baseline_2026-09-25.{ghost-robot,mainline-4.2.0}.tsv
+
+ghost-robot: 32 / 288 IDENTICAL
+
+  by content   gradient 28/144   photo 4/144
+  by bit depth bd8 28/144        bd10 4/144
+  by size      64 21/96          128 7/96      256 4/96
+  by preset    p2 4/48   p4 6/48   p6 4/48   p8 4/48   p10 7/48   p13 7/48
+  by qp        q20 4/72  q32 2/72  q45 9/72  q55 17/72
+
+  first-divergence stage histogram (256 divergent cells):
+    tile-op 188    tile 41    FH 27
+
+  dominant divergent classes (each cell is unique; classes by
+  content x bd x stage):
+    photo bd10    tile-op  54   (e.g. photo-64-b10-p8-q55)
+    gradient bd10 tile-op  54   (e.g. gradient-64-b10-p2-q32)
+    photo bd8     tile-op  50   (e.g. photo-64-b8-p8-q55)
+    gradient bd8  tile-op  30   (e.g. gradient-128-b8-p6-q45)
+    photo/gradient tile    41   (24 bd8 + 17 bd10)
+    photo/gradient FH      27   (12 bd8 + 15 bd10)
+
+control (mainline-4.2.0): 288 / 288 IDENTICAL — the divergence above is
+entirely the unreleased-mainline-master + fork commits, not regression in
+the shared paths.
