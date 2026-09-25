@@ -13,6 +13,12 @@ Crates are not published to crates.io yet — depend by git.
 
 ### QUEUED BREAKING CHANGES
 
+- `AvifEncoder::with_variance_boost` no longer clamps `strength` into 1-4:
+  an out-of-range value is refused by `validate_configuration` (and the
+  encode), as C refuses it. Every fork knob in `HdrForkConfig` is range-checked
+  the same way (`HdrForkConfig::validate_ranges`, called by
+  `validate_hdr_config`), so a raw `EncodePipeline::hdr` outside C's ranges is
+  now an error.
 - `SvtReference` is `#[non_exhaustive]` and gains `GhostRobot`; exhaustive
   matches outside the crate need a wildcard arm (`50c683a4`).
 - Raw tune value 5 now means VMAF, as in every C oracle, and is refused
@@ -99,6 +105,11 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Typed fork knobs on the facade**: `ForkConfig` (re-exported from
+  `svtav1::avif`) names every `HdrForkConfig` knob by its C field, and
+  `AvifEncoder::with_fork` applies it; unset fields keep the reference's
+  defaults. `config_surface` checks that every `Hdr` field of Ghost Robot's
+  configuration has a `ForkConfig` field.
 - **Ghost Robot configuration surface** (7df9a27f): the four C options the
   port runs only at their defaults are `HdrForkConfig` fields, and
   `validate_hdr_config` refuses any other value instead of ignoring it.

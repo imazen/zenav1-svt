@@ -49,6 +49,7 @@ pub mod film_grain_model;
 pub mod film_grain_synthesis;
 pub mod frame_geom;
 pub(crate) mod funnel_arm;
+pub mod fork_config;
 pub mod hdr_mode;
 pub mod inter_hdr_arm;
 pub mod inter_md_arm;

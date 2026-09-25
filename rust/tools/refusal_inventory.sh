@@ -117,7 +117,7 @@ SRC+=(crates/svtav1-encoder/src/entropy/obu.rs svtav1/src/avif.rs)
 # Until 2026-09-25 none of these were catalogued, so the ledger missed every
 # refusal they make. Also the animation facade, which the ledger had never
 # scanned.
-SRC+=(crates/svtav1-encoder/src/reference.rs crates/svtav1-encoder/src/enhancements.rs svtav1/src/animation.rs)
+SRC+=(crates/svtav1-encoder/src/reference.rs crates/svtav1-encoder/src/hdr_mode.rs crates/svtav1-encoder/src/enhancements.rs svtav1/src/animation.rs)
 for f in "${SRC[@]}"; do
     [ -f "$f" ] || { echo "refusal_inventory: source $f is missing — update SRC" >&2; exit 2; }
 done

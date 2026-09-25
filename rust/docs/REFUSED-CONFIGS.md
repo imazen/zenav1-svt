@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **99
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -60,6 +60,28 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/enhancements.rs` | aom-screen-tools-v1 is measured for all-intra 4:2:0 only |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too large to tile: MAX_TILE_AREA forces more tiles than MAX_TILE_ROWS (64) tile rows can supply at this width |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | a minimum QM level must not exceed its maximum |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | ac_bias must be between 0.0 and 8.0 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | cdef_scaling must be between 1 and 30 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | complex_hvs must be 0 or 1 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | kf_tf_strength must be between 0 and 4 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | max_tx_size must be 32 or 64 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_adaptive_filtering must be between 0 and 4 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_chroma_from_luma must be 0 or 1 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_norm_strength must be between 0 and 4 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_size must be between -1 and 13 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_strength must be between 0 and 200 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | noise_strength_chroma must be between -1 and 200 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | qp_scale_compress_strength must be between 0.0 and 8.0 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | screen_content_mode must be between 0 and 3 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | sharp_tx must be 0 or 1 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | sharpness must be between -7 and 7 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | tf_strength must be between 0 and 4 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | tx_bias must be between 0 and 3 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | variance_boost_curve must be between 0 and 3 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | variance_boost_strength must be between 1 and 4 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | variance_octile must be between 1 and 8 |
+| `crates/svtav1-encoder/src/hdr_mode.rs` | QM levels must be at most 15 |
 | `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | cand_reduction_level is outside C's set_cand_reduction_ctrls switch (crate::inter_hdr_arm::enc_dec_cand_reduction) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override changed U/V separation after the key frame; the sequence header fixes separate_uv_delta_q until the next key frame |

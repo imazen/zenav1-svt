@@ -368,3 +368,24 @@ fn every_ghost_robot_config_field_has_one_disposition() {
         c.len()
     );
 }
+
+/// Plan 1.2's "done when": every field the ledger routes through
+/// `HdrForkConfig` has a typed facade setter — a `ForkConfig` field of the
+/// same C name, or (`tune`) `AvifEncoder::with_tune`.
+#[test]
+fn every_hdr_field_has_a_typed_facade_setter() {
+    use svtav1::avif::ForkConfig;
+    let missing: Vec<_> = SURFACE
+        .iter()
+        .filter(|(name, d)| matches!(d, Hdr) && *name != "tune")
+        .map(|(name, _)| *name)
+        .filter(|name| !ForkConfig::FIELDS.contains(name))
+        .collect();
+    assert!(missing.is_empty(), "no ForkConfig field for {missing:?}");
+    for f in ForkConfig::FIELDS {
+        assert!(
+            SURFACE.iter().any(|(n, d)| n == f && matches!(d, Hdr)),
+            "ForkConfig::{f} is not an Hdr field in the ledger"
+        );
+    }
+}

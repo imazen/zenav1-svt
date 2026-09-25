@@ -31,6 +31,7 @@ pub use crate::policy::{Effort, EncodingPolicy, ResolvedStillPolicy, StillSuitab
 pub use svtav1_encoder::chroma_q::ChromaQOverride;
 /// Explicit, uncalibrated Zen experiments for the region beyond native −1.
 pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
+pub use svtav1_encoder::fork_config::ForkConfig;
 /// Pinned C source identity, separate from speed and policy.
 pub use svtav1_encoder::reference::SvtReference;
 /// Checked C preset domain, including research -1.
@@ -139,26 +140,15 @@ pub struct AvifEncoder {
     chroma_subsampling: ChromaSubsampling,
     /// Number of encoding threads (None = auto).
     threads: Option<usize>,
-    /// C `static_config.enable_qm` — quantization matrices. Wired to
-    /// `EncodePipeline::hdr.enable_qm`; see [`AvifEncoder::with_qm`].
-    /// `None` = unset: the selected reference's own default applies (off
-    /// under mainline, ON under Ghost Robot).
-    enable_qm: Option<bool>,
+    /// Fork and mainline knobs by their C names ([`AvifEncoder::with_fork`],
+    /// [`AvifEncoder::with_qm`], [`AvifEncoder::with_variance_boost`]). Unset
+    /// fields keep the selected reference's own defaults (for example QM and
+    /// variance boost: off under mainline, on under Ghost Robot).
+    fork: ForkConfig,
     /// C `static_config.tune` (`--tune`) — the per-tune configuration
     /// bundle C applies in `svt_av1_enc_set_parameter`. Wired to
     /// `EncodePipeline::hdr.tune`; see [`AvifEncoder::with_tune`].
     tune: SvtTune,
-    /// C `static_config.enable_variance_boost` — the per-superblock
-    /// delta-q that IS SVT-AV1's still-image adaptive quantization. Wired to
-    /// `EncodePipeline::hdr.enable_variance_boost`. `None` = unset: the
-    /// selected reference's own default applies (off under mainline, ON
-    /// under Ghost Robot).
-    enable_variance_boost: Option<bool>,
-    /// C `static_config.variance_boost_strength` (1-4, default 2; the docs
-    /// recommend 3 for stills). Wired to
-    /// `EncodePipeline::hdr.variance_boost_strength`. `None` = the selected
-    /// reference's default (2 on every oracle).
-    variance_boost_strength: Option<u8>,
     film_grain: svtav1_encoder::film_grain_config::FilmGrainConfig,
     /// Lossless encoding mode.
     lossless: bool,
@@ -200,17 +190,11 @@ impl AvifEncoder {
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
-            // `None` = unset: the selected reference's own defaults apply
-            // (`HdrForkConfig::defaults_for` — off under mainline, which is
-            // also the bytes this encoder has always emitted; ON under
-            // Ghost Robot, which ships `enable_qm = 1` /
-            // `enable_variance_boost = true`). The two knobs used to be
-            // recorded-and-ignored; they are live now, so a hard default
-            // here would silently override the reference's defaults.
-            enable_qm: None,
+            // Empty: the selected reference's own defaults apply
+            // (`HdrForkConfig::defaults_for`), so no hard default here can
+            // silently override them.
+            fork: ForkConfig::default(),
             tune: SvtTune::Psnr,
-            enable_variance_boost: None,
-            variance_boost_strength: None,
             film_grain: Default::default(),
             lossless: false,
             color_primaries: 1,           // BT.709
@@ -470,7 +454,7 @@ impl AvifEncoder {
     /// bytes by `qm_knob_changes_bytes` below. Lossless encoding uses identity
     /// matrices, as required by the decoder's lossless reconstruction.
     pub fn with_qm(mut self, enable: bool) -> Self {
-        self.enable_qm = Some(enable);
+        self.fork.enable_qm = Some(enable);
         self
     }
 
@@ -481,15 +465,33 @@ impl AvifEncoder {
     /// variance_boost_strength}`, which derive a per-superblock qindex plan
     /// and signal delta-q in the frame header. `strength` is C's 1-4 scale
     /// (default 2; `Docs/Appendix-Variance-Boost.md:43` recommends 3 for
-    /// still images) and is clamped into that range — NOT the old
-    /// `with_vaq`'s inert 0.0-1.0 float. Unset, the selected reference's
+    /// still images); a value outside it is refused when the encoder is
+    /// validated, as C refuses it, not clamped. Unset, the selected reference's
     /// default applies (off under mainline, on under Ghost Robot). Proven
     /// to change the emitted bytes by `variance_boost_knob_changes_bytes`
     /// below.
     pub fn with_variance_boost(mut self, enable: bool, strength: u8) -> Self {
-        self.enable_variance_boost = Some(enable);
-        self.variance_boost_strength = Some(strength.clamp(1, 4));
+        self.fork.enable_variance_boost = Some(enable);
+        self.fork.variance_boost_strength = Some(strength);
         self
+    }
+
+    /// Override fork and mainline knobs by their C names. Each field `fork`
+    /// sets replaces any earlier setting of it (including by
+    /// [`Self::with_qm`] and [`Self::with_variance_boost`]); unset fields
+    /// keep their current value. Values are passed through unclamped:
+    /// [`Self::validate_configuration`] refuses what C's
+    /// `svt_av1_verify_settings` refuses, and what the port has not
+    /// implemented for the selected reference. `tune` is set with
+    /// [`Self::with_tune`].
+    pub fn with_fork(mut self, fork: ForkConfig) -> Self {
+        self.fork = self.fork.merged(fork);
+        self
+    }
+
+    /// The knob overrides set so far.
+    pub fn fork(&self) -> ForkConfig {
+        self.fork
     }
 
     /// Select C's `--tune` bundle (C `static_config.tune`,
@@ -663,22 +665,22 @@ impl AvifEncoder {
         // now the real pipeline settings. Unset, the reference's own
         // `svt_av1_set_default_params` defaults apply — off under mainline
         // (byte-neutral), on under Ghost Robot.
-        pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::defaults_for(
+        pipeline.hdr = self.resolved_hdr();
+        pipeline.film_grain = self.film_grain.clone();
+        pipeline
+    }
+
+    /// The reference's defaults (Ghost Robot is HdrFork-only) with the
+    /// caller's overrides and tune applied — what both the encode and
+    /// [`Self::validate_configuration`] use.
+    fn resolved_hdr(&self) -> svtav1_encoder::hdr_mode::HdrForkConfig {
+        let mut hdr = svtav1_encoder::hdr_mode::HdrForkConfig::defaults_for(
             self.reference,
             self.implied_hdr_mode(),
         );
-        pipeline.film_grain = self.film_grain.clone();
-        if let Some(v) = self.enable_qm {
-            pipeline.hdr.enable_qm = v;
-        }
-        pipeline.hdr.tune = self.tune.to_raw();
-        if let Some(v) = self.enable_variance_boost {
-            pipeline.hdr.enable_variance_boost = v;
-        }
-        if let Some(v) = self.variance_boost_strength {
-            pipeline.hdr.variance_boost_strength = v;
-        }
-        pipeline
+        self.fork.apply(&mut hdr);
+        hdr.tune = self.tune.to_raw();
+        hdr
     }
 
     /// The HDR mode this facade's pipeline runs in. Ghost Robot has no
@@ -964,25 +966,9 @@ impl AvifEncoder {
         self.film_grain
             .validate()
             .map_err(EncodeError::UnsupportedConfig)?;
-        // Validate against the same resolved config the encode will use:
-        // the reference's defaults (Ghost Robot is HdrFork-only) plus the
-        // caller's explicit knob overrides.
-        let mut hdr = svtav1_encoder::hdr_mode::HdrForkConfig::defaults_for(
-            self.reference,
-            self.implied_hdr_mode(),
-        );
-        if let Some(v) = self.enable_qm {
-            hdr.enable_qm = v;
-        }
-        if let Some(v) = self.enable_variance_boost {
-            hdr.enable_variance_boost = v;
-        }
-        if let Some(v) = self.variance_boost_strength {
-            hdr.variance_boost_strength = v;
-        }
-        hdr.tune = self.tune.to_raw();
+        // The same resolved config the encode will use.
         self.reference
-            .validate_hdr_config(&hdr)
+            .validate_hdr_config(&self.resolved_hdr())
             .map_err(EncodeError::UnsupportedConfig)?;
         self.enhancements
             .validate(
@@ -1065,9 +1051,7 @@ mod tests {
         assert_eq!(enc.chroma_subsampling, ChromaSubsampling::Yuv420);
         assert!(enc.threads.is_none());
         // Unset: the selected reference's defaults apply (C mainline: off).
-        assert_eq!(enc.enable_qm, None);
-        assert_eq!(enc.enable_variance_boost, None);
-        assert_eq!(enc.variance_boost_strength, None);
+        assert_eq!(enc.fork, ForkConfig::default());
         assert!(!enc.lossless);
     }
 
@@ -1086,10 +1070,42 @@ mod tests {
         assert_eq!(enc.speed, 3);
         assert_eq!(enc.bit_depth, 10);
         assert_eq!(enc.threads, Some(4));
-        assert_eq!(enc.enable_qm, Some(true));
-        assert_eq!(enc.enable_variance_boost, Some(true));
-        assert_eq!(enc.variance_boost_strength, Some(3));
+        assert_eq!(enc.fork.enable_qm, Some(true));
+        assert_eq!(enc.fork.enable_variance_boost, Some(true));
+        assert_eq!(enc.fork.variance_boost_strength, Some(3));
         assert!(enc.lossless);
+    }
+
+    /// `with_fork` reaches the resolved configuration, later settings win,
+    /// and out-of-range values are refused rather than clamped (C's
+    /// `svt_av1_verify_settings` ranges).
+    #[test]
+    fn fork_overrides_reach_the_config_and_are_range_checked() {
+        let mut f = ForkConfig::default();
+        f.sharpness = Some(3);
+        f.variance_boost_strength = Some(2);
+        let enc = AvifEncoder::new()
+            .with_reference(SvtReference::GhostRobot)
+            .with_variance_boost(true, 4)
+            .with_fork(f);
+        let hdr = enc.resolved_hdr();
+        assert_eq!((hdr.sharpness, hdr.variance_boost_strength), (3, 2));
+        assert!(hdr.enable_variance_boost, "with_fork keeps unset fields");
+        enc.validate_configuration().unwrap();
+
+        for bad in [0u8, 5] {
+            let enc = AvifEncoder::new().with_variance_boost(true, bad);
+            assert!(
+                enc.validate_configuration().is_err(),
+                "strength {bad} not clamped"
+            );
+        }
+        let mut f = ForkConfig::default();
+        f.ac_bias = Some(8.5);
+        let enc = AvifEncoder::new()
+            .with_reference(SvtReference::GhostRobot)
+            .with_fork(f);
+        assert!(enc.validate_configuration().is_err());
     }
 
     /// The stop token installed by `with_timeout` reaches the pipeline: an
@@ -1114,24 +1130,6 @@ mod tests {
             .with_timeout(core::time::Duration::from_secs(60))
             .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
             .expect("a 60s budget must not fire on a 64x64 encode");
-    }
-
-    /// C's strength scale is 1-4 (`Docs/Parameters.md:124`), so 0 and 9 are
-    /// clamped rather than passed through into the boost kernel.
-    #[test]
-    fn variance_boost_strength_clamps_to_c_range() {
-        assert_eq!(
-            AvifEncoder::new()
-                .with_variance_boost(true, 0)
-                .variance_boost_strength,
-            Some(1)
-        );
-        assert_eq!(
-            AvifEncoder::new()
-                .with_variance_boost(true, 9)
-                .variance_boost_strength,
-            Some(4)
-        );
     }
 
     // ---- issue #9 items 6 + 7 ------------------------------------------

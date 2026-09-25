@@ -58,7 +58,7 @@ It was done when:
 
 - [x] 1.1 (`50c683a4`) `SvtReference::GhostRobot` (and `#[non_exhaustive]`), with its
   own `validate_hdr_config` envelope.
-- [ ] 1.2 Ghost Robot's configuration surface in `HdrForkConfig`:
+- [x] 1.2 Ghost Robot's configuration surface in `HdrForkConfig`:
   `enable_qmpsnr`, `luminance_qp_bias`, `hbd_mds`. Plus a typed facade
   builder (`AvifEncoder::with_fork(ForkConfig)`) exposing the fork knobs by
   their C names, instead of the raw `EncodePipeline.hdr` field.
@@ -74,11 +74,20 @@ It was done when:
       classified.
     - The refusal ledger now also scans the `validate*` `Err(...)` refusals
       and the animation facade, which it had missed: 83 -> 112 rows.
-  - Open: the typed facade builder. Plan 1.4 narrows the facade, which
-    needs a decision on what `svtav1_encoder` itself makes public: zenavif
-    (pinned by git rev) uses `EncodePipeline`, `RcConfig`, `HdrForkConfig`,
-    `FilmGrainConfig`, `entropy::obu` and `types::EncodeError` directly,
-    and many integration tests reach internals (T2).
+  - Done (this change): the typed facade builder. `ForkConfig`
+    (`svtav1_encoder::fork_config`, re-exported from `svtav1::avif`) has one
+    `Option` field per `Hdr` field of the ledger, by its C name, and
+    `AvifEncoder::with_fork` merges it; `with_qm`/`with_variance_boost` write
+    into it, and one `resolved_hdr()` serves the encode and validation.
+    `HdrForkConfig::validate_ranges` refuses what Ghost Robot's
+    `svt_av1_verify_settings` refuses (22 checks; the ledger is 133 rows),
+    so `with_variance_boost` no longer clamps. `config_surface` fails if an
+    `Hdr` field has no `ForkConfig` field. Item 1.2 is complete.
+  - Plan 1.4 narrows the facade, which needs a decision on what
+    `svtav1_encoder` itself makes public: zenavif (pinned by git rev) uses
+    `EncodePipeline`, `RcConfig`, `HdrForkConfig`, `FilmGrainConfig`,
+    `entropy::obu` and `types::EncodeError` directly, and many integration
+    tests reach internals (T2).
 - [x] 1.3 (`893f6823`) `EncodingPolicy::SvtParity(GhostRobot)` resolves fork defaults
   exactly as Ghost Robot's `svt_av1_set_default_params` does.
 - [ ] 1.4 Narrow the facade (S9):

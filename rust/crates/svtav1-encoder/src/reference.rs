@@ -56,6 +56,7 @@ impl SvtReference {
     /// Reject controls that cannot belong to the selected mainline source.
     /// Mainline-owned tuning, QM, variance boost and grain remain available.
     pub fn validate_hdr_config(self, hdr: &HdrForkConfig) -> Result<(), &'static str> {
+        hdr.validate_ranges()?;
         // Numbered as every C oracle numbers it (`crate::tune`): 5 is VMAF,
         // whose unsharp pre-processing is not ported.
         if hdr.tune == crate::tune::TUNE_VMAF {

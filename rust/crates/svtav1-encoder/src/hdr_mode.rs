@@ -349,10 +349,10 @@ impl HdrForkConfig {
             min_chroma_qm_level: 8,          // :1142
             max_chroma_qm_level: 15,         // :1143
             tf_strength: 1,                  // :1156
-            luminance_qp_bias: 0,             // :1158
-            hbd_mds: -1,                      // :1174
-            enable_qmpsnr: -1,                // :1190
-            max_hierarchical_levels: 0,       // :1181
+            luminance_qp_bias: 0,            // :1158
+            hbd_mds: -1,                     // :1174
+            enable_qmpsnr: -1,               // :1190
+            max_hierarchical_levels: 0,      // :1181
         }
     }
 
@@ -537,6 +537,94 @@ impl HdrForkConfig {
 
     pub fn is_fork(&self) -> bool {
         self.mode == SvtHdrMode::HdrFork
+    }
+
+    /// The value ranges C refuses outside of (Ghost Robot's
+    /// `svt_av1_verify_settings`, enc_settings.c), so an out-of-range knob is
+    /// an error rather than something clamped or indexed out of bounds.
+    pub fn validate_ranges(&self) -> Result<(), &'static str> {
+        if !(1..=4).contains(&self.variance_boost_strength) {
+            return Err(
+                "variance_boost_strength must be between 1 and 4 [C: svt_av1_verify_settings]",
+            );
+        }
+        if !(1..=8).contains(&self.variance_octile) {
+            return Err("variance_octile must be between 1 and 8 [C: svt_av1_verify_settings]");
+        }
+        if self.variance_boost_curve > 3 {
+            return Err(
+                "variance_boost_curve must be between 0 and 3 [C: svt_av1_verify_settings]",
+            );
+        }
+        if !(-7..=7).contains(&self.sharpness) {
+            return Err("sharpness must be between -7 and 7 [C: svt_av1_verify_settings]");
+        }
+        if self.max_tx_size != 32 && self.max_tx_size != 64 {
+            return Err("max_tx_size must be 32 or 64 [C: svt_av1_verify_settings]");
+        }
+        if self.screen_content_mode.is_some_and(|m| m > 3) {
+            return Err("screen_content_mode must be between 0 and 3 [C: svt_av1_verify_settings]");
+        }
+        if self.tf_strength > 4 {
+            return Err("tf_strength must be between 0 and 4 [C: svt_av1_verify_settings]");
+        }
+        if self.kf_tf_strength > 4 {
+            return Err("kf_tf_strength must be between 0 and 4 [C: svt_av1_verify_settings]");
+        }
+        if !(0.0..=8.0).contains(&self.ac_bias) {
+            return Err("ac_bias must be between 0.0 and 8.0 [C: svt_av1_verify_settings]");
+        }
+        if !(0.0..=8.0).contains(&self.qp_scale_compress_strength) {
+            return Err("qp_scale_compress_strength must be between 0.0 and 8.0 \
+                 [C: svt_av1_verify_settings]");
+        }
+        if self.sharp_tx > 1 {
+            return Err("sharp_tx must be 0 or 1 [C: svt_av1_verify_settings]");
+        }
+        if self.tx_bias > 3 {
+            return Err("tx_bias must be between 0 and 3 [C: svt_av1_verify_settings]");
+        }
+        if self.complex_hvs > 1 {
+            return Err("complex_hvs must be 0 or 1 [C: svt_av1_verify_settings]");
+        }
+        if self.noise_norm_strength > 4 {
+            return Err("noise_norm_strength must be between 0 and 4 [C: svt_av1_verify_settings]");
+        }
+        if self.noise_adaptive_filtering > 4 {
+            return Err(
+                "noise_adaptive_filtering must be between 0 and 4 [C: svt_av1_verify_settings]",
+            );
+        }
+        if !(1..=30).contains(&self.cdef_scaling) {
+            return Err("cdef_scaling must be between 1 and 30 [C: svt_av1_verify_settings]");
+        }
+        if self.noise_strength > 200 {
+            return Err("noise_strength must be between 0 and 200 [C: svt_av1_verify_settings]");
+        }
+        if !(-1..=200).contains(&self.noise_strength_chroma) {
+            return Err(
+                "noise_strength_chroma must be between -1 and 200 [C: svt_av1_verify_settings]",
+            );
+        }
+        if self.noise_chroma_from_luma > 1 {
+            return Err("noise_chroma_from_luma must be 0 or 1 [C: svt_av1_verify_settings]");
+        }
+        if !(-1..=13).contains(&self.noise_size) {
+            return Err("noise_size must be between -1 and 13 [C: svt_av1_verify_settings]");
+        }
+        if self.enable_qm
+            && (self.min_qm_level > self.max_qm_level
+                || self.min_chroma_qm_level > self.max_chroma_qm_level)
+        {
+            return Err(
+                "a minimum QM level must not exceed its maximum [C: svt_av1_verify_settings]",
+            );
+        }
+        // C checks no upper bound; the port's matrices stop at level 15.
+        if self.max_qm_level > 15 || self.max_chroma_qm_level > 15 {
+            return Err("QM levels must be at most 15 [C: unchecked; 15 is the last matrix level]");
+        }
+        Ok(())
     }
 }
 
