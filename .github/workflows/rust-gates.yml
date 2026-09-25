@@ -295,6 +295,14 @@ jobs:
         # this gate keeps it honest.
         run: ./tools/portnote_index.sh --check
 
+      - name: every tests/*.rs file is in exactly one test target
+        if: matrix.shard == 3
+        working-directory: rust
+        # With autotests = false, a test file can be compiled into two
+        # binaries (run twice) or into none (never run). Both happened: 162
+        # files ran twice after d2abc282b. rust/docs/PLAN-ORACLES-AND-CLEANUP.md 0.7.
+        run: python3 tools/test_targets_check.py
+
       - name: regression spot-check (one cell per bug ever fixed)
         if: matrix.shard == 5
         working-directory: rust
