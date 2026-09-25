@@ -96,7 +96,18 @@ pub(super) fn encode_coding_unit(
     mut unit_enc_rdoq: Vec<bool>,
     pd0_inter: Option<crate::pd0::Pd0InterRef<'_>>,
     mut sb_pd0_max_min: Option<(usize, usize)>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — the value
+    // every PD0/light-PD1 `svt_psy_adjust_rate_light` site consumes.
+    ac_bias_eff: f64,
+    // The ac-bias rate adjustment is Ghost Robot-behaviour only at this
+    // scope — Hybrid3115 keeps its pinned surface (plan 3.3).
+    reference: crate::reference::SvtReference,
 ) -> (crate::partition::PartitionResult, bool) {
+    let ac_bias_eff = if reference == crate::reference::SvtReference::GhostRobot {
+        ac_bias_eff
+    } else {
+        0.0
+    };
     for &(x0, y0) in units.iter() {
         let cur_w = unit_size.min(w - x0);
         let cur_h = unit_size.min(h - y0);
@@ -238,6 +249,7 @@ pub(super) fn encode_coding_unit(
                         // (svt_aom_full_cost_pd0's lambda — PD0
                         // runs at 8-bit even at bd10).
                         Some(sb_md_full_lambda),
+                        ac_bias_eff,
                     )
                 } else if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) {
                     // The VIDEO arm's PD0, which is a different
@@ -311,6 +323,7 @@ pub(super) fn encode_coding_unit(
                         // C `full_sb_lambda_md[EB_8_BIT_MD]`
                         // (svt_aom_full_cost_pd0's lambda).
                         Some(sb_md_full_lambda),
+                        ac_bias_eff,
                     );
                     // C `md_encode_block`'s `lpd1` per-SB dispatch
                     // off the PD0 root result. The light path uses
@@ -362,6 +375,7 @@ pub(super) fn encode_coding_unit(
                         // C `full_sb_lambda_md[EB_8_BIT_MD]`
                         // (svt_aom_full_cost_pd0's lambda).
                         Some(sb_md_full_lambda),
+                        ac_bias_eff,
                     )
                 };
                 // The same per-SB variance map C's picture analysis
@@ -633,6 +647,7 @@ pub(super) fn encode_coding_unit(
                             // C `full_sb_lambda_md[EB_8_BIT_MD]`
                             // (svt_aom_full_cost_pd0's lambda).
                             Some(sb_md_full_lambda),
+                            ac_bias_eff,
                         )
                     } else {
                         crate::pd0::pd0_pick_sb_partition_m6_eval(
@@ -744,6 +759,7 @@ pub(super) fn encode_coding_unit(
                             // C `full_sb_lambda_md[EB_8_BIT_MD]`
                             // (svt_aom_full_cost_pd0's lambda).
                             Some(sb_md_full_lambda),
+                            ac_bias_eff,
                         )
                     }
                 };
@@ -918,6 +934,7 @@ pub(super) fn encode_coding_unit(
                                     // C `full_sb_lambda_md`
                                     // (svt_aom_full_cost_pd0's lambda).
                                     Some(sb_md_full_lambda),
+                                    ac_bias_eff,
                                 )
                                 .max_min_picked(&mut mx, &mut mn);
                             }
@@ -1288,6 +1305,7 @@ pub(super) fn encode_coding_unit(
                                 // C `full_sb_lambda_md[EB_8_BIT_MD]`
                                 // (svt_aom_full_cost_pd0's lambda).
                                 Some(sb_md_full_lambda),
+                                ac_bias_eff,
                             )
                         } else {
                             crate::pd0::pd0_pick_sb_partition_m6_eval(
@@ -1372,6 +1390,7 @@ pub(super) fn encode_coding_unit(
                                 // C `full_sb_lambda_md[EB_8_BIT_MD]`
                                 // (svt_aom_full_cost_pd0's lambda).
                                 Some(sb_md_full_lambda),
+                                ac_bias_eff,
                             )
                         }
                     };

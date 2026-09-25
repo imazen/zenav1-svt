@@ -527,6 +527,13 @@ pub(super) fn eval_intra_chroma(
                         intra_dir: 0,
                         coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                         tx_bias: frame.tx_bias,
+                        ac_bias_eff: if frame.reference
+                            == crate::reference::SvtReference::GhostRobot
+                        {
+                            frame.ac_bias_eff
+                        } else {
+                            0.0
+                        },
                         crop: uv_crop,
                     }),
                 );
@@ -596,6 +603,13 @@ pub(super) fn eval_intra_chroma(
                                     intra_dir: 0,
                                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                                     tx_bias: frame.tx_bias,
+                                    ac_bias_eff: if frame.reference
+                                        == crate::reference::SvtReference::GhostRobot
+                                    {
+                                        frame.ac_bias_eff
+                                    } else {
+                                        0.0
+                                    },
                                     crop: uv_crop,
                                 }),
                             )
@@ -786,6 +800,13 @@ pub(super) fn eval_intra_chroma(
                         intra_dir: 0,
                         coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                         tx_bias: frame.tx_bias,
+                        ac_bias_eff: if frame.reference
+                            == crate::reference::SvtReference::GhostRobot
+                        {
+                            frame.ac_bias_eff
+                        } else {
+                            0.0
+                        },
                         crop: uv_crop,
                     };
                     let mut u_cfl10 = vec![0u16; cw * chh];
@@ -1324,6 +1345,13 @@ pub(super) fn eval_intra_chroma(
                                 intra_dir: 0,
                                 coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                                 tx_bias: frame.tx_bias,
+                                ac_bias_eff: if frame.reference
+                                    == crate::reference::SvtReference::GhostRobot
+                                {
+                                    frame.ac_bias_eff
+                                } else {
+                                    0.0
+                                },
                                 crop: uv_crop,
                             }),
                         );
@@ -1347,6 +1375,13 @@ pub(super) fn eval_intra_chroma(
                             intra_dir: 0,
                             coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                             tx_bias: frame.tx_bias,
+                            ac_bias_eff: if frame.reference
+                                == crate::reference::SvtReference::GhostRobot
+                            {
+                                frame.ac_bias_eff
+                            } else {
+                                0.0
+                            },
                             crop: uv_crop,
                         };
                         let mut u_cfl10 = vec![0u16; cw * chh];

@@ -230,6 +230,7 @@ fn m5_gradient64_scan_matches_capture() {
             None,
             None,
             None,
+            0.0,
         );
         assert!(eval.split, "q{qp}: PD0 splits the 64");
         let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
@@ -270,6 +271,7 @@ fn m5_gradient64_scan_matches_capture() {
         None,
         None,
         None,
+        0.0,
     );
     assert!(!eval.split);
     let scan = build_refined_scan(&eval, &ctrls, 1527856, &tables);
@@ -312,6 +314,7 @@ fn m4_gradient64_scan_shape() {
         None,
         None,
         None,
+        0.0,
     );
     assert!(eval.split);
     let scan = build_refined_scan(&eval, &ctrls, 25650, &tables);

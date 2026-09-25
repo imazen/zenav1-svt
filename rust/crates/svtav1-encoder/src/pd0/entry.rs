@@ -43,6 +43,10 @@ pub fn pd0_pick_sb_partition(
     // factor whenever the SB qindex differs from base). See
     // [`pd0_frame_lambda_and_min_sq`].
     sb_lambda: Option<u64>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -94,6 +98,7 @@ pub fn pd0_pick_sb_partition(
         ires_factor,
         // LVL_5/6 use their own closed-form coeff rates; unused here.
         coeff_rate_est_lvl: 0,
+        ac_bias_eff,
         // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
         // NSQ disabled: every one-false boundary node force-splits.
         // `use_accurate_part_ctx` = `enc_mode <= M8` is FALSE here
@@ -181,6 +186,10 @@ pub fn pd0_pick_sb_partition_lvl0(
     // factor whenever the SB qindex differs from base). See
     // [`pd0_frame_lambda_and_min_sq`].
     sb_lambda: Option<u64>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -214,6 +223,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         // coeff rate. Unused by the LVL_0/LVL_5 closed forms directly (they
         // read `ires_factor`), kept 0 for consistency.
         coeff_rate_est_lvl: 0,
+        ac_bias_eff,
         // enc_mode > M6 => nsq_geom_level 0 => NSQ disabled: one-false
         // boundary nodes force-split (inert on 64-aligned frames).
         accurate_part_ctx: true,
@@ -286,6 +296,10 @@ pub fn pd0_pick_sb_partition_m6(
     // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
     // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
     max_tx_size: u8,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -315,6 +329,7 @@ pub fn pd0_pick_sb_partition_m6(
         subres_step: 0,
         ires_factor: 0,
         coeff_rate_est_lvl,
+        ac_bias_eff,
         accurate_part_ctx: true,
         depth_early_exit_th: 1000,
         parent_cost_bias: 1000,
@@ -481,6 +496,10 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
     // factor whenever the SB qindex differs from base). See
     // [`pd0_frame_lambda_and_min_sq`].
     sb_lambda: Option<u64>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -535,6 +554,7 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         subres_step: subres_step.unwrap_or_else(|| mode.default_subres_step()),
         ires_factor: 0,
         coeff_rate_est_lvl,
+        ac_bias_eff,
         // Every preset this entry point serves is <= M8 on both arms, where
         // `use_accurate_part_ctx` is true (enc_mode_config.c:8955 / :9937).
         accurate_part_ctx: true,
@@ -714,6 +734,10 @@ pub fn pd0_pick_sb_partition_video(
     // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — forwarded verbatim to
     // [`pd0_pick_sb_partition_video_eval`].
     sb_lambda: Option<u64>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Tree {
     pd0_pick_sb_partition_video_eval(
         src,
@@ -743,6 +767,7 @@ pub fn pd0_pick_sb_partition_video(
         subres_step,
         parent_cost_bias,
         sb_lambda,
+        ac_bias_eff,
     )
     .tree()
 }
@@ -816,6 +841,10 @@ pub fn pd0_pick_sb_partition_video_eval(
     // factor whenever the SB qindex differs from base). See
     // [`pd0_frame_lambda_and_min_sq`].
     sb_lambda: Option<u64>,
+    // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
+    // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
+    // bits inside `perform_tx_pd0`. 0.0 under mainline.
+    ac_bias_eff: f64,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -868,6 +897,7 @@ pub fn pd0_pick_sb_partition_video_eval(
         subres_step: subres_step.unwrap_or_else(|| mode.default_subres_step()),
         ires_factor,
         coeff_rate_est_lvl,
+        ac_bias_eff,
         accurate_part_ctx,
         depth_early_exit_th: if depth_early_exit_lvl1 { 1000 } else { 900 },
         // `sig_deriv_enc_dec_pd0`'s resolved value — off 1000 only at

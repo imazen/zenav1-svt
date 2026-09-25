@@ -201,10 +201,54 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     is fork-feature territory (items 3.3+).
 - [ ] 3.3 Fork determinism and correctness fixes: `f0111bae`, `d6f4b170`,
   `560f7453`, `ec7e414d`, `2c66d9ea`.
+  - Findings (measured 2026-09-25): the first still divergence is a
+    `PARTITION_CDF` at tile-op 0 — C splits (`s3`), the port does not
+    (`s0`). Knob sweep (`SVT_FORK_*` env overrides on
+    `from_env_for_reference`): `AC_BIAS=0` moves the first divergence
+    from op 0 to op 1909 — ac-bias is the dominant driver;
+    `ENABLE_VARIANCE_BOOST=0` and `SHARP_TX=0` change the Rust symbol to
+    `B:v1` but don't match C; `ENABLE_QM=0` moves the divergence to FH
+    (`cdef_y_pri_strength` 15 vs 12).
+  - Root cause found and ported (this change): the port had the ac-bias
+    helpers but no `svt_psy_adjust_rate_light` call sites — C applies
+    the AC-energy rate subtraction inside `perform_tx_pd0`
+    (product_coding_loop.c:4511/:4602, every coeff-rate arm) and
+    `perform_dct_dct_tx_light_pd1` (:5731). Wired: `Pd0Ctx::ac_bias_eff`
+    + `psy_adjust_rate_light` at `lvl5_like_block_cost_rect` and
+    `lvl1_cost_from_pred`, the `RateMode::LightPd1` luma arm in
+    `tx_unit_inner`, plus the missing `DIST_CALC_PREDICTION` psy term
+    (C adds it to both prediction and residual spatial dists;
+    `tx_type_search`/:5977 twin). The op-0 cell is now byte-identical
+    (`gradient-128-b8-p2-q45`).
+  - Also ported in the same change: `svt_psy_distortion_hbd` /
+    `psy_full_dist_hbd` (the `is_hbd` arm of `get_svt_psy_full_dist`,
+    `energy_gap << 2`) and the bd10 arms in `tx_unit_hbd` + the IFS
+    `model_rd_for_sb` bump — replacing a latent `debug_assert` that
+    fired once bd10+ac_bias configs could reach the 16-bit IFS arm.
+  - Gating: every new site is `SvtReference::GhostRobot`-only; the
+    chroma `plane_type == 0` restriction on the pre-existing residual
+    psy applies only under GhostRobot (Hybrid3115 keeps its pinned
+    chroma term). Only GR pin cells moved.
+  - `f0111bae` (`!skip_intra && pd0_use_src_samples`) and `d6f4b170`
+    (temporal_filtering.c) are video-only — no still-grid effect;
+    `560f7453`'s chroma `effective_ac_bias` was already the port's
+    behaviour (the pre-commit C bug was never ported).
+  - Open: `ec7e414d` (TF `use_8bit_subpel` — video TF only),
+    `2c66d9ea` (full 10-bit PD0: 16-bit neighbour arrays, `vf_hbd_10`,
+    HBD tx in `perform_tx_pd0`, `hbd_md = 0` removal — reaches bd10
+    stills via the forced `PD0_LVL_0` path; sizeable, not yet ported).
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0
   ac-bias dampening (`c65c2bfa`), chroma noise `pow(luma, 0.75)`
   (`9f54af57`), delta-q all-skip (`2f08c8e8`), lossless across tunes
   (`a74cfb9e`).
+  - `c65c2bfa`: `get_effective_ac_bias_mds0` (0.05 at I-slices vs the
+    general 0.3) applies only on the `mds0_dist_type == SSD` arm of
+    `fast_loop_core` — stills run `mds0_level = 0` (VAR/Hadamard), so
+    stills-inert; port the helper when the SSD arm exists.
+  - `70877799`/`d705ef50` complex-hvs: GR default `complex_hvs = 0` —
+    inert until the knob is turned on; `9f54af57` chroma noise:
+    `noise_strength_chroma` auto only when noise is on — off the still
+    grid; `2f08c8e8`/`a74cfb9e` unread.
 - [ ] 3.5 QM-PSNR (`dff0a9f8`).
 - [ ] 3.6 High Profile 4:4:4 (`f67a0f74`, `c4e1b9ce`). This is the largest
   item, and needs the 4:4:4 chroma paths completed first (S1).

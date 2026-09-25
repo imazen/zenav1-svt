@@ -65,6 +65,11 @@ fn rd_args(cx: &ChromaCtx, frame: &FunnelFrame, plane_dir: usize) -> TxRdArgs {
         intra_dir: plane_dir,
         coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
         tx_bias: frame.tx_bias,
+        ac_bias_eff: if frame.reference == crate::reference::SvtReference::GhostRobot {
+            frame.ac_bias_eff
+        } else {
+            0.0
+        },
         crop: cx.uv_crop,
     }
 }

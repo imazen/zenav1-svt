@@ -99,6 +99,116 @@ pub fn psy_distortion(
     energy_gap
 }
 
+/// C `svt_psy_distortion_hbd` (ac_bias.c:99-117), the u16 twin of
+/// [`psy_distortion`]: same 8x8/4x4 walk, `highbd_psy_energy_8x8_c`
+/// (`aom_highbd_hadamard_8x8` + `((satd(64)+2)>>2) - ((dc+2)>>2)`) and
+/// `highbd_psy_energy_4x4_c` (`aom_hadamard_4x4` + `satd(16)<<1 - dc`)
+/// behind it, and the result shifted `<< 2` "to approximately match
+/// equivalent 8-bit strengths".
+pub fn psy_distortion_hbd(
+    input: &[u16],
+    input_stride: usize,
+    recon: &[u16],
+    recon_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    let mut energy_gap: u64 = 0;
+
+    if width >= 8 && height >= 8 {
+        let mut coeffs = [0i32; 64];
+        let mut block = [0i16; 64];
+        let mut j = 0;
+        while j < height {
+            let mut i = 0;
+            while i < width {
+                for h in 0..8 {
+                    let row = &input[(j + h) * input_stride + i..][..8];
+                    for w in 0..8 {
+                        // C reads the u16 raster through an `int16_t*`
+                        // (ac_bias.c:90) — the `as` cast is the same
+                        // reinterpretation (bd<=15 keeps every value
+                        // non-negative).
+                        block[h * 8 + w] = row[w] as i16;
+                    }
+                }
+                crate::hadamard::aom_highbd_hadamard_8x8(&block, 8, &mut coeffs);
+                let input_energy = ((aom_satd(&coeffs) + 2) >> 2) - ((coeffs[0] + 2) >> 2);
+
+                for h in 0..8 {
+                    let row = &recon[(j + h) * recon_stride + i..][..8];
+                    for w in 0..8 {
+                        block[h * 8 + w] = row[w] as i16;
+                    }
+                }
+                crate::hadamard::aom_highbd_hadamard_8x8(&block, 8, &mut coeffs);
+                let recon_energy = ((aom_satd(&coeffs) + 2) >> 2) - ((coeffs[0] + 2) >> 2);
+
+                energy_gap += u64::from(input_energy.abs_diff(recon_energy));
+                i += 8;
+            }
+            j += 8;
+        }
+    } else {
+        let mut coeffs = [0i32; 16];
+        let mut block = [0i16; 16];
+        let mut j = 0;
+        while j < height {
+            let mut i = 0;
+            while i < width {
+                for h in 0..4 {
+                    let row = &input[(j + h) * input_stride + i..][..4];
+                    for w in 0..4 {
+                        block[h * 4 + w] = row[w] as i16;
+                    }
+                }
+                aom_hadamard_4x4(&block, 4, &mut coeffs);
+                let input_energy = (aom_satd(&coeffs) << 1) - coeffs[0];
+
+                for h in 0..4 {
+                    let row = &recon[(j + h) * recon_stride + i..][..4];
+                    for w in 0..4 {
+                        block[h * 4 + w] = row[w] as i16;
+                    }
+                }
+                aom_hadamard_4x4(&block, 4, &mut coeffs);
+                let recon_energy = (aom_satd(&coeffs) << 1) - coeffs[0];
+
+                energy_gap += u64::from(input_energy.abs_diff(recon_energy));
+                i += 4;
+            }
+            j += 4;
+        }
+    }
+
+    energy_gap << 2
+}
+
+/// C `get_svt_psy_full_dist`'s `is_hbd` arm (ac_bias.c:134-136):
+/// `llrint(svt_psy_distortion_hbd(...) * ac_bias)`.
+#[allow(clippy::too_many_arguments)]
+pub fn psy_full_dist_hbd(
+    src: &[u16],
+    src_offset: usize,
+    src_stride: usize,
+    recon: &[u16],
+    recon_offset: usize,
+    recon_stride: usize,
+    width: usize,
+    height: usize,
+    ac_bias: f64,
+) -> u64 {
+    let d = psy_distortion_hbd(
+        &src[src_offset..],
+        src_stride,
+        &recon[recon_offset..],
+        recon_stride,
+        width,
+        height,
+    );
+    (d as f64 * ac_bias).round_ties_even() as u64
+}
+
 /// C `get_svt_psy_full_dist` (ac_bias.c:150), 8-bit path:
 /// `llrint(psy_distortion(...) * ac_bias)`.
 #[allow(clippy::too_many_arguments)]

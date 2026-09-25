@@ -263,12 +263,8 @@ pub(super) fn ifs_at_mds3(
             // :2130-2152 under `hbd_md = 2`: `svt_aom_inter_prediction` at
             // `EB_TEN_BIT` (luma only) into the 16-bit scratch, then
             // `model_rd_for_sb` at `EB_TEN_BIT` (:2146). The ac-bias psy
-            // term has no 16-bit port; `ac_bias` is 0 on every path that
-            // arms this bump (video defaults), so the term is identically 0.
-            debug_assert_eq!(
-                im.ifs.ac_bias_eff, 0.0,
-                "bd10 MDS3 IFS has no 16-bit psy kernel — arm refuses when ac_bias is set"
-            );
+            // term is `get_svt_psy_full_dist`'s `is_hbd` arm
+            // (`svt_psy_distortion_hbd`, the <<2-scaled u16 energy gap).
             let hbd = padded
                 .hbd
                 .as_ref()
@@ -421,9 +417,28 @@ pub(super) fn ifs_at_mds3(
                     );
                 }
             }
-            let sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
+            let mut sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
                 &b.y_src10, 0, w, &scratch10, 0, w, w, h,
             );
+            // `model_rd_for_sb`'s `sse += get_svt_psy_full_dist(..., is_hbd)`
+            // (enc_inter_prediction.c:2012-2022): u16 source vs the 10-bit
+            // inter prediction, `energy_gap << 2` scaled. GhostRobot-only at
+            // this scope (Hybrid3115 keeps its pinned surface).
+            if im.ifs.ac_bias_eff != 0.0
+                && fx.frame().reference == crate::reference::SvtReference::GhostRobot
+            {
+                sse += svtav1_dsp::ac_bias::psy_full_dist_hbd(
+                    &b.y_src10,
+                    0,
+                    w,
+                    &scratch10,
+                    0,
+                    w,
+                    w,
+                    h,
+                    im.ifs.ac_bias_eff,
+                );
+            }
             let (rate, dist) = svtav1_dsp::port_model_rd::model_rd_for_sb(
                 &[bsize],
                 &[sse],

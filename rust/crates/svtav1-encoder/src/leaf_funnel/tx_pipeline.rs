@@ -1196,12 +1196,7 @@ pub(super) fn tx_unit_inner(
         let q194_fp = qcoeff.get(194).copied().unwrap_or(0);
         crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut eob, scan, qt, &o);
         #[cfg(feature = "std")]
-        if crate::dbgenv::q194()
-            && plane_type == 0
-            && w == 16
-            && h == 16
-            && tx_type == 2
-        {
+        if crate::dbgenv::q194() && plane_type == 0 && w == 16 && h == 16 && tx_type == 2 {
             eprintln!(
                 "Q194 t={} qfp={} q={} dq={} eob={} pk=[{},{},{}] rdm={}",
                 packed.get(194).copied().unwrap_or(0),
@@ -1362,7 +1357,13 @@ pub(super) fn tx_unit_inner(
         // the spatial SSE BEFORE the <<4 (get_svt_psy_full_dist call sites
         // in full_loop.c). tx_bias=0 (fork default) keeps the facade a
         // plain SSE, so this is the whole fork-default delta here.
-        if frame.ac_bias_eff > 0.0 {
+        // LUMA only under GhostRobot (C's `get_svt_psy_full_dist` sites
+        // all read `input_pic->y_buffer`; `uv_full_distortion` carries no
+        // psy term). Other references keep the long-standing chroma term —
+        // the output pins freeze it.
+        if frame.ac_bias_eff > 0.0
+            && (plane_type == 0 || frame.reference != crate::reference::SvtReference::GhostRobot)
+        {
             // C `get_svt_psy_full_dist(..., cropped_tx_width,
             // cropped_tx_height, ...)` (product_coding_loop.c:4834/:4862,
             // :5803/:5831) — cropped area, full recon stride.
@@ -1398,14 +1399,36 @@ pub(super) fn tx_unit_inner(
     // raw `sse(src, pred) << 4` (the facade's plain-SSE form — MDS3's skip_y
     // is the same expression, leaf_funnel/mds3.rs).
     let dist_pred = if spatial_dist {
-        (svtav1_dsp::variance::sse(
+        let mut pd = svtav1_dsp::variance::sse(
             &src[src_off..],
             src_stride,
             &pred[pred_off..],
             pred_stride,
             crop_w,
             crop_h,
-        ) << 4) as u64
+        );
+        // [ac-bias] `y_full_distortion[DIST_CALC_PREDICTION] +=
+        // get_svt_psy_full_dist(input, pred)` — C adds the same term it
+        // adds to the residual arm above (perform_dct_dct_tx
+        // product_coding_loop.c:5961-5989 and the tx_type_search twin),
+        // also before <<4.
+        if frame.ac_bias_eff > 0.0
+            && plane_type == 0
+            && frame.reference == crate::reference::SvtReference::GhostRobot
+        {
+            pd += svtav1_dsp::ac_bias::psy_full_dist(
+                src,
+                src_off,
+                src_stride,
+                pred,
+                pred_off,
+                pred_stride,
+                crop_w,
+                crop_h,
+                frame.ac_bias_eff,
+            );
+        }
+        pd << 4
     } else {
         let mut d: u64 = svtav1_dsp::residual::sq_sum_i32(&packed[..pw * ph]);
         d += three_quad_energy;
@@ -1495,6 +1518,27 @@ pub(super) fn tx_unit_inner(
             rates,
         ),
         RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
+    };
+    // C `perform_dct_dct_tx_light_pd1` (product_coding_loop.c:5731-5735):
+    // `*y_coeff_bits = svt_psy_adjust_rate_light(recon_coeff, *y_coeff_bits,
+    // bwidth, bheight, effective_ac_bias)` — the fork's ac-bias subtracts
+    // the block's AC energy × eff from the estimated rate (floor 1). LUMA
+    // light-PD1 only: the Exact and Lvl0Closed paths' C twins carry no
+    // adjust, and the light chroma lane has its own unadjusted estimate.
+    let bits = if matches!(rate_mode, RateMode::LightPd1(_))
+        && plane_type == 0
+        && frame.ac_bias_eff > 0.0
+        && frame.reference == crate::reference::SvtReference::GhostRobot
+    {
+        svtav1_dsp::ac_bias::psy_adjust_rate_light(
+            &dqcoeff[..pw * ph],
+            bits as u64,
+            pw,
+            ph,
+            frame.ac_bias_eff,
+        ) as i32
+    } else {
+        bits
     };
     let cul = compute_cul_level(qcoeff);
 
@@ -1759,6 +1803,9 @@ pub(crate) struct TxRdArgs {
     /// `[SVT_HDR_MODE]` fork tx-bias facade strength (`FunnelFrame::tx_bias`).
     /// The facade is pure arithmetic on the SSE, so it applies at any depth.
     pub tx_bias: u8,
+    /// Fork `get_effective_ac_bias` (`FunnelFrame::ac_bias_eff`) — drives
+    /// the hbd `get_svt_psy_full_dist` adds on the spatial dist pair.
+    pub ac_bias_eff: f64,
     /// The cropped-TX distortion extent (`frame_geom::cropped_tx_dims` /
     /// `_uv`), exactly as the u8 [`tx_unit`]'s `crop` — C reaches the same
     /// `svt_spatial_full_distortion_kernel_facade` at both depths (only the
@@ -2275,7 +2322,27 @@ pub(super) fn tx_unit_hbd_screened(
                         a.tx_bias,
                     ) as u64;
                 }
-                let dist_pred = (svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                // [ac-bias] hbd `get_svt_psy_full_dist` — the u16 twin of
+                // the u8 site above: residual and prediction arms each get
+                // `svt_psy_distortion_hbd` (<<2-scaled energy gap) before
+                // the caller's `<<4` (perform_dct_dct_tx /
+                // tx_type_search under `SVT_EFFECTIVE_HBD_MD`). LUMA only —
+                // C's psy sites all read `input_pic->y_buffer`; the chroma
+                // uv_full_distortion arm carries no psy term.
+                if a.ac_bias_eff > 0.0 && plane_type == 0 {
+                    sse += svtav1_dsp::ac_bias::psy_full_dist_hbd(
+                        src,
+                        src_off,
+                        src_stride,
+                        &recon,
+                        0,
+                        w,
+                        crop_w,
+                        crop_h,
+                        a.ac_bias_eff,
+                    );
+                }
+                let mut dp_sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
                     src,
                     src_off,
                     src_stride,
@@ -2284,7 +2351,21 @@ pub(super) fn tx_unit_hbd_screened(
                     pred_stride,
                     crop_w,
                     crop_h,
-                )) << 4;
+                );
+                if a.ac_bias_eff > 0.0 && plane_type == 0 {
+                    dp_sse += svtav1_dsp::ac_bias::psy_full_dist_hbd(
+                        src,
+                        src_off,
+                        src_stride,
+                        pred,
+                        pred_off,
+                        pred_stride,
+                        crop_w,
+                        crop_h,
+                        a.ac_bias_eff,
+                    );
+                }
+                let dist_pred = dp_sse << 4;
                 (sse << 4, dist_pred)
             } else {
                 let mut d: u64 = 0;

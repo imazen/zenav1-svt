@@ -69,9 +69,9 @@ use svtav1_types::math::shift_u32::divide_and_round_u64 as divide_and_round;
 
 use svtav1_types::math::rd::rdcost_u64 as rdcost;
 #[cfg(test)]
-mod research_lambda_tests;
-#[cfg(test)]
 mod pd0_quant_parity_tests;
+#[cfg(test)]
+mod research_lambda_tests;
 /// PD0-picked square partition tree: leaves carry the block size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pd0Tree {
@@ -667,6 +667,12 @@ struct Pd0Ctx<'a> {
     /// (`th = (bw*bh)>>5`, bw/bh capped at 32). Only consulted by the
     /// LVL_1 block cost; LVL_5/6 use their own closed forms.
     coeff_rate_est_lvl: u8,
+    /// Fork `get_effective_ac_bias(static_config.ac_bias, is_islice,
+    /// temporal_layer_index)` — drives C's `svt_psy_adjust_rate_light`
+    /// subtraction on `txb_coeff_bits`/`y_coeff_bits` inside
+    /// `perform_tx_pd0` (product_coding_loop.c:4512/:4602), whichever
+    /// coeff-rate arm produced the estimate. 0.0 under mainline.
+    ac_bias_eff: f64,
     /// C `ctx->nsq_geom_ctrls.enabled` (svt_aom_get_nsq_geom_level_allintra,
     /// enc_mode_config.c:8240): 1 for allintra enc_mode <= M6 (presets 0..=6,
     /// nsq_geom_level 1/2/3), 0 for enc_mode > M6 (presets >= 7, level 0).
@@ -1133,7 +1139,22 @@ impl<'a> Pd0Ctx<'a> {
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
         // 100*eob. The resolution factor is a per-picture constant (0 for
         // <= 240p, e.g. all 64/128 synthetic cells; 1 at 360p incl. 512x512).
-        let bits = 5000 + self.ires_factor * 1600 + 100 * eob as u64;
+        let mut bits = 5000 + self.ires_factor * 1600 + 100 * eob as u64;
+        // Ghost Robot: `svt_psy_adjust_rate_light` subtracts AC energy ×
+        // `effective_ac_bias` from `txb_coeff_bits` after EVERY rate arm
+        // (product_coding_loop.c:4511-4514). `recon_coeff` is the packed
+        // dequantized buffer.
+        if self.ac_bias_eff != 0.0 {
+            let pw = bw.min(32);
+            let ph = tx_h.min(32);
+            bits = svtav1_dsp::ac_bias::psy_adjust_rate_light(
+                &self.scratch.dqcoeff[..pw * ph],
+                bits,
+                pw,
+                ph,
+                self.ac_bias_eff,
+            );
+        }
         // svt_aom_full_cost_pd0: rate = coeff bits + skip(0) bits +
         // PARTITION_NONE bits at context 0 — read from the LIVE
         // `md_rate_est_ctx` (chained tables when the video arm passed them).
@@ -1422,7 +1443,7 @@ impl<'a> Pd0Ctx<'a> {
         let cw = bw.min(32);
         let ch = tx_h.min(32);
         let th = (cw * ch) >> 5;
-        let bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
+        let mut bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
             6000 + eob as u64 * 500
         } else if eob == 0 {
             cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
@@ -1445,6 +1466,19 @@ impl<'a> Pd0Ctx<'a> {
                 step,
             ) as u64
         };
+        // Ghost Robot: `svt_psy_adjust_rate_light` on `txb_coeff_bits`
+        // after whichever rate arm produced it (perform_tx_pd0,
+        // product_coding_loop.c:4511-4514); `recon_coeff` = the packed
+        // dequantized tx block.
+        if self.ac_bias_eff != 0.0 {
+            bits = svtav1_dsp::ac_bias::psy_adjust_rate_light(
+                &self.scratch.dqcoeff[..cw * ch],
+                bits,
+                cw,
+                ch,
+                self.ac_bias_eff,
+            );
+        }
         let rate = bits + tables.skip0_bits + tables.none_bits_ctx0;
         let cost = rdcost(self.lambda, rate, dist);
         // C `md_encode_block_pd0` (product_coding_loop.c:8429): on the VIDEO
@@ -2568,11 +2602,9 @@ impl<'a> Pd0Ctx<'a> {
 }
 
 #[cfg(test)]
-mod inter_lambda_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod alt_lambda_tests;
+#[cfg(test)]
+mod inter_lambda_tests;
 /// Differential parity for the post-MD RD lambdas against the REAL exported
 /// `svt_aom_compute_rd_mult_based_on_qindex` (rc_process.c:365) — the base
 /// that `svt_aom_lambda_assign` builds every one of them from.
@@ -2584,6 +2616,8 @@ mod alt_lambda_tests;
 /// only the C symbol settles them.
 #[cfg(test)]
 mod lambda_c_parity;
+#[cfg(test)]
+mod tests;
 mod variance;
 pub use variance::*;
 mod lambda;

@@ -417,6 +417,13 @@ pub(super) fn txt_search(
                                 intra_dir,
                                 coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
                                 tx_bias: frame.tx_bias,
+                                ac_bias_eff: if frame.reference
+                                    == crate::reference::SvtReference::GhostRobot
+                                {
+                                    frame.ac_bias_eff
+                                } else {
+                                    0.0
+                                },
                                 crop,
                             }),
                             screen.as_mut(),

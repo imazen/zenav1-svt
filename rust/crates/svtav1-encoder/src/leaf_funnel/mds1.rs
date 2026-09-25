@@ -247,6 +247,11 @@ pub(super) fn run_mds1(
                     intra_dir,
                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                     tx_bias: frame.tx_bias,
+                    ac_bias_eff: if frame.reference == crate::reference::SvtReference::GhostRobot {
+                        frame.ac_bias_eff
+                    } else {
+                        0.0
+                    },
                     crop: blk_crop,
                 }),
             )
@@ -652,6 +657,11 @@ fn lossless_mds1_txbs_hbd(
                 intra_dir,
                 coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                 tx_bias: frame.tx_bias,
+                ac_bias_eff: if frame.reference == crate::reference::SvtReference::GhostRobot {
+                    frame.ac_bias_eff
+                } else {
+                    0.0
+                },
                 crop: txb_crop,
             }),
         );

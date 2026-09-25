@@ -1652,6 +1652,8 @@ pub(super) fn encode_one_tile_body(
                 unit_enc_rdoq,
                 pd0_inter,
                 sb_pd0_max_min,
+                ac_bias_eff,
+                reference,
             );
 
             // Keep the per-SB recon list layout for downstream consumers.

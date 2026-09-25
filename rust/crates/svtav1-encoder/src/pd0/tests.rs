@@ -132,6 +132,7 @@ fn lvl0_block_costs_match_c() {
         lambda: kf_full_lambda_8bit(80, 20) as u64,
         mode: Pd0Mode::Lvl0,
         coeff_rate_est_lvl: 0,
+        ac_bias_eff: 0.0,
         lvl1: None,
         max_sq: 32,
         min_sq: 8,
@@ -195,6 +196,7 @@ fn lvl0_gradient64_tree_matches_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
     // q40 / q55 keep the same 4x32 shape here (the parent still wins);
@@ -215,6 +217,7 @@ fn lvl0_gradient64_tree_matches_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(t55.leaf_sizes(), vec![64]);
 }
@@ -263,6 +266,7 @@ fn lvl5_block_costs_match_c_q40() {
         lambda: kf_full_lambda_8bit(160, 40) as u64,
         mode: Pd0Mode::Lvl5,
         coeff_rate_est_lvl: 0,
+        ac_bias_eff: 0.0,
         lvl1: None,
         max_sq: 32,
         min_sq: 8,
@@ -320,6 +324,7 @@ fn lvl5_block_costs_match_c_q55_with_subres() {
         lambda: kf_full_lambda_8bit(220, 55) as u64,
         mode: Pd0Mode::Lvl5,
         coeff_rate_est_lvl: 0,
+        ac_bias_eff: 0.0,
         lvl1: None,
         max_sq: 64,
         min_sq: 8,
@@ -416,6 +421,7 @@ fn gradient64_trees_match_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(t20.leaf_sizes(), vec![16; 16]);
     // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
@@ -434,6 +440,7 @@ fn gradient64_trees_match_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(t40.leaf_sizes(), vec![32; 4]);
     // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
@@ -451,6 +458,7 @@ fn gradient64_trees_match_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(t55, Pd0Tree::Leaf(64));
     // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
@@ -469,6 +477,7 @@ fn gradient64_trees_match_c() {
         None,
         64,
         None,
+        0.0,
     );
     assert_eq!(tu, Pd0Tree::Leaf(64));
 }
@@ -494,6 +503,7 @@ fn lvl1_block_costs_match_c() {
         lambda: kf_full_lambda_8bit(220, 55) as u64,
         mode: Pd0Mode::Lvl1,
         coeff_rate_est_lvl: 1,
+        ac_bias_eff: 0.0,
         lvl1: Some(&tables),
         max_sq: 64,
         min_sq: 8,
@@ -547,6 +557,7 @@ fn lvl1_block_costs_match_c() {
         lambda: kf_full_lambda_8bit(160, 40) as u64,
         mode: Pd0Mode::Lvl1,
         coeff_rate_est_lvl: 1,
+        ac_bias_eff: 0.0,
         lvl1: Some(&tables40),
         max_sq: 64,
         min_sq: 8,
@@ -596,6 +607,7 @@ fn lvl1_block_costs_match_c() {
         lambda: kf_full_lambda_8bit(80, 20) as u64,
         mode: Pd0Mode::Lvl1,
         coeff_rate_est_lvl: 1,
+        ac_bias_eff: 0.0,
         lvl1: Some(&tables20),
         max_sq: 64,
         min_sq: 8,
@@ -653,6 +665,7 @@ fn m6_gradient64_trees_match_c() {
         64,
         None,
         64,
+        0.0,
     );
     assert_eq!(t20.leaf_sizes(), vec![32; 4]);
     let t40 = pd0_pick_sb_partition_m6(
@@ -670,6 +683,7 @@ fn m6_gradient64_trees_match_c() {
         64,
         None,
         64,
+        0.0,
     );
     assert_eq!(t40.leaf_sizes(), vec![32; 4]);
     let t55 = pd0_pick_sb_partition_m6(
@@ -687,6 +701,7 @@ fn m6_gradient64_trees_match_c() {
         64,
         None,
         64,
+        0.0,
     );
     assert_eq!(t55, Pd0Tree::Leaf(64));
     // Uniform content: exact DC prediction, zero residual -> 64 NONE
@@ -707,6 +722,7 @@ fn m6_gradient64_trees_match_c() {
         64,
         None,
         64,
+        0.0,
     );
     assert_eq!(tu, Pd0Tree::Leaf(64));
 }
