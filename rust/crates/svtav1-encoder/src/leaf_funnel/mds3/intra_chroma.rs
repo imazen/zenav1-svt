@@ -42,7 +42,7 @@ pub(super) fn eval_intra_chroma(
     pal_uv_no: u64,
     pal_uv_no_y1: u64,
     best_recon: &crate::vecpool::PoolVec<u8>,
-    best_recon10: &Vec<u16>,
+    best_recon10: &[u16],
     best_pred: crate::vecpool::PoolVec<u8>,
     best_pred10: Vec<u16>,
     chroma_gate: TxGate,

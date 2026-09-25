@@ -157,14 +157,11 @@ impl EncodePipeline {
         } else {
             frame_me.map_or(0, |m| {
                 let n = m.per_b64.len() as u64;
-                if n == 0 {
-                    0
-                } else {
-                    m.per_b64
-                        .iter()
-                        .fold(0u64, |a, b| a + u64::from(b.me_8x8_distortion))
-                        / n
-                }
+                m.per_b64
+                    .iter()
+                    .fold(0u64, |a, b| a + u64::from(b.me_8x8_distortion))
+                    .checked_div(n)
+                    .unwrap_or(0)
             })
         };
         let new_qindex = crate::port_rc_vbr_cbr_qpick::rc_calc_qindex_rate_control(

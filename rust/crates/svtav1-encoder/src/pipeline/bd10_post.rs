@@ -43,9 +43,9 @@ impl EncodePipeline {
         inter_md_frame: Option<crate::inter_md_arm::InterMdFrame<'_>>,
         sb_inter_lambda: Option<Vec<crate::pd0::SbInterLambda>>,
         sb_enc_rdoq: Vec<bool>,
-        all_trees: &mut Vec<crate::partition::PartitionTree>,
+        all_trees: &mut [crate::partition::PartitionTree],
     ) -> Result<(), whereat::prelude::At<EncodeError>> {
-        Ok(if bit_depth == 10 {
+        if bit_depth == 10 {
             // The native level pass accepts depth-zero transforms, including
             // filter-intra and directional prediction without edge filtering.
             // Use the actual sequence-header tool value. Monochrome disables
@@ -398,6 +398,7 @@ impl EncodePipeline {
             if hbd_source.is_some() && !is_key && !bd10_full_rd {
                 *hbd_used = true;
             }
-        })
+        }
+        Ok(())
     }
 }

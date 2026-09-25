@@ -138,7 +138,7 @@ impl EncodePipeline {
                     skip_mode_ref_frame_idx_1: st.skip_mode_ref_frame_idx_1,
                     cand_reduction: *cand_red,
                     wm_level: sigs.wm_level,
-                    bit_depth: bit_depth,
+                    bit_depth,
                     padded,
                     padded_by_ref: inter_padded_by_ref,
                     // The SB-EXTENT-padded source, NOT `encode_input` at
@@ -271,7 +271,7 @@ impl EncodePipeline {
                     // C `scs->mrp_ctrls.use_best_references` + the
                     // `determine_best_references` inputs — the per-block
                     // `ctx->ref_frame_type_arr` rebuild gate.
-                    use_best_references: use_best_references,
+                    use_best_references,
                     temporal_layer_index: pic_decision
                         .as_ref()
                         .map_or(0, |p| p.temporal_layer_index),

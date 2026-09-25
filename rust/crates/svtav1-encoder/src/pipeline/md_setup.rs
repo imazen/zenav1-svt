@@ -258,7 +258,7 @@ impl EncodePipeline {
         md_alt_lambda_factors: bool,
         w: usize,
         h: usize,
-        encode_input: &Vec<u8>,
+        encode_input: &[u8],
         base_qindex: u8,
         r0_delta_qp_md: bool,
         delta_q_present: bool,

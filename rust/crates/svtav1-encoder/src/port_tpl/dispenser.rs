@@ -94,8 +94,8 @@ pub(super) fn tpl_filter_intra_edge(
     origin: usize,
 ) {
     use svtav1_dsp::intra_pred as ip;
-    let mb_stride = (max_frame_width + 15) / 16;
-    let mb_height = (max_frame_height + 15) / 16;
+    let mb_stride = max_frame_width.div_ceil(16);
+    let mb_height = max_frame_height.div_ceil(16);
     let txwpx = 16i32; // TX_16X16
     let txhpx = 16i32;
     let need_right = p_angle < 90;

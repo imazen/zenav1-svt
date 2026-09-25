@@ -390,15 +390,15 @@ impl EncodePipeline {
         &self,
         chroma: Option<(&[u8], &[u8])>,
         fmt: svtav1_types::chroma::ChromaFormat,
-        recon: &Vec<u8>,
-        u_recon: &Vec<u8>,
-        v_recon: &Vec<u8>,
+        recon: &[u8],
+        u_recon: &[u8],
+        v_recon: &[u8],
         recon10: &Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
         decoder_output8: &Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
         out8: &mut Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
         out10: &mut Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
     ) -> Result<(), whereat::prelude::At<EncodeError>> {
-        Ok(if self.superres_denom.is_some() {
+        if self.superres_denom.is_some() {
             let (cw, uw, hh) = (
                 self.width as usize,
                 self.upscaled_width as usize,
@@ -499,7 +499,8 @@ impl EncodePipeline {
                     upscale_hbd(v10, ccw, coded, cuw, chh)?,
                 ));
             }
-        })
+        }
+        Ok(())
     }
 
     #[inline(always)]

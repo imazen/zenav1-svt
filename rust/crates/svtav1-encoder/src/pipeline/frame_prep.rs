@@ -133,12 +133,12 @@ pub(super) fn fill_canvas10(
     acw: usize,
     sb_size: usize,
     tile_grid: crate::entropy::obu::TileGrid,
-    tile_recons: &Vec<(
+    tile_recons: &[(
         Vec<u8>,
         Vec<crate::partition::PartitionTree>,
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
         Vec<bool>,
-    )>,
+    )],
     canvas10: &mut Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
 ) {
     if let Some((cy, cu, cv)) = canvas10.as_mut() {

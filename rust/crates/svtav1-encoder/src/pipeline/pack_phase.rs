@@ -1291,7 +1291,7 @@ impl EncodePipeline {
         if let Some(frame) = cbr_frame_rc.as_mut() {
             let avg_cnt_zeromv = frame_coded_area.borrow().as_ref().map_or(0, |a| {
                 let n = (w * h) as u64;
-                if n == 0 { 0 } else { 100 * a.zeromv_area / n }
+                (100 * a.zeromv_area).checked_div(n).unwrap_or(0)
             });
             self.cbr_postencode(
                 frame,

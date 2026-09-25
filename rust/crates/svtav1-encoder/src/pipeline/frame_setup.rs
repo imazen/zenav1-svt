@@ -133,7 +133,7 @@ impl EncodePipeline {
         &self,
         w: usize,
         h: usize,
-        encode_input: &Vec<u8>,
+        encode_input: &[u8],
         sb_input: &[u8],
         in_stride: usize,
         tpl_adjusted_qp: &mut u8,
@@ -715,7 +715,7 @@ impl EncodePipeline {
         sc_arm: crate::sc_detect::ScArm,
         w: usize,
         h: usize,
-        encode_input: &Vec<u8>,
+        encode_input: &[u8],
         sc_preset: i8,
     ) -> crate::sc_detect::ScDerivation {
         // `sc_arm` is bound at frame level above; it matters HERE because C

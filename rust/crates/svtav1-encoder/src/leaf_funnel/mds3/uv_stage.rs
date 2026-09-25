@@ -22,7 +22,7 @@ pub(super) fn chroma_complexity_is_luma(
     filt_type_uv: i32,
     use_tx_shortcuts_mds3: bool,
     best_pred: &crate::vecpool::PoolVec<u8>,
-    best_pred10: &Vec<u16>,
+    best_pred10: &[u16],
 ) -> bool {
     // ---- Chroma complexity detector for the tx-shortcut N4 gate ----
     // C `chroma_complexity_check_pred` (product_coding_loop.c:7014-7017)

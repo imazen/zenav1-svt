@@ -454,11 +454,11 @@ pub fn result_model_store(
     tpl_stats.recrf_rate = tpl_stats.recrf_rate.max(1);
 
     if synth_blk_size == 32 {
-        let stride = (aligned_width as usize + 31) / 32;
+        let stride = (aligned_width as usize).div_ceil(32);
         let idx = (mb_origin_y as usize >> 5) * stride + (mb_origin_x as usize >> 5);
         tpl_stats_grid[idx] = *tpl_stats;
     } else if synth_blk_size == 16 {
-        let stride = (aligned_width as usize + 15) / 16;
+        let stride = (aligned_width as usize).div_ceil(16);
         let idx = (mb_origin_y as usize >> 4) * stride + (mb_origin_x as usize >> 4);
         if size == 32 {
             // normalize based on the block size 16x16
@@ -475,7 +475,7 @@ pub fn result_model_store(
         }
     } else {
         // small resolution: 16x16 data duplicated on an 8x8 grid
-        let stride = ((aligned_width as usize + 15) / 16) << 1;
+        let stride = (aligned_width as usize).div_ceil(16) << 1;
         let idx = (mb_origin_y as usize >> 3) * stride + (mb_origin_x as usize >> 3);
         if size == 32 {
             tpl_stats.srcrf_dist = (tpl_stats.srcrf_dist / 16).max(1);

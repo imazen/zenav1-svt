@@ -511,7 +511,7 @@ impl EncodePipeline {
                 rh,
                 /*mg_len=*/ 0,
             );
-            return Ok(self.encode_delayed_intra()?);
+            return self.encode_delayed_intra();
         }
         // Queue order decides the release shape: an intra inside the next
         // `mg` entries terminates the release at `[tail + intra]`
@@ -1396,7 +1396,7 @@ impl EncodePipeline {
 
     pub(super) fn run_ra_tf_prep(
         &mut self,
-        pics: &mut alloc::vec::Vec<Option<crate::port_picstruct::PicParams>>,
+        pics: &mut [Option<crate::port_picstruct::PicParams>],
         mg_lo: usize,
         mg_hi: usize,
         frames: &mut alloc::vec::Vec<crate::port_tf_driver::TfPicBufs>,

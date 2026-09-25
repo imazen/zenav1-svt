@@ -8,10 +8,10 @@ impl EncodePipeline {
         w: usize,
         h: usize,
         ss_x: usize,
-        recon: &Vec<u8>,
+        recon: &[u8],
         film_grain: &Option<crate::noise_gen::FilmGrainParams>,
-        u_recon: &Vec<u8>,
-        v_recon: &Vec<u8>,
+        u_recon: &[u8],
+        v_recon: &[u8],
         recon10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
         decoder_output8: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
         out8: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
@@ -26,7 +26,7 @@ impl EncodePipeline {
                 // they ran, search recon otherwise).
                 Some(planes) => planes,
                 None => decoder_output8
-                    .unwrap_or_else(|| (recon.clone(), u_recon.clone(), v_recon.clone())),
+                    .unwrap_or_else(|| (recon.to_vec(), u_recon.to_vec(), v_recon.to_vec())),
             };
             self.recon_frames
                 .push_back((display_order, rec_planes.clone()));
