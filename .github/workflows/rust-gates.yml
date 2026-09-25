@@ -15,6 +15,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The ME C-parity and traced tests return early when the cref build could
+  # not link motion_estimation.c's hme_level_2 / check_00_center statics
+  # (build.rs warns). This makes that a failure here instead of a silent pass;
+  # all 40 pass with it set on the default oracle (2026-09-25).
+  SVT_CREF_REQUIRE_ME_STATICS: "1"
   # NOTE (2026-09-05): `ZENAV1_SKIP_CORPUS_TESTS` used to live HERE, at workflow
   # scope, on the premise that "no CI runner has the image corpora". That premise
   # is now false for the `gates` job: it FETCHES gb82-sc (sparse, 2.9 MB, ~2 s —
