@@ -517,7 +517,6 @@ pub fn build_inter_candidates(
         inter_comp_ctrls: crate::port_enc_mode_config::ctrls::set_inter_comp_controls(
             f.inter_compound_mode,
         )
-        .map(crate::port_md::inject::InterCompCtrls::from)
         .unwrap_or_default(),
         // C `set_inter_intra_ctrls(ctx->inter_intra_comp_ctrls,
         // pcs->inter_intra_level)` (mode_decision.c:420-470 / enc_mode_

@@ -766,21 +766,15 @@ pub fn ra_mctf_filter(
                             let tf_subpel_early_exit_th = u32::from(ctrls.subpel_early_exit_th);
                             // `set_hme_search_params_mctf(ctx, 0)`.
                             let def_tf = tf::SearchAreaMinMax {
-                                sa_min: (
-                                    me_ctx.hme_l0_sa_default_tf.sa_min.width,
-                                    me_ctx.hme_l0_sa_default_tf.sa_min.height,
-                                ),
-                                sa_max: (
-                                    me_ctx.hme_l0_sa_default_tf.sa_max.width,
-                                    me_ctx.hme_l0_sa_default_tf.sa_max.height,
-                                ),
+                                sa_min: me_ctx.hme_l0_sa_default_tf.sa_min,
+                                sa_max: me_ctx.hme_l0_sa_default_tf.sa_max,
                             };
                             let hme_l0 = tf::set_hme_search_params_mctf(def_tf, 0)
                                 .expect("hme_search_level 0 is always valid");
-                            me_ctx.hme_l0_sa.sa_min.width = hme_l0.sa_min.0;
-                            me_ctx.hme_l0_sa.sa_min.height = hme_l0.sa_min.1;
-                            me_ctx.hme_l0_sa.sa_max.width = hme_l0.sa_max.0;
-                            me_ctx.hme_l0_sa.sa_max.height = hme_l0.sa_max.1;
+                            me_ctx.hme_l0_sa.sa_min.width = hme_l0.sa_min.width;
+                            me_ctx.hme_l0_sa.sa_min.height = hme_l0.sa_min.height;
+                            me_ctx.hme_l0_sa.sa_max.width = hme_l0.sa_max.width;
+                            me_ctx.hme_l0_sa.sa_max.height = hme_l0.sa_max.height;
 
                             motion_estimation_b64(
                                 &centre_pic,

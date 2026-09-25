@@ -120,18 +120,8 @@ pub struct MeSrCtrls {
     pub distance_based_hme_resizing: u8,
 }
 
-/// C `Me8x8VarCtrls` (me_context.h:252).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Me8x8VarCtrls {
-    /// C `enabled`.
-    pub enabled: u8,
-    /// C `me_sr_div4_th`.
-    pub me_sr_div4_th: u32,
-    /// C `me_sr_div2_th`.
-    pub me_sr_div2_th: u32,
-    /// C `me_sr_mult2_th`.
-    pub me_sr_mult2_th: u32,
-}
+/// C `Me8x8VarCtrls` — unified: the single definition lives in `crate::port_enc_mode_config::me`.
+pub use crate::port_enc_mode_config::me::Me8x8VarCtrls;
 
 /// C `MvBasedSearchAdj` (me_context.h:305).
 #[derive(Clone, Copy, Debug, Default)]
@@ -146,23 +136,11 @@ pub struct MvBasedSearchAdj {
     pub sa_multiplier: u16,
 }
 
-/// C `SearchArea` (me_context.h:283).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SearchArea {
-    /// C `width`.
-    pub width: u16,
-    /// C `height`.
-    pub height: u16,
-}
+/// C `SearchArea` — unified: the single definition lives in `crate::port_enc_mode_config::me`.
+pub use crate::port_enc_mode_config::me::SearchArea;
 
-/// C `SearchAreaMinMax` (me_context.h:288).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SearchAreaMinMax {
-    /// C `sa_min`.
-    pub sa_min: SearchArea,
-    /// C `sa_max`.
-    pub sa_max: SearchArea,
-}
+/// C `SearchAreaMinMax` — unified: the single definition lives in `crate::port_enc_mode_config::me`.
+pub use crate::port_enc_mode_config::me::SearchAreaMinMax;
 
 /// C `SearchInfo` (me_context.h:293).
 #[derive(Clone, Copy, Debug, Default)]

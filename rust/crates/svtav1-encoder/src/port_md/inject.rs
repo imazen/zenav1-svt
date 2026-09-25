@@ -316,50 +316,10 @@ impl InjectHooks for NoRefinement {
 // The control structs the injectors read
 // ---------------------------------------------------------------------------
 
-/// C `InterCompCtrls` (md_process.h:83), the fields these injectors read.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct InterCompCtrls {
-    pub tot_comp_types: u8,
-    pub do_me: bool,
-    pub do_pme: bool,
-    pub do_nearest_nearest: bool,
-    pub do_near_near: bool,
-    pub do_nearest_near_new: bool,
-    pub do_3x3_bi: bool,
-    pub do_global: bool,
-    pub skip_on_ref_info: bool,
-    pub no_sym_dist: bool,
-    pub max_mv_length: u16,
-    /// C `use_rate` — `search_compound_diff_wedge` prices each wedge/mask
-    /// trial with `model_rd` when set (level 1 only).
-    pub use_rate: bool,
-    /// C `pred0_to_pred1_mult` — the per-pixel SAD budget under which
-    /// `calc_pred_masked_compound` early-exits.
-    pub pred0_to_pred1_mult: u8,
-}
+/// C `InterCompCtrls` — unified: the single definition lives in
+/// `crate::port_enc_mode_config::ctrls`.
+pub use crate::port_enc_mode_config::ctrls::InterCompCtrls;
 
-impl From<crate::port_enc_mode_config::ctrls::InterCompCtrls> for InterCompCtrls {
-    /// The injectors read a subset of `ctx->inter_comp_ctrls`; `use_rate`
-    /// and `pred0_to_pred1_mult` are carried through for the
-    /// `calc_pred_masked_compound` / `search_compound_diff_wedge` hooks.
-    fn from(c: crate::port_enc_mode_config::ctrls::InterCompCtrls) -> Self {
-        Self {
-            tot_comp_types: c.tot_comp_types,
-            do_me: c.do_me,
-            do_pme: c.do_pme,
-            do_nearest_nearest: c.do_nearest_nearest,
-            do_near_near: c.do_near_near,
-            do_nearest_near_new: c.do_nearest_near_new,
-            do_3x3_bi: c.do_3x3_bi,
-            do_global: c.do_global,
-            skip_on_ref_info: c.skip_on_ref_info,
-            no_sym_dist: c.no_sym_dist,
-            max_mv_length: c.max_mv_length,
-            use_rate: c.use_rate,
-            pred0_to_pred1_mult: c.pred0_to_pred1_mult,
-        }
-    }
-}
 
 /// C `InterIntraCompCtrls`.
 #[derive(Debug, Clone, Copy, Default)]

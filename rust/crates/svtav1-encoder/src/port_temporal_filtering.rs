@@ -1776,13 +1776,10 @@ pub fn apply_filtering_block_plane_wise_offsets(
     }
 }
 
-/// `SearchAreaMinMax` — the two width/height pairs
-/// `set_hme_search_params_mctf` writes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SearchAreaMinMax {
-    pub sa_min: (u16, u16),
-    pub sa_max: (u16, u16),
-}
+/// C `SearchAreaMinMax` — unified: the single definition lives in
+/// `crate::port_enc_mode_config::me`; `sa_min`/`sa_max` are `SearchArea`
+/// rather than `(u16, u16)` pairs.
+pub use crate::port_enc_mode_config::me::{SearchArea, SearchAreaMinMax};
 
 /// `set_hme_search_params_mctf` (temporal_filtering.c:2571). `static` in C —
 /// TIER 4.
@@ -1802,8 +1799,14 @@ pub fn set_hme_search_params_mctf(
     match hme_search_level {
         0 => Some(default_tf),
         1 => Some(SearchAreaMinMax {
-            sa_min: (default_tf.sa_min.0 << 1, default_tf.sa_min.1 << 1),
-            sa_max: (default_tf.sa_max.0 << 2, default_tf.sa_max.1 << 2),
+            sa_min: crate::port_enc_mode_config::me::SearchArea {
+                width: default_tf.sa_min.width << 1,
+                height: default_tf.sa_min.height << 1,
+            },
+            sa_max: crate::port_enc_mode_config::me::SearchArea {
+                width: default_tf.sa_max.width << 2,
+                height: default_tf.sa_max.height << 2,
+            },
         }),
         // C `assert(0)` here and leaves the fields unchanged in a release
         // build; refusing is the port's equivalent (WORKING-ON-THIS.md §6).

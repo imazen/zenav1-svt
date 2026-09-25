@@ -739,11 +739,7 @@ impl DeblockGeom {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EdgeDir {
-    Vert,
-    Horz,
-}
+use crate::lf_levels::EdgeDir;
 
 /// Port of the decoder's `set_lpf_parameters` (libaom
 /// av1/common/av1_loopfilter.c:224; SVT deblocking_filter.c:217),

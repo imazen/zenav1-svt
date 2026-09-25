@@ -508,12 +508,9 @@ pub fn is_valid_mv_diff(best_pred_mv: [Mv; 2], mv0: Mv, mv1: Mv, is_compound: bo
     true
 }
 
-/// C `RedundantCandCtrls` (md_process.h:675-678).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RedundantCandCtrls {
-    pub score_th: i32,
-    pub mag_th: i32,
-}
+/// C `RedundantCandCtrls` — unified: the single definition lives in
+/// `crate::port_enc_mode_config::encdec`.
+pub use crate::port_enc_mode_config::encdec::RedundantCandCtrls;
 
 /// The already-injected MV log C keeps on the MD context
 /// (`ctx->injected_mvs` / `injected_ref_types` / `injected_mv_count`,

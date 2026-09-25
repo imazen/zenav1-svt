@@ -495,14 +495,9 @@ pub fn calculate_boost_bits(frame_count: i32, mut boost: i32, total_group_bits: 
 // `svt_av1_rc_init` against the STRING "svt_av1_rc_init_sb_qindex" inside two
 // doc comments (sb_qindex.rs:145, :265) and reported it ported. It was not.
 
-/// C `enum aom_rc_mode` (encoder.h:32).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
-pub enum AomRcMode {
-    Vbr = 0,
-    Cbr = 1,
-    Q = 2,
-}
+/// C `enum aom_rc_mode` — unified: the single definition lives in
+/// `crate::port_rc_vbr_cbr_state`.
+pub use crate::port_rc_vbr_cbr_state::AomRcMode;
 
 /// C `SvtAv1RcMode` (EbSvtAv1Enc.h:177) — the CONFIG-side enum, whose numbering
 /// is NOT `AomRcMode`'s. `set_rc_param` is the translation between them, and
