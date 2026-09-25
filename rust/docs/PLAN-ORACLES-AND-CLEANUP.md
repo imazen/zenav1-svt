@@ -266,9 +266,10 @@ Order, by expected size:
      gone from the pipeline (`092c7e27`).
    - Open: the third symbol-writing walk (`recon_only`), and the per-leaf
      `FunnelFrame` deep clones under TPL/SSIM lambdas.
-   - Delete `temporal_filter::temporal_filter` and the f64 `estimate_noise`
-     with S1, after retargeting the `fallible-alloc` test that uses the
-     former as its allocation vehicle;
+   - Done (this change): `temporal_filter::temporal_filter`, `TfConfig`,
+     `TfResult` and the f64 `estimate_noise` are deleted. The
+     `fallible-alloc` test now calls `try_vec!` inside the encoder crate
+     directly, which is what it was testing;
 6. per-call allocations (S6).
 
 ## Maintenance backlog

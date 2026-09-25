@@ -619,28 +619,29 @@ fn try_encode_cancellation_mid_frame_is_clean_err() {
     );
 }
 
-/// Feature 3: under `fallible-alloc`, an oversized-dimensions request to a
-/// converted allocation site returns `Err(AllocFailed)` instead of aborting.
-/// `temporal_filter`'s first action is `try_vec![0u16; width * height]?`, so
-/// a `usize::MAX x 1` request fails the reservation (its byte count exceeds
-/// `isize::MAX` on both 32- and 64-bit) and returns before reading the input.
+/// Feature 3: under `fallible-alloc`, an unsatisfiable allocation at a
+/// converted site returns `Err(AllocFailed)` instead of aborting.
+///
+/// `try_vec!`'s `#[cfg(feature = "fallible-alloc")]` is evaluated in the crate
+/// where the macro EXPANDS, so this has to run inside the encoder crate: it
+/// proves the encoder's `fallible-alloc` feature reaches every `try_vec!` site
+/// here. A `usize::MAX`-element request exceeds `isize::MAX` bytes on 32- and
+/// 64-bit targets, so the reservation fails before any memory is touched.
+/// (Until 2026-09-25 the vehicle was the homegrown `temporal_filter`, deleted
+/// as dead pre-port code; its first statement was this same `try_vec!`.)
 #[cfg(feature = "fallible-alloc")]
 #[test]
 fn oversized_dims_return_alloc_failed_not_abort() {
-    let tiny = [0u8; 4];
-    let err = crate::temporal_filter::temporal_filter(
-        &tiny,
-        &[],
-        usize::MAX,
-        1,
-        1,
-        &crate::temporal_filter::TfConfig::default(),
-    )
-    .expect_err("an unsatisfiable reservation must be Err, not an abort");
+    fn alloc_plane(len: usize) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
+        Ok(svtav1_types::try_vec![0u16; len]?)
+    }
+    let err = alloc_plane(usize::MAX).expect_err("an unsatisfiable reservation must be Err, not an abort");
     assert!(
         matches!(err.error(), EncodeError::AllocFailed { .. }),
         "expected EncodeError::AllocFailed, got {err:?}"
     );
+    // Control: a satisfiable request through the same path succeeds.
+    assert_eq!(alloc_plane(16).expect("small allocation").len(), 16);
 }
 
 /// Issue #22: VBR/CBR were ACCEPTED and silently encoded at qp 30.

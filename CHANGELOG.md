@@ -28,6 +28,9 @@ Crates are not published to crates.io yet — depend by git.
   `max_hierarchical_levels` (7df9a27f). Struct literals must add them or use
   `..HdrForkConfig::mainline()`/`..Default::default()`.
 
+- `temporal_filter::{temporal_filter, TfConfig, TfResult, estimate_noise}` are
+  removed (see Removed).
+
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
 - **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
   `InvalidDimensions` now carries `width`, `height`, and `reason`, and
@@ -2539,6 +2542,11 @@ Crates are not published to crates.io yet — depend by git.
   non-64-multiple sizes at speed 1); 224 encode and all 224 decode.
 
 ### Removed
+
+- **Legacy homegrown temporal filter** (this change): `temporal_filter::{temporal_filter,
+  TfConfig, TfResult, estimate_noise}`. None was a port of C or called by the
+  encoder; the ported filter is `port_temporal_filtering`. The module keeps
+  `estimate_noise_fp16`, the exact C port.
 
 - **Four libaom-derived Zen enhancements** (30fa9a3a), each on its own
   measurement: `StillImageTune` (v1 was exactly tune IQ), `AomAdaptiveSharpness`

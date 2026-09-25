@@ -533,9 +533,9 @@ impl EncodePipeline {
         // `crate::port_tf_driver` and runs upstream on the random-access
         // buffer (`ra_tf_bufs` / `TfPicBufs`), so this function receives the
         // already-filtered source; low-delay has no TF in C
-        // (`derive_tf_params`, enc_handle.c:3339-3343). The homegrown
-        // recon-blending `temporal_filter::temporal_filter` that used to sit
-        // here behind a literal `false` gate was removed on 2026-09-25.
+        // (`derive_tf_params`, enc_handle.c:3339-3343). A homegrown
+        // recon-blending temporal filter used to sit here behind a literal
+        // `false` gate; it and the function were deleted on 2026-09-25.
         let w = self.width as usize;
         let h = self.height as usize;
         let n = w * h;
