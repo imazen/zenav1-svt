@@ -2,10 +2,10 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **72
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **100
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
-only ones a byte-parity gate could ever close — and **1** carry no
+only ones a byte-parity gate could ever close — and **2** carry no
 `[C: ...]` marker at all.
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -40,6 +40,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 
 | where | C? | refusal |
 |---|---|---|
+| `crates/svtav1-encoder/src/enhancements.rs` | ? | deep-search-v1 is measured for all-intra 4:2:0 8-bit only |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | ? | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts | QP 0 (coded-lossless) inter frames are not implemented outside 8-bit 4:2:0: the 10-bit path mis-predicts intra per-block vs the decoder's per-TXB rule and the monochrome / 4:4:4 arms have no inter WHT residual path — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
@@ -56,6 +57,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 
 | where | refusal |
 |---|---|
+| `crates/svtav1-encoder/src/enhancements.rs` | Zen experiments require native research -1, all-intra 4:2:0 |
+| `crates/svtav1-encoder/src/enhancements.rs` | aom-screen-tools-v1 is measured for all-intra 4:2:0 only |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too large to tile: MAX_TILE_AREA forces more tiles than MAX_TILE_ROWS (64) tile rows can supply at this width |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |
 | `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
@@ -116,6 +119,32 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline/superres.rs` | superres is not wired for frames that run loop restoration (allintra preset <= 6, except small frames where restoration is disabled) — C runs LR on the UPSCALED frame; use preset >= 7 |
 | `crates/svtav1-encoder/src/pipeline/superres.rs` | superres is not wired for monochrome — the mono entry has no downscale arm and would code a left-cropped plane under an upscale header (C has no mono mode at any depth; this is a port-extension gap, not a C envelope) |
 | `crates/svtav1-encoder/src/pipeline/superres.rs` | superres supports 8/10-bit only — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists outside that envelope |
+| `crates/svtav1-encoder/src/reference.rs` | Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline |
+| `crates/svtav1-encoder/src/reference.rs` | enable_qmpsnr and max_hierarchical_levels are Ghost Robot options |
+| `crates/svtav1-encoder/src/reference.rs` | pristine mainline QP scale compression must be an integer from 0 through 3 |
+| `crates/svtav1-encoder/src/reference.rs` | pristine mainline reference cannot use hybrid HDR mode |
+| `crates/svtav1-encoder/src/reference.rs` | pristine mainline reference cannot use hybrid-only controls |
+| `crates/svtav1-encoder/src/reference.rs` | pristine mainline reference supports tune values 0 through 5 |
+| `crates/svtav1-encoder/src/reference.rs` | pristine mainline reference supports variance boost curves 0 through 2 |
+| `crates/svtav1-encoder/src/reference.rs` | tune 5 (VMAF) is not ported |
+| `crates/svtav1-encoder/src/reference.rs` | tune must be 0 through 6 |
+| `crates/svtav1-encoder/src/reference.rs` | enable_qmpsnr = 1 (QM-weighted PSNR) is not ported |
+| `crates/svtav1-encoder/src/reference.rs` | max_hierarchical_levels > 0 (RTC CBR low-delay mini-GOP resizing) is not ported |
+| `crates/svtav1-encoder/src/reference.rs` | hbd_mds is not ported beyond -1 (preset-derived 8/10-bit mode decision) |
+| `crates/svtav1-encoder/src/reference.rs` | luminance_qp_bias is not ported: only 0 (off) is accepted |
+| `svtav1/src/animation.rs` | AVIF pixel aspect ratio must be positive and 1:1 |
+| `svtav1/src/animation.rs` | amve needs nonzero illuminance and chromaticities in 0..=50000 |
+| `svtav1/src/animation.rs` | animation duration overflow |
+| `svtav1/src/animation.rs` | animation frame needs non-zero duration, complete chroma and alpha planes, and consistent alpha presence |
+| `svtav1/src/animation.rs` | animation input sample type must match the configured bit depth |
+| `svtav1/src/animation.rs` | animation luma stride exceeds u32 |
+| `svtav1/src/animation.rs` | animation needs frames, a non-zero timescale and dimensions in 1..=65535 |
+| `svtav1/src/animation.rs` | animation sample exceeds the configured bit depth |
+| `svtav1/src/animation.rs` | cclv needs a field, primaries in -5000000..=5000000, and min <= avg <= max |
+| `svtav1/src/animation.rs` | crop rectangle must be nonempty and within the image |
+| `svtav1/src/animation.rs` | premultiplied animation requires alpha |
+| `svtav1/src/animation.rs` | repeated animation duration overflow |
+| `svtav1/src/animation.rs` | rotation must be 0..=3 and mirror axis must be 0..=1 |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `svtav1/src/avif.rs` | SvtParity forbids Zen enhancements |
 | `svtav1/src/avif.rs` | a chroma plane is shorter than ceil(height/2) * ceil(width/2) |

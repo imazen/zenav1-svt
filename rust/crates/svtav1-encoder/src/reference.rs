@@ -64,6 +64,30 @@ impl SvtReference {
         if hdr.tune > crate::tune::TUNE_FILM_GRAIN {
             return Err("tune must be 0 through 6");
         }
+        // C options the port runs only at their defaults. A different value
+        // would be silently ignored, so it is refused instead.
+        if hdr.luminance_qp_bias != 0 {
+            return Err("luminance_qp_bias is not ported: only 0 (off) is accepted [C: accepts 1..=100]");
+        }
+        if hdr.hbd_mds != -1 {
+            return Err(
+                "hbd_mds is not ported beyond -1 (preset-derived 8/10-bit mode decision) \
+                 [C: accepts 0, 1, 2]",
+            );
+        }
+        if self == Self::GhostRobot {
+            if hdr.enable_qmpsnr == 1 {
+                return Err("enable_qmpsnr = 1 (QM-weighted PSNR) is not ported [C: accepts]");
+            }
+            if hdr.max_hierarchical_levels != 0 {
+                return Err(
+                    "max_hierarchical_levels > 0 (RTC CBR low-delay mini-GOP resizing) is not \
+                     ported [C: accepts]",
+                );
+            }
+        } else if hdr.enable_qmpsnr != -1 || hdr.max_hierarchical_levels != 0 {
+            return Err("enable_qmpsnr and max_hierarchical_levels are Ghost Robot options");
+        }
         match self {
             Self::Hybrid3115 => return Ok(()),
             Self::GhostRobot => {
@@ -157,6 +181,52 @@ mod tests {
                 .validate_hdr_config(&HdrForkConfig::hdr_fork_c_mode1())
                 .is_err()
         );
+    }
+
+    /// The C options the port runs only at their defaults are refused at any
+    /// other value, never silently ignored, and the defaults pass for every
+    /// reference.
+    #[test]
+    fn unported_c_options_are_refused_not_ignored() {
+        let gr = HdrForkConfig::ghost_robot();
+        for reference in [SvtReference::GhostRobot, SvtReference::Hybrid3115] {
+            let base = if reference == SvtReference::GhostRobot {
+                gr.clone()
+            } else {
+                HdrForkConfig::hdr_fork_c_mode1()
+            };
+            assert!(reference.validate_hdr_config(&base).is_ok(), "{reference:?} defaults");
+            let mut h = base.clone();
+            h.luminance_qp_bias = 10;
+            assert!(reference.validate_hdr_config(&h).is_err());
+            for v in [0i8, 1, 2] {
+                let mut h = base.clone();
+                h.hbd_mds = v;
+                assert!(reference.validate_hdr_config(&h).is_err(), "hbd_mds {v}");
+            }
+        }
+        assert!(
+            SvtReference::Mainline420
+                .validate_hdr_config(&HdrForkConfig::mainline())
+                .is_ok()
+        );
+        // Ghost Robot: QM-PSNR on and mini-GOP resizing are refused; PSNR
+        // (0) and auto (-1) are accepted.
+        let mut h = gr.clone();
+        h.enable_qmpsnr = 1;
+        assert!(SvtReference::GhostRobot.validate_hdr_config(&h).is_err());
+        h.enable_qmpsnr = 0;
+        assert!(SvtReference::GhostRobot.validate_hdr_config(&h).is_ok());
+        let mut h = gr.clone();
+        h.max_hierarchical_levels = 1;
+        assert!(SvtReference::GhostRobot.validate_hdr_config(&h).is_err());
+        // The Ghost Robot-only options have no meaning for the other references.
+        let mut h = HdrForkConfig::hdr_fork_c_mode1();
+        h.enable_qmpsnr = 0;
+        assert!(SvtReference::Hybrid3115.validate_hdr_config(&h).is_err());
+        let mut h = HdrForkConfig::mainline();
+        h.max_hierarchical_levels = 1;
+        assert!(SvtReference::Mainline420.validate_hdr_config(&h).is_err());
     }
 
     #[test]

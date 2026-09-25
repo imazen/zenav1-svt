@@ -62,6 +62,19 @@ It was done when:
   `enable_qmpsnr`, `luminance_qp_bias`, `hbd_mds`. Plus a typed facade
   builder (`AvifEncoder::with_fork(ForkConfig)`) exposing the fork knobs by
   their C names, instead of the raw `EncodePipeline.hdr` field.
+  - Done (this change):
+    - `HdrForkConfig` carries `luminance_qp_bias`, `hbd_mds`,
+      `enable_qmpsnr` and `max_hierarchical_levels` at C's defaults.
+      `validate_hdr_config` refuses every value the port does not implement,
+      and a unit test pins that.
+    - `svtav1/tests/config_surface.rs` gives each of Ghost Robot's 139
+      `EbSvtAv1EncConfiguration` fields one disposition (Api / Hdr /
+      Refused / Derived / DefaultOnly / NotApplicable). It parses the C
+      header, so a new upstream field fails the test until it is
+      classified.
+    - The refusal ledger now also scans the `validate*` `Err(...)` refusals
+      and the animation facade, which it had missed: 83 -> 112 rows.
+  - Open: the typed facade builder.
 - [x] 1.3 (`893f6823`) `EncodingPolicy::SvtParity(GhostRobot)` resolves fork defaults
   exactly as Ghost Robot's `svt_av1_set_default_params` does.
 - [ ] 1.4 Narrow the facade (S9):

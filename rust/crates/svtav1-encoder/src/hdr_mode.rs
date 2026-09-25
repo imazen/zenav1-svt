@@ -124,6 +124,22 @@ pub struct HdrForkConfig {
     pub max_chroma_qm_level: u8,
     /// Temporal-filter strength (fork default 1, mainline 3).
     pub tf_strength: u8,
+    /// C `luminance_qp_bias` (hybrid and Ghost Robot): 0 off, 1..=100 biases
+    /// the frame QP by average luminance. Not ported: only 0 is accepted.
+    pub luminance_qp_bias: u8,
+    /// C `hbd_mds` (hybrid and Ghost Robot): -1 derives the 8/10-bit mode
+    /// decision from the preset, which is what the port implements
+    /// (`LeafBd10::mds3_hbd`); 0 (full 8-bit), 1 (full 10-bit) and 2 (hybrid)
+    /// force it and are not ported.
+    pub hbd_mds: i8,
+    /// C `enable_qmpsnr` (Ghost Robot only): -1 auto (on at tune IQ), 0 PSNR,
+    /// 1 QM-weighted PSNR. QM-PSNR is not ported (plan 3.5), so 1 is refused;
+    /// -1 at tune IQ under Ghost Robot is the known remaining divergence.
+    /// Must stay -1 for the other references, which have no such option.
+    pub enable_qmpsnr: i8,
+    /// C `max_hierarchical_levels` (Ghost Robot only): 0 off; >0 allows RTC
+    /// CBR low-delay mini-GOP resizing, which is not ported.
+    pub max_hierarchical_levels: u8,
 }
 
 impl Default for HdrForkConfig {
@@ -168,6 +184,10 @@ impl HdrForkConfig {
             min_chroma_qm_level: 8,
             max_chroma_qm_level: 15,
             tf_strength: 3,
+            luminance_qp_bias: 0,
+            hbd_mds: -1,
+            enable_qmpsnr: -1,
+            max_hierarchical_levels: 0,
         }
     }
 
@@ -222,6 +242,10 @@ impl HdrForkConfig {
             min_chroma_qm_level: 8,
             max_chroma_qm_level: 15,
             tf_strength: 1,
+            luminance_qp_bias: 0,
+            hbd_mds: -1,
+            enable_qmpsnr: -1,
+            max_hierarchical_levels: 0,
         }
     }
 
@@ -255,6 +279,10 @@ impl HdrForkConfig {
             max_qm_level: 10,
             enable_variance_boost: true,
             tf_strength: 1,
+            luminance_qp_bias: 0,
+            hbd_mds: -1,
+            enable_qmpsnr: -1,
+            max_hierarchical_levels: 0,
             sharpness: 1,
             // --- everything else: the unconditional neutral values ---
             ..Self::mainline()
@@ -280,9 +308,10 @@ impl HdrForkConfig {
     /// `enable_qmpsnr = -1` (`:1190`; auto → on only at `TUNE_IQ`,
     /// resolved in `copy_api_from_app`, `enc_handle.c:4971-4972`),
     /// `luminance_qp_bias = 0` (`:1158`), `hbd_mds = DEFAULT` (`:1174`),
-    /// `max_hierarchical_levels = 0` (`:1181`). All neutral at these
-    /// defaults, so the missing surface changes nothing on the ported
-    /// paths — except tune IQ, where C turns QM-PSNR on and the port
+    /// `max_hierarchical_levels = 0` (`:1181`). These four are fields of this
+    /// struct, refused at any value but the default until ported
+    /// (`SvtReference::validate_hdr_config`). The defaults are neutral on the
+    /// ported paths, except at tune IQ, where C turns QM-PSNR on and the port
     /// cannot match until that metric lands (plan item 3.5).
     ///
     /// Caller-decision fields (`encoder_bit_depth` 10 at `:1019`,
@@ -320,6 +349,10 @@ impl HdrForkConfig {
             min_chroma_qm_level: 8,          // :1142
             max_chroma_qm_level: 15,         // :1143
             tf_strength: 1,                  // :1156
+            luminance_qp_bias: 0,             // :1158
+            hbd_mds: -1,                      // :1174
+            enable_qmpsnr: -1,                // :1190
+            max_hierarchical_levels: 0,       // :1181
         }
     }
 

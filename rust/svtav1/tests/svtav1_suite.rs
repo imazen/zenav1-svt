@@ -24,6 +24,7 @@ mod issue13_repro;
 mod issue18_repro;
 mod issue9_repro;
 mod never_panics;
+mod config_surface;
 mod output_pins;
 mod real_encode;
 mod thread_determinism;

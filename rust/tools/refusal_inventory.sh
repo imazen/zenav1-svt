@@ -112,6 +112,12 @@ for f in "$PIPE"/*.rs; do
     SRC+=("$f")
 done
 SRC+=(crates/svtav1-encoder/src/entropy/obu.rs svtav1/src/avif.rs)
+# Configuration validators that refuse with `Err("...")` rather than through
+# `UnsupportedConfig`: the reference/HDR envelope and the Zen enhancements.
+# Until 2026-09-25 none of these were catalogued, so the ledger missed every
+# refusal they make. Also the animation facade, which the ledger had never
+# scanned.
+SRC+=(crates/svtav1-encoder/src/reference.rs crates/svtav1-encoder/src/enhancements.rs svtav1/src/animation.rs)
 for f in "${SRC[@]}"; do
     [ -f "$f" ] || { echo "refusal_inventory: source $f is missing — update SRC" >&2; exit 2; }
 done
@@ -169,6 +175,7 @@ REASON = re.compile(r'\breason:\s*"((?:[^"\\]|\\.)*)"')
 CMARK = re.compile(r"\[C:\s*([^\]]*)\]")
 # Trailing comma and `.to_string()` are both common; requiring a bare
 # `)` right after the string silently dropped half the real refusals.
+ERRS = re.compile(r'\bErr\(\s*"((?:[^"\\]|\\.)*)"')
 SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
 FNDEF = re.compile(r"\n\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+([a-z_0-9]+)")
 
@@ -180,6 +187,15 @@ for path in sys.argv[1:]:
 
     found = unsupported_messages(joined)
     found |= set(m.group(1) for m in REASON.finditer(joined))
+
+    # `Err("...")` counts inside `validate*` functions (the reference/HDR and
+    # Zen-enhancement envelopes return their refusals this way).
+    for i, (pos, name) in enumerate(bounds := [(m.start(), m.group(1)) for m in FNDEF.finditer(joined)]):
+        if not name.startswith("validate"):
+            continue
+        stop = bounds[i + 1][0] if i + 1 < len(bounds) else len(joined)
+        for m in ERRS.finditer(joined[pos:stop]):
+            found.add(m.group(1))
 
     # `Some("...")` counts inside configuration predicates and tile validation.
     bounds = [(m.start(), m.group(1)) for m in FNDEF.finditer(joined)]
