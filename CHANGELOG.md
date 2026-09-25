@@ -35,6 +35,22 @@ Crates are not published to crates.io yet — depend by git.
   (see Removed).
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
+- **AV1 vocabulary unification — one definition per type (`0ac832fc`,
+  `981d4788`).** Duplicate same-name types now re-export a single
+  canonical definition; most import paths still resolve unchanged, but
+  some variant/field spellings moved to the canonical type's:
+  `svtav1_types::frame::PredStructure` gains `AllIntra`, and
+  `svtav1_types::reference::ReferenceMode` gains `IntraSentinel`
+  (exhaustive matches need new arms); `FrameType::is_intra` is renamed
+  `is_intra_only`; `InterIntraMode` variants `DcPred`/`VPred`/`HPred`/
+  `SmoothPred` are now `IiDcPred`/`IiVPred`/`IiHPred`/`IiSmoothPred`;
+  `CompoundType::Distwtd`/`Diffwtd` are `DistWtd`/`DiffWtd`;
+  `RefList::L0`/`L1` are `List0`/`List1`; `port_rc_process`/
+  `port_picstruct` `FrameUpdateType` variants `*Update` are now the
+  `port_frame_update` spellings (`Kf`, `Lf`, `Gf`, `Arf`, `Overlay`,
+  `IntnlOverlay`, `IntnlArf`); `SearchAreaMinMax::{sa_min,sa_max}` are
+  `SearchArea {width,height}` fields, not `(u16,u16)` tuples.
+
 - **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
   `InvalidDimensions` now carries `width`, `height`, and `reason`, and
   `InvalidQuality` carries `quality`. Update matches on the former unit

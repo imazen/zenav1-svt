@@ -226,9 +226,30 @@ In dependency order:
     the copies in `intra_pred.rs` and `hbd.rs` (owned by the intra-x86
     delegate; fold them in after it lands).
   - Done: the 13 `rdcost` copies -> `svtav1_types::math::rd` (`fc82b896`).
+  - In progress — same-name types (`0ac832fc`, `981d4788`, pins
+    unchanged): 24 duplicate names resolved so far. Unified to one
+    definition: `SliceType`, `MotionMode`, `DistortionType`,
+    `TransformationType`, `CompReferenceType`, `Part`, `PartitionType`,
+    `ObuType`, `FrameType`, `Mv`, `SubpelMvLimits`, `PredStructure`,
+    `ReferenceMode`, `RefList`, `FrameUpdateType`, `InterIntraMode`,
+    `CompoundType`, `SearchArea`, `SearchAreaMinMax`, `Me8x8VarCtrls`,
+    `InterCompCtrls`, `RedundantCandCtrls`, `AomRcMode`, `EdgeDir`.
+    Remaining: the `*Ctrls` pairs with C-field-width differences
+    (`MeHmeRefPruneCtrls`/`MeSrCtrls`/`MvBasedSearchAdj`/`PreHmeCtrls` —
+    `inter_me/context.rs` is the C-faithful side — plus `MdPmeCtrls`,
+    `WmCtrls`, `SgFilterCtrls`, `CandEliminationCtrls`,
+    `InterIntraCompCtrls`, `NearCountCtrls`, `CoeffShavingCtrls`,
+    `InterInterCompoundData`, `SkipModeInfo`, `RcIntervalParams`,
+    `SgrprojInfo`, `MbEdges`, `TxCoeffShape`), and the same-name
+    different-thing renames (`SbVariance` ×3, `Plane`, `ComponentType`,
+    `Neighbour`/`Neighbours`, `ReferenceFrame`, `NeighborMi`,
+    `TileBounds`, `ScClasses`, `FirstPassStats`, `SuperresParams`,
+    `InterCandidate`, `SkipSubDepthCtrls`, `RcMode`, `EncodeError`,
+    `ScaleFactors`, `OrderHintInfo`, `FilmGrainParams`, `Rng`).
+    `TileLimits` and `PaddedPlaneT` are deferred — their twins live in
+    `restoration*`, owned by a concurrent session.
   - Next: AV1 vocabulary constants (`INTRA_FRAME` ×8,
-    `LAST_FRAME` ×9, `MI_SIZE` ×9), and same-name types (`SbVariance` ×3, and
-    others).
+    `LAST_FRAME` ×9, `MI_SIZE` ×9).
 - S4 a `Pixel` sample trait plus a `BitDepth` enum;
 - S3 derive signals once through the ported orchestrators;
 - S2 split `pipeline.rs` into stages. Target: every `.rs` file at 2-3 kloc
