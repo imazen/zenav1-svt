@@ -133,11 +133,47 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     on photo-256-b10-p8-q32, payloads closer on six more) still hit
     earlier divergences; kernel parity pinned in c_parity_hadamard
     (avx2 multiset + composed _c oracle). Mainline control 288/288.
-  - `8b1f9a0d` restoration-enable derivation
-  - `507025f6` PD1/LPD1 switch
-  - `ccdfdb09` fractional CRF above 63
-  - `0c1c4dec` luma bias removed
-  - the rest of the 35 "behaviour?" commits, triaged by the gate.
+  - `8b1f9a0d` (`5382c4e2`) in-loop-filter fixes: ported the
+    `search_wiener_finish` `wiener_win` arm (luma sized by the search
+    window, not `WIENER_WIN` unconditionally) behind `GhostRobot`,
+    threading `SvtReference` through the three `*_with_stop` restoration
+    searches. The seq-header `enable_restoration` arm is unreachable —
+    the port has no `enable_restoration_filtering` knob, so the C `!=
+    DEFAULT` branch has no equivalent. Grid 32/288; two cells moved to a
+    later divergence (lr_type no longer first on `photo-128-b10-p2-q55`;
+    `photo-64-b8-p6-q20` tile→FH). One output pin moved
+    (`grad-64x64-b10-p6-q30-GhostRobot-HdrFork`), fixture regenerated.
+    Mainline 288/288; nextest 2776/2776; spotcheck 147/147.
+  - `507025f6` PD1/LPD1 switch: stills-inert. `svt_aom_is_ref_same_size`
+    still returns false for `I_SLICE`, so all touched paths
+    (`ref_list*_count`, depth-removal ref arms) stay on the zero-ref side
+    on an all-intra grid.
+  - `ccdfdb09` fractional CRF above 63: ported at the single `lw_bump`
+    computation in `pipeline.rs` — under `GhostRobot`, when
+    `sq_qp == 63 && extended_crf_qindex_offset != 0` and the frame's
+    `lambda_weight` base would be zero (research preset `<= -1` bypassing
+    the ladder, or a sub-16 `picture_qp` non-IQ frame — the only shapes
+    `frame_lambda_weight[_for_preset]` can return 0), the bump lands on
+    `LAMBDA_WEIGHT_NEUTRAL` 128 instead of 0. Stills-inert (the grid never
+    sets the offset); `md_config`'s `lambda_weight` field is carried but
+    unconsumed downstream, so only the live `lw_bump` path needed it.
+  - `0c1c4dec` (`4b1f125d`) luma bias removed: flat `plane_rd_mult`
+    ({17,13}/{16,10} for every frame) ported at the two
+    `CodingQuantCfg::allintra_rd_mult` assignments in `frame_setup.rs`,
+    gated on `GhostRobot`. Stills-inert (the allintra arm already read
+    row [1]); fixes Ghost-Robot VIDEO chroma RDOQ weighting (20→13/10).
+    Ghost grid byte-identical to the `8b1f9a0d` grid; mainline 288/288;
+    pins 6/6; nextest 2772/2772; spotcheck 147/147.
+  - the rest of the 35 "behaviour?" commits, triaged by the gate:
+    upstream commits in the delta are SIMD/RTC perf or verified
+    bit-exact (`837210f49`, `ef51f3cf0`, `05a895cd0`, `11be59e70`,
+    `0115564e9`, `13438c1f4`, `309672721`, `b7292868a`, `3f972dab0`,
+    `573327e31` fused hadamard-satd — fused _c calls the same RTCD
+    kernels, values identical). `e6ff85f0d` and the `463dfe461`/
+    `8620b075c` pair are RTC-only. `4acc70626` is ROI segmentation only.
+    `f9100ab22` is low-delay DLF (video). No remaining mainline-master
+    commit reaches the still grid — the residual tile-op/FH divergence
+    is fork-feature territory (items 3.3+).
 - [ ] 3.3 Fork determinism and correctness fixes: `f0111bae`, `d6f4b170`,
   `560f7453`, `ec7e414d`, `2c66d9ea`.
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0

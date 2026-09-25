@@ -893,8 +893,30 @@ impl EncodePipeline {
         // `clamp_qindex` caps at the max-qp qindex), so `(MAXQ - new_qindex) *
         // offset / 56` in rc_crf_cqp.c:511 evaluates to 0 there. 0 on every
         // other config, hence byte-inert everywhere else.
-        let lw_bump: u32 = if self.rc_config.qp == 63 {
-            u32::from(self.rc_config.extended_crf_qindex_offset) * 28
+        let lw_bump: u32 = if self.rc_config.qp == 63
+            && self.rc_config.extended_crf_qindex_offset != 0
+        {
+            let bump = u32::from(self.rc_config.extended_crf_qindex_offset) * 28;
+            // Ghost Robot ccdfdb09 ("Fix bitrate inversion at fractional
+            // CRF/QP above 63"): the bump is added onto
+            // `LAMBDA_WEIGHT_NEUTRAL` (128) when the ladder produced a zero
+            // `lambda_weight`, instead of landing on 0 — without it the CRF
+            // 63.x range ran a tiny lambda and produced giant frames.
+            // `lambda_weight` reaches `+= offset*28` as 0 only when the
+            // ladder arm is bypassed: `preset <= -1` (research presets skip
+            // the qp ladder, `frame_lambda_weight_for_preset`) or a
+            // `picture_qp < 16` non-IQ frame (the {0,150,175} ladder's floor
+            // — unreachable at sq_qp 63 but kept for exactness). Tune-IQ's
+            // curve floored at 128 can never be 0. Every consumer reads the
+            // value through `lw_bump`, so folding the neutral base into it
+            // covers all of them at once.
+            let zero_base = self.hdr.tune != crate::tune::TUNE_IQ
+                && (self.speed_config.preset <= -1 || u32::from(picture_qp) < 16);
+            if self.reference == crate::reference::SvtReference::GhostRobot && zero_base {
+                128 + bump
+            } else {
+                bump
+            }
         } else {
             0
         };
