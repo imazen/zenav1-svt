@@ -3481,7 +3481,7 @@ impl<'a> Pd0Ctx<'a> {
         #[cfg(feature = "std")]
         if crate::dbgenv::pd0dbg() {
             eprintln!(
-                "PD0BLK org=({},{}) {}x{} dist={} ybits={} cost={} lambda={} subres={} dc={} ha={} hl={} a0={:?} l0={:?}",
+                "PD0BLK org=({},{}) {}x{} dist={} ybits={} cost={} lambda={} eob={} qidx={} subres={} dc={} ha={} hl={} a0={:?} l0={:?}",
                 abs_x,
                 abs_y,
                 bw,
@@ -3490,6 +3490,8 @@ impl<'a> Pd0Ctx<'a> {
                 bits,
                 cost,
                 self.lambda,
+                eob,
+                self.qindex,
                 step,
                 pred[0],
                 u8::from(nb.is_some_and(|n| n.2)),

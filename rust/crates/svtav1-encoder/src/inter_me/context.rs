@@ -723,17 +723,24 @@ impl MeB64Output {
     /// `svt_aom_pa_reference_object_ctor` (`reference_object.c`) and clears
     /// the counts; the port allocated three `Vec`s per b64 per frame
     /// (`MeB64Output::new` 12.53 M over 6,144 calls in
-    /// `benchmarks/mem_heaptrack_2026-09-03.txt`). This reproduces `new`'s
-    /// state exactly — every element is overwritten with the same value
-    /// `new` would have allocated it with, and every scalar is reset to its
-    /// `Default` — so the search that follows cannot observe the difference.
+    /// `benchmarks/mem_heaptrack_2026-09-03.txt`).
+    ///
+    /// `me_mv_array` is deliberately NOT cleared: C's pool is a single
+    /// `EB_MALLOC_ARRAY` handed out per b64 per picture with no memset, so a
+    /// slot the search never writes (e.g. ref0 pruned by
+    /// `prune_me_candidates_th` in `construct_me_candidate_array`, or
+    /// `blk_do_ref == 0` in the single-ref path) keeps the PREVIOUS frame's
+    /// MV — and `is_cr_motion_static` in the cyclic-refresh gate reads slot 0
+    /// unconditionally. Zeroing here made the gate see `(0,0)` where C saw a
+    /// stale search result. `resize` preserves the prefix when the length is
+    /// already right, so only a genuinely undersized buffer is grown (fresh
+    /// elements get `Mv::ZERO`, matching C's first-touch zero pages).
     pub fn reset(&mut self, max_cand: usize, max_refs: usize) {
         self.total_me_candidate_index.clear();
         self.total_me_candidate_index.resize(SQUARE_PU_COUNT, 0u8);
         self.me_candidate_array.clear();
         self.me_candidate_array
             .resize(SQUARE_PU_COUNT * max_cand, MeCandidate::default());
-        self.me_mv_array.clear();
         self.me_mv_array
             .resize(SQUARE_PU_COUNT * max_refs, Mv::ZERO);
         // The scalar tail of `..Self::default()`.

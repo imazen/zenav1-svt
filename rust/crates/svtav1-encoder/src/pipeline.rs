@@ -127,6 +127,13 @@ pub struct EncodePipeline {
     pub rc_config: RcConfig,
     /// Rate control state.
     pub rc_state: RcState,
+    /// C `enc_ctx->rc`/`rc_cfg` + the `scs`/`frame_info` RC subset — the
+    /// C-shaped rate-control state (`svt_aom_set_rc_param`,
+    /// pass2_strategy.c:907) that drives VBR/CBR. Populated on the first
+    /// frame of a VBR/CBR encode from `rc_config`; `None` under CQP/CRF,
+    /// whose flow runs entirely off `rc_state`/`rc_config` exactly as before.
+    /// See [`crate::port_rc_driver`].
+    rc_vbr_cbr: Option<crate::port_rc_driver::RcVbrCbr>,
     /// Decoded picture buffer.
     pub dpb: DecodedPictureBuffer,
     /// GOP structure.
@@ -699,6 +706,7 @@ impl EncodePipeline {
             ),
             rc_config,
             rc_state: RcState::default(),
+            rc_vbr_cbr: None,
             enable_tf: true,
             enable_tf_key: true,
             dpb: DecodedPictureBuffer::new(),
@@ -834,7 +842,7 @@ impl EncodePipeline {
             hier,
             pp::PredStructure::LowDelay,
             self.bit_depth == 8,
-            pp::RcMode::CqpOrCrf,
+            self.rc_config.mode.into(),
         );
         self.mrp_ctrls = mrp_ctrls;
         let (tf_level, tf_params_per_type) = pp::derive_tf_params(
@@ -849,9 +857,12 @@ impl EncodePipeline {
             // `SVT_PRED_STRUCT=1` (LOW_DELAY) for the same cells. Under RA a
             // mid-stream key reaches this path via the drain release, where
             // `scs->static_config.pred_structure` stays RANDOM_ACCESS — so
-            // this is `self.pred_structure`, not a literal.
+            // this is `self.pred_structure`, not a literal. The RC mode is
+            // the caller's: under CBR `av1_generate_rps_info` takes the
+            // lay0/lay1-toggle L0-only arm (pd_process.c:2066) instead of the
+            // CQP/CRF 7-slot rotation — visible in `ref_frame_idx[4..6]`.
             pred_structure: self.pred_structure,
-            rate_control_mode: pp::RcMode::CqpOrCrf,
+            rate_control_mode: self.rc_config.mode.into(),
             rtc: false,
             allintra: false,
             mrp_ctrls,
@@ -1359,7 +1370,7 @@ impl EncodePipeline {
             hier,
             pp::PredStructure::RandomAccess,
             self.bit_depth == 8,
-            pp::RcMode::CqpOrCrf,
+            self.rc_config.mode.into(),
         );
         self.mrp_ctrls = mrp_ctrls;
         let (tf_level, tf_params_per_type) = pp::derive_tf_params(
@@ -1371,7 +1382,7 @@ impl EncodePipeline {
         );
         let seq = pp::SeqPicParams {
             pred_structure: pp::PredStructure::RandomAccess,
-            rate_control_mode: pp::RcMode::CqpOrCrf,
+            rate_control_mode: self.rc_config.mode.into(),
             rtc: false,
             allintra: false,
             mrp_ctrls,
@@ -2333,7 +2344,7 @@ impl EncodePipeline {
                     // `r0_adjust_factor` gate reads, not the port's
                     // group-shape `tpl_lad_mg` (which stays 0).
                     tpl_lad_mg: scs_tpl_lad_mg,
-                    rate_control_mode: pp::RcMode::CqpOrCrf,
+                    rate_control_mode: self.rc_config.mode.into(),
                 }),
                 tpl_group_level(pic.slice_type == pp::SliceType::I),
                 self.width,
@@ -3483,17 +3494,20 @@ impl EncodePipeline {
         // emitted bytes are unchanged. Callers wanting graceful OOM /
         // cancellation use `try_encode_frame`.
         //
-        // "Trusted path" EXCLUDES an unsupported configuration. Since issue #22
-        // this refuses `RcMode::Vbr`/`Cbr` at the config choke point, so a caller
-        // that builds the pipeline with one and then uses this infallible wrapper
-        // panics HERE instead of silently receiving a qp-30 stream. That is the
-        // intended trade — a panic is loud, a mixed-qp bitstream is not — but the
-        // message must say so rather than claim infallibility.
+        // "Trusted path" EXCLUDES an unsupported configuration. The config
+        // choke point refuses `RcMode::Vbr` (first-pass statistics are not
+        // ported) and `RcMode::Cbr` outside LOW_DELAY (C's own envelope),
+        // so a caller that builds the pipeline with one and then uses this
+        // infallible wrapper panics HERE instead of silently receiving a
+        // stream the port never meant to emit. That is the intended trade —
+        // a panic is loud, a mislabeled bitstream is not — but the message
+        // must say so rather than claim infallibility.
         self.encode_frame_mono_core(y_plane, y_stride).expect(
             "encode_frame is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
-                 configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
-                 #22) — use try_encode_frame to handle it as an error",
+                 configuration this port refuses (e.g. RcMode::Vbr or \
+                 non-LOW_DELAY Cbr, issue #22) — use try_encode_frame to \
+                 handle it as an error",
         )
     }
 
@@ -3567,13 +3581,15 @@ impl EncodePipeline {
         // KEEPS the exact panicking contract: on the default/trusted path the
         // core cannot return `Err`, so `.expect()` never fires and the bytes are
         // unchanged. "Trusted path" EXCLUDES an unsupported configuration — see
-        // the note on `encode_frame`; since issue #22 a `RcMode::Vbr`/`Cbr`
-        // pipeline panics here rather than emitting a qp-30 stream.
+        // the note on `encode_frame`; a `RcMode::Vbr` or non-LOW_DELAY `Cbr`
+        // pipeline panics here rather than emitting a stream C would refuse
+        // or the port cannot compute honestly.
         self.encode_frame_420_core(y, u, v, y_stride).expect(
             "encode_frame_420 is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
-                 configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
-                 #22) — use try_encode_frame_420 to handle it as an error",
+                 configuration this port refuses (e.g. RcMode::Vbr or \
+                 non-LOW_DELAY Cbr, issue #22) — use try_encode_frame_420 to \
+                 handle it as an error",
         )
     }
 
@@ -4468,38 +4484,353 @@ impl EncodePipeline {
         }
     }
 
-    /// BITRATE-TARGETED RATE CONTROL IS NOT WIRED — refuse it rather than emit
-    /// a plausible-but-wrong stream.
+    /// BITRATE-TARGETED RATE CONTROL — C's own envelope plus this port's
+    /// coverage inside it.
     ///
-    /// `assign_picture_qp`'s Vbr/Cbr arm (rate_control.rs) starts from
-    /// `state.qp`, i.e. `RcState::default().qp` = 30, and NEVER reads
-    /// `config.qp`. For a single still frame `state.total_frames` is 0, so the
-    /// buffer-fullness delta is 0 and the picture QP is exactly `30 +
-    /// temporal_layer_delta` no matter what the caller asked for. Meanwhile ten
-    /// other sites in this file still derive from `self.rc_config.qp`, so the
-    /// result is not even uniformly wrong: the picture QP and the qp-keyed
-    /// derivations disagree, which is a MIXED-QP stream.
-    ///
-    /// `target_bitrate` is read nowhere on the encode path outside that arm, so
-    /// nothing actually targets a bitrate either. C's real ports exist in-tree
-    /// and are C-parity tested (`port_rc_vbr_cbr*`, `port_rc_rtc_cbr`,
-    /// `port_pass2_gop`) but are wired to nothing here; bitrate targeting is
-    /// also inherently multi-frame, and this pipeline refuses a third frame
-    /// anyway. See issue #22.
+    /// C admits `SVT_AV1_RC_MODE_CBR` only under LOW_DELAY and
+    /// `SVT_AV1_RC_MODE_VBR` only outside it (enc_settings.c:157/:177). The
+    /// port wires the one-pass CBR driver (`cbr_frame_qindex` →
+    /// `port_rc_vbr_cbr_*` → `cbr_postencode`) on exactly that envelope.
+    /// VBR stays refused: its ported arm consumes first-pass statistics and
+    /// `firstpass.c` is not ported, so it would emit CRF-shaped output under
+    /// a bitrate label — the plausible-but-wrong class the issue #22 refusal
+    /// was written against.
     fn rate_control_config_error(&self) -> Option<&'static str> {
         match self.rc_config.mode {
             crate::rate_control::RcMode::Cqp | crate::rate_control::RcMode::Crf => None,
-            crate::rate_control::RcMode::Vbr | crate::rate_control::RcMode::Cbr => Some(
-                "bitrate-targeted rate control (VBR/CBR) is not implemented: \
-                 target_bitrate is read nowhere on the encode path and \
-                 assign_picture_qp's VBR/CBR arm starts from RcState::default().qp \
-                 = 30 instead of the caller's qp, so the frame's base_q_idx would \
-                 come from qp 30 while every qp-keyed level derivation still reads \
-                 rc_config.qp — a mixed-qp stream. The C ports exist but are \
-                 unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, \
-                 port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, \
-                 port_pass2_gop. Use RcMode::Cqp or RcMode::Crf [C: accepts]",
+            crate::rate_control::RcMode::Vbr => Some(
+                "VBR rate control is not implemented: the ported two-pass arm \
+                 (`svt_aom_process_rc_stat`/`av1_set_target_rate`, \
+                 pass2_strategy.c) needs first-pass statistics, and \
+                 firstpass.c is not ported — wiring VBR without them would \
+                 emit CRF-shaped output under a bitrate label. Use \
+                 RcMode::Cbr (LOW_DELAY) or RcMode::Cqp/Crf [C: accepts VBR \
+                 only outside LOW_DELAY, enc_settings.c:177]",
             ),
+            crate::rate_control::RcMode::Cbr => {
+                // C's own envelope (enc_settings.c:157): CBR exists only
+                // under LOW_DELAY. Inside it the ported one-pass driver
+                // runs; outside it refuse rather than emit a stream C
+                // would never produce.
+                if self.pred_structure == crate::port_picstruct::PredStructure::LowDelay {
+                    None
+                } else {
+                    Some(
+                        "CBR rate control requires pred_structure == LOW_DELAY \
+                         — C's own constraint (enc_settings.c:157, \"CBR Rate \
+                         control is currently not supported for \
+                         RANDOM_ACCESS/ALL_INTRA, use VBR mode\") [C: refuses]",
+                    )
+                }
+            }
+        }
+    }
+
+    /// The LD+CBR frame qindex and per-SB plan — C's `RC_INPUT` task body for
+    /// `rc_cfg.mode == AOM_CBR` (rc_process.c:833-877):
+    /// `rc_init_frame_stats` → `svt_av1_rc_process_rate_allocation` →
+    /// `svt_av1_rc_calc_qindex_rate_control`, then `generate_sb_qindex`'s
+    /// CBR arm (`svt_av1_rc_init_sb_qindex`, rc_aq.c:879-885).
+    ///
+    /// Returns `(base_qindex, frame_rc, sb_plan)`. `frame_rc` is the PPCS
+    /// half the post-encode update consumes — carry it to
+    /// [`Self::cbr_postencode`]. `sb_plan` is `Some` only when cyclic
+    /// refresh armed; `None` is C's flat arm (every SB takes the frame
+    /// `base_q_idx`, `delta_q_present` stays 0).
+    fn cbr_frame_qindex(
+        &mut self,
+        pic: Option<&crate::port_picstruct::PicParams>,
+        is_key: bool,
+        display_order: u64,
+        frame_hier: u8,
+        sc_class1: bool,
+        frame_me: Option<&crate::inter_me_arm::FrameMe>,
+    ) -> crate::EncodeResult<(
+        u8,
+        crate::port_rc_vbr_cbr_state::FrameRc,
+        Option<crate::sb_qindex::SbQindexPlan>,
+    )> {
+        // `svt_aom_set_rc_param` + `set_param_based_on_input`, built once from
+        // the encode config. The config gate admits CBR only on LOW_DELAY,
+        // which is also the envelope `RcVbrCbr::new_cbr` documents.
+        if self.rc_vbr_cbr.is_none() {
+            self.rc_vbr_cbr = Some(crate::port_rc_driver::RcVbrCbr::new_cbr(
+                &self.rc_config,
+                self.width,
+                self.height,
+                self.bit_depth,
+                // C `scs->static_config.intra_period_length` is the CLI
+                // `--intra-period` MINUS one (the app prints length+1); -1
+                // is C's "no periodic intra" sentinel.
+                if self.gop.intra_period == 0 {
+                    -1
+                } else {
+                    self.gop.intra_period as i32 - 1
+                },
+                frame_hier,
+                self.sb_size as u16,
+                (self.width as usize).div_ceil(self.sb_size) as u16,
+                (self.height as usize).div_ceil(self.sb_size) as u16,
+            ));
+        }
+        let rcs = self.rc_vbr_cbr.as_mut().unwrap();
+        let b64_count = (self.width.div_ceil(64) * self.height.div_ceil(64)) as u16;
+        let mut frame = crate::port_rc_driver::frame_rc(
+            pic,
+            is_key,
+            display_order,
+            self.width,
+            self.height,
+            self.upscaled_width,
+            b64_count,
+            frame_hier,
+            sc_class1,
+        );
+        // `pcs->me_64x64_distortion[]` — the RC path's copy of the open-loop
+        // per-b64 distortions. Empty on a key frame, where ME never runs;
+        // `rc_init_frame_stats` then leaves both averages alone, exactly as
+        // C does on an I_SLICE.
+        let me_64x64_dist: alloc::vec::Vec<u32> = frame_me.map_or_else(alloc::vec::Vec::new, |m| {
+            m.per_b64.iter().map(|b| b.me_64x64_distortion).collect()
+        });
+        let slice_type = if is_key {
+            crate::port_rc_process::SliceType::I
+        } else {
+            crate::port_rc_process::SliceType::B
+        };
+        let ref_l0_stats = pic
+            .filter(|p| p.ref_list0_count_try > 0)
+            .and_then(|p| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[0] as usize));
+        let ref_l1_stats = pic
+            .filter(|p| p.ref_list1_count_try > 0)
+            .and_then(|p| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[4] as usize));
+        // C `rc_init_frame_stats` (rc_process.c:836 → :604). Of its outputs
+        // only `avg_base_me_dist` is consumed on this path — the three
+        // ref-object percentages are the port's separately-computed
+        // `ref_obj_stats`/`md_ref_intra_percentage` inputs, and
+        // `rate_average_periodin_frames` is a two-pass field the ported CBR
+        // arm never reads.
+        let stats = crate::port_rc_process::rc_init_frame_stats(
+            &crate::port_rc_process::FrameStatsInput {
+                slice_type,
+                ref_list1_count_try: pic.map_or(0, |p| p.ref_list1_count_try),
+                ref_l0: ref_l0_stats.as_ref(),
+                ref_l1: ref_l1_stats.as_ref(),
+                passes: 1,
+                max_bit_rate: u64::from(self.rc_config.max_bitrate) * 1000,
+                total_stats_count: 0,
+                me_64x64_distortion: &me_64x64_dist,
+            },
+        );
+        if let Some(avg) = stats.avg_base_me_dist {
+            rcs.rc.prev_avg_base_me_dist = rcs.rc.cur_avg_base_me_dist;
+            rcs.rc.cur_avg_base_me_dist = avg;
+        }
+        // C `svt_av1_rc_process_rate_allocation` (rc_process.c:857 →
+        // rc_vbr_cbr.c). The two `FnOnce` are VBR's `svt_aom_process_rc_stat`
+        // / `av1_set_target_rate` pair — unreachable under AOM_CBR and wired
+        // to nothing because first-pass stats are not ported.
+        let bw = rcs.frame_bandwidth();
+        let (best_q, worst_q) = rcs.best_worst_allowed_q();
+        let mode = rcs.cfg.mode;
+        let hier = i32::from(rcs.scs.hierarchical_levels);
+        crate::port_rc_vbr_cbr_update::process_rate_allocation(
+            &mut rcs.rc,
+            &rcs.cfg,
+            &rcs.scs,
+            &mut frame,
+            // `ppcs->tpl_ctrls.enable` is 0 under LOW_DELAY (`get_tpl`), the
+            // only structure CBR is admitted on — `TplCtrlsRc::default()`
+            // says exactly that.
+            &crate::port_rc_vbr_cbr_qpick::TplCtrlsRc::default(),
+            &mut rcs.resize_pending,
+            crate::port_rc_vbr_cbr_update::RtResizeMode::None,
+            false,
+            |rc| crate::port_rc_driver::apply_rc_init(rc, mode, best_q, worst_q, hier, bw),
+            |_rc, _f| {},
+            |_rc, _f| {},
+        );
+        // `pcs->ref_pic_ptr_array` — C fills list 0 from
+        // `ref_dpb_index[LAST..=GOLD]` (rps indices 0..4) and list 1 from
+        // `[BWD..=ALT]` (4..7); under LD the second list is empty.
+        let mut l0: alloc::vec::Vec<crate::port_rc_vbr_cbr_qpick::RefPicRc> =
+            alloc::vec::Vec::new();
+        let mut l1: alloc::vec::Vec<crate::port_rc_vbr_cbr_qpick::RefPicRc> =
+            alloc::vec::Vec::new();
+        if let Some(p) = pic {
+            for i in 0..usize::from(p.ref_list0_count_try) {
+                if let Some(rf) = self.dpb.get(p.rps.ref_dpb_index[i] as usize) {
+                    l0.push(crate::port_rc_driver::ref_pic_rc(rf));
+                }
+            }
+            for i in 0..usize::from(p.ref_list1_count_try) {
+                if let Some(rf) = self.dpb.get(p.rps.ref_dpb_index[4 + i] as usize) {
+                    l1.push(crate::port_rc_driver::ref_pic_rc(rf));
+                }
+            }
+        }
+        let refs = crate::port_rc_vbr_cbr_qpick::RefLists {
+            l0: &l0,
+            l1: &l1,
+            l0_count_try: pic.map_or(0, |p| usize::from(p.ref_list0_count_try)),
+            l1_count_try: pic.map_or(0, |p| usize::from(p.ref_list1_count_try)),
+        };
+        // `pcs->norm_me_dist` (initial_rc_process.c:718-726) — the per-b64
+        // 8x8 distortion mean the cyclic-refresh motion gates threshold
+        // against; 0 on an I slice, exactly as C leaves it.
+        let norm_me_dist = if is_key {
+            0u64
+        } else {
+            frame_me.map_or(0, |m| {
+                let n = m.per_b64.len() as u64;
+                if n == 0 {
+                    0
+                } else {
+                    m.per_b64
+                        .iter()
+                        .fold(0u64, |a, b| a + u64::from(b.me_8x8_distortion))
+                        / n
+                }
+            })
+        };
+        let new_qindex = crate::port_rc_vbr_cbr_qpick::rc_calc_qindex_rate_control(
+            &mut rcs.rc,
+            &rcs.cfg,
+            &rcs.scs,
+            &rcs.twopass,
+            &mut frame,
+            &refs,
+            slice_type,
+            // `MeDistortion` is read only by the VBR reference-qindex floor —
+            // unreachable under AOM_CBR.
+            None,
+            &mut rcs.cr_sb_end,
+            &mut rcs.cr,
+            |cr| {
+                if let Some(me) = frame_me {
+                    crate::sb_qindex::cyclic_refresh_setup(
+                        cr,
+                        u32::from(b64_count),
+                        norm_me_dist,
+                        &me.per_b64,
+                    );
+                } else {
+                    // C runs the setup over zeroed ME arrays on a key frame;
+                    // its only possible outcome is what
+                    // `cyclic_refresh_init` already left — refresh stays off
+                    // for an I slice.
+                    cr.apply_cyclic_refresh = false;
+                }
+            },
+        );
+        let Some(new_qindex) = new_qindex else {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "CBR rate control could not resolve this frame's qindex bounds: \
+                 `rc_pick_q_and_bounds_no_stats_cbr` reads the LAST reference \
+                 unconditionally and its DPB slot is empty"
+            )));
+        };
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_RCDBG").is_some() {
+            std::eprintln!(
+                "RCDBG pic={} ft={} this_tgt={} base_tgt={} qidx={} cr={} \
+                 buf={} bot={} avg_bw={} lastq=[{},{}] active_worst={} \
+                 roll_t={} roll_a={} since_key={} to_key={} band={}",
+                frame.picture_number,
+                frame.update_type as i32,
+                frame.this_frame_target,
+                frame.base_frame_target,
+                new_qindex,
+                rcs.cr.apply_cyclic_refresh as i32,
+                rcs.rc.buffer_level,
+                rcs.rc.bits_off_target,
+                rcs.rc.avg_frame_bandwidth,
+                rcs.rc.last_q[0],
+                rcs.rc.last_q[1],
+                rcs.rc.active_worst_quality,
+                rcs.rc.rolling_target_bits,
+                rcs.rc.rolling_actual_bits,
+                rcs.rc.frames_since_key,
+                rcs.rc.frames_to_key,
+                rcs.cr_sb_end,
+            );
+        }
+        // `generate_sb_qindex`'s CBR arm — `svt_av1_rc_init_sb_qindex`
+        // (rc_aq.c:879-885): cyclic refresh assigns per-SB qindexes and flips
+        // `delta_q_present`; otherwise every SB takes the frame base. C skips
+        // `svt_av1_normalize_sb_delta_q` at `delta_q_res == 1`
+        // (rc_process.c:741-744), which `SbQindexPlan.delta_q_res = 1`
+        // carries into the signal side.
+        let sb_plan = if rcs.cr.apply_cyclic_refresh && let Some(me) = frame_me {
+            let mut sb_qindex = alloc::vec![0u8; usize::from(b64_count)];
+            crate::sb_qindex::cyclic_sb_qp_assignment(
+                &rcs.cr,
+                new_qindex,
+                norm_me_dist,
+                &me.per_b64,
+                &mut sb_qindex,
+            );
+            Some(crate::sb_qindex::SbQindexPlan {
+                base_qindex: new_qindex as u8,
+                sb_qindex,
+                delta_q_res: 1,
+            })
+        } else {
+            None
+        };
+        Ok((new_qindex as u8, frame, sb_plan))
+    }
+
+    /// C `rc_process_packetization_feedback`'s one-pass CBR arm
+    /// (rc_process.c:758-792): `svt_av1_rc_postencode_update` consumes the
+    /// coded bit count and the normalized zero-MV area, then
+    /// `svt_aom_update_rc_counts` advances the frame counters.
+    fn cbr_postencode(
+        &mut self,
+        frame: &mut crate::port_rc_vbr_cbr_state::FrameRc,
+        total_num_bits: u64,
+        avg_cnt_zeromv: u64,
+    ) {
+        let Some(rcs) = self.rc_vbr_cbr.as_mut() else {
+            return;
+        };
+        crate::port_rc_vbr_cbr_update::postencode_update(
+            &mut rcs.rc,
+            &rcs.cfg,
+            &rcs.scs,
+            frame,
+            &rcs.cr,
+            total_num_bits,
+            avg_cnt_zeromv,
+        );
+        let (frames_since_key, frames_to_key, frames_since_cdf_update) =
+            crate::port_rc_process::update_rc_counts(
+                frame.showable_frame,
+                // `ppcs->frm_hdr.disable_cdf_update` — always signalled 0 by
+                // this encoder (obu.rs:1600/:2515/:3450).
+                false,
+                rcs.rc.frames_since_key,
+                rcs.rc.frames_to_key,
+                rcs.rc.frames_since_cdf_update,
+            );
+        rcs.rc.frames_since_key = frames_since_key;
+        rcs.rc.frames_to_key = frames_to_key;
+        rcs.rc.frames_since_cdf_update = frames_since_cdf_update;
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_RCDBG").is_some() {
+            std::eprintln!(
+                "RCDBG-POST pic={} bits={} proj={} zeromv={} buf={} bot={} \
+                 since_key={} to_key={} low_motion={}",
+                frame.picture_number,
+                total_num_bits,
+                frame.projected_frame_size,
+                avg_cnt_zeromv,
+                rcs.rc.buffer_level,
+                rcs.rc.bits_off_target,
+                rcs.rc.frames_since_key,
+                rcs.rc.frames_to_key,
+                rcs.rc.avg_frame_low_motion,
+            );
         }
     }
 
@@ -5775,6 +6106,164 @@ impl EncodePipeline {
         #[allow(unused_mut)]
         let mut tpl_adjusted_qp = pcs.qp;
 
+        // --- The INTER branch of MODE DECISION (docs/INTER-ENCODE-PLAN.md
+        // §1s items 1b/2/3/6). `None` on a key frame, which is what keeps the
+        // whole still envelope byte-identical by construction.
+        //
+        // The open-loop search runs against the PREVIOUS FRAME'S SOURCE, not
+        // the DPB recon — SVT's ME is open loop (`me_process.c:185-203` reads
+        // the PA reference, `reference_object.c:242-250`). The recon side is
+        // `ref_padded_luma`, which the motion COMPENSATION indexes.
+        //
+        // The PA picture is built only in VIDEO mode: on a still/AVIF encode
+        // nothing can ever reference this frame, and the pyramid is a padded
+        // copy plus two decimations of the whole luma plane — real work to
+        // spend on a buffer with no reader.
+        let mut pa_cur = (self.gop.intra_period != 1).then(|| match self.pa_scratch.take() {
+            // Recycle the frame-before-last's pyramid. `refill_from_source`
+            // rewrites every byte and every descriptor field, so this is
+            // byte-identical to the fresh allocation it replaces.
+            Some(mut recycled) => {
+                recycled.refill_from_source(&encode_input, w, w, h, display_order);
+                recycled
+            }
+            None => alloc::boxed::Box::new(crate::inter_me_arm::PaPicture::from_source(
+                &encode_input,
+                w,
+                w,
+                h,
+                display_order,
+            )),
+        });
+        // C `pa_ref_obj->avg_luma = input_pcs->avg_luma`
+        // (`pic_analysis_process.c:2003`) — stamped onto the reference object
+        // a later picture's `get_similar_ref_brightness` reads through
+        // `pa_slots`. `INVALID_LUMA` whenever `calc_hist` was off, because
+        // the picture decision's `avg_luma` was already gated there.
+        if let Some(pa) = pa_cur.as_mut() {
+            pa.avg_luma = pic_decision.as_ref().map_or(
+                crate::port_picstruct::INVALID_LUMA,
+                |p| p.avg_luma,
+            );
+        }
+        // The TPL stage already ran this picture's open-loop ME against the
+        // same reference pyramids with the same `FrameMeParams` — C's
+        // `pa_me_data->me_results`, shared between `tpl_mc_flow` and the
+        // picture's own encode. Reuse it verbatim; a member the stage
+        // skipped (I slice, or a reference pyramid it could not resolve)
+        // falls through to the sequential computation, whose `None`/`Some`
+        // answer is then identical.
+        let frame_me = match tpl_in.as_mut().and_then(|f| f.frame_me.take()) {
+            me @ Some(_) => me,
+            None => match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
+                (false, Some(cur), Some(pic)) => {
+                    // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
+                    // the picture decision offered, resolved to its DPB slot's PA
+                    // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
+                    // This used to feed only `pa_ref` — the PREVIOUS frame — to
+                    // both lists, which is the [1,1] shape frame 1 happens to
+                    // produce but leaves a frame with `ref_list0_count_try > 1`
+                    // (frame 2 onward on a flat GOP) searching LAST2's MV slot
+                    // against LAST's picture.
+                    let mut refs = crate::inter_me::context::MeRefs::default();
+                    for rt in 1i8..=7 {
+                        let (li, ri) = (
+                            crate::inter_mvp::get_list_idx(rt),
+                            crate::inter_mvp::get_ref_frame_idx(rt),
+                        );
+                        let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
+                        if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
+                            refs.arr[li][ri] = Some(pa.ds_ref());
+                        }
+                    }
+                    #[cfg(feature = "std")]
+                    if crate::dbgenv::medbg() {
+                        let mut s = alloc::string::String::new();
+                        for (i, sl) in self.pa_slots.iter().enumerate() {
+                            s.push_str(&alloc::format!(
+                                "{i}:{} ",
+                                sl.as_deref().map_or(-1, |p| p.picture_number as i64)
+                            ));
+                        }
+                        std::eprintln!(
+                            "PASLOTS poc={} dpb={:?} slots=[{s}]",
+                            pic.picture_number,
+                            pic.rps.ref_dpb_index
+                        );
+                    }
+                    // `me_process.c:212-213` — the counts the picture decision
+                    // offered. `MeRefs::get` panics on a hole a search reaches,
+                    // so a missing pyramid means no ME rather than a wrong one —
+                    // the same shape the `pa_ref == None` arm produced before.
+                    let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
+                    let complete = (0..2).all(|li| {
+                        (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
+                    });
+                    if !complete {
+                        None
+                    } else {
+                        // Recycle the previous frame's result set.
+                        // `run_frame_me_into` resets every per-b64 entry to
+                        // exactly what `MeB64Output::new` builds and reassigns
+                        // every scalar, so this is byte-identical to a fresh
+                        // `run_frame_me`.
+                        let mut out = self
+                            .me_scratch
+                            .take()
+                            .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
+                        crate::inter_me_arm::run_frame_me_into(
+                            &mut out,
+                            cur,
+                            &refs,
+                            num_to_search,
+                            crate::inter_me_arm::FrameMeParams {
+                                // C `pcs->enc_mode` — post-clamp
+                                // (enc_handle.c:4433): the `sig_deriv_me`
+                                // ladders branch at M11 (search area, prehme).
+                                enc_mode: crate::rate_arm::eff_enc_mode(
+                                    sc_arm,
+                                    self.speed_config.preset,
+                                ),
+                                qp: self.rc_config.qp,
+                                width: w,
+                                height: h,
+                                picture_number: display_order,
+                                // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
+                                // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
+                                // update. A flat low-delay P GOP DOES still emit
+                                // GF_UPDATE frames (picture_decision marks the
+                                // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
+                                // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
+                                // here — the `96x96 q20 p6` cell's poc4 is one.
+                                frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
+                                hierarchical_levels: frame_hier,
+                                // C `me_process.c:214-215` — `pcs->temporal_layer_index`
+                                // / `pcs->is_ref`, straight off the picture decision.
+                                temporal_layer_index: pic.temporal_layer_index,
+                                is_ref: pic.is_ref,
+                                sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                                // C `scs->mrp_ctrls` — set this frame by
+                                // `run_picture_decision` above.
+                                only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
+                                safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
+                                safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
+                                // C `pcs->similar_brightness_refs` /
+                                // `frame_is_leaf(pcs)` — picture decision's
+                                // outputs, gating the safe-limit ME arm
+                                // (`motion_estimation.c:2231`).
+                                similar_brightness_refs: pic.similar_brightness_refs,
+                                frame_is_leaf: crate::port_picstruct::frame_is_leaf(
+                                    pic.update_type,
+                                ),
+                            },
+                        );
+                        Some(out)
+                    }
+                }
+                _ => None,
+            },
+        };
+
         // THE single CLI-qp -> qindex conversion (C: quantizer_to_qindex
         // lookup on picture_qp, rc_crf_cqp.c). Everything above this line
         // (assign_picture_qp, VAQ, TPL) works in the CLI 0..63 domain where
@@ -5811,11 +6300,38 @@ impl EncodePipeline {
         // first divergence FH `loop_filter_level[0]` C=4 Rust=5). With
         // offset 0 the two values are equal, so every pre-existing cell is
         // byte-identical either way.
+        // BITRATE RC dispatch — C's `rc_cfg.mode != AOM_Q` fork
+        // (rc_process.c:850-859): a VBR/CBR frame's qindex comes from
+        // `svt_av1_rc_process_rate_allocation` +
+        // `svt_av1_rc_calc_qindex_rate_control`, NEVER from the
+        // `svt_av1_rc_calc_qindex_crf_cqp` chain below — the `!allintra`
+        // block is skipped alongside it. `cbr_frame_rc` carries the PPCS
+        // RC fields forward to the packetization-feedback update at the
+        // end of this function; `cbr_sb_plan` is cyclic refresh's per-SB
+        // map (`None` = C's flat arm). Only `RcMode::Cbr` reaches this:
+        // VBR is refused at `rate_control_config_error` (first-pass
+        // statistics are not ported), and LD+CBR is C's own envelope.
+        let mut cbr_frame_rc: Option<crate::port_rc_vbr_cbr_state::FrameRc> = None;
+        let mut cbr_sb_plan: Option<crate::sb_qindex::SbQindexPlan> = None;
         #[allow(unused_mut)]
-        let mut base_qindex = crate::rate_control::qp_to_qindex_with_offset(
-            tpl_adjusted_qp,
-            self.rc_config.extended_crf_qindex_offset,
-        );
+        let mut base_qindex = if self.rc_config.mode == crate::rate_control::RcMode::Cbr {
+            let (q, frame, plan) = self.cbr_frame_qindex(
+                pic_decision.as_ref(),
+                is_key,
+                display_order,
+                frame_hier,
+                sc_derivation.classes.sc_class1,
+                frame_me.as_ref(),
+            )?;
+            cbr_frame_rc = Some(frame);
+            cbr_sb_plan = plan;
+            q
+        } else {
+            crate::rate_control::qp_to_qindex_with_offset(
+                tpl_adjusted_qp,
+                self.rc_config.extended_crf_qindex_offset,
+            )
+        };
         // VIDEO-MODE QP SCALING (inter campaign C1a). C's `cqp_qindex_calc`
         // (rc_crf_cqp.c:393, the mainline `#else` arm) returns the qindex
         // untouched when `scs->allintra` — the early return the entire still
@@ -5849,7 +6365,10 @@ impl EncodePipeline {
         let tpl_flags = tpl_fti.map(|f| f.flags);
         let r0_delta_qp_md = tpl_flags.is_some_and(|f| f.r0_delta_qp_md);
         let mut tpl_r0 = tpl_fti.map_or(0.0, |f| f.r0);
-        if !allintra {
+        // CBR never enters the CQP/CRF dispatch — its qindex is the one
+        // `rc_calc_qindex_rate_control` already produced above (C's own
+        // `mode != AOM_Q` fork, rc_process.c:853-859).
+        if !allintra && self.rc_config.mode != crate::rate_control::RcMode::Cbr {
             let new_qindex: i32 = if let Some(fti) = tpl_fti {
                 // `rc->active_worst_quality` — `scs_qindex` forever in the
                 // 1-pass envelope: `svt_av1_rc_init` seeds it at
@@ -6009,7 +6528,16 @@ impl EncodePipeline {
         // consumer (lambda, CDF bucket, deblock, FH) — C order: rc_aq runs
         // in rc_init_sb_qindex ahead of MD. picture_qp follows C's
         // (base+2)>>2 update.
-        let mut sb_plan = if self.hdr.enable_variance_boost {
+        let mut sb_plan = if self.rc_config.mode == crate::rate_control::RcMode::Cbr {
+            // C `svt_av1_rc_init_sb_qindex` (rc_aq.c:879-885): under AOM_CBR
+            // the cyclic-refresh decision made inside
+            // `rc_calc_qindex_rate_control` is the ONLY per-SB plan —
+            // variance boost and the TPL arm below are skipped entirely
+            // ("mutually exclusive with other AQ modes"). `None` is C's
+            // flat arm — every SB takes the frame `base_q_idx` and
+            // `delta_q_present` stays 0.
+            cbr_sb_plan
+        } else if self.hdr.enable_variance_boost {
             let sb_cols_p = w.div_ceil(64);
             let sb_rows_p = h.div_ceil(64);
             // C iterates the per-SB plan `sb_addr < scs->sb_total_count`
@@ -6392,164 +6920,6 @@ impl EncodePipeline {
             (prf, cdfs)
         } else {
             (crate::port_picstruct::PRIMARY_REF_NONE, None)
-        };
-
-        // --- The INTER branch of MODE DECISION (docs/INTER-ENCODE-PLAN.md
-        // §1s items 1b/2/3/6). `None` on a key frame, which is what keeps the
-        // whole still envelope byte-identical by construction.
-        //
-        // The open-loop search runs against the PREVIOUS FRAME'S SOURCE, not
-        // the DPB recon — SVT's ME is open loop (`me_process.c:185-203` reads
-        // the PA reference, `reference_object.c:242-250`). The recon side is
-        // `ref_padded_luma`, which the motion COMPENSATION indexes.
-        //
-        // The PA picture is built only in VIDEO mode: on a still/AVIF encode
-        // nothing can ever reference this frame, and the pyramid is a padded
-        // copy plus two decimations of the whole luma plane — real work to
-        // spend on a buffer with no reader.
-        let mut pa_cur = (self.gop.intra_period != 1).then(|| match self.pa_scratch.take() {
-            // Recycle the frame-before-last's pyramid. `refill_from_source`
-            // rewrites every byte and every descriptor field, so this is
-            // byte-identical to the fresh allocation it replaces.
-            Some(mut recycled) => {
-                recycled.refill_from_source(&encode_input, w, w, h, display_order);
-                recycled
-            }
-            None => alloc::boxed::Box::new(crate::inter_me_arm::PaPicture::from_source(
-                &encode_input,
-                w,
-                w,
-                h,
-                display_order,
-            )),
-        });
-        // C `pa_ref_obj->avg_luma = input_pcs->avg_luma`
-        // (`pic_analysis_process.c:2003`) — stamped onto the reference object
-        // a later picture's `get_similar_ref_brightness` reads through
-        // `pa_slots`. `INVALID_LUMA` whenever `calc_hist` was off, because
-        // the picture decision's `avg_luma` was already gated there.
-        if let Some(pa) = pa_cur.as_mut() {
-            pa.avg_luma = pic_decision.as_ref().map_or(
-                crate::port_picstruct::INVALID_LUMA,
-                |p| p.avg_luma,
-            );
-        }
-        // The TPL stage already ran this picture's open-loop ME against the
-        // same reference pyramids with the same `FrameMeParams` — C's
-        // `pa_me_data->me_results`, shared between `tpl_mc_flow` and the
-        // picture's own encode. Reuse it verbatim; a member the stage
-        // skipped (I slice, or a reference pyramid it could not resolve)
-        // falls through to the sequential computation, whose `None`/`Some`
-        // answer is then identical.
-        let frame_me = match tpl_in.as_mut().and_then(|f| f.frame_me.take()) {
-            me @ Some(_) => me,
-            None => match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
-                (false, Some(cur), Some(pic)) => {
-                    // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
-                    // the picture decision offered, resolved to its DPB slot's PA
-                    // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
-                    // This used to feed only `pa_ref` — the PREVIOUS frame — to
-                    // both lists, which is the [1,1] shape frame 1 happens to
-                    // produce but leaves a frame with `ref_list0_count_try > 1`
-                    // (frame 2 onward on a flat GOP) searching LAST2's MV slot
-                    // against LAST's picture.
-                    let mut refs = crate::inter_me::context::MeRefs::default();
-                    for rt in 1i8..=7 {
-                        let (li, ri) = (
-                            crate::inter_mvp::get_list_idx(rt),
-                            crate::inter_mvp::get_ref_frame_idx(rt),
-                        );
-                        let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
-                        if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
-                            refs.arr[li][ri] = Some(pa.ds_ref());
-                        }
-                    }
-                    #[cfg(feature = "std")]
-                    if crate::dbgenv::medbg() {
-                        let mut s = alloc::string::String::new();
-                        for (i, sl) in self.pa_slots.iter().enumerate() {
-                            s.push_str(&alloc::format!(
-                                "{i}:{} ",
-                                sl.as_deref().map_or(-1, |p| p.picture_number as i64)
-                            ));
-                        }
-                        std::eprintln!(
-                            "PASLOTS poc={} dpb={:?} slots=[{s}]",
-                            pic.picture_number,
-                            pic.rps.ref_dpb_index
-                        );
-                    }
-                    // `me_process.c:212-213` — the counts the picture decision
-                    // offered. `MeRefs::get` panics on a hole a search reaches,
-                    // so a missing pyramid means no ME rather than a wrong one —
-                    // the same shape the `pa_ref == None` arm produced before.
-                    let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
-                    let complete = (0..2).all(|li| {
-                        (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
-                    });
-                    if !complete {
-                        None
-                    } else {
-                        // Recycle the previous frame's result set.
-                        // `run_frame_me_into` resets every per-b64 entry to
-                        // exactly what `MeB64Output::new` builds and reassigns
-                        // every scalar, so this is byte-identical to a fresh
-                        // `run_frame_me`.
-                        let mut out = self
-                            .me_scratch
-                            .take()
-                            .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
-                        crate::inter_me_arm::run_frame_me_into(
-                            &mut out,
-                            cur,
-                            &refs,
-                            num_to_search,
-                            crate::inter_me_arm::FrameMeParams {
-                                // C `pcs->enc_mode` — post-clamp
-                                // (enc_handle.c:4433): the `sig_deriv_me`
-                                // ladders branch at M11 (search area, prehme).
-                                enc_mode: crate::rate_arm::eff_enc_mode(
-                                    sc_arm,
-                                    self.speed_config.preset,
-                                ),
-                                qp: self.rc_config.qp,
-                                width: w,
-                                height: h,
-                                picture_number: display_order,
-                                // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
-                                // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
-                                // update. A flat low-delay P GOP DOES still emit
-                                // GF_UPDATE frames (picture_decision marks the
-                                // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
-                                // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
-                                // here — the `96x96 q20 p6` cell's poc4 is one.
-                                frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
-                                hierarchical_levels: frame_hier,
-                                // C `me_process.c:214-215` — `pcs->temporal_layer_index`
-                                // / `pcs->is_ref`, straight off the picture decision.
-                                temporal_layer_index: pic.temporal_layer_index,
-                                is_ref: pic.is_ref,
-                                sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                                // C `scs->mrp_ctrls` — set this frame by
-                                // `run_picture_decision` above.
-                                only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
-                                safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
-                                safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
-                                // C `pcs->similar_brightness_refs` /
-                                // `frame_is_leaf(pcs)` — picture decision's
-                                // outputs, gating the safe-limit ME arm
-                                // (`motion_estimation.c:2231`).
-                                similar_brightness_refs: pic.similar_brightness_refs,
-                                frame_is_leaf: crate::port_picstruct::frame_is_leaf(
-                                    pic.update_type,
-                                ),
-                            },
-                        );
-                        Some(out)
-                    }
-                }
-                _ => None,
-            },
         };
 
         // GLOBAL MOTION, decided per FRAME (see `gm_level_for_frame` /
@@ -7476,7 +7846,11 @@ impl EncodePipeline {
                 enc_mode: crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
                 sq_qp: u32::from(self.rc_config.qp),
                 base_q_idx: base_qindex,
-                picture_qp: u32::from(pcs.qp),
+                // C `ppcs->picture_qp` — the RC-derived value, NOT the CLI
+                // qp: `rc_process.c:901` recomputes it as
+                // `(base_q_idx + 2) >> 2` every frame, which is what the
+                // pd0/lpd1/me-variance thresholds inside index.
+                picture_qp: u32::from(picture_qp),
                 temporal_layer_index: temporal_layer,
                 hierarchical_levels: frame_hier,
                 // C `ppcs->update_type` — the picture decision's
@@ -8250,7 +8624,10 @@ impl EncodePipeline {
                     ifs: crate::inter_md_arm::IfsFrameKnobs {
                         smooth_bias: false, // the refusal above holds the first term off
                         tx_bias: self.hdr.tx_bias > 0,
-                        picture_qp: self.rc_config.qp,
+                        // C `ppcs->picture_qp` — the index into
+                        // `ifs_smooth_bias` (enc_inter_prediction.c:2171);
+                        // the RC-derived value, not the CLI qp.
+                        picture_qp,
                         // Inter picture, temporal layer 0 (hier_levels 0).
                         ac_bias_eff: svtav1_dsp::ac_bias::effective_ac_bias(
                             self.hdr.ac_bias,
@@ -8263,6 +8640,22 @@ impl EncodePipeline {
                     factor_update_type: md_lambda_factor_update_type,
                     alt_lambda_factors: md_alt_lambda_factors,
                     lambda_mod_intra,
+                    // C `scs->mrp_ctrls.use_best_references` + the
+                    // `determine_best_references` inputs — the per-block
+                    // `ctx->ref_frame_type_arr` rebuild gate.
+                    use_best_references: self.mrp_ctrls.use_best_references,
+                    temporal_layer_index: pic_decision
+                        .as_ref()
+                        .map_or(0, |p| p.temporal_layer_index),
+                    ref_list0_count_try: pic_decision
+                        .as_ref()
+                        .is_some_and(|p| p.ref_list0_count_try > 0),
+                    ref_list1_count_try: pic_decision
+                        .as_ref()
+                        .is_some_and(|p| p.ref_list1_count_try > 0),
+                    sframe_ref_pruned: pic_decision
+                        .as_ref()
+                        .is_some_and(|p| p.sframe_ref_pruned),
                 })
             }
             _ => None,
@@ -10142,6 +10535,30 @@ impl EncodePipeline {
         // key frame fell through to the closed form, which is not the arm C
         // takes. At preset 6 / qindex 67 that signalled `loop_filter_level = 3`
         // where C signals 0.
+        // C `pcs->ref_skip_percentage` (`rc_process.c:96`, `rc_init_frame_stats`
+        // — the mean `skip_coded_area` of the nearest L0/L1 references,
+        // I-slice refs counting 0). Feeds `dlf_level_modulation` inside
+        // `get_dlf_level_default`; a high-skip reference set is what shuts
+        // the loop filter off on well-predicted hierarchical frames. 0 on a
+        // key frame (no refs — C's I-slice early-out).
+        let dlf_ref_skip_percentage = pic_decision.as_ref().map_or(0, |p| {
+            if is_key {
+                0
+            } else {
+                crate::port_rc_process::get_ref_skip_percentage(
+                    crate::port_rc_process::SliceType::B,
+                    u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX),
+                    (p.ref_list0_count_try > 0)
+                        .then(|| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[0] as usize))
+                        .flatten()
+                        .as_ref(),
+                    (p.ref_list1_count_try > 0)
+                        .then(|| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[4] as usize))
+                        .flatten()
+                        .as_ref(),
+                )
+            }
+        });
         let dlf_level = if is_single_frame {
             // `get_dlf_level_allintra(dlf_enc_mode, fast_decode, resolution)`.
             crate::port_enc_mode_config::leaf::get_dlf_level_allintra(
@@ -10157,7 +10574,10 @@ impl EncodePipeline {
             // branches yield 6 when `is_base` — which every KEY frame is
             // (`temporal_layer_index == 0`) — so the value passed cannot
             // change a key frame's level. `ref_skip_percentage` feeds
-            // `dlf_level_modulation`, which C runs only when `!is_base`.
+            // `dlf_level_modulation`, which C runs only when `!is_base`;
+            // modulation mode 3 can zero an otherwise-enabled level when the
+            // references are >95% skip (MEASURED: hier-2 LD-CBR poc6, a TL1
+            // frame whose level-6 became 0 on refs at 100% skip).
             crate::port_enc_mode_config::leaf::get_dlf_level_default(
                 dlf_enc_mode,
                 dlf_is_not_last_layer,
@@ -10165,7 +10585,7 @@ impl EncodePipeline {
                 dlf_resolution,
                 dlf_is_base,
                 crate::port_enc_mode_config::InputCoeffLvl::Normal,
-                0,
+                dlf_ref_skip_percentage,
             )
         };
         // C's `default:` arm is `assert(0)`; the port refuses rather than
@@ -12535,6 +12955,31 @@ impl EncodePipeline {
 
         crate::stop_check(&stop)?;
 
+        // C `rc_process_packetization_feedback`'s one-pass CBR arm
+        // (rc_process.c:758-792): the packetized bit count
+        // (`output_stream_ptr->n_filled_len << 3`,
+        // packetization_process.c:818) feeds `svt_av1_rc_postencode_update`,
+        // then `svt_aom_update_rc_counts` advances the counters.
+        // `n_filled_len` is the bitstream buffer WITHOUT the temporal
+        // delimiter — `svt_aom_encode_td_av1` writes it into the reorder
+        // queue, not `pcs->bitstream_ptr` — so the 2-byte `12 00` TD header
+        // this port prepends to every TU comes back out of the count.
+        // `avg_cnt_zeromv` is the `rest_process.c:350` normalization of the
+        // `update_b`-accumulated zero-MV area.
+        if let Some(frame) = cbr_frame_rc.as_mut() {
+            let avg_cnt_zeromv = frame_coded_area
+                .borrow()
+                .as_ref()
+                .map_or(0, |a| {
+                    let n = (w * h) as u64;
+                    if n == 0 { 0 } else { 100 * a.zeromv_area / n }
+                });
+            self.cbr_postencode(
+                frame,
+                bitstream.len().saturating_sub(2) as u64 * 8,
+                avg_cnt_zeromv,
+            );
+        }
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
 
@@ -12899,6 +13344,12 @@ pub(crate) struct CodedAreaAcc {
     pub(crate) skip_area: u64,
     /// C `ctx->tot_hp_coded_area`.
     pub(crate) hp_area: u64,
+    /// C `ctx->tot_cnt_zero_mv` (coding_loop.c:1626-1627) — the pixel area
+    /// of blocks whose MV is below half-pel, normalized into
+    /// `pcs->avg_cnt_zeromv` by `rest_process.c:350` and folded into
+    /// `rc->avg_frame_low_motion` by `svt_av1_rc_postencode_update`
+    /// (rc_vbr_cbr.c:1617-1619). Only CBR reads it.
+    pub(crate) zeromv_area: u64,
     /// C `pcs->sb_intra[sb]`, init 0 (`enc_dec_process.c:3099`).
     pub(crate) sb_intra: Vec<u8>,
     /// C `pcs->sb_skip[sb]`, init **1** (`enc_dec_process.c:3100`).
@@ -12969,6 +13420,7 @@ impl CodedAreaAcc {
             intra_area: 0,
             skip_area: 0,
             hp_area: 0,
+            zeromv_area: 0,
             sb_intra: alloc::vec![0u8; sb_cols * sb_rows],
             sb_skip: alloc::vec![1u8; sb_cols * sb_rows],
             sb_64x64_mvp: alloc::vec![0u8; sb_cols * sb_rows],
@@ -12988,6 +13440,7 @@ impl CodedAreaAcc {
         self.intra_area += other.intra_area;
         self.skip_area += other.skip_area;
         self.hp_area += other.hp_area;
+        self.zeromv_area += other.zeromv_area;
         for (d, s) in self.sb_intra.iter_mut().zip(&other.sb_intra) {
             *d |= *s;
         }
@@ -13042,6 +13495,18 @@ impl CodedAreaAcc {
                 }
                 if hp {
                     self.hp_area += area;
+                }
+            }
+            // C `coding_loop.c:1617-1628` — `tot_cnt_zero_mv`: the block's
+            // pixel area counts when its list-0 MV is within half-pel, OR
+            // (a compound block) its list-1 MV is. C's test is on the
+            // eighth-pel `block_mi.mv`, which is what `InterDecision::mv`
+            // carries.
+            if let Some(i) = decision.inter.as_ref() {
+                let sub_half_pel =
+                    |m: svtav1_types::motion::Mv| i32::from(m.x).abs() < 8 && i32::from(m.y).abs() < 8;
+                if sub_half_pel(i.mv[0]) || (i.ref_frame[1] > 0 && sub_half_pel(i.mv[1])) {
+                    self.zeromv_area += area;
                 }
             }
             // C `coding_loop.c:1629` — the same non-intra arm. A single
@@ -15129,6 +15594,17 @@ fn encode_block_syntax(
     // skip mode IS its skipped-residual path.
     if !skip_mode {
         let skip_ctx = ectx.skip_ctx(block_x, block_y);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_SKDBG").is_some() {
+            std::eprintln!(
+                "SKDBG org=({},{}) {}x{} skip={}",
+                block_x,
+                block_y,
+                decision.width,
+                decision.height,
+                skip as u8
+            );
+        }
         crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
     }
 
@@ -17039,10 +17515,32 @@ impl Bd10ModeNeighbors {
 fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) {
     match tree {
         crate::partition::PartitionTree::Leaf(d) => {
-            eprintln!(
-                "LEAF x{:4} y{:4} {}x{} mode {:2} uv {:2} tx {} eob {} txd {}",
-                x, y, d.width, d.height, d.intra_mode, d.uv_mode, d.tx_type, d.eob, d.tx_depth
-            );
+            if let Some(i) = d.inter.as_deref() {
+                eprintln!(
+                    "LEAF x{:4} y{:4} {}x{} mode {:?} uv {:2} tx {} eob {} txd {} rf=[{},{}] mv=[{},{}|{},{}] drl={}",
+                    x,
+                    y,
+                    d.width,
+                    d.height,
+                    i.mode,
+                    d.uv_mode,
+                    d.tx_type,
+                    d.eob,
+                    d.tx_depth,
+                    i.ref_frame[0],
+                    i.ref_frame[1],
+                    i.mv[0].y,
+                    i.mv[0].x,
+                    i.mv[1].y,
+                    i.mv[1].x,
+                    i.drl_index,
+                );
+            } else {
+                eprintln!(
+                    "LEAF x{:4} y{:4} {}x{} mode {:2} uv {:2} tx {} eob {} txd {}",
+                    x, y, d.width, d.height, d.intra_mode, d.uv_mode, d.tx_type, d.eob, d.tx_depth
+                );
+            }
         }
         crate::partition::PartitionTree::Split {
             partition_type,
@@ -21325,48 +21823,78 @@ mod tests {
     }
 
     /// Issue #22: VBR/CBR were ACCEPTED and silently encoded at qp 30.
+    /// LD+CBR is now wired (`port_rc_driver` + `cbr_frame_qindex`), so the
+    /// refusal narrowed to what C's own envelope plus the unported
+    /// first-pass machinery exclude: VBR everywhere, CBR outside LOW_DELAY.
     ///
     /// ANTI-VACUITY. The mono `try_encode_frame` path is used deliberately:
     /// `try_encode_frame_420` returns `UnsupportedConfig` for a default-built
     /// pipeline anyway (`EncodePipeline::new` leaves `chroma_420 = false`), so a
     /// 4:2:0 version of this test would pass for the wrong reason both before
     /// and after the fix. The Crf control below encodes successfully through the
-    /// very same call, which is what proves the Vbr/Cbr refusal is doing the
+    /// very same call, which is what proves the remaining refusals do the
     /// work rather than some unrelated guard.
     #[test]
-    fn vbr_and_cbr_are_refused_and_do_not_advance_the_frame_counters() {
+    fn vbr_and_non_ld_cbr_are_refused_and_do_not_advance_the_frame_counters() {
         let y = vec![100u8; 64 * 64];
 
-        for mode in [
-            crate::rate_control::RcMode::Vbr,
-            crate::rate_control::RcMode::Cbr,
-        ] {
-            let mut p = EncodePipeline::new(
-                64,
-                64,
-                10,
-                RcConfig {
-                    mode,
-                    qp: 20,
-                    target_bitrate: 5000,
-                    ..RcConfig::default()
-                },
-                3,
-                1,
-            );
-            let err = p
-                .try_encode_frame(&y, 64)
-                .expect_err("bitrate-targeted rate control must be refused");
-            match err.error() {
-                crate::EncodeError::UnsupportedConfig(why) => assert!(
-                    why.contains("VBR/CBR"),
-                    "{mode:?}: refusal should name the mode, got {why:?}"
-                ),
-                other => panic!("{mode:?}: expected UnsupportedConfig, got {other:?}"),
-            }
-            assert_eq!(p.frame_count, 0, "{mode:?}: a refused frame must not count");
-            assert_eq!(p.rc_state.total_frames, 0);
+        // VBR is refused on ANY structure — its ported arm consumes
+        // first-pass statistics that do not exist yet.
+        let mut vbr = EncodePipeline::new(
+            64,
+            64,
+            10,
+            RcConfig {
+                mode: crate::rate_control::RcMode::Vbr,
+                qp: 20,
+                target_bitrate: 5000,
+                ..RcConfig::default()
+            },
+            3,
+            1,
+        );
+        let err = vbr
+            .try_encode_frame(&y, 64)
+            .expect_err("VBR must be refused — first-pass stats are unported");
+        match err.error() {
+            crate::EncodeError::UnsupportedConfig(why) => assert!(
+                why.contains("VBR"),
+                "Vbr: refusal should name the mode, got {why:?}"
+            ),
+            other => panic!("Vbr: expected UnsupportedConfig, got {other:?}"),
         }
+        assert_eq!(vbr.frame_count, 0);
+        assert_eq!(vbr.rc_state.total_frames, 0);
+
+        // CBR outside LOW_DELAY is refused by C's own rule
+        // (enc_settings.c:157). `AllIntra` is the non-LD structure used here
+        // because `RandomAccess` trips the RA entry guard first, before the
+        // RC check runs — both are refusals, but this leg is about CBR.
+        let mut cbr_ai = EncodePipeline::new(
+            64,
+            64,
+            10,
+            RcConfig {
+                mode: crate::rate_control::RcMode::Cbr,
+                qp: 20,
+                target_bitrate: 5000,
+                ..RcConfig::default()
+            },
+            3,
+            1,
+        );
+        cbr_ai.pred_structure = crate::port_picstruct::PredStructure::AllIntra;
+        let err = cbr_ai
+            .try_encode_frame(&y, 64)
+            .expect_err("CBR under ALL_INTRA must be refused");
+        match err.error() {
+            crate::EncodeError::UnsupportedConfig(why) => assert!(
+                why.contains("CBR"),
+                "Cbr/AllIntra: refusal should name the mode, got {why:?}"
+            ),
+            other => panic!("Cbr/AllIntra: expected UnsupportedConfig, got {other:?}"),
+        }
+        assert_eq!(cbr_ai.frame_count, 0);
 
         // CONTROL: the identical call with Crf still encodes. Without this the
         // test above could pass because the pipeline refuses everything.

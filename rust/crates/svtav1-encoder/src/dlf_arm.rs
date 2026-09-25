@@ -276,6 +276,23 @@ pub fn pick_filter_level_by_q(i: &DlfPickInputs<'_>) -> LfLevels {
     let mut filt_guess_chroma = filt_guess / 2;
 
     let (do_y, do_uv) = me_based_dlf_skip(i);
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_DLFDBG").is_some() {
+        std::eprintln!(
+            "DLFDBG qidx={} guess={} min_ref={:?} avg_sad={} do=({},{}) res={} tl={} hier={} zfs={} refs={}",
+            i.base_qindex,
+            filt_guess,
+            min_ref,
+            i.avg_me_sad,
+            do_y as u8,
+            do_uv as u8,
+            i.input_resolution.as_u8(),
+            i.temporal_layer_index,
+            i.hierarchical_levels,
+            i.ctrls.zero_filter_strength_lvl,
+            i.refs.len()
+        );
+    }
     if !do_y {
         filt_guess = 0;
     }

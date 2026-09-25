@@ -1527,10 +1527,14 @@ mod recycle_tests {
     }
 
     /// `run_frame_me_into` on a RECYCLED [`FrameMe`] must produce exactly what
-    /// `run_frame_me` produces fresh — every per-b64 array and every scalar.
-    /// The recycled set is first filled from a different frame pair, so a
-    /// missed `MeB64Output::reset` field would show up as the previous
-    /// frame's search result.
+    /// `run_frame_me` produces fresh — every per-b64 array and every scalar —
+    /// EXCEPT the `me_mv_array` slots this frame's search never wrote. C's
+    /// `MeResults` pool is a per-picture `EB_MALLOC_ARRAY` with no memset, so
+    /// an unsearched `(pu, list, ref)` slot keeps the PREVIOUS picture's MV
+    /// (which `is_cr_motion_static` reads unconditionally); `reset`
+    /// deliberately preserves it. A stale slot therefore shows `r != f`
+    /// exactly where `f` is `Mv::ZERO` — any other divergence means the
+    /// search itself differed, which is a real bug.
     #[test]
     fn a_recycled_frame_me_is_identical_to_a_fresh_one() {
         let (w, h) = (128usize, 128usize);
@@ -1577,7 +1581,13 @@ mod recycle_tests {
                 r.total_me_candidate_index, f.total_me_candidate_index,
                 "b64 {i} total_me_candidate_index"
             );
-            assert_eq!(r.me_mv_array, f.me_mv_array, "b64 {i} me_mv_array");
+            for (j, (rm, fm)) in r.me_mv_array.iter().zip(&f.me_mv_array).enumerate() {
+                assert!(
+                    rm == fm || *fm == svtav1_types::motion::Mv::ZERO,
+                    "b64 {i} me_mv_array[{j}]: recycled {rm:?} vs fresh {fm:?} — a slot the \
+                     search WROTE must match; only unwritten slots may keep stale data"
+                );
+            }
             assert_eq!(
                 r.me_candidate_array.len(),
                 f.me_candidate_array.len(),

@@ -151,6 +151,21 @@ pub enum RcMode {
     Cbr = 2,
 }
 
+/// The API-surface [`crate::rate_control::RcMode`] splits C's single
+/// `CQP_OR_CRF` bucket into its two knobs; the picstruct arms only ever
+/// test `== Cbr`/`!= Cbr`, so both fold back to `CqpOrCrf`.
+impl From<crate::rate_control::RcMode> for RcMode {
+    fn from(m: crate::rate_control::RcMode) -> Self {
+        match m {
+            crate::rate_control::RcMode::Cqp | crate::rate_control::RcMode::Crf => {
+                Self::CqpOrCrf
+            }
+            crate::rate_control::RcMode::Vbr => Self::Vbr,
+            crate::rate_control::RcMode::Cbr => Self::Cbr,
+        }
+    }
+}
+
 /// C `SvtAv1FrameUpdateType` (`API/EbSvtAv1Enc.h:183-191`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameUpdateType {
@@ -1612,15 +1627,18 @@ impl std::error::Error for RpsError {}
 /// **Coverage — all 9 of C's top-level branches are translated.**
 /// `pd_process.c:1954-3483` splits on: RTC flat
 /// (`rtc && hierarchical_levels == 0`), low-delay CQP/CRF, low-delay CBR
-/// (hierarchical levels 1 and 2 — C's own ceiling; it logs
-/// "Error in MG indexing" elsewhere), flat RA (`hierarchical_levels == 0`),
-/// and one branch per RA hierarchical level 1..=5 — the last five delegated
-/// to [`crate::port_picstruct_ra`], including the
-/// `pred_struct_ptr->pred_type != RANDOM_ACCESS` cut-short arms inside them.
-/// A `LOW_DELAY` sequence under VBR falls through C's rate-control tests
-/// into the hierarchical branches exactly as it does here. The residual
-/// error surface is therefore the same shapes C rejects: LD-CBR outside
-/// levels 1-2 and mini-GOP positions outside the ported tables.
+/// (flat plus hierarchical levels 1 and 2 — C's `else` after the `hier == 1`
+/// arm carries only a debug `assert(hier == 2)` and its
+/// `switch (temporal_layer)` serves every other level, flat included —
+/// "LD CBR only supports flat/1L/2L"), flat RA
+/// (`hierarchical_levels == 0`), and one branch per RA hierarchical level
+/// 1..=5 — the last five delegated to [`crate::port_picstruct_ra`],
+/// including the `pred_struct_ptr->pred_type != RANDOM_ACCESS` cut-short
+/// arms inside them. A `LOW_DELAY` sequence under VBR falls through C's
+/// rate-control tests into the hierarchical branches exactly as it does
+/// here. The residual error surface is therefore the same shapes C only
+/// logs an error for: LD-CBR temporal layers outside 0..=2 and mini-GOP
+/// positions outside the ported tables.
 ///
 /// The S-frame paths (`set_sframe_type`, `set_sframe_rps`,
 /// `decide_sframe_mg`) and the app-driven reference-management events
@@ -1996,7 +2014,15 @@ fn rps_low_delay_cbr(
                 });
             }
         }
-    } else if hier == 2 {
+    } else {
+        // C's `else` after `hierarchical_levels == 1` carries only
+        // `assert(hierarchical_levels == 2)` — a DEBUG check — and the comment
+        // "LD CBR only supports flat/1L/2L". In a release build a flat
+        // (hier 0) stream falls through to this `switch (temporal_layer)`,
+        // whose case 0 is the arm every flat-LD picture takes. Treating
+        // `hier != 1` uniformly IS the faithful behaviour; the Err below is
+        // for the shapes C itself only logs an error for (temporal_layer
+        // outside 0..=2, or an HL2 mini-GOP position it cannot index).
         match temporal_layer {
             0 => {
                 idx[LAST] = base2_idx;
@@ -2070,12 +2096,6 @@ fn rps_low_delay_cbr(
                 });
             }
         }
-    } else {
-        // C asserts hierarchical_levels == 2 here.
-        return Err(RpsBranchUnsupported {
-            hierarchical_levels: hier,
-            temporal_layer,
-        });
     }
 
     update_ref_poc_array(&mut pic.rps, &ctx.dpb);

@@ -900,7 +900,17 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let rc = RcConfig {
-            mode: RcMode::Cqp,
+            // `SVTAV1_RC_MODE` (C's `--rc`): 0 = CQP, 1 = VBR, 2 = CBR.
+            // Default 0 keeps every existing cell. CBR is admitted only
+            // under LOW_DELAY (`SVT_PRED_STRUCT` unset/1) — C's own
+            // envelope (enc_settings.c:157); the pipeline refuses the
+            // rest.
+            mode: match std::env::var("SVTAV1_RC_MODE").ok().as_deref() {
+                None | Some("0") => RcMode::Cqp,
+                Some("1") => RcMode::Vbr,
+                Some("2") => RcMode::Cbr,
+                other => panic!("SVTAV1_RC_MODE must be 0/1/2, got {other:?}"),
+            },
             qp,
             // `SVT_AQ_MODE` (C's `--aq-mode`): 2 selects the TPL-gated
             // per-SB deltaq — live on the random-access path, inert on
@@ -910,6 +920,23 @@ fn main() {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
+            // `SVTAV1_TBR` (C's `--tbr`, kbps) — the CBR/VBR target.
+            target_bitrate: std::env::var("SVTAV1_TBR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            // `SVTAV1_VBV` (C's `--vbv-bufsize`, ms) — max buffer size;
+            // starting/optimal levels take C's defaults (600/600).
+            buffer_size_ms: std::env::var("SVTAV1_VBV")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000),
+            // `SVTAV1_FPS` — the framerate RC scales bitrates by. C's
+            // capture pins 30/1; match it unless overridden.
+            framerate: std::env::var("SVTAV1_FPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30.0),
             ..RcConfig::default()
         };
         // `mono` is derived here rather than read from the later binding:

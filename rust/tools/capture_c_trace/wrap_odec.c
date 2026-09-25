@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 
 /* Full struct layout (need enc->rng): same include set as svtav1-cref. */
@@ -114,4 +115,16 @@ void svt_trace_mark(const char* tag) {
     FILE* f = tf();
     if (f)
         fprintf(f, "# M %s\n", tag);
+}
+
+void svt_trace_markf(const char* fmt, ...) {
+    FILE* f = tf();
+    if (f) {
+        va_list ap;
+        va_start(ap, fmt);
+        fprintf(f, "# M ");
+        vfprintf(f, fmt, ap);
+        fprintf(f, "\n");
+        va_end(ap);
+    }
 }

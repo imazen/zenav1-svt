@@ -319,6 +319,29 @@ int main(int argc, char** argv) {
         if (lad_env && *lad_env)
             cfg.look_ahead_distance = (uint32_t)atoi(lad_env);
     }
+    /* SVT_RC_MODE forces `cfg.rate_control_mode` (C's `--rc`): 0 CQP/CRF,
+     * 1 VBR, 2 CBR. SVT_TBR forces `cfg.target_bit_rate` in KILOBITS
+     * (C's `--tbr` CLI unit; the field itself is bits/sec). SVT_VBV /
+     * SVT_START_BUF / SVT_OPT_BUF force the three buffer knobs in ms.
+     * Absent => untouched: rc mode 0 as set above, library-default
+     * buffers — no existing cell moves. */
+    {
+        const char* rc_env = getenv("SVT_RC_MODE");
+        if (rc_env && *rc_env)
+            cfg.rate_control_mode = (uint8_t)atoi(rc_env);
+        const char* tbr_env = getenv("SVT_TBR");
+        if (tbr_env && *tbr_env)
+            cfg.target_bit_rate = (uint32_t)atoi(tbr_env) * 1000;
+        const char* vbv_env = getenv("SVT_VBV");
+        if (vbv_env && *vbv_env)
+            cfg.maximum_buffer_size_ms = atoi(vbv_env);
+        const char* sb_env = getenv("SVT_START_BUF");
+        if (sb_env && *sb_env)
+            cfg.starting_buffer_level_ms = atoi(sb_env);
+        const char* ob_env = getenv("SVT_OPT_BUF");
+        if (ob_env && *ob_env)
+            cfg.optimal_buffer_level_ms = atoi(ob_env);
+    }
     cfg.level_of_parallelism   = 1;   /* --lp 1 */
     cfg.encoder_bit_depth      = bit_depth;
     cfg.encoder_color_format   = EB_YUV420;

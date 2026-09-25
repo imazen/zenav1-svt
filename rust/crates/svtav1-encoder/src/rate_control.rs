@@ -264,7 +264,7 @@ pub fn qp_to_lambda(qp: u8) -> f64 {
 // reports `unknown lint` at this line).
 #[allow(unknown_lints, clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
 // division; `checked_div` cannot express it without restructuring hot RD control flow
-pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8) -> u8 {
+pub fn assign_picture_qp(config: &RcConfig, _state: &RcState, temporal_layer: u8) -> u8 {
     match config.mode {
         RcMode::Cqp => {
             // CQP: fixed QP + temporal layer offset
@@ -277,27 +277,17 @@ pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8)
             (config.qp as i16 + delta as i16).clamp(0, 63) as u8
         }
         RcMode::Vbr | RcMode::Cbr => {
-            // VBR/CBR: adjust QP based on buffer fullness
-            let target_bits_per_frame =
-                (config.target_bitrate as f64 * 1000.0 / config.framerate) as i64;
-            let avg_bits = if state.total_frames > 0 {
-                (state.total_bits / state.total_frames) as i64
-            } else {
-                target_bits_per_frame
-            };
-
-            let delta = if avg_bits > target_bits_per_frame {
-                // Over budget → increase QP
-                1i8
-            } else if avg_bits < target_bits_per_frame * 3 / 4 {
-                // Under budget → decrease QP
-                -1
-            } else {
-                0
-            };
-
-            let layer_delta = TEMPORAL_LAYER_QP_DELTA[temporal_layer.min(5) as usize];
-            (state.qp as i16 + delta as i16 + layer_delta as i16).clamp(0, 63) as u8
+            // C `scs->static_config.qp` is IMMUTABLE under VBR/CBR — rate
+            // control moves `ppcs->picture_qp` and `frm_hdr.base_q_idx`, never
+            // the CLI-domain qp that every qp-keyed derivation (PD0 level
+            // bands, coeff-level ladders, NSQ geometry thresholds) reads.
+            // The ported driver's CBR qindex lives on `base_qindex`; letting
+            // the legacy `state.qp` ramp leak into `pcs.qp` resolved
+            // `pic_pd0_lvl` 5 (LVL_5's closed form) where C at the same CLI
+            // qp resolves 4 (the real estimator) — measured on the LD+CBR
+            // key frame of `g5 72x88 q40 p8` (port PD0 pc=2242107 vs C
+            // pc=6411087 at org=(16,0) 16x16).
+            config.qp
         }
     }
 }

@@ -512,6 +512,173 @@ pub fn sb_setup_lambda(
     true
 }
 
+// ---------------------------------------------------------------------------
+// Cyclic refresh (rc_aq.c:560-655) — the CBR per-SB qindex path
+// ---------------------------------------------------------------------------
+
+/// C `is_in_cr_band` (rc_aq.c:560) — the refresh band is `[sb_start, sb_end)`
+/// in SB raster order; when `sb_start > sb_end` it wraps around the frame.
+#[inline]
+fn is_in_cr_band(b64_idx: u32, sb_start: u32, sb_end: u32) -> bool {
+    if sb_start <= sb_end {
+        b64_idx >= sb_start && b64_idx < sb_end
+    } else {
+        b64_idx >= sb_start || b64_idx < sb_end
+    }
+}
+
+/// C `is_cr_motion_static` (rc_aq.c:566): the SB is eligible for refresh boost
+/// when its 8x8 ME distortion is below `dist_reject_thresh` AND the 64x64
+/// list-0 ME MV is within ±1 full pel (the `me_mv_array[0]` entry).
+#[inline]
+fn is_cr_motion_static(
+    me_8x8_distortion: u32,
+    mv: svtav1_types::motion::Mv,
+    dist_reject_thresh: u64,
+) -> bool {
+    u64::from(me_8x8_distortion) < dist_reject_thresh
+        && i32::from(mv.x).abs() <= 1
+        && i32::from(mv.y).abs() <= 1
+}
+
+/// C `BOOST_MAX` (rc_aq.c:557).
+const CR_BOOST_MAX: u64 = 10;
+
+/// C `svt_aom_cyclic_refresh_setup` (rc_aq.c:571).
+///
+/// Refreshes `cr`'s per-segment statistics from this frame's ME data and may
+/// switch `apply_cyclic_refresh` OFF when the motion gate rejects every SB in
+/// the band — the `delta_q_present` overhead would then be pure syntax cost.
+/// Runs inside `svt_av1_rc_calc_qindex_rate_control`'s CBR arm, after
+/// `cyclic_refresh_init` has already positioned the band; the caller supplies
+/// the callback there because this function lives in `rc_aq.c`, not
+/// `rc_vbr_cbr.c`.
+///
+/// `per_b64` is the frame's ME result set: C reads
+/// `me_results[b64]->me_mv_array[0]` (the 64x64 PU's list-0 MV) and the
+/// `me_{8x8,64x64}_distortion[b64]` scalars off the same struct.
+pub fn cyclic_refresh_setup(
+    cr: &mut crate::port_rc_vbr_cbr_state::CyclicRefresh,
+    b64_total_count: u32,
+    norm_me_dist: u64,
+    per_b64: &[crate::inter_me::context::MeB64Output],
+) {
+    cr.me_distortion = [0; 3];
+    cr.actual_num_seg1_sbs = 0;
+    cr.actual_num_seg2_sbs = 0;
+    let mut seg2_dist: u64 = 0;
+    let avg_me_dist = norm_me_dist;
+    let dist_reject_thresh = avg_me_dist * 2 + 1;
+    let dbg = std::env::var_os("SVTAV1_CRDBG").is_some();
+    for b64_idx in 0..b64_total_count as usize {
+        let b64 = &per_b64[b64_idx];
+        let in_cr_range = is_in_cr_band(b64_idx as u32, cr.sb_start, cr.sb_end);
+        if dbg {
+            eprintln!(
+                "CRDBG b64={} in={} d8={} d64={} mv=({},{}) band=[{},{}] thresh={}",
+                b64_idx,
+                in_cr_range as u8,
+                b64.me_8x8_distortion,
+                b64.me_64x64_distortion,
+                b64.me_mv_array[0].x,
+                b64.me_mv_array[0].y,
+                cr.sb_start,
+                cr.sb_end,
+                dist_reject_thresh
+            );
+        }
+        if in_cr_range
+            && is_cr_motion_static(
+                b64.me_8x8_distortion,
+                b64.me_mv_array[0],
+                dist_reject_thresh,
+            )
+        {
+            if u64::from(b64.me_8x8_distortion) < avg_me_dist {
+                seg2_dist += u64::from(b64.me_8x8_distortion);
+                cr.me_distortion[2] += u64::from(b64.me_64x64_distortion);
+                cr.actual_num_seg2_sbs += 1;
+            } else {
+                cr.me_distortion[1] += u64::from(b64.me_64x64_distortion);
+                cr.actual_num_seg1_sbs += 1;
+            }
+        } else {
+            cr.me_distortion[0] += u64::from(b64.me_64x64_distortion);
+        }
+    }
+
+    let actual_num_seg0_sbs = b64_total_count
+        - cr.actual_num_seg1_sbs as u32
+        - cr.actual_num_seg2_sbs as u32;
+    cr.me_distortion[0] = if actual_num_seg0_sbs != 0 {
+        cr.me_distortion[0] / u64::from(actual_num_seg0_sbs)
+    } else {
+        0
+    };
+    cr.me_distortion[1] = if cr.actual_num_seg1_sbs != 0 {
+        cr.me_distortion[1] / cr.actual_num_seg1_sbs as u64
+    } else {
+        0
+    };
+    cr.me_distortion[2] = if cr.actual_num_seg2_sbs != 0 {
+        cr.me_distortion[2] / cr.actual_num_seg2_sbs as u64
+    } else {
+        0
+    };
+
+    // If the motion gate rejected ALL SBs in the refresh range, disable CR for
+    // this frame to avoid delta_q_present signaling overhead with no actual
+    // delta-Q benefit.
+    if cr.actual_num_seg1_sbs + cr.actual_num_seg2_sbs == 0 {
+        cr.apply_cyclic_refresh = false;
+        return;
+    }
+    let mut rate_boost_fac = cr.rate_boost_fac;
+    if cr.actual_num_seg2_sbs != 0 {
+        seg2_dist /= cr.actual_num_seg2_sbs as u64;
+        // Every term summed into seg2_dist was `< avg_me_dist`, so the mean
+        // is too and this subtraction cannot underflow; `avg_me_dist` is
+        // nonzero for the same reason (a zero mean admits no seg2 members).
+        let dev = (avg_me_dist - seg2_dist) * 100 / avg_me_dist;
+        // Quadratic scaling; boost = BOOST_MAX * (dev/100)^2.
+        rate_boost_fac += (CR_BOOST_MAX * dev * dev / (100 * 100)) as i32;
+    }
+    cr.rate_ratio_qdelta_seg2 = 0.1 * rate_boost_fac as f64 * cr.rate_ratio_qdelta;
+}
+
+/// C `cyclic_sb_qp_assignment` (rc_aq.c:626) — the per-SB qindex write C's
+/// `svt_av1_rc_init_sb_qindex` performs when `apply_cyclic_refresh` holds.
+/// `delta_q_present = 1` is this function's header side effect; the caller
+/// folds it into the [`SbQindexPlan`] it builds from the filled map.
+///
+/// Only valid at `sb_size == 64` — C's own comment ("only works for sb size =
+/// 64") and `cyclic_refresh_init`'s `super_block_size != 64` gate agree.
+pub fn cyclic_sb_qp_assignment(
+    cr: &crate::port_rc_vbr_cbr_state::CyclicRefresh,
+    base_q_idx: i32,
+    norm_me_dist: u64,
+    per_b64: &[crate::inter_me::context::MeB64Output],
+    sb_qindex: &mut [u8],
+) {
+    let dist_reject_thresh = norm_me_dist * 2 + 1;
+    for (b64_idx, q) in sb_qindex.iter_mut().enumerate() {
+        let b64 = &per_b64[b64_idx];
+        let mut offset = 0;
+        if is_in_cr_band(b64_idx as u32, cr.sb_start, cr.sb_end) {
+            if !is_cr_motion_static(b64.me_8x8_distortion, b64.me_mv_array[0], dist_reject_thresh)
+            {
+                // Non-static SB (any non-zero MV or high distortion): no boost.
+                offset = 0;
+            } else if u64::from(b64.me_8x8_distortion) < norm_me_dist {
+                offset = cr.qindex_delta[2];
+            } else {
+                offset = cr.qindex_delta[1];
+            }
+        }
+        *q = (base_q_idx + offset).clamp(1, MAXQ) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

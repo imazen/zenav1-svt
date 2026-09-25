@@ -307,6 +307,21 @@ pub struct InterMdFrame<'a> {
     /// reconinter.c) — read by the inter-intra wedge search, the
     /// masked-compound wedge pick, and the predict-time WEDGE blend.
     pub wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks,
+    /// C `scs->mrp_ctrls.use_best_references` — the level
+    /// `get_enable_use_best_me` (product_coding_loop.c:9310-9341) reads to
+    /// decide whether this block's `ref_frame_type_arr` is rebuilt by
+    /// `determine_best_references` from its own ME candidate array.
+    pub use_best_references: u8,
+    /// C `pcs->temporal_layer_index` — the `> 0` gate of
+    /// `get_enable_use_best_me`.
+    pub temporal_layer_index: u8,
+    /// C `pcs->ppcs->ref_list{0,1}_count_try != 0` — the backfill gates of
+    /// `determine_best_references` (product_coding_loop.c:104-114).
+    pub ref_list0_count_try: bool,
+    pub ref_list1_count_try: bool,
+    /// C `pcs->ppcs->sframe_ref_pruned` — when set, C skips
+    /// `determine_best_references` entirely (product_coding_loop.c:9379).
+    pub sframe_ref_pruned: bool,
 }
 
 /// The order-hint half of [`InterFrame`], owned so the borrow is local.
@@ -1539,13 +1554,22 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
 /// (mode_decision.c:3576-3579). The funnel needs the same ordering: this
 /// runs before the intra candidate set is fixed, and
 /// [`build_inter_candidates`] consumes the result rather than re-searching.
-pub struct BlockPrelude {
+pub struct BlockPrelude<'a> {
     /// C `ctx->ref_mv_stack[MODE_CTX_REF_FRAMES]`.
     pub stacks: Vec<crate::inter_mvp::InterMvpStack>,
     /// C `ctx->ref_mv_count[MODE_CTX_REF_FRAMES]`.
     pub ref_mv_count: [u8; crate::inter_mvp::MODE_CTX_REF_FRAMES],
     /// The search output — `md_me_dist()`/`md_pme_dist()` included.
     pub search: crate::inter_search_arm::BlockSearchOut,
+    /// C `ctx->ref_frame_type_arr[0..tot_ref_frame_types]` at INJECTION
+    /// time — `determine_best_references`' rebuild of the picture-level
+    /// list from this block's own ME candidates when `use_best_me` fired,
+    /// else the picture-level list unchanged.
+    pub ref_arr: alloc::borrow::Cow<'a, [i8]>,
+    /// This block's ME candidates — `determine_best_references` consumed
+    /// them in `block_prelude`; `build_inter_candidates` hands the same
+    /// slice to the injectors.
+    pub me_cands: Vec<crate::port_md::predicates::MeCandidateRef>,
 }
 
 /// Build [`BlockPrelude`] for one block (see its doc for C's ordering).
@@ -1557,8 +1581,8 @@ pub struct BlockPrelude {
 /// swaps C's `read_refine_me_mvs` + `pme_search` for
 /// `read_refine_me_mvs_light_pd1` (:2737) — a strictly smaller search with
 /// its own seeding and skip gates.
-pub fn block_prelude(
-    f: &InterMdFrame<'_>,
+pub fn block_prelude<'a>(
+    f: &InterMdFrame<'a>,
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
@@ -1572,7 +1596,8 @@ pub fn block_prelude(
         &crate::port_enc_mode_config::light_pd1::LightPd1Signals,
         bool,
     )>,
-) -> BlockPrelude {
+) -> BlockPrelude<'a> {
+    use crate::port_md::predicates::MeCandidateRef;
     // --- The reference-MV stack, PER REFERENCE TYPE. C calls
     //     `svt_aom_generate_av1_mvp_table(ctx, ..., ctx->ref_frame_type_arr,
     //     ctx->tot_ref_frame_types, pcs)` (product_coding_loop.c:9393), i.e.
@@ -1610,6 +1635,64 @@ pub fn block_prelude(
     // C's `ctx->sb64_sq_no4xn_geom` is set in the MD block setup, so it is a
     // property of THIS block, not of the picture.
     let mvp_env = f.mvp_env.for_block(f.sb_size, b.bw as usize, b.bh as usize);
+    // --- C's ME candidate array for this block, verbatim: the injectors
+    //     read each candidate's own `direction` and resolve it to a
+    //     reference frame (`mode_decision.c:2320-2326`), and
+    //     `determine_best_references` below rebuilds the ref list from it.
+    let me_cands: Vec<MeCandidateRef> = f
+        .me
+        .cands_for(b.org_x, b.org_y, b.bsize)
+        .iter()
+        .map(|c| MeCandidateRef {
+            direction: c.direction(),
+            ref_idx_l0: c.ref_idx_l0(),
+            ref_idx_l1: c.ref_idx_l1(),
+            ref0_list: c.ref0_list(),
+            ref1_list: c.ref1_list(),
+        })
+        .collect();
+    // C `determine_best_references` (product_coding_loop.c:65-116), run at
+    // the top of `md_encode_block`/`md_encode_block_light_pd1` when the
+    // lane's own gate says so — the light lane's is `use_best_references
+    // == 3 && temporal_layer_index > 0` (:9074), the regular lane's is
+    // `get_enable_use_best_me` (:9379), which levels 1 and 3 also resolve
+    // without TPL. In both, `ctx->ref_frame_type_arr` is REBUILT per block
+    // from this block's own ME candidate array — a reference ME never
+    // searched (`do_ref == 0`) drops out entirely — and that list, not
+    // `ppcs`' picture-level one, then drives the MVP table, the searches,
+    // and every injector below. `use_best_references == 2` needs
+    // `get_sb_tpl_inter_stats` (TPL, unported); `None` folds to false,
+    // which is C's own result whenever `tpl_ctrls.enable` is 0.
+    let use_best_me = !f.sframe_ref_pruned
+        && if light.is_some() {
+            f.use_best_references == 3 && f.temporal_layer_index > 0
+        } else {
+            crate::port_md::coding_loop::get_enable_use_best_me(
+                f.use_best_references,
+                u32::from(f.temporal_layer_index),
+                f.me
+                    .per_b64
+                    .get((b.org_y / 64) * f.me.b64_cols + (b.org_x / 64))
+                    .map_or(0, |o| o.me_8x8_distortion),
+            )
+            .unwrap_or(false)
+        };
+    let block_ref_arr: alloc::borrow::Cow<'_, [i8]> = if use_best_me {
+        alloc::borrow::Cow::Owned(
+            crate::port_md::coding_loop::determine_best_references(
+                &me_cands,
+                me_cands.len(),
+                // `pcs->slice_type == B_SLICE` — this frame is inter (the
+                // funnel only builds `InterMdFrame` on non-I slices) and the
+                // port's `SliceType` makes every inter frame B.
+                true,
+                f.ref_list0_count_try,
+                f.ref_list1_count_try,
+            ),
+        )
+    } else {
+        alloc::borrow::Cow::Borrowed(f.ref_frame_type_arr)
+    };
     // C `svt_aom_generate_av1_mvp_table` (product_coding_loop.c:9393 ->
     // adaptive_mv_pred.c:1329; the light lane's `!shut_fast_rate`-guarded
     // call is at :9114): ONE driver over `ref_frame_type_arr`, single AND
@@ -1619,15 +1702,14 @@ pub fn block_prelude(
     // this reaches, so the guard is a transcription, not a fork — it keeps
     // C's skip reachable rather than baking in today's value.
     if light.is_none_or(|(sig, _)| !sig.shut_fast_rate) {
-        for (&rt, st) in f
-            .ref_frame_type_arr
+        for (&rt, st) in block_ref_arr
             .iter()
             .zip(crate::inter_mvp::generate_av1_mvp_table(
                 &grid,
                 &ctx,
                 &mvp_env,
                 b.bsize as usize,
-                f.ref_frame_type_arr,
+                &block_ref_arr,
             ))
         {
             ref_mv_count[rt.max(0) as usize] = st.count;
@@ -1665,7 +1747,11 @@ pub fn block_prelude(
         mi_cols: f.mi_cols,
         src: f.src,
         src_stride: f.src_stride,
-        ref_frame_type_arr: f.ref_frame_type_arr,
+        // The BLOCK-level list `determine_best_references` produced (or the
+        // picture-level one when its gate is off) — what C's
+        // `ctx->ref_frame_type_arr` holds at this point in
+        // `md_encode_block`.
+        ref_frame_type_arr: &block_ref_arr,
         padded_by_ref: &f.padded_by_ref,
         stacks: &stacks,
         ref_mv_count: &ref_mv_count,
@@ -1723,6 +1809,8 @@ pub fn block_prelude(
         stacks,
         ref_mv_count,
         search,
+        ref_arr: block_ref_arr,
+        me_cands,
     }
 }
 
@@ -1746,7 +1834,7 @@ pub fn build_inter_candidates(
     // `generate_md_stage_0_cand_light_pd1` class-merge control
     // (mode_decision.c:3638-3643).
     merge_inter_cands_mult: u8,
-    prelude: BlockPrelude,
+    prelude: BlockPrelude<'_>,
     warp_out: &mut WarpRefineBlock,
     // C `ctx->is_intra_bordered` — the
     // `use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx) : 0`
@@ -1765,12 +1853,14 @@ pub fn build_inter_candidates(
     use crate::port_md::inject::{
         CandArray, InjectCtx, WmCtrls, inject_inter_candidates, inject_inter_candidates_light_pd1,
     };
-    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef};
+    use crate::port_md::predicates::InjectedMvLog;
 
     let BlockPrelude {
         stacks,
         ref_mv_count,
         search,
+        ref_arr,
+        me_cands,
     } = prelude;
     let ctx = derive_block_ctx(
         (b.org_y / 4) as i32,
@@ -1817,20 +1907,6 @@ pub fn build_inter_candidates(
         r
     };
 
-    // --- C's ME candidate array for this block, verbatim: the injectors
-    //     read each candidate's own `direction` and resolve it to a
-    //     reference frame (`mode_decision.c:2320-2326`).
-    let me_cands: Vec<MeCandidateRef> =
-        f.me.cands_for(b.org_x, b.org_y, b.bsize)
-            .iter()
-            .map(|c| MeCandidateRef {
-                direction: c.direction(),
-                ref_idx_l0: c.ref_idx_l0(),
-                ref_idx_l1: c.ref_idx_l1(),
-                ref0_list: c.ref0_list(),
-                ref1_list: c.ref1_list(),
-            })
-            .collect();
     let me_totals = [me_cands.len() as u8];
     let sb_me_mv = search.sb_me_mv;
 
@@ -1932,7 +2008,10 @@ pub fn build_inter_candidates(
         skip_mode_ref_frame_idx_0: f.skip_mode_ref_frame_idx_0,
         skip_mode_ref_frame_idx_1: f.skip_mode_ref_frame_idx_1,
         is_lossless_segment: false,
-        ref_frame_type_arr: f.ref_frame_type_arr,
+        // The same block-level list the MVP table and searches used —
+        // `determine_best_references`' rebuild when `use_best_me` fired in
+        // `block_prelude`, else the picture-level list.
+        ref_frame_type_arr: &ref_arr,
         global_motion: &f.global_motion,
         // C `pcs->ppcs->gm_ctrls.skip_identity`, which
         // `svt_aom_set_gm_controls` sets ONLY at gm_level 4: with it set and a

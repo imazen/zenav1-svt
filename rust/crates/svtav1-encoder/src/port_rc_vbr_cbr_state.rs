@@ -350,6 +350,9 @@ pub struct CyclicRefresh {
     pub actual_num_seg1_sbs: i32,
     /// `cr->actual_num_seg2_sbs`.
     pub actual_num_seg2_sbs: i32,
+    /// `cr->me_distortion[3]` — the per-segment mean 64x64 ME distortions
+    /// `svt_aom_cyclic_refresh_setup` (rc_aq.c:571) refreshes each frame.
+    pub me_distortion: [u64; 3],
 }
 
 /// C `SequenceControlSet` fields read by `rc_vbr_cbr.c`.

@@ -168,6 +168,7 @@ fn build(
         rate_boost_fac: 15,
         sb_start: 0,
         sb_end: 100,
+        me_distortion: [0; 3],
     };
     let params = up::RcIntervalParams {
         rolling_target_bits: 60_000,

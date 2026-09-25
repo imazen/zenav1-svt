@@ -95,6 +95,7 @@ pub mod port_picstruct;
 pub mod port_picstruct_ra;
 pub mod port_preanalysis;
 pub mod port_ransac;
+pub mod port_rc_driver;
 pub mod port_rc_process;
 pub mod port_rc_rtc_cbr;
 pub mod port_rc_vbr_cbr;
