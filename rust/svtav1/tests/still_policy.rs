@@ -33,7 +33,7 @@ fn parity_refuses_conflicting_reference_extensions_and_mono_in_real_encoder() {
         encoder
             .clone()
             .with_native_preset(NativePreset::RESEARCH)
-            .with_enhancement(ZenEnhancement::AomIntraEdgeFilter),
+            .with_enhancement(ZenEnhancement::DeepSearch),
     ] {
         assert!(bad.resolve_still_policy().is_err());
         assert!(bad.encode_yuv420(&y, &uv, &uv, 8, 8, 8).is_err());
@@ -105,7 +105,7 @@ fn support_query_matches_real_grain_mono_and_reference_refusals() {
             }),
         AvifEncoder::new()
             .with_native_preset(NativePreset::RESEARCH)
-            .with_enhancement(ZenEnhancement::AomIntraEdgeFilter),
+            .with_enhancement(ZenEnhancement::DeepSearch),
     ] {
         for format in [StillInputFormat::Monochrome, StillInputFormat::Yuv420] {
             let query = encoder.validate_configuration_for_input(17, 19, format);

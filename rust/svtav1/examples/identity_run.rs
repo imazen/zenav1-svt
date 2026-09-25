@@ -66,32 +66,11 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 /// silently dropped by either entry point — on an out-of-envelope encode
 /// (video, mono) `ZenEnhancements::validate` refuses instead.
 fn apply_enhancement_env(pipeline: &mut EncodePipeline) {
-    if let Ok(value) = std::env::var("SVTAV1_ZEN_INTRA_EDGE_FILTER") {
-        match value.as_str() {
-            "0" => {}
-            "1" => {
-                pipeline.enhancements = pipeline
-                    .enhancements
-                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter);
-                eprintln!("SVTAV1_ENHANCEMENT=aom-intra-edge-filter-v1");
-            }
-            _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
-        }
-    }
-    // AOM-style restoration-unit size search: evaluate the legal RU sizes
-    // through the SVT filter search + RD costs instead of the C-fixed grid
-    // pick. Same research envelope as the intra-edge arm (native -1,
-    // all-intra 4:2:0 — `ZenEnhancements::validate` refuses wider).
-    if let Ok(value) = std::env::var("SVTAV1_ZEN_RESTORATION_UNIT_SEARCH") {
-        match value.as_str() {
-            "0" => {}
-            "1" => {
-                pipeline.enhancements = pipeline
-                    .enhancements
-                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomRestorationUnitSearch);
-                eprintln!("SVTAV1_ENHANCEMENT=aom-restoration-unit-search-v1");
-            }
-            _ => panic!("SVTAV1_ZEN_RESTORATION_UNIT_SEARCH must be 0 or 1"),
+    // Removed 2026-09-25 on measurement (benchmarks/aom_keep_or_drop_2026-09-25.meta).
+    // Refuse rather than silently encode without them.
+    for gone in ["SVTAV1_ZEN_INTRA_EDGE_FILTER", "SVTAV1_ZEN_RESTORATION_UNIT_SEARCH"] {
+        if std::env::var(gone).is_ok_and(|v| v != "0") {
+            panic!("{gone}: this Zen enhancement was removed on 2026-09-25 (no RD gain)");
         }
     }
     // AOM-style screen tools on stills: palette + IntraBC stay enabled at

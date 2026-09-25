@@ -631,7 +631,6 @@ impl EncodePipeline {
     #[inline(always)]
     pub(super) fn derive_seq_tools(
         &self,
-        zen_intra_edge_filter: bool,
         is_single_frame: bool,
     ) -> crate::entropy::obu::SeqTools {
         let seq_tools = {
@@ -697,7 +696,6 @@ impl EncodePipeline {
             // filtering — signaling 0 keeps our recon decoder-exact on
             // that self-consistent surface.
             t.enable_intra_edge_filter &= self.chroma_420;
-            t.enable_intra_edge_filter |= zen_intra_edge_filter;
             // Small-frame implementation limit (enc_settings.c:214-232):
             // when the TRUE source width OR height is < 64, C force-clears
             // enable_restoration_filtering (and aq_mode, already off on the

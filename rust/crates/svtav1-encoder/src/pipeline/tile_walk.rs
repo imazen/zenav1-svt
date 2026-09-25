@@ -214,7 +214,6 @@ pub(super) fn encode_tile_rows(
     // Byte-inert at preset -1 and on every video frame.
     deep_search: bool,
     reference: crate::reference::SvtReference,
-    zen_intra_edge_filter: bool,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -363,7 +362,6 @@ pub(super) fn encode_tile_rows(
             coded_lossless,
             deep_search,
             reference,
-            zen_intra_edge_filter,
             pd0_det_frame,
             lpd1_frame,
             stop,

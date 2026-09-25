@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **100
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **99
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -57,7 +57,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 
 | where | refusal |
 |---|---|
-| `crates/svtav1-encoder/src/enhancements.rs` | Zen experiments require native research -1, all-intra 4:2:0 |
 | `crates/svtav1-encoder/src/enhancements.rs` | aom-screen-tools-v1 is measured for all-intra 4:2:0 only |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too large to tile: MAX_TILE_AREA forces more tiles than MAX_TILE_ROWS (64) tile rows can supply at this width |
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |

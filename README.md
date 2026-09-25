@@ -22,8 +22,10 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
   It does not certify every untested combination or erase known divergences.
 - Checked native presets include **−1 through 13**. Effort currently resolves
   to native buckets; fractional adaptive search is not implemented.
-- Grain modeling/denoising/tables/synthesis and named Zen intra-edge/restoration
-  experiments are wired in their documented envelopes. Experiments stay opt-in.
+- Grain modeling/denoising/tables/synthesis are wired in their documented
+  envelopes. Two opt-in Zen enhancements remain: `AomScreenTools` (-23% ssim2
+  BD-rate on screen content at preset 8, `benchmarks/aom_keep_or_drop_2026-09-25.meta`)
+  and `DeepSearch`. Six others were removed on 2026-09-25 for showing no gain.
 - 4:4:4 chroma ships on a measured decoder-verified envelope (8-bit key AND
   inter frames, SB64, no superres) as a Zen extension — C refuses it, so the
   oracle is the decoder, never byte parity. 4:2:2 and 12-bit remain rejected,

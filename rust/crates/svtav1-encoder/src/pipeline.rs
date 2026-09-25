@@ -71,9 +71,6 @@ impl EncodePipeline {
                 self.bit_depth,
             )
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
-        let zen_intra_edge_filter = self
-            .enhancements
-            .contains(crate::enhancements::ZenEnhancement::AomIntraEdgeFilter);
         self.reference
             .validate_hdr_config(&self.hdr)
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
@@ -1535,7 +1532,7 @@ impl EncodePipeline {
         // the per-block use_filter_intra symbol exists exactly when the
         // SH signals the tool, so all three consumers MUST see one value.
         let is_single_frame = self.gop.intra_period == 1;
-        let seq_tools = self.derive_seq_tools(zen_intra_edge_filter, is_single_frame);
+        let seq_tools = self.derive_seq_tools(is_single_frame);
 
         // The picture-level MD inputs, BOUND rather than passed inline because
         // TWO derivations read them: `md_config_inputs` ->
@@ -1995,7 +1992,6 @@ impl EncodePipeline {
             &mut self.last_recon10_y,
             &mut self.last_recon10_uv,
             chroma,
-            zen_intra_edge_filter,
             &hbd_source,
             stale_vars,
             &mut hbd_used,

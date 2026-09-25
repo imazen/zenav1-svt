@@ -188,8 +188,6 @@ fn cases() -> Vec<Case> {
     }
     // Every Zen enhancement at a legal and at an illegal preset.
     for e in [
-        ZenEnhancement::AomIntraEdgeFilter,
-        ZenEnhancement::AomRestorationUnitSearch,
         ZenEnhancement::AomScreenTools,
         ZenEnhancement::DeepSearch,
     ] {
@@ -245,8 +243,8 @@ fn every_accepted_configuration_ends_in_ok_or_err() {
         eprintln!("  {n:>4}  {why}");
     }
     // Anti-vacuity: a sweep whose cells are all refused proves nothing.
-    // MEASURED 2026-09-25 on i265: 445 of 524 cells encode, 79 refuse
-    // explicitly (453 of 536 before four enhancements were removed). A drop
+    // MEASURED 2026-09-25 on i265: 443 of 518 cells encode, 75 refuse
+    // explicitly (453 of 536 before six enhancements were removed). A drop
     // below the floor means configurations stopped being encoded; look at
     // the refusal list above before moving it.
     assert!(

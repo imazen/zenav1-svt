@@ -239,7 +239,7 @@ impl EncodePipeline {
                                     widen_tight(sv, cw, lr_tcw, lr_tch),
                                 ),
                             };
-                            crate::restoration::search_restoration_still_configured_with_stop(
+                            crate::restoration::search_restoration_still_bd_with_stop(
                                 &ctrls,
                                 &sg_ctrls,
                                 &lr_sy10,
@@ -253,16 +253,12 @@ impl EncodePipeline {
                                 filter_chroma,
                                 rdmult,
                                 self.bit_depth,
-                                self.enhancements.contains(
-                                    crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
-                                ),
-                                self.sb_size,
                                 stop,
                                 self.reference,
                             )?
                         }
                         None => {
-                            crate::restoration::search_restoration_still_configured_with_stop::<u8>(
+                            crate::restoration::search_restoration_still_bd_with_stop::<u8>(
                                 &ctrls,
                                 &sg_ctrls,
                                 &lr_src_y,
@@ -276,10 +272,6 @@ impl EncodePipeline {
                                 filter_chroma,
                                 rdmult,
                                 8,
-                                self.enhancements.contains(
-                                    crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
-                                ),
-                                self.sb_size,
                                 stop,
                                 self.reference,
                             )?

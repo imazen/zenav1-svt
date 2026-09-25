@@ -31,6 +31,9 @@ Crates are not published to crates.io yet — depend by git.
 - `temporal_filter::{temporal_filter, TfConfig, TfResult, estimate_noise}` are
   removed (see Removed).
 
+- `ZenEnhancement::{AomIntraEdgeFilter, AomRestorationUnitSearch}` are removed
+  (see Removed).
+
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
 - **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
   `InvalidDimensions` now carries `width`, `height`, and `reason`, and
@@ -2542,6 +2545,14 @@ Crates are not published to crates.io yet — depend by git.
   non-64-multiple sizes at speed 1); 224 encode and all 224 decode.
 
 ### Removed
+
+- **`AomIntraEdgeFilter` and `AomRestorationUnitSearch`** (this change), on the
+  keep-or-drop sweep (`benchmarks/aom_keep_or_drop_2026-09-25.meta`, 7,092
+  cells). The intra-edge filter was a small net ssim2 BD loss on photos (median
+  +0.12% / +0.51% at tune 1 / 3); the restoration-unit search was RD-neutral
+  (median 0.000) at 2-9% more encode time. `AomScreenTools` stays: -23% ssim2
+  BD on screen content at preset 8. `identity_run` now refuses the two
+  removed `SVTAV1_ZEN_*` variables instead of ignoring them.
 
 - **Legacy homegrown temporal filter** (9409e9f6): `temporal_filter::{temporal_filter,
   TfConfig, TfResult, estimate_noise}`. None was a port of C or called by the

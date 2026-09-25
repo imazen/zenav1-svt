@@ -9,17 +9,14 @@
 //! `benchmarks/still_image_tune_v1_2026-09-19.meta`), `AomAdaptiveSharpness`
 //! (a no-op under IQ), `AomAdaptiveCdef` (+0.4 to +0.9 % ssim2 BD against
 //! SVT's own strength pick) and `AomDeltaQLf` (RD-neutral;
-//! `benchmarks/aom_features_2026-09-20.meta`).
+//! `benchmarks/aom_features_2026-09-20.meta`); and on the same day
+//! `AomIntraEdgeFilter` (a small net ssim2 BD loss: median +0.12% / +0.51% at
+//! tune 1 / 3 on photos) and `AomRestorationUnitSearch` (median BD 0.000, 2-9%
+//! slower), both in `benchmarks/aom_keep_or_drop_2026-09-25.meta`.
 
 /// Independently selectable, uncalibrated search enhancement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZenEnhancement {
-    /// Follow AOM's still-image policy of enabling intra-edge filtering.
-    /// Prediction and sequence signaling change together. This can worsen RD;
-    /// it is an experiment, not a promise of improved compression.
-    AomIntraEdgeFilter,
-    /// Evaluate legal restoration-unit sizes using SVT filter search and RD costs.
-    AomRestorationUnitSearch,
     /// libaom-style screen-tool availability on stills: when the AA-aware
     /// detector sets `sc_class5`, palette and IntraBC stay ENABLED at every
     /// preset instead of following the allintra ladders that switch them
@@ -53,8 +50,6 @@ impl ZenEnhancement {
     /// Stable experiment identity for benchmark/configuration records.
     pub const fn id(self) -> &'static str {
         match self {
-            Self::AomIntraEdgeFilter => "aom-intra-edge-filter-v1",
-            Self::AomRestorationUnitSearch => "aom-restoration-unit-search-v1",
             Self::AomScreenTools => "aom-screen-tools-v1",
             Self::DeepSearch => "deep-search-v1",
         }
@@ -64,8 +59,6 @@ impl ZenEnhancement {
 /// A deduplicated set of explicit experiments. Empty preserves C decisions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ZenEnhancements {
-    intra_edge_filter: bool,
-    restoration_unit_search: bool,
     screen_tools: bool,
     deep_search: bool,
 }
@@ -74,8 +67,6 @@ impl ZenEnhancements {
     /// Add one diagnostic/ablation experiment.
     pub const fn with(mut self, enhancement: ZenEnhancement) -> Self {
         match enhancement {
-            ZenEnhancement::AomIntraEdgeFilter => self.intra_edge_filter = true,
-            ZenEnhancement::AomRestorationUnitSearch => self.restoration_unit_search = true,
             ZenEnhancement::AomScreenTools => self.screen_tools = true,
             ZenEnhancement::DeepSearch => self.deep_search = true,
         }
@@ -85,8 +76,6 @@ impl ZenEnhancements {
     /// Whether a particular experiment is selected.
     pub const fn contains(self, enhancement: ZenEnhancement) -> bool {
         match enhancement {
-            ZenEnhancement::AomIntraEdgeFilter => self.intra_edge_filter,
-            ZenEnhancement::AomRestorationUnitSearch => self.restoration_unit_search,
             ZenEnhancement::AomScreenTools => self.screen_tools,
             ZenEnhancement::DeepSearch => self.deep_search,
         }
@@ -94,27 +83,18 @@ impl ZenEnhancements {
 
     /// Whether every experiment is disabled.
     pub const fn is_empty(self) -> bool {
-        !self.intra_edge_filter
-            && !self.restoration_unit_search
-            && !self.screen_tools
+        !self.screen_tools
             && !self.deep_search
     }
 
-    /// Per-member envelopes. The two research members extend native −1 still
-    /// 4:2:0 only — faster-preset reuse needs separate measurements and is not
-    /// inferred.
+    /// Per-member envelopes, each measured for the scope it names.
     pub fn validate(
         self,
-        preset: i8,
+        _preset: i8,
         allintra: bool,
         chroma_420: bool,
         bit_depth: u8,
     ) -> Result<(), &'static str> {
-        if (self.intra_edge_filter || self.restoration_unit_search)
-            && (preset != -1 || !allintra || !chroma_420)
-        {
-            return Err("Zen experiments require native research -1, all-intra 4:2:0");
-        }
         if self.screen_tools && (!allintra || !chroma_420) {
             return Err("aom-screen-tools-v1 is measured for all-intra 4:2:0 only");
         }
@@ -128,26 +108,6 @@ impl ZenEnhancements {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn experiments_are_explicit_and_do_not_repurpose_native_presets() {
-        let off = ZenEnhancements::default();
-        assert!(off.is_empty());
-        for enhancement in [
-            ZenEnhancement::AomIntraEdgeFilter,
-            ZenEnhancement::AomRestorationUnitSearch,
-        ] {
-            let on = off.with(enhancement);
-            assert_eq!(on.with(enhancement), on);
-            assert!(on.contains(enhancement));
-            assert!(on.validate(-1, true, true, 8).is_ok());
-            for preset in [-3, -2, 0, 5, 9, 13] {
-                assert!(on.validate(preset, true, true, 8).is_err());
-            }
-            assert!(on.validate(-1, false, true, 8).is_err());
-            assert!(on.validate(-1, true, false, 8).is_err());
-        }
-    }
 
     #[test]
     fn deep_search_is_allintra_420_8bit_scoped_and_inert_at_native_minus1() {

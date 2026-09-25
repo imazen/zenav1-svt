@@ -62,7 +62,6 @@ pub(super) fn encode_one_tile_body(
     coded_lossless: bool,
     deep_search: bool,
     reference: crate::reference::SvtReference,
-    zen_intra_edge_filter: bool,
     pd0_det_frame: crate::part_arm::Pd0DetFrame<'_>,
     lpd1_frame: Option<Lpd1FrameIn>,
     stop: &dyn Stop,
@@ -213,9 +212,6 @@ pub(super) fn encode_one_tile_body(
     // only one with `reduce_filter_intra == 0`.
     funnel_cfg.reduce_filter_intra =
         inter_md.is_some_and(|m| m.cand_reduction.reduce_filter_intra != 0);
-    // Same explicit override as the sequence bit. All funnel prediction
-    // stages and the native10 final pass must see the decoder's policy.
-    funnel_cfg.edge_filter |= zen_intra_edge_filter;
     // `pcs->txs_level` -> `set_txs_controls`, for THIS arm
     // (`crate::txs_arm`). The arms agree at M4..M7 and diverge at M8/M9,
     // where the video ladder keeps the tx-size search on (level 3 / 4)

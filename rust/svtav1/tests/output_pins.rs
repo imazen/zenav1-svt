@@ -518,8 +518,6 @@ fn output_pins_fork_knobs_and_enhancements() {
         }
     }
     let enhancements = [
-        (ZenEnhancement::AomIntraEdgeFilter, -1i8),
-        (ZenEnhancement::AomRestorationUnitSearch, -1),
         (ZenEnhancement::AomScreenTools, 8),
         (ZenEnhancement::DeepSearch, 8),
     ];
