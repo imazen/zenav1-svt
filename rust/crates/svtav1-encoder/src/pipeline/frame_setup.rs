@@ -698,3 +698,129 @@ impl EncodePipeline {
         seq_tools
     }
 }
+
+impl EncodePipeline {
+    pub(super) fn derive_screen_content(
+        &self,
+        sc_arm: crate::sc_detect::ScArm,
+        w: usize,
+        h: usize,
+        encode_input: &Vec<u8>,
+        sc_preset: i8,
+    ) -> crate::sc_detect::ScDerivation {
+        // `sc_arm` is bound at frame level above; it matters HERE because C
+        // picks a DIFFERENT derivation function per arm of `scs->allintra`.
+        // On the video arm the intra-BC ladder is
+        // `sig_deriv_multi_processes_default`'s (:2033-2052) instead of the
+        // allintra one (:2346-2369) — which is what makes a video-mode
+        // screen-content key frame set `frm_hdr->allow_intrabc` at M6, where
+        // the still arm leaves it clear.
+        let sc_derivation = match self.hdr.screen_content_mode {
+            Some(mode @ 0..=1) => {
+                // C forces every classification, not just the header flag.
+                // Keep the real preset for palette/IntraBC tool selection.
+                let forced = mode == 1;
+                crate::sc_detect::derive_sc_classes(
+                    sc_arm,
+                    self.speed_config.preset,
+                    crate::sc_detect::ScClasses {
+                        sc_class0: forced,
+                        sc_class1: forced,
+                        sc_class2: forced,
+                        sc_class3: forced,
+                        sc_class4: forced,
+                        sc_class5: forced,
+                    },
+                )
+            }
+            _ => crate::sc_detect::derive_sc(sc_arm, sc_preset, encode_input, w, w, h),
+        };
+        sc_derivation
+    }
+
+    pub(super) fn derive_base_qindex(
+        &mut self,
+        display_order: u64,
+        is_key: bool,
+        pic_decision: &Option<crate::port_picstruct::PicParams>,
+        frame_hier: u8,
+        sc_derivation: crate::sc_detect::ScDerivation,
+        tpl_adjusted_qp: u8,
+        frame_me: &Option<crate::inter_me_arm::FrameMe>,
+        cbr_frame_rc: &mut Option<crate::port_rc_vbr_cbr_state::FrameRc>,
+        cbr_sb_plan: &mut Option<crate::sb_qindex::SbQindexPlan>,
+    ) -> Result<u8, whereat::prelude::At<EncodeError>> {
+        #[allow(unused_mut)]
+        let mut base_qindex = if self.rc_config.mode == crate::rate_control::RcMode::Cbr {
+            let (q, frame, plan) = self.cbr_frame_qindex(
+                pic_decision.as_ref(),
+                is_key,
+                display_order,
+                frame_hier,
+                sc_derivation.classes.sc_class1,
+                frame_me.as_ref(),
+            )?;
+            *cbr_frame_rc = Some(frame);
+            *cbr_sb_plan = plan;
+            q
+        } else {
+            crate::rate_control::qp_to_qindex_with_offset(
+                tpl_adjusted_qp,
+                self.rc_config.extended_crf_qindex_offset,
+            )
+        };
+        Ok(base_qindex)
+    }
+
+    pub(super) fn derive_qm_levels(
+        &self,
+        base_qindex: u8,
+        coded_lossless: bool,
+        chroma_deltas: crate::chroma_q::ChromaQDeltas,
+    ) -> [u8; 3] {
+        // [SVT_HDR_MODE] frame QM levels (svt_av1_qm_init,
+        // md_config_process.c:249): the linear qindex map (default tune =
+        // PSNR in the fork); chroma levels derive from base + the FH
+        // chroma AC deltas. [15;3] = QM off (identity).
+        // A lossless segment uses identity matrices in the decoder even when
+        // using_qmatrix is signaled. C applies nonidentity weights here at QP0
+        // and produces wrong decoded samples (SUSPECTED-C-BUGS.md #31). Keep
+        // the raw matrix helpers C-exact, but use the decoder's identity rule
+        // for lossless MD, quantization, reconstruction and header signaling.
+        let qm_levels: [u8; 3] = if self.hdr.enable_qm && !coded_lossless {
+            // TUNE_IQ / TUNE_MS_SSIM use the still-image polynomial
+            // (svt_av1_qm_init switch, md_config_process.c:255).
+            let still = matches!(
+                self.hdr.tune,
+                crate::tune::TUNE_IQ | crate::tune::TUNE_MS_SSIM
+            );
+            let lvl = move |q: i32, lo: u8, hi: u8| {
+                if still {
+                    crate::qm::still_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+                } else {
+                    crate::qm::aom_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+                }
+            };
+            [
+                lvl(
+                    i32::from(base_qindex),
+                    self.hdr.min_qm_level,
+                    self.hdr.max_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.u_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.v_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+            ]
+        } else {
+            [15; 3]
+        };
+        qm_levels
+    }
+}

@@ -135,3 +135,20 @@ pub(super) fn dump_mvs(ref_frame: &ReferenceFrame) {
         }
     }
 }
+
+impl EncodePipeline {
+    pub(super) fn dump_recon10_bin(&self) {
+        #[cfg(feature = "std")]
+        if let Ok(prefix) = std::env::var("SVTAV1_RECON10_BIN") {
+            if let (Some(y), Some((u, v))) =
+                (self.last_recon10_y.as_ref(), self.last_recon10_uv.as_ref())
+            {
+                for (plane, samples) in [y, u, v].into_iter().enumerate() {
+                    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    std::fs::write(format!("{prefix}.p{plane}"), bytes)
+                        .expect("write native pre-filter reconstruction");
+                }
+            }
+        }
+    }
+}

@@ -698,3 +698,119 @@ impl EncodePipeline {
         Ok(pd0_min_sq)
     }
 }
+
+impl EncodePipeline {
+    pub(super) fn derive_ref_gm_field(
+        &self,
+        pic_decision: &Option<crate::port_picstruct::PicParams>,
+        primary_ref_frame_for_cdf: u8,
+    ) -> [svtav1_types::motion::WarpedMotionParams; 8] {
+        // C `pcs->child_pcs->ref_global_motion[]` (pic_manager_process.c:831):
+        // the PRIMARY-REF picture's own saved models, which every parameter is
+        // delta-coded against. An I_SLICE reference contributes IDENTITY, and
+        // so does `PRIMARY_REF_NONE` — the same slot the CDF continuation
+        // resolves, so the two cannot disagree about which picture this frame
+        // is coded against.
+        let ref_gm_field: [svtav1_types::motion::WarpedMotionParams; 8] =
+            if primary_ref_frame_for_cdf == crate::port_picstruct::PRIMARY_REF_NONE {
+                [svtav1_types::motion::WarpedMotionParams::default(); 8]
+            } else {
+                pic_decision
+                    .as_ref()
+                    .map(|p| p.rps.ref_dpb_index[primary_ref_frame_for_cdf as usize] as usize)
+                    .and_then(|slot| self.dpb.get(slot))
+                    .map_or(
+                        [svtav1_types::motion::WarpedMotionParams::default(); 8],
+                        |rf| rf.global_motion,
+                    )
+            };
+        ref_gm_field
+    }
+
+    pub(super) fn build_lpd1_frame(
+        &self,
+        sc_arm: crate::sc_detect::ScArm,
+        pic_decision: &Option<crate::port_picstruct::PicParams>,
+        pipeline_md_inputs: &Option<crate::inter_hdr_arm::PipelineMdInputs>,
+        md_config_signals: Option<crate::port_enc_mode_config::md_config::MdConfigSignals>,
+    ) -> Option<Lpd1FrameIn> {
+        let lpd1_frame = md_config_signals
+            .as_ref()
+            .zip(pipeline_md_inputs.as_ref())
+            .map(|(mc, p)| {
+                let enc_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
+                Lpd1FrameIn {
+                    pic_lpd1_lvl: mc.pic_lpd1_lvl,
+                    enc_mode,
+                    is_b_slice: pic_decision
+                        .as_ref()
+                        .is_some_and(|d| d.slice_type == crate::port_picstruct::SliceType::B),
+                    input_resolution: p.input_resolution,
+                    picture_qp: p.picture_qp,
+                    ref_list0_count_try: p.ref_list0_count_try,
+                    ref_list1_count_try: p.ref_list1_count_try,
+                    ref_skip_percentage: crate::inter_hdr_arm::ref_skip_percentage(p),
+                    use_best_me_unipred_cand_only: u8::from(
+                        enc_mode > crate::port_enc_mode_config::enc_mode::M1,
+                    ),
+                    merge_inter_cands_mult: if mc.nic_level >= 6 { 4 } else { u8::MAX },
+                    cand_reduction_level: mc.cand_reduction_level,
+                    rdoq_level: mc.rdoq_level,
+                    coeff_shaving_level: mc.coeff_shaving_level,
+                    me_subpel_level: mc.me_subpel_level,
+                    rate_est_level: mc.rate_est_level,
+                    approx_inter_rate: mc.approx_inter_rate,
+                    intra_level: mc.intra_level,
+                }
+            });
+        lpd1_frame
+    }
+
+    pub(super) fn derive_ref_min_max_sq(
+        &self,
+        pic_decision: &Option<crate::port_picstruct::PicParams>,
+        last_ref: &Option<alloc::sync::Arc<ReferenceFrame>>,
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        // `update_pred_th_offset`'s `use_ref_info` read
+        // (enc_dec_process.c:1611-1621) takes `ref_obj_l0`'s
+        // `sb_min_sq_size`/`sb_max_sq_size`, then — on a B slice with
+        // `ref_list1_count_try` and a same-size L1 reference — merges
+        // `MIN(min, l1_min)` / `MAX(max, l1_max)`. Unlike the depth-removal
+        // read above there is NO POC-adjacency gate. Owned vectors because
+        // the merge produces a new array; `None` on a key frame.
+        let ref_min_max_sq: Option<(Vec<u8>, Vec<u8>)> = last_ref
+            .as_ref()
+            .filter(|rf| {
+                self.superres_denom.is_none()
+                    || (rf.width == self.width as u32 && rf.height == self.height as u32)
+            })
+            .map(|rf| {
+                let mut mn = rf.sb_min_sq_size.clone();
+                let mut mx = rf.sb_max_sq_size.clone();
+                let l1 = pic_decision
+                    .as_ref()
+                    .filter(|p| {
+                        p.slice_type == crate::port_picstruct::SliceType::B
+                            && p.ref_list1_count_try > 0
+                    })
+                    .and_then(|p| {
+                        self.dpb
+                            .get(p.rps.ref_dpb_index[crate::port_picstruct::BWD] as usize)
+                    })
+                    .filter(|rf| {
+                        self.superres_denom.is_none()
+                            || (rf.width == self.width as u32 && rf.height == self.height as u32)
+                    });
+                if let Some(l1) = l1 {
+                    for (m, v) in mn.iter_mut().zip(l1.sb_min_sq_size.iter()) {
+                        *m = (*m).min(*v);
+                    }
+                    for (m, v) in mx.iter_mut().zip(l1.sb_max_sq_size.iter()) {
+                        *m = (*m).max(*v);
+                    }
+                }
+                (mn, mx)
+            });
+        ref_min_max_sq
+    }
+}

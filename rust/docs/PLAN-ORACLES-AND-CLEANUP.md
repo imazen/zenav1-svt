@@ -177,7 +177,7 @@ In dependency order:
     `run_entropy_walk` closure body, the TPL r0 block, the chroma and HBD
     source prep), each for its own reason: invalid code, a closure left
     `FnOnce`, moves out of borrowed values. They remain inline.
-  - Done (this change): the tangled three, `entropy_walk` (the body of the
+  - Done (`5d0a77ee`): the tangled three, `entropy_walk` (the body of the
     `run_entropy_walk` closure), `bd10_post_pass` and
     `build_inter_md_frame`, are ASSOCIATED fns that take the few `self` fields
     they touch as parameters (4, 6 and 8). Then a closure or a
@@ -185,6 +185,11 @@ In dependency order:
     of all of `self`. Moved to `pipeline/{walk_driver, bd10_post,
     inter_md_stage}.rs`. `pipeline.rs` is 4,950 lines; `encode_frame_impl` is
     4,055.
+  - Done (this change): 18 more stages, with the comments above each range
+    moving along with it. The three constants local to `encode_frame_impl`
+    that they share (`DLF_FAST_DECODE`, `SEQ_CDEF_LEVEL`, `CDEF_FAST_DECODE`)
+    are now module-level. `pipeline.rs` is 4,509 lines; `encode_frame_impl`
+    is 3,595.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting

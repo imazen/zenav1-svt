@@ -362,3 +362,76 @@ impl EncodePipeline {
         Ok((cdef_params, cdef_dist_dev))
     }
 }
+
+impl EncodePipeline {
+    pub(super) fn build_dlf_pick_inputs<'a>(
+        &self,
+        is_key: bool,
+        pic_decision: &Option<crate::port_picstruct::PicParams>,
+        frame_hier: u8,
+        base_qindex: u8,
+        dlf_resolution: crate::port_enc_mode_config::ResolutionRange,
+        dlf_temporal_layer_index: u8,
+        dlf_ctrls: crate::port_enc_mode_config::ctrls::DlfCtrls,
+        dlf_refs: &'a [crate::dlf_arm::RefDlfState],
+        dlf_avg_me_sad: u32,
+    ) -> crate::dlf_arm::DlfPickInputs<'a> {
+        let dlf_pick_inputs = crate::dlf_arm::DlfPickInputs {
+            ctrls: dlf_ctrls,
+            frame_type_is_key: is_key,
+            // `pcs->slice_type == I_SLICE`. This port has no intra-only
+            // non-key frame, so it equals `is_key`; C reads two fields and so
+            // does `DlfPickInputs`.
+            is_intra_slice: is_key,
+            // `frame_is_boosted` / `frame_is_leaf` come from the picture
+            // decision's `update_type`, the same source `cdef_frame_is_boosted`
+            // below already uses. A KEY frame is intra-only and KF_UPDATE, so
+            // boosted is true and leaf is false either way.
+            frame_is_boosted: pic_decision
+                .as_ref()
+                .map_or(is_key, crate::port_picstruct::frame_is_boosted),
+            frame_is_leaf: pic_decision
+                .as_ref()
+                .is_some_and(|pic| pic.update_type == crate::port_picstruct::FrameUpdateType::Lf),
+            hierarchical_levels: frame_hier,
+            temporal_layer_index: dlf_temporal_layer_index,
+            input_resolution: dlf_resolution,
+            refs: &dlf_refs,
+            avg_me_sad: dlf_avg_me_sad,
+            base_qindex,
+            bit_depth: self.bit_depth,
+        };
+        dlf_pick_inputs
+    }
+
+    pub(super) fn derive_cdef_level(
+        &self,
+        sc_derivation: crate::sc_detect::ScDerivation,
+        is_single_frame: bool,
+        dlf_resolution: crate::port_enc_mode_config::ResolutionRange,
+        dlf_is_base: bool,
+    ) -> u8 {
+        let cdef_level = if is_single_frame {
+            crate::port_enc_mode_config::cdef_search::cdef_search_level_allintra(
+                self.speed_config.preset as i8,
+                CDEF_FAST_DECODE,
+                dlf_resolution,
+                SEQ_CDEF_LEVEL,
+                sc_derivation.allow_intrabc,
+                crate::port_enc_mode_config::cdef_search::CONFIG_DEFAULT,
+            )
+        } else {
+            // The ladder's own `is_base` is `temporal_layer_index == 0`, which
+            // every KEY frame is — NOT the `frame_is_boosted` one the controls
+            // table below uses.
+            crate::port_enc_mode_config::cdef_search::cdef_search_level_default(
+                self.speed_config.preset as i8,
+                dlf_is_base,
+                SEQ_CDEF_LEVEL,
+                sc_derivation.allow_intrabc,
+                crate::port_enc_mode_config::cdef_search::CONFIG_DEFAULT,
+            )
+        };
+        cdef_level
+    }
+}

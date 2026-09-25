@@ -13,7 +13,8 @@ above it) moves verbatim, in source order, into `<file-stem>/<child>.rs` as
 
     impl <Type> { ...methods... }
 
-and the parent gains `mod <child>;` at the end of the file. A method in a
+and the parent gains `mod <child>;` at the end of the file. If the child
+already exists, the methods are appended to it as another `impl` block. A method in a
 child module's impl keeps full access to the type's private fields (privacy
 follows the module tree), so the only edit is visibility: a method with no
 `pub`/`pub(..)` becomes `pub(super)` — the reach it had before, the parent
@@ -65,14 +66,19 @@ def main():
         body += chunk + [""]
     out = path.parent / (path.stem if path.stem not in ("mod", "lib", "main") else "") / f"{child}.rs"
     out = pathlib.Path(str(out).replace("//", "/"))
-    if out.exists():
-        sys.exit(f"move_methods: {out} already exists")
+    block = header + "\n" + "\n".join(body).rstrip("\n") + "\n}\n"
+    existed = out.exists()
+    old = out.read_text() if existed else None
     out.parent.mkdir(exist_ok=True)
-    out.write_text("use super::*;\n\n" + header + "\n" + "\n".join(body).rstrip("\n") + "\n}\n")
+    # An existing child gains another `impl` block (Rust allows several).
+    out.write_text(old.rstrip("\n") + "\n\n" + block if existed else "use super::*;\n\n" + block)
     # Format BEFORE touching the parent: if the child does not parse, nothing
     # has been removed from the parent yet.
     if subprocess.run(["rustfmt", "--edition", "2024", str(out)]).returncode != 0:
-        out.unlink()
+        if existed:
+            out.write_text(old)
+        else:
+            out.unlink()
         sys.exit(f"move_methods: {out} does not parse; parent left unchanged")
 
     keep = []
@@ -85,7 +91,10 @@ def main():
     keep = [l for i, l in enumerate(lines) if i not in cut]
     while keep and keep[-1] == "":
         keep.pop()
-    keep += ["", f"mod {child};", ""]
+    if not existed:
+        keep += ["", f"mod {child};", ""]
+    else:
+        keep += [""]
     path.write_text("\n".join(keep))
     print(f"moved {len(spans)} methods ({sum(e - s for s, e, _ in spans)} lines) -> {out}")
 
