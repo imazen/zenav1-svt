@@ -180,7 +180,13 @@ Order, by expected size:
 
 ## Phase 6 — test structure
 
-T2 (in-crate differentials, shrinking the public API), T3 (one cell
-harness instead of 39 bash copies), T4 (stage-boundary differentials),
-T5 (never-panics sweep), T6 (no_std, tier and dead-code gates), T7 (inline
-tests out of product files).
+- [x] T5 (this change) never-panics sweep: `svtav1/tests/never_panics.rs`,
+  536 tiny encodes across geometry, depth, chroma, preset, qp, every
+  reference and mode, fork knobs, LD/RA video and all Zen enhancements, in
+  3 s. Measured 2026-09-25: 453 Ok, 83 explicit refusals, 0 panics; it
+  asserts an Ok floor of 440 against vacuity.
+- [ ] T2 in-crate differentials, shrinking the public API.
+- [ ] T3 one cell harness instead of 39 bash copies.
+- [ ] T4 stage-boundary differentials.
+- [ ] T6 no_std, tier and dead-code gates.
+- [ ] T7 inline tests out of product files.

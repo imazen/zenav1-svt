@@ -2193,9 +2193,6 @@ impl EncodePipeline {
             > = alloc::vec::Vec::with_capacity(mg_len + 1);
             member_stats.push(Some(alloc::boxed::Box::new(key.stats)));
             member_stats.extend(self.ra_stats.iter().take(mg_len).cloned());
-            #[cfg(feature = "std")]
-            std::eprintln!("TFDI frames={} mg_len={} members={:?}", frames.len(), mg_len,
-                pic.tf_window.as_ref().map(|w| w.members.iter().flatten().map(|m| m.index).collect::<alloc::vec::Vec<_>>()));
             let out = crate::port_tf_driver::ra_mctf_filter(
                 scs_tf,
                 /*centre_slot=*/ 0,
