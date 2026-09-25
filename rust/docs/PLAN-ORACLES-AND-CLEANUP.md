@@ -271,10 +271,13 @@ In dependency order:
     and neutral on large ones. The remainder is extra memcpy of values that the
     stage boundaries move or return by value. The FramePlan bundling below should
     remove it; re-measure with callgrind when it lands.
-  - Next: the phase calls pass 67 and 69 parameters (rust-analyzer's
-    explicit data flow). Bundle them into a `FramePlan` struct that setup
-    returns, so each phase reads named fields. Then `tile_walk.rs` (3,501,
-    one function) and the other files over 3 kloc.
+  - Done (this change): the 29 per-frame values both phases read are one
+    `Copy` struct, `pipeline::frame_shape::FrameShape`. It is built once
+    (none of them changes between the phases, checked), and each phase
+    destructures it on entry, so the phase bodies are unchanged. The calls go
+    from 70/78 to 41/49 parameters. Instructions are unchanged (callgrind
+    within 0.04%), so the +0.1..0.4% residue is NOT in the phase parameters;
+    it is still open.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting
