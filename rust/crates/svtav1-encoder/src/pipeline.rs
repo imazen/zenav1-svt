@@ -2576,267 +2576,42 @@ impl EncodePipeline {
             );
         }
 
-        let inter_md_frame = match (
-            frame_me.as_ref(),
+        let inter_md_frame = Self::build_inter_md_frame(
+            self.speed_config.preset,
+            self.bit_depth,
+            self.rc_config.qp,
+            self.mrp_ctrls.use_best_references,
+            self.hdr.tx_bias,
+            self.hdr.tune,
+            self.hdr.alt_ssim_tuning,
+            self.hdr.ac_bias,
+            &pic_decision,
+            md_lambda_base_update_type,
+            md_lambda_factor_update_type,
+            md_alt_lambda_factors,
+            lambda_mod_intra,
+            w,
+            h,
+            sb_input,
+            in_stride,
+            sc_derivation,
+            &frame_me,
+            base_qindex,
+            picture_qp,
+            delta_q_plan,
+            &primary_ref_cdfs,
+            sb_size,
             ref_padded_luma,
-            inter_syntax_state.as_ref(),
-            inter_mvp_env.as_ref(),
-            md_config_signals.as_ref(),
-            inter_cand_reduction.as_ref(),
-        ) {
-            (Some(me), Some(padded), Some(st), Some(env), Some(sigs), Some(cand_red)) => {
-                // §1s item 8, the inter half: the same `md_frame_context`
-                // the intra rate tables are built from.
-                let default_fc = crate::entropy::context::FrameContext::new_default();
-                let default_ic = crate::port_entropy_inter::InterCdfs::new_default();
-                let (fc, ic) = match primary_ref_cdfs.as_deref() {
-                    Some(prev) => (&prev.fc, &prev.fc.inter),
-                    None => (&default_fc, &default_ic),
-                };
-                let (fac, ref_fac) = crate::inter_md_arm::build_inter_rates(fc, ic);
-                // C `svt_aom_estimate_mv_rate` (md_rate_estimation.c:458-465):
-                // under `pcs->approx_inter_rate` the nmv cost tables are
-                // memset to zero and `nmvcoststack` repointed at them, so
-                // every MV prices at 0 in the motion searches.
-                let nmv = if sigs.approx_inter_rate != 0 {
-                    crate::intrabc::MvCostTables::zeroed()
-                } else {
-                    crate::inter_md_arm::nmv_cost_table(
-                        &fc.nmvc,
-                        crate::inter_mv_code::mv_precision(
-                            st.allow_high_precision_mv,
-                            st.force_integer_mv,
-                        ),
-                    )
-                };
-                let search = crate::inter_search_arm::frame_cfg(
-                    &crate::inter_search_arm::SearchFrameInputs {
-                        md_pme_level: sigs.md_pme_level,
-                        me_subpel_level: sigs.me_subpel_level,
-                        pme_subpel_level: sigs.pme_subpel_level,
-                        md_nsq_mv_search_level: sigs.md_nsq_mv_search_level,
-                        interpolation_search_level: sigs.interpolation_search_level,
-                        dist_based_ref_pruning: sigs.dist_based_ref_pruning,
-                        cli_qp: u32::from(self.rc_config.qp),
-                        // `ppcs->picture_qp` — `perform_md_reference_pruning`'s
-                        // check-closest threshold; inert while
-                        // `check_closest_multiplier` is 0 (level <= 3).
-                        picture_qp,
-                        // `set_qp_based_th_scaling_ctrls_default`
-                        // (enc_handle.c:3812) — 1 at every preset above
-                        // `ENC_MR`, which is every preset this port reaches
-                        // on the video arm.
-                        pme_qp_based_th_scaling: self.speed_config.preset > 0,
-                        base_q_idx: base_qindex,
-                        allow_high_precision_mv: st.allow_high_precision_mv,
-                        approx_inter_rate: sigs.approx_inter_rate,
-                        pic_width: w as u32,
-                        pic_height: h as u32,
-                    },
-                )
-                .ok_or_else(|| {
-                    whereat::at!(EncodeError::UnsupportedConfig(
-                        "a picture-level MD search level is outside the range its C control \
-                         table accepts (crate::inter_search_arm::frame_cfg)",
-                    ))
-                })?;
-                // `sharpness_ctrls.ifs` (enc_handle.c:3279-3285) arms the
-                // IFS smooth bias together with `pcs->ppcs->is_noise_level`
-                // (enc_inter_prediction.c:2166). `is_noise_level` IS derived
-                // (port_picstruct::tf_window_noise + the `:4240` stamps): C's
-                // `last_i_noise_levels_log1p_fp16` updates only inside
-                // `derive_tf_window_params`, which runs on no LD picture —
-                // the flag is 0 for the whole low-delay envelope on both
-                // sides — and is real under RA+TF. Every subjective-tune arm
-                // (`ifs`, `unipred_bias`, `cdef`, `restoration`) ANDs with
-                // it, so a 0 makes all of them inert — except
-                // `sharpness_ctrls.rdoq`, which is NOT noise-gated:
-                // `(use_sharpness || sharp_tx) && delta_q_present`
-                // (full_loop.c:1070). The port's `optimize_b` has no
-                // `use_sharpness` term, so a sharpness tune meeting a live
-                // delta-q plan diverges; and under is_noise_level = 1 the
-                // unipred/cdef/restoration arms are unwired. Refuse the
-                // union rather than guess either — the admitted surface is
-                // exactly where every arm is provably inert.
-                let sharp_tune =
-                    crate::tune::sharpness_ifs(self.hdr.tune, self.hdr.alt_ssim_tuning);
-                let is_noise = pic_decision.as_ref().is_some_and(|p| p.is_noise_level);
-                if sharp_tune && (is_noise || delta_q_plan.is_some()) {
-                    return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                        "subjective-tune sharpness arms (tune vq / film-grain, or alt-ssim \
-                         tuning) on an inter frame are supported only where they are inert: \
-                         is_noise_level == 0 (always true on low delay) and no delta-q plan \
-                         — this frame sets one, where C's unipred_bias/cdef/restoration or \
-                         `use_sharpness` rdoq arms fire and this port does not model them",
-                    )));
-                }
-                Some(crate::inter_md_arm::InterMdFrame {
-                    skip_mode_flag: st.skip_mode_flag,
-                    skip_mode_ref_frame_idx_0: st.skip_mode_ref_frame_idx_0,
-                    skip_mode_ref_frame_idx_1: st.skip_mode_ref_frame_idx_1,
-                    cand_reduction: *cand_red,
-                    wm_level: sigs.wm_level,
-                    bit_depth: self.bit_depth,
-                    padded,
-                    padded_by_ref: inter_padded_by_ref,
-                    // The SB-EXTENT-padded source, NOT `encode_input` at
-                    // stride `w`. C's MD searches read
-                    // `input_pic->y_buffer + blk_org_y * y_stride + blk_org_x`
-                    // over the BLOCK's full extent, and on a frame whose dims
-                    // are not a multiple of 64 a straddling block runs past
-                    // the aligned edge into C's replicated border
-                    // (`pad_input_picture` + `svt_aom_generate_padding`).
-                    // `sb_input` is that buffer and the port already reads PD0's
-                    // b64 variance and every straddling leaf's residual out of
-                    // it; wiring the inter search to the unpadded plane instead
-                    // was an out-of-bounds READ, not a different number.
-                    //
-                    // MEASURED 2026-09-02: the port PANICKED at
-                    // `port_md/md_search.rs`'s source gather ("the len is 5184
-                    // but the index is 5184", 5184 = 72*72) on 18 of the 96
-                    // grid cells — every 72x72 cell of uniform, diag and screen
-                    // content. For a 64-aligned frame `sb_input == encode_input`
-                    // and `in_stride == w`, so this is byte-neutral on the other
-                    // 72 cells by construction.
-                    src: sb_input,
-                    src_stride: in_stride,
-                    ref_frame_type_arr: &inter_ref_types,
-                    search,
-                    // The `md_subpel`-shape view of the same nmv storage —
-                    // `nmv`'s `approx_inter_rate` zero arm applies here too.
-                    search_tables: if sigs.approx_inter_rate != 0 {
-                        crate::intrabc::MvCostTables::zeroed()
-                    } else {
-                        crate::intrabc::build_nmv_cost_table(
-                            &fc.nmvc,
-                            crate::inter_mv_code::mv_precision(
-                                st.allow_high_precision_mv,
-                                st.force_integer_mv,
-                            ),
-                        )
-                    },
-                    me,
-                    fac,
-                    ref_fac,
-                    nmv,
-                    interpolation_filter: st.interpolation_filter,
-                    is_motion_mode_switchable: st.is_motion_mode_switchable,
-                    allow_warped_motion: st.allow_warped_motion,
-                    force_integer_mv: st.force_integer_mv,
-                    allow_high_precision_mv: st.allow_high_precision_mv,
-                    enable_dual_filter: st.enable_dual_filter,
-                    enable_masked_compound: st.enable_masked_compound,
-                    enable_jnt_comp: st.enable_jnt_comp,
-                    enable_interintra_compound: st.enable_interintra_compound,
-                    reference_mode_is_select: matches!(
-                        st.reference_mode,
-                        crate::port_entropy_inter::refframe::ReferenceMode::Select
-                    ),
-                    allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
-                    order_hint: crate::inter_md_arm::OrderHints {
-                        enable_order_hint: st.enable_order_hint,
-                        order_hint_bits: st.order_hint_bits,
-                        cur_order_hint: st.cur_order_hint,
-                        ref_order_hint: st.ref_order_hint,
-                    },
-                    mvp_env: env.mvp_env(),
-                    mi_rows: env.mi_rows,
-                    mi_cols: env.mi_cols,
-                    tile: env.tile,
-                    sb_mi_size: env.sb_mi_size,
-                    frame_w: w,
-                    frame_h: h,
-                    sb_size,
-                    gm_wmtype: st.gm_wmtype,
-                    global_motion: gm_field,
-                    gm_skip_identity,
-                    gm_enabled,
-                    // C `pcs->inter_compound_mode` — same signal derivation
-                    // as `pic_obmc_level` below.
-                    inter_compound_mode: md_config_signals
-                        .as_ref()
-                        .map_or(0, |sigs| sigs.inter_compound_mode),
-                    // C `pcs->inter_intra_level` — `svt_aom_get_inter_
-                    // intra_level`'s ladder, the input to
-                    // `set_inter_intra_ctrls` at injection.
-                    inter_intra_level: md_config_signals
-                        .as_ref()
-                        .map_or(0, |sigs| sigs.inter_intra_level),
-                    // C `pcs->hbd_md` (`sig_deriv_multi_processes_default`,
-                    // enc_mode_config.c:2151-2164): bd10 && preset<=MR → 1,
-                    // bd10 && preset<=M5 → 2 (`is_base` — a flat GOP makes
-                    // every frame base), else 0 on an inter frame. The
-                    // `hbd_mds` CLI override has no port input — it is
-                    // DEFAULT here. This is the depth the inter-intra and
-                    // masked-compound searches run at; the u16 arms are
-                    // live wherever the ladder returns non-zero.
-                    hbd_md: match self.bit_depth {
-                        10 if self.speed_config.preset <= -1 => 1,
-                        10 if self.speed_config.preset <= 5 => 2,
-                        _ => 0,
-                    },
-                    // The frame-owned mask tables C keeps file-scope
-                    // (`init_ii_masks` / `svt_av1_init_wedge_masks`): the
-                    // smooth inter-intra blends and the master wedge
-                    // table both searches and the masked compound arm
-                    // read.
-                    ii_masks: svtav1_dsp::port_interintra::IiMasks::new(),
-                    wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks::new(),
-                    // C `ppcs->pic_obmc_level`, straight off the mode-decision
-                    // signal derivation that already computes it.
-                    pic_obmc_level: md_config_signals
-                        .as_ref()
-                        .map_or(0, |sigs| sigs.pic_obmc_level),
-                    ifs: crate::inter_md_arm::IfsFrameKnobs {
-                        // `sharpness_ctrls.ifs && is_noise_level` — the
-                        // refusal above admits only `is_noise_level == 0`
-                        // frames under a sharpness tune, so this is 0 for
-                        // exactly the same reason C's gate is.
-                        smooth_bias: sharp_tune && is_noise,
-                        tx_bias: self.hdr.tx_bias > 0,
-                        // C `ppcs->picture_qp` — the index into
-                        // `ifs_smooth_bias` (enc_inter_prediction.c:2171);
-                        // the RC-derived value, not the CLI qp.
-                        picture_qp,
-                        // Inter picture, temporal layer 0 (hier_levels 0).
-                        ac_bias_eff: svtav1_dsp::ac_bias::effective_ac_bias(
-                            self.hdr.ac_bias,
-                            false,
-                            0,
-                        ),
-                    },
-                    base_update_type: md_lambda_base_update_type
-                        .expect("an inter frame always has a picture decision"),
-                    factor_update_type: md_lambda_factor_update_type,
-                    alt_lambda_factors: md_alt_lambda_factors,
-                    lambda_mod_intra,
-                    // C `scs->mrp_ctrls.use_best_references` + the
-                    // `determine_best_references` inputs — the per-block
-                    // `ctx->ref_frame_type_arr` rebuild gate.
-                    use_best_references: self.mrp_ctrls.use_best_references,
-                    temporal_layer_index: pic_decision
-                        .as_ref()
-                        .map_or(0, |p| p.temporal_layer_index),
-                    ref_list0_count_try: pic_decision
-                        .as_ref()
-                        .is_some_and(|p| p.ref_list0_count_try > 0),
-                    ref_list1_count_try: pic_decision
-                        .as_ref()
-                        .is_some_and(|p| p.ref_list1_count_try > 0),
-                    sframe_ref_pruned: pic_decision.as_ref().is_some_and(|p| p.sframe_ref_pruned),
-                    // C `pcs->ppcs->max_can_count` —
-                    // `svt_aom_get_max_can_count(enc_mode, rtc)`; the rtc
-                    // half is false on every config this port accepts
-                    // (the same `false` `sig_deriv_multi_processes`
-                    // passes at multi_processes.rs).
-                    max_can_count: crate::port_enc_mode_config::leaf::get_max_can_count(
-                        i8::try_from(self.speed_config.preset).unwrap_or(i8::MAX),
-                        false,
-                    ),
-                })
-            }
-            _ => None,
-        };
+            md_config_signals,
+            gm_field,
+            gm_skip_identity,
+            gm_enabled,
+            inter_cand_reduction,
+            &inter_syntax_state,
+            &inter_mvp_env,
+            inter_padded_by_ref,
+            &inter_ref_types,
+        )?;
 
         // C `av1_lambda_assign_md` (md_process.c:725) run PER SUPERBLOCK, as
         // `svt_aom_mode_decision_configure_sb` (md_process.c:796) calls it —
@@ -3366,364 +3141,49 @@ impl EncodePipeline {
             self.last_recon10_y = Some(cy);
             self.last_recon10_uv = Some((cu, cv));
         }
-        if self.bit_depth == 10 {
-            // The native level pass accepts depth-zero transforms, including
-            // filter-intra and directional prediction without edge filtering.
-            // Use the actual sequence-header tool value. Monochrome disables
-            // edge filtering; color's full-RD funnel handles lower presets.
-            let bd10_edge_filter = seq_tools.enable_intra_edge_filter;
-            // PARTIAL SB (2026-08-04): this used to be gated on
-            // `w % 64 == 0 && h % 64 == 0` with the rationale that
-            // "`tx_unit_hbd` is not partial-SB-aware". That named the wrong
-            // function — `tx_unit_hbd` takes explicit `(w, h, stride, off)` and
-            // is handed `rd: None` here, so it has no geometry term at all.
-            // The real exposure was in the CALLERS, and all of it is now fixed:
-            // `recon10` is SB-extent-sized (was ALIGNED-sized, so a straddling
-            // write ran past the buffer or wrapped a row), the recon writes are
-            // straddle-clipped like `commit_leaf`'s, the sources are the
-            // SB-extent-padded `sb_input`/`sb_chroma_owned` twins, and the Split
-            // arms walk quadrant SLOTS skipping off-frame origins instead of
-            // zipping a fixed `(type, len)` offset table that a pruned child
-            // list does not satisfy. See `bd10_reencode_luma` /
-            // `bd10_reencode_node`.
-            // HISTORICAL MEASUREMENT (task #94, before native luma context
-            // wiring below): the bd10 FULL-RD funnel also
-            // produces 10-bit coded levels, computed with each txb's REAL
-            // entropy contexts — whereas this post-pass hardcodes the RDOQ
-            // contexts to 0/0 (only correct where `real_coeff_ctx` is off).
-            // Skipping the post-pass in favour of the funnel's levels was
-            // therefore expected to be strictly better; it was A/B MEASURED on
-            // the p6 bd10 grid and is NOT (4/20 byte-exact with the post-pass,
-            // 3/20 without — `gradient 64x64 q12` regresses to a CDEF-strength
-            // divergence). So the post-pass stays authoritative for the coded
-            // levels until that is root-caused. The funnel's 10-bit levels are
-            // still live where the post-pass does not reach: the neighbour
-            // `cul` bytes that drive later blocks' coefficient contexts, and
-            // the u8 chroma recon the CDEF/LR searches read.
-            // The resulting gate remains: where the FULL-RD funnel ran, it
-            // ALREADY produced this frame's
-            // coded 10-bit levels and the committed 10-bit recon, computed
-            // with each txb's REAL entropy contexts. This level-only post-pass
-            // originally hardcoded RDOQ contexts to 0/0 — correct only where
-            // `real_coeff_ctx` is off — so letting it run on top REPLACED
-            // correct levels with ones quantized under the wrong contexts, and
-            // the recon it writes then disagrees with the bitstream the funnel
-            // decided. That is exactly the invariant `bd10_full_rd_supported`
-            // documents ("the winner's 10-bit levels ARE the coded ones, so
-            // the level-only re-encode post-pass is skipped"); it was
-            // documented but never actually implemented in this gate.
-            //
-            // MEASURED (bd10, 128x128 gradient, presets 3 and 5, q12/q32/q55):
-            // with both running, the port's 10-bit recon differs from C's by
-            // 8194-11766 bytes and the tile payload diverges; with the
-            // post-pass correctly skipped, the recon is byte-identical to C's
-            // `svt_aom_get_recon_pic` dump. The eff-M9 band (preset >= 9) is
-            // NOT full-RD, so the post-pass stays authoritative there — which
-            // is why removing it wholesale regressed that band (the A/B noted
-            // in docs/bd10-port-map.md) while removing it *conditionally* does
-            // not.
-            let bd10_full_rd = bd10_full_rd_supported(
-                coded_lossless,
-                self.bit_depth,
-                self.speed_config.preset,
-                chroma.is_some(),
-                is_key,
-                w,
-                h,
-            );
-            // `pcs->hbd_md` gates only the MD quantization depth
-            // (`is_islice ? 2 : 0` at M6+, `is_base ? 2 : 0` at M0..M5 —
-            // TRACED 2026-09-18: the johnny p6 cell's P-frame derives 0). The
-            // residual 10-bit re-quantize this post-pass models is C's at TWO
-            // different sites depending on `pic_bypass_encdec`:
-            // - bypass off (bd10 video <= M7): the ENCODE pass
-            //   (`av1_encode_loop` -> `svt_aom_quantize_inv_quantize` with
-            //   `is_encode_pass = true`, `ed_ctx->bit_depth =
-            //   encoder_bit_depth`).
-            // - bypass on (bd10 video M8+, `get_bypass_encdec_default`,
-            //   enc_mode_config.c:8426-8433): `encode_b` early-returns
-            //   through `update_b` and ships the MD-committed levels — but
-            //   `product_coding_loop.c:9649` first bumps `ctx->hbd_md = 2`
-            //   for `bypass_encdec && encoder_bit_depth > 8 &&
-            //   pd_pass == PD_PASS_1 && perform_md_recon`, so MDS3 itself
-            //   quantizes the winner at TRUE 10-bit (`full_lambda_md[
-            //   EB_10_BIT_MD]`). TRACED 2026-10-08 on vidyo4 p8: zero
-            //   `is_encode_pass` quantize calls, and the MD-side `lam`
-            //   equals the 10-bit chain exactly.
-            // Either way the coded coefficients are a 10-bit re-quantize of
-            // the committed TUs, so the post-pass runs in both modes.
-            let bd10_postpass_runs = !bd10_full_rd
-                && all_trees
-                    .iter()
-                    .all(|t| bd10_tree_supported(t, bd10_edge_filter, coded_lossless));
-            // `update_skip_ctx_dc_sign_ctx` for THIS arm — C gates the
-            // per-TU `get_txb_ctx` derivation (and its RDOQ input) on it
-            // (`rate_est_ctrls` at enc_mode_config.c:6428). `for_preset`
-            // bakes the allintra ladder (real ctx only <= M6); the video arm
-            // is a flat `rate_est_level = 1` (:8942), so P/B-frames derive
-            // REAL coefficient contexts at every preset — MEASURED on the
-            // vidyo4 p8 cell, where C's MDS3 quantize read tsc=2 on a
-            // split-TX TU whose coded left neighbour feeds the
-            // `skip_contexts` table.
-            let postpass_real_ctx =
-                crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(
-                    sc_arm,
-                    crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
-                ))
-                .1;
-            // Diagnostic: which 10-bit canvas the post-filter searches (DLF
-            // level, CDEF strength, Wiener LR) end up reading. The two
-            // producers — the FULL-RD funnel's committed per-block recon and
-            // this level-only post-pass — are gated differently, so "which one
-            // is live" is the first question any recon-parity investigation
-            // has to answer and it is not otherwise observable from outside.
-            #[cfg(feature = "std")]
-            if crate::dbgenv::bd10_postpass() {
-                let unsupported = all_trees
-                    .iter()
-                    .filter(|t| !bd10_tree_supported(t, bd10_edge_filter, coded_lossless))
-                    .count();
-                eprintln!(
-                    "BD10_POSTPASS runs={bd10_postpass_runs} \
-                     unsupported_sbs={unsupported}/{} edge_filter={bd10_edge_filter}",
-                    all_trees.len()
-                );
-            }
-            if let Some(cq) = c_quant.as_ref().filter(|_| bd10_postpass_runs) {
-                let shift = (self.bit_depth - 8) as u32;
-                // Task #6 chunk 1: the REAL 10-bit source when the caller
-                // entered through `try_encode_frame_*_hbd` (so the coded
-                // levels carry the low 2 bits), else the `u8 << shift`
-                // widening this site always did.
-                // It is the SB-EXTENT-padded plane (`sb_input` / `hbd_sb_owned`
-                // at `in_stride`), not the aligned one: a straddling leaf's
-                // residual gather reads the full block width. Identical to the
-                // aligned plane on every 64-aligned frame, where
-                // `sb_input == encode_input` and `in_stride == w`.
-                let src10: alloc::vec::Vec<u16> = match hbd_sb_owned
-                    .as_ref()
-                    .map(|(y, _, _)| y)
-                    .or_else(|| hbd_source.as_ref().map(|h| &h.y))
-                {
-                    Some(y10) => {
-                        debug_assert_eq!(y10.len(), sb_input.len());
-                        hbd_used = true;
-                        y10.clone()
-                    }
-                    None => sb_input.iter().map(|&s| (s as u16) << shift).collect(),
-                };
-                // bd10 ENCODE-PASS lambda (C `pic_full_lambda[EB_10_BIT_MD]`,
-                // assigned in `reset_enc_dec` via `svt_aom_lambda_assign(..,
-                // EB_TEN_BIT, base_q_idx, multiply_lambda = true)`,
-                // enc_dec_process.c:184-188). That is `compute_rd_mult` at
-                // 10 bits — the update-type base multiplier + the
-                // `rd_frame_type_factor[1]` row + scale — then `*= 16`. It
-                // does NOT take `av1_lambda_assign_md`'s `lambda_weight` or
-                // `lambda_mod_intra` (md_process.c:730-753): those are the MD
-                // ladders, and this post-pass models EncDec.
-                //
-                // On a key frame `kf_full_lambda_bd10` computes the same
-                // chain with the KF base multiplier (3.3) — equal to
-                // `lambda_assign` here once `pcs->lambda_weight` is 0, which
-                // is every measured key-frame cell; keep the proven call.
-                let lambda_bd10 = u64::from(if is_key || coded_lossless {
-                    crate::pd0::kf_full_lambda_bd10(
-                        base_qindex,
-                        picture_qp as u32,
-                        self.speed_config.preset,
-                    )
-                } else {
-                    // `ed_ctx->md_ctx->full_lambda_md[EB_10_BIT_MD]` — the
-                    // `av1_lambda_assign_md` chain, NOT `pic_full_lambda`:
-                    // coding_loop.c:436 hands the encode-pass quantizer the
-                    // MD lambda, so `lambda_weight`/`lambda_mod_intra` DO
-                    // apply (at q40 the weight is 150 → λ ×1.17).
-                    crate::pd0::inter_full_lambda_bd10(
-                        base_qindex,
-                        md_lambda_base_update_type
-                            .expect("an inter frame always has a picture decision"),
-                        md_lambda_factor_update_type,
-                        md_alt_lambda_factors,
-                        0,
-                        lambda_mod_intra,
-                        crate::pd0::frame_lambda_weight_for_preset(
-                            self.speed_config.preset,
-                            picture_qp as u32,
-                            self.hdr.tune == crate::tune::TUNE_IQ,
-                            lw_bump,
-                        ),
-                    )
-                });
-                // `ed_ctx->md_skip_blk` (coding_loop.c:387/464): C's encode
-                // pass force-zeroes every TU — luma AND chroma — when MD
-                // committed the block as skip. The chroma pass runs after the
-                // luma walk overwrites the leaf eobs, so the funnel's
-                // commitment is collected into this set on the way through.
-                let mut committed_skip: alloc::collections::BTreeSet<(u32, u32)> =
-                    alloc::collections::BTreeSet::new();
-                let recon10 = bd10_reencode_luma(
-                    &mut all_trees,
-                    sb_cols,
-                    sb_size,
-                    &tile_grid,
-                    w,
-                    h,
-                    &src10,
-                    in_stride,
-                    base_qindex,
-                    cq.rdoq_level,
-                    lambda_bd10,
-                    cq.allintra_rd_mult,
-                    postpass_real_ctx,
-                    bd10_edge_filter,
-                    self.bit_depth,
-                    qm_levels[0],
-                    self.hdr.sharpness,
-                    // The DPB's reference pictures, whose 10-bit twin the INTER
-                    // arm predicts from. `None` on a key frame, where no leaf
-                    // can be inter.
-                    inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
-                    // The encode-pass RDOQ rate table is estimated from
-                    // `pcs->md_frame_context`, seeded from the primary ref's
-                    // saved CDFs (enc_dec_process.c:2817 +
-                    // md_config_process.c:292) — same source as `fun_rates`.
-                    primary_ref_cdfs.as_deref(),
-                    &mut committed_skip,
-                    // Per-SB `full_lambda_md[EB_10_BIT_MD]` — C's encode pass
-                    // re-runs `av1_lambda_assign_md` for every superblock
-                    // (mode_decision_configure_sb), so the RDOQ lambda varies
-                    // by SB through `me_q_index - base_q_idx` even with
-                    // `delta_q_present == 0`.
-                    sb_inter_lambda.as_deref(),
-                    // Per-SB `rdoq_ctrls->enabled` — the light-PD1 encode arm
-                    // can turn RDOQ off where `pcs->rdoq_level` kept it
-                    // (`sig_deriv_enc_dec_light_pd1_default`, lpd1 > L4 →
-                    // level 0). Uniform `rdoq_level != 0` on key frames, so
-                    // the stills gates are byte-inert.
-                    Some(&sb_enc_rdoq),
-                )?;
-                // bd10 CHROMA re-encode (task #94): recompute chroma levels at
-                // bd10 too — the luma pass above leaves chroma at the u8 MD
-                // decision, which diverges on content whose subsampled chroma
-                // carries a coded residual (e.g. `diag`). Gated identically
-                // (complete-SB + bd10_tree_supported, which rejects CfL /
-                // directional-uv-with-edge-filter). Flat-chroma content
-                // (gradient/uniform) re-encodes to the same zero result, so bd8
-                // and the existing bd10 gate cells stay byte-unchanged. Chroma
-                // qindex == base_qindex in mainline (all FH chroma deltas 0),
-                // matching the walk's `base_q_idx` chroma coding.
-                if let Some((u_src, v_src)) = sb_chroma_owned.as_ref() {
-                    // Task #6 chunk 1: real 10-bit chroma when supplied. Both
-                    // sides are the SB-extent shape (`sb_chroma_owned` /
-                    // `hbd_sb_owned`), which is the untouched aligned chroma on
-                    // a 64-aligned frame — so the two planes match
-                    // element-for-element either way.
-                    let hbd_uv = hbd_sb_owned
-                        .as_ref()
-                        .map(|(_, u, v)| (u, v))
-                        .or_else(|| hbd_source.as_ref().map(|h| (&h.u, &h.v)))
-                        .filter(|(u, _)| !u.is_empty());
-                    let (u10, v10): (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) = match hbd_uv {
-                        Some((hu, hv)) => {
-                            debug_assert_eq!(hu.len(), u_src.len());
-                            hbd_used = true;
-                            (hu.clone(), hv.clone())
-                        }
-                        None => (
-                            u_src.iter().map(|&s| (s as u16) << shift).collect(),
-                            v_src.iter().map(|&s| (s as u16) << shift).collect(),
-                        ),
-                    };
-                    // The pass's residual gather reads the full TX width at
-                    // `cstride`, so a right-straddle TU on an `acw`-strided
-                    // plane WRAPS into the next row's real samples. C reads
-                    // its chroma picture at a border-inclusive stride whose
-                    // pad holds the replicated right edge
-                    // (`svt_aom_generate_padding16_bit`, resize.c:1064 —
-                    // `pad_input_pictures` on the non-resize path). Give the
-                    // source the same SB-extent-stride, edge-replicated shape
-                    // the funnel builds at `padded_chroma10`
-                    // (~pipeline.rs:14106). MEASURED: uniform 128 q20 d10 at
-                    // p9/p10/p13 — C coded a chroma txb the next-row read
-                    // quantized to eob 0 (27B vs C's 28B OBU, ±1 chroma LSB
-                    // in the right-region recon).
-                    let cstride = fmt.chroma_width(w.div_ceil(sb_size) * sb_size);
-                    let (u10, v10) = if cstride != acw {
-                        let md_ch = fmt.chroma_height(h.div_ceil(sb_size) * sb_size);
-                        (
-                            pad_plane_replicate_u16(&u10, acw, acw, ach, cstride, md_ch)?,
-                            pad_plane_replicate_u16(&v10, acw, acw, ach, cstride, md_ch)?,
-                        )
-                    } else {
-                        (u10, v10)
-                    };
-                    let uv10 = bd10_reencode_chroma(
-                        &mut all_trees,
-                        sb_cols,
-                        sb_size,
-                        &tile_grid,
-                        w,
-                        h,
-                        &u10,
-                        &v10,
-                        cstride,
-                        // The 10-bit LUMA recon the pass above just produced —
-                        // the CfL AC source for UV_CFL_PRED leaves. C reads the
-                        // same thing (`cfl_temp_luma_recon16bit`), and it is
-                        // fully committed here because the luma re-encode walks
-                        // the entire frame before chroma starts.
-                        &recon10,
-                        w,
-                        // base_qindex sources the frame-level coeff-rate context
-                        // (`cfc`); qindex_u/qindex_v drive the per-plane chroma
-                        // quant tables (== base in mainline). See the fn doc.
-                        base_qindex,
-                        qindex_u,
-                        qindex_v,
-                        cq.rdoq_level,
-                        lambda_bd10,
-                        cq.allintra_rd_mult,
-                        postpass_real_ctx,
-                        bd10_edge_filter,
-                        self.bit_depth,
-                        [qm_levels[1], qm_levels[2]],
-                        self.hdr.sharpness,
-                        inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
-                        primary_ref_cdfs.as_deref(),
-                        &committed_skip,
-                        sb_inter_lambda.as_deref(),
-                        Some(&sb_enc_rdoq),
-                    )?;
-                    // Crop the SB-extent canvases to the in-frame planes every
-                    // downstream consumer expects (the bd10 deblock-level /
-                    // CDEF-strength / Wiener-LR searches compare them against
-                    // `w*h` and `(w>>ss_x)*(h>>ss_y)` sources at the ALIGNED stride).
-                    // The canvases are `cstride`-strided (== `acw` on a
-                    // 64-aligned frame, where the crop degenerates to a prefix).
-                    let mut cu = svtav1_types::try_vec![0u16; acw * ach]?;
-                    let mut cv = svtav1_types::try_vec![0u16; acw * ach]?;
-                    for r in 0..ach {
-                        cu[r * acw..(r + 1) * acw]
-                            .copy_from_slice(&uv10.0[r * cstride..r * cstride + acw]);
-                        cv[r * acw..(r + 1) * acw]
-                            .copy_from_slice(&uv10.1[r * cstride..r * cstride + acw]);
-                    }
-                    self.last_recon10_uv = Some((cu, cv));
-                }
-                self.last_recon10_y = Some(recon10[..w * h].to_vec());
-            }
-            // At hbd_md == 0 (non-I-slice, enc_mode > M5 — the `is_key`/`is_base`
-            // terms C encodes in `pcs->hbd_md`, TRACED 2026-09-18) C's mode
-            // decision runs entirely on the MSB-truncated u8 picture — the u16
-            // source's consumption IS that truncation
-            // (`svt_convert_8bit_to_16bit` is a plain copy, pack_unpack_c.c:198;
-            // the 16-bit pipeline then carries 0..255 values). Mark it consumed
-            // so the no-silent-truncation guard does not fire on exactly the
-            // frames where truncation is the C-faithful behavior.
-            if hbd_source.is_some() && !is_key && !bd10_full_rd {
-                hbd_used = true;
-            }
-        }
+        Self::bd10_post_pass(
+            self.bit_depth,
+            self.speed_config.preset,
+            self.hdr.sharpness,
+            self.hdr.tune,
+            &mut self.last_recon10_y,
+            &mut self.last_recon10_uv,
+            chroma,
+            &hbd_source,
+            &mut hbd_used,
+            is_key,
+            sc_arm,
+            md_lambda_base_update_type,
+            md_lambda_factor_update_type,
+            md_alt_lambda_factors,
+            lambda_mod_intra,
+            w,
+            h,
+            fmt,
+            acw,
+            ach,
+            sb_input,
+            in_stride,
+            &sb_chroma_owned,
+            hbd_sb_owned,
+            base_qindex,
+            picture_qp,
+            lw_bump,
+            coded_lossless,
+            &primary_ref_cdfs,
+            &c_quant,
+            sb_size,
+            sb_cols,
+            tile_grid,
+            qindex_u,
+            qindex_v,
+            qm_levels,
+            seq_tools,
+            inter_md_frame,
+            sb_inter_lambda,
+            sb_enc_rdoq,
+            &mut all_trees,
+        )?;
 
         crate::stop_check(&stop)?;
 
@@ -3838,358 +3298,53 @@ impl EncodePipeline {
             Vec<u8>,
             u8,
         )> {
-            let (mut u_recon, mut v_recon) = if chroma.is_some() {
-                (
-                    svtav1_types::try_vec![128u8; ext_cbuf]?,
-                    svtav1_types::try_vec![128u8; ext_cbuf]?,
-                )
-            } else {
-                (Vec::new(), Vec::new())
-            };
-            // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
-            // recorded in coding order (== the decoder's parse order).
-            // SHARED across every tile (absolute-position indexed,
-            // deblock.rs): deblock/CDEF/LR apply post-tile-merge at frame
-            // scope, unaffected by tile-row boundaries, so this — like
-            // u_recon/v_recon above — is allocated ONCE and each tile's
-            // walk below only ever writes its own rows into it.
-            let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h, lr_true_w, lr_true_h);
-            // Mode/skip context tracking at 4x4 granularity — frame-wide
-            // sizing (not tile-height): block coords (bx, by) passed to
-            // encode_partition_tree are ABSOLUTE frame positions, so a
-            // fresh EntropyCtx sized to the whole frame keeps those
-            // indices valid across every tile while still giving the
-            // C-exact "above unavailable at tile top" reset (a fresh
-            // EntropyCtx starts every array at its unavailable/default
-            // state — exactly entropy_coding_reset_neighbor_arrays,
-            // ec_process.c:60-67).
-            let w4 = w.div_ceil(4);
-            let h4 = h.div_ceil(4);
-
-            debug_assert_eq!(
-                all_trees.len(),
-                sb_cols * sb_rows,
-                "tree count {} != SB count {}x{}={}",
-                all_trees.len(),
+            Self::entropy_walk(
+                self.speed_config.preset,
+                self.superres_denom,
+                self.chroma_format,
+                self.bit_depth,
+                chroma,
+                &stop,
+                is_key,
+                sc_arm,
+                &pic_decision,
+                w,
+                h,
+                n,
+                &sb_chroma_owned,
+                sc_derivation,
+                frame_tx_mode_select,
+                base_qindex,
+                delta_q_plan,
+                md_sb_qindex,
+                &primary_ref_cdfs,
+                &c_quant,
+                sb_size,
                 sb_cols,
                 sb_rows,
-                sb_cols * sb_rows,
-            );
-
-            // One independent entropy walk PER TILE ROW (task #86): C
-            // resets every tile to a fresh FrameContext (`primary_ref_
-            // frame == PRIMARY_REF_NONE` always holds for KEY frames) and
-            // fresh neighbor-context arrays before its own arithmetic
-            // coder starts (`reset_entropy_coding_picture`,
-            // ec_process.c:72-117) — mirrored here by constructing fresh
-            // writer/frame_ctx/coeff_fc/ectx/lr_refs per tile_idx.
-            //
-            // Task #96: and per tile COLUMN too. The tile group's tile
-            // order is raster over the grid (row-major), which is the
-            // order a decoder consumes the size-prefixed payloads in.
-            let mut tile_bitstreams: Vec<Vec<u8>> = Vec::with_capacity(tile_grid.num_tiles());
-            for tile_idx in 0..tile_grid.num_tiles() {
-                // Feature 1: byte-inert cooperative-cancellation check, once per
-                // tile of each entropy re-walk (this closure runs up to 3x).
-                if stop.may_stop() {
-                    stop.check()
-                        .map_err(EncodeError::from)
-                        .map_err(whereat::at)?;
-                }
-                let (tile_sb_row_start, tile_sb_row_end) =
-                    tile_grid.row_span(tile_idx / tile_grid.tile_cols);
-                let (tile_sb_col_start, tile_sb_col_end) =
-                    tile_grid.col_span(tile_idx % tile_grid.tile_cols);
-
-                let mut writer = crate::entropy::writer::AomWriter::new(n + 256);
-                // CDF updates enabled — matches the frame header's disable_cdf_update=0.
-                //
-                // C `reset_entropy_coding_picture` (ec_process.c:101-112) does
-                // this per TILE, and so does this loop: with
-                // `primary_ref_frame != PRIMARY_REF_NONE` every tile starts
-                // from the SAME restored reference context (not from the
-                // previous tile's end state), which is what makes tiles
-                // independently decodable.
-                let (mut frame_ctx, mut coeff_fc) = match primary_ref_cdfs.as_ref() {
-                    Some(prev) => (prev.fc.clone(), prev.coeff.clone()),
-                    // C-exact coefficient CDFs for the base_q_idx bucket
-                    // (svt_av1_default_coef_probs semantics) — qindex domain.
-                    None => (
-                        crate::entropy::context::FrameContext::new_default(),
-                        crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
-                    ),
-                };
-                let mut ectx = EntropyCtx::new(
-                    w4,
-                    h4,
-                    seq_tools.enable_filter_intra,
-                    // The SAME bit the frame header writes — see
-                    // `EntropyCtx::tx_mode_select`.
-                    frame_tx_mode_select,
-                    sc_derivation.allow_screen_content_tools,
-                    self.bit_depth,
-                    self.chroma_format
-                        .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420),
-                );
-                // IBC chunk 1: arm the per-block use_intrabc flag coding
-                // (C write_intrabc_info gate) from the same sc derivation
-                // that set the FH bit — signaling and coding MUST agree or
-                // the stream is undecodable.
-                ectx.allow_intrabc = sc_derivation.allow_intrabc;
-                // The frame-level inter syntax the pack's inter arm reads
-                // (docs/INTER-ENCODE-PLAN.md §1s item 7). `None` on a key
-                // frame, where the arm is unreachable.
-                ectx.inter_syntax = inter_syntax_state.clone();
-                // C `update_b`'s accumulators, armed on the VIDEO arm only —
-                // C's own gate is `!pcs->scs->allintra` (coding_loop.c:1603),
-                // a SEQUENCE flag, so both frame types of a video encode
-                // accumulate and no allintra cell does. That is what keeps
-                // the still envelope untouched by construction.
-                ectx.coded_area =
-                    matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }).then(|| {
-                        CodedAreaAcc::new(
-                            // C `frm_hdr->allow_high_precision_mv`, from the
-                            // same derivation the header signals. FALSE on a
-                            // key frame, where `inter_syntax_state` is `None`
-                            // and no block carries an MV anyway.
-                            inter_syntax_state
-                                .as_ref()
-                                .is_some_and(|st| st.allow_high_precision_mv),
-                            sb_size,
-                            w.div_ceil(sb_size),
-                            h.div_ceil(sb_size),
-                            h.div_ceil(4) as i32,
-                            w.div_ceil(4) as i32,
-                            // C `coding_loop.c:1748`:
-                            // `scs->mfmv_enabled && slice_type != I_SLICE &&
-                            //  ppcs->is_ref`. `mfmv_enabled` is
-                            // `svt_aom_set_mfmv_config`'s sequence flag, which
-                            // `md_config_inputs` already derives as
-                            // `enc_mode <= ENC_M10`; `is_ref` is the picture
-                            // decision's. On a key frame `md_config_signals`
-                            // is `None`, which is C's `I_SLICE` arm.
-                            md_config_signals.is_some()
-                                && self.speed_config.preset <= 10
-                                && pic_decision.as_ref().is_some_and(|p| p.is_ref),
-                            inter_ref_frame_side,
-                        )
-                    });
-                if let Some(env) = inter_mvp_env.clone() {
-                    ectx.arm_inter_mvp(env);
-                }
-                // Task #86: this tile's own top row — gates "above"
-                // availability in tx_size_ctx and (via chroma_pass's
-                // encode_chroma_block_dc calls below) chroma prediction.
-                ectx.tile_top_px = tile_sb_row_start * sb_size;
-                // Task #96: ditto for this tile's own left column.
-                ectx.tile_left_px = tile_sb_col_start * sb_size;
-                // Same rect in LUMA mi, ends included, for the MD
-                // prediction path. Ends are clamped to the frame exactly
-                // like C's av1_tile_set_{col,row}
-                // (`AOMMIN(mi_col_end, cm->mi_params.mi_cols)`).
-                ectx.tile_mi = crate::intra_edge::TileMi {
-                    mi_row_start: tile_sb_row_start * sb_size / 4,
-                    mi_row_end: (tile_sb_row_end * sb_size / 4).min(h4),
-                    mi_col_start: tile_sb_col_start * sb_size / 4,
-                    mi_col_end: (tile_sb_col_end * sb_size / 4).min(w4),
-                };
-                // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
-                // (C prev_qindex tile-init); uniform plan = every SB at base.
-                if let Some(res) = delta_q_res_signal {
-                    ectx.delta_q_state = Some((res, i32::from(base_qindex), sb_size));
-                    ectx.delta_q_sb_qindex = i32::from(base_qindex);
-                }
-                let mut chroma_pass = sb_chroma_owned.as_ref().map(|(u_src, v_src)| ChromaPass {
-                    u_src: u_src.as_slice(),
-                    v_src: v_src.as_slice(),
-                    u_recon: &mut u_recon,
-                    v_recon: &mut v_recon,
-                    stride: cw,
-                    qindex_u,
-                    qindex_v,
-                    qm_u: qm_levels[1],
-                    qm_v: qm_levels[2],
-                    c_quant: c_quant.as_deref(),
-                    ref_uv: ref_padded_luma
-                        .and_then(|p| p.uv.as_ref())
-                        .map(|(u, v)| (u, v)),
-                    sb_size,
-                    frame_w: w,
-                    frame_h: h,
-                });
-                // LR tap references reset at the tile start (C
-                // svt_av1_reset_loop_restoration, ec_process.c:199).
-                let mut lr_refs = crate::restoration::LrWalkRefs::default();
-                let mut prev_sb_row = usize::MAX;
-
-                for sb_row in tile_sb_row_start..tile_sb_row_end {
-                    // Feature 1: byte-inert cooperative-cancellation check, once
-                    // per SB row of the entropy walk.
-                    if stop.may_stop() {
-                        stop.check()
-                            .map_err(EncodeError::from)
-                            .map_err(whereat::at)?;
-                    }
-                    for sb_col in tile_sb_col_start..tile_sb_col_end {
-                        crate::stop_check(&stop)?;
-                        let sb_idx = sb_row * sb_cols + sb_col;
-                        let tree = &all_trees[sb_idx];
-                        // Per-SB delta-q / TPL: the SB's qindex drives the
-                        // delta symbol (only when `delta_q_present` armed the
-                        // state), the chroma dequant, and (via the search,
-                        // which used the same map) the coded coefficients.
-                        // `md_sb_qindex` is the QUANT map — live under
-                        // `r0_delta_qp_md` even when nothing is signalled.
-                        if let Some(plan) = md_sb_qindex {
-                            let sbq = i32::from(plan.sb_qindex[sb_idx]);
-                            if delta_q_plan.is_some() {
-                                ectx.delta_q_sb_qindex = sbq;
-                            }
-                            if let Some(cp) = chroma_pass.as_mut() {
-                                cp.qindex_u =
-                                    (sbq + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
-                                cp.qindex_v =
-                                    (sbq + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
-                            }
-                        }
-                        let bx = sb_col * sb_size;
-                        let by = sb_row * sb_size;
-
-                        // Reset left partition context at the start of each SB row,
-                        // matching rav1d's per-tile-row left context reset.
-                        if sb_row != prev_sb_row {
-                            ectx.reset_left_for_sb_row();
-                            prev_sb_row = sb_row;
-                        }
-
-                        // Arm the per-SB cdef_idx emission (C write_cdef resets
-                        // cdef_transmitted at the SB's top-left, then the first
-                        // non-skip block emits `cdef_bits` literal bits). 64x64
-                        // SBs: one filter block per SB.
-                        // C write_cdef resets `cdef_transmitted[4]` at the
-                        // SB top-left, then each 64x64 quadrant's first
-                        // non-skip block emits its own literal. The strength
-                        // is read off the B64 grid (C's mbmi at
-                        // `(mi & ~15)`), which is what `fb_idx` is indexed
-                        // by — NOT by the SB grid. At SB64 the two grids
-                        // coincide and only quadrant 0 is ever used, so this
-                        // reduces exactly to the previous
-                        // `fb_idx[sb_row * nhfb + sb_col]`.
-                        ectx.cdef_sb = cdef_walk.and_then(|p| {
-                            (p.bits > 0).then(|| {
-                                let fb_per_sb = sb_size / 64;
-                                let mut strengths = [0u8; 4];
-                                for (q, st) in strengths.iter_mut().enumerate() {
-                                    let fbc = sb_col * fb_per_sb + (q & 1);
-                                    let fbr = sb_row * fb_per_sb + (q >> 1);
-                                    // Off-frame quadrants of a partial SB
-                                    // code nothing, so their slot is never
-                                    // read; 0 keeps the lookup total.
-                                    *st = p
-                                        .fb_idx
-                                        .get(fbr * p.nhfb + fbc)
-                                        .copied()
-                                        .filter(|_| fbc < p.nhfb)
-                                        .unwrap_or(0);
-                                }
-                                CdefSbState {
-                                    bits: p.bits,
-                                    strengths,
-                                    transmitted: [false; 4],
-                                    sb128: sb_size == 128,
-                                }
-                            })
-                        });
-
-                        // Loop-restoration coefficients for every RU cornered in
-                        // this SB — BEFORE the SB's partition tree, matching the
-                        // decoder's read order.
-                        if let Some(info) = lr {
-                            crate::restoration::write_lr_for_sb(
-                                &mut writer,
-                                &mut frame_ctx,
-                                info,
-                                &mut lr_refs,
-                                (by / 4) as i32,
-                                (bx / 4) as i32,
-                                (sb_size / 4) as i32,
-                                // TRUE dims: the RU grid / corner computation is
-                                // coded off the coded frame size, not the aligned
-                                // grid (byte-neutral when 8-aligned).
-                                lr_true_w,
-                                lr_true_h,
-                                chroma.is_none(),
-                                self.superres_denom,
-                            );
-                        }
-
-                        encode_partition_tree(
-                            tree,
-                            &mut writer,
-                            &mut frame_ctx,
-                            &mut coeff_fc,
-                            base_qindex,
-                            &mut ectx,
-                            is_key,
-                            bx,
-                            by,
-                            &mut chroma_pass,
-                            &mut deblock_geom,
-                            recon_only,
-                        );
-                    }
-                }
-
-                tile_bitstreams.push(writer.done().to_vec());
-                // C `enc_dec_process.c:3166-3170`: each EncDec context's
-                // coded-area totals are summed into the picture under
-                // `pcs->intra_mutex`. One tile per context here.
-                // The recon-only walk keeps NO coded-area / CDF state: its
-                // sums would be re-added by the bit-producing walk that
-                // follows, inflating `intra_area`/`skip_area`/`hp_area` past
-                // C's single `update_b` pass. (This is also the latent fix
-                // for the pre-split walks double-merging on re-walk frames —
-                // only ONE bit-producing walk now runs per frame.)
-                if !recon_only && let Some(acc) = ectx.coded_area.as_ref() {
-                    let mut slot = frame_coded_area.borrow_mut();
-                    match slot.as_mut() {
-                        Some(f) => f.merge(acc),
-                        None => *slot = Some(acc.clone()),
-                    }
-                }
-                // See `walk_end_cdfs`: overwritten per tile AND per walk, so
-                // it ends holding the last tile of the last walk — C's own
-                // "last tile wins" save order.
-                if !recon_only {
-                    *walk_end_cdfs.borrow_mut() = Some(crate::port_frame_cdf::FrameCdfs {
-                        fc: frame_ctx,
-                        coeff: coeff_fc,
-                    });
-                }
-            }
-
-            // Shared derivation for the frame header's tile_info() trailer
-            // AND the tile group's size prefixes — computed once from the
-            // real per-tile byte lengths so the two can never disagree
-            // (see tile_size_bytes_minus_1_for's doc comment).
-            let non_last_lens: Vec<usize> = tile_bitstreams
-                [..tile_bitstreams.len().saturating_sub(1)]
-                .iter()
-                .map(|t| t.len())
-                .collect();
-            let tile_size_bytes_minus_1 =
-                crate::entropy::obu::tile_size_bytes_minus_1_for(&non_last_lens);
-
-            Ok((
-                crate::entropy::obu::build_tile_group_multi(
-                    &tile_bitstreams,
-                    tile_size_bytes_minus_1,
-                ),
-                deblock_geom,
-                u_recon,
-                v_recon,
-                tile_size_bytes_minus_1,
-            ))
+                ref_padded_luma,
+                tile_grid,
+                chroma_deltas,
+                qindex_u,
+                qindex_v,
+                delta_q_res_signal,
+                qm_levels,
+                seq_tools,
+                md_config_signals,
+                &inter_syntax_state,
+                inter_ref_frame_side,
+                &inter_mvp_env,
+                &all_trees,
+                cw,
+                ext_cbuf,
+                lr_true_w,
+                lr_true_h,
+                &frame_coded_area,
+                &walk_end_cdfs,
+                lr,
+                cdef_walk,
+                recon_only,
+            )
         };
         // Whether the walk's side effects (the recon planes + deblock
         // geometry) are consumed downstream: the CDEF search (when this
@@ -5786,3 +4941,9 @@ mod recon_output;
 
 mod diagnostics;
 use diagnostics::*;
+
+mod walk_driver;
+
+mod bd10_post;
+
+mod inter_md_stage;

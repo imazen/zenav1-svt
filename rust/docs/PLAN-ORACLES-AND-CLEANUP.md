@@ -170,13 +170,21 @@ In dependency order:
     stages take `&self` and hand their `self` writes back to the caller
     (`search_restoration`). `build_inter_md_frame` and `bd10_post_pass` are
     left inline until they can take the specific fields they borrow.
-  - Done (this change): 12 more stages move to `pipeline/{md_setup,
+  - Done (`bd3962ec`): 12 more stages move to `pipeline/{md_setup,
     loop_filters, recon_output, diagnostics}.rs`, so the debug dumps sit in
     `diagnostics.rs` (S7). `pipeline.rs` is 5,788 lines;
     `encode_frame_impl` is 4,900. rust-analyzer failed on four ranges (the
     `run_entropy_walk` closure body, the TPL r0 block, the chroma and HBD
     source prep), each for its own reason: invalid code, a closure left
     `FnOnce`, moves out of borrowed values. They remain inline.
+  - Done (this change): the tangled three, `entropy_walk` (the body of the
+    `run_entropy_walk` closure), `bd10_post_pass` and
+    `build_inter_md_frame`, are ASSOCIATED fns that take the few `self` fields
+    they touch as parameters (4, 6 and 8). Then a closure or a
+    returned borrow pins only those fields, as the inline code did, instead
+    of all of `self`. Moved to `pipeline/{walk_driver, bd10_post,
+    inter_md_stage}.rs`. `pipeline.rs` is 4,950 lines; `encode_frame_impl` is
+    4,055.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting
