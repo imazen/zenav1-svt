@@ -431,3 +431,52 @@ hand-maintained CDF lists (see "Cleanup").
 QM-PSNR is the one item both upstreams now carry. It is the natural next
 libaom-derived experiment, and it would come from the fork's C, not
 libaom's.
+
+### Should the oracle track Ghost Robot directly? (measured 2026-09-25)
+
+What Ghost Robot (`9dabe3ca`) is: mainline v4.2.0 (`9292ec8e`, an
+ancestor) plus 217 commits. Matched by subject against upstream
+`gitlab.com/AOMediaCodec/SVT-AV1` (head `73ec3ee7`, 2026-09-24), 144 of
+those are **unreleased mainline master** (of 157 on master since v4.2.0;
+mainline has tagged nothing since v4.2.0). The other 73 are fork-only
+(45 by the fork maintainer).
+
+**Mainline master brings real output changes.** A rough split of the 144:
+- ~71 SIMD/perf (bit-exact by intent);
+- 24 test/build;
+- 14 RTC or low-delay;
+- ~35 others, of which at least these change output:
+  - `1e3da1d7`, "Fix HBD Hadamard overflow in all-intra MDS0", which lands
+    in 10-bit all-intra, this port's 10-bit still surface;
+  - `8b1f9a0d`, "In loop filters bug fixes", which changes how the
+    sequence header's `enable_restoration` flag is derived;
+  - `507025f6` (PD1/LPD1 switch);
+  - `ccdfdb09` (fractional CRF above 63);
+  - `0c1c4dec` (removes luma bias).
+
+**The fork rewrites history.** Chromedome (`8d13912d`) is not an ancestor
+of the fork's `main`: each release is rebased. The fork's tags `v4.1.0` and
+`v4.2.0` point at its own releases and shadow mainline's tag names. Pin
+by commit SHA, never by branch or tag name.
+
+**Tune numbering.** Ghost Robot has `TUNE_VMAF = 5`,
+`TUNE_FILM_GRAIN = 6`, the same as the hybrid, so the port's
+`TUNE_FILM_GRAIN = 5` is wrong under every candidate oracle.
+
+**Consequences of tracking it:**
+- It retires the in-house `SVT_HDR_MODE` hybrid (`3115c0c1b`); the port's
+  runtime `is_fork()` switch already plays that role.
+- The mainline parity target must move to the same base: pristine mainline
+  at the master commit Ghost Robot sits on. Otherwise the mainline and fork
+  references disagree in shared code. "v4.2.0" claims in README.md, the
+  `Mainline420` variant name and the refusal strings would all change.
+- Every byte-identity gate needs re-measuring (8-bit 1100, bd10 photo 191,
+  nonflat 309, bd10 video 24), and the port must absorb the output-changing
+  mainline commits above. That is work a future mainline 4.3/5.0 would
+  force anyway.
+
+**The alternative** keeps v4.2.0 and cherry-picks only the 73 fork-only
+commits, as was done for Chromedome. It preserves the v4.2.0 claim but
+keeps a private C fork alive. It also conflicts wherever fork commits build
+on mainline master work: the fused ac-bias/Hadamard kernels
+(`9144140a`) sit on master's `svt_psy_distortion` and Hadamard commits.
