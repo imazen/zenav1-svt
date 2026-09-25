@@ -57,8 +57,12 @@ SCREEN_GRID = {"-1": ["base", "ie", "ru", "st"],
                # ladders keep at least one screen tool live, so the
                # AomScreenTools fill (which requires BOTH dead) never fires
                # and cells are byte-identical. p8 is the first preset in its
-               # active zone.
-               "8": ["base", "st"]}
+               # active zone; p8/10/12 were added after the lead's review.
+               "8": ["base", "st"], "10": ["base", "st"], "12": ["base", "st"]}
+# Lead's follow-up: st at the active presets on ONE image per photo class
+# (the first row of each class in the subset TSV), both tunes.
+PHOTO_HI_GRID = {"8": ["base", "st"], "10": ["base", "st"],
+                 "12": ["base", "st"]}
 # Everything that could leak in from the caller's environment and silently
 # change an arm. Arms re-add only what they arm.
 ENV_STRIP = re.compile(r"^(SVTAV1_|SVT_|SVT$)")
@@ -231,7 +235,10 @@ def main():
     rows = [l.split("\t") for l in SUBSET.read_text().splitlines() if l.strip()]
     srows = [("gb82-sc", f"codec-corpus/gb82-sc/{p.name}")
              for p in sorted(SCREEN_DIR.glob("*.png"))]
-    jobs = jobs_for(rows, PHOTO_GRID) + jobs_for(srows, SCREEN_GRID)
+    seen = set()
+    one_per_class = [r for r in rows if not (r[0] in seen or seen.add(r[0]))]
+    jobs = (jobs_for(rows, PHOTO_GRID) + jobs_for(srows, SCREEN_GRID)
+            + jobs_for(one_per_class, PHOTO_HI_GRID))
     done = set()
     if CSV.exists():
         for l in CSV.read_text().splitlines()[1:]:
@@ -322,6 +329,7 @@ def analyze():
                          wall=float(f[7]), cpu=float(f[8]),
                          s=float(f[9]) if f[9] else float("nan"),
                          py=float(f[10]) if f[10] else float("nan"),
+                         sha=f[11] if len(f) > 11 else "",
                          err=f[12] if len(f) > 12 else ""))
     good = [r for r in rows if not r["err"]]
     bad = [r for r in rows if r["err"]]
@@ -336,15 +344,22 @@ def analyze():
     print(f"{'class':>6} {'tune':>4} {'p':>3} {'arm':>5} "
           f"{'BDs2 mean':>9} {'p25':>7} {'p50':>7} {'p75':>7} "
           f"{'BDpy mean':>9} {'p25':>7} {'p50':>7} {'p75':>7} "
-          f"{'n':>3} {'win':>4} {'loss':>4} {'cpuRatio':>9} {'err':>4}")
+          f"{'n':>3} {'win':>4} {'loss':>4} {'cpuRatio':>9} "
+          f"{'ident':>9} {'err':>4}")
     for k, tune, p, arm in combos:
         bd_s, bd_p, ratio, win, loss = [], [], [], 0, 0
         imgs = sorted({key[1] for key in g if key[0] == k and key[2] == tune
                        and key[4] == p})
+        nident = ncmp = 0
         for img in imgs:
             a = g.get((k, img, tune, arm, p))
             b = g.get((k, img, tune, "base", p))
-            if not a or not b or len(a) < 3 or len(b) < 3:
+            if not a or not b:
+                continue
+            for q in set(a) & set(b):
+                ncmp += 1
+                nident += a[q].get("sha") and a[q]["sha"] == b[q]["sha"]
+            if len(a) < 3 or len(b) < 3:
                 continue
             v = bdrate(a, b, "s")
             if v is None:
@@ -371,7 +386,8 @@ def analyze():
               f"{sum(bd_p)/len(bd_p):9.3f} {pct(bd_p,25):7.3f} "
               f"{pct(bd_p,50):7.3f} {pct(bd_p,75):7.3f} "
               f"{len(bd_s):>3} {win:>4} {loss:>4} "
-              f"{sum(ratio)/len(ratio):9.3f} {derr:>4}")
+              f"{sum(ratio)/len(ratio):9.3f} "
+              f"{nident}/{ncmp:>4} {derr:>4}")
 
 
 if __name__ == "__main__":

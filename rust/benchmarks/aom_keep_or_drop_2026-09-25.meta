@@ -1,7 +1,7 @@
 Snapshot 2026-09-25 (i265): keep-or-drop RD measurement of the three
 previously-unmeasured libaom-derived `ZenEnhancement` variants —
 `AomIntraEdgeFilter` (ie), `AomRestorationUnitSearch` (ru),
-`AomScreenTools` (st). 7092 cells, 0 encode errors, 0 decode errors,
+`AomScreenTools` (st). 10080 cells, 0 encode errors, 0 decode errors,
 0 dimension mismatches. Evidence for the lead's keep/drop call; no
 recommendation beyond the numbers.
 
@@ -10,15 +10,15 @@ host:   i265 — Intel; wall = GNU time %e, cpu = %U+%S around each
         under run-heavy --mem 8G --jobs 6.
 build:  release `identity_run` built from c2f1ffc7eab8 + the new
         SVTAV1_ZEN_RESTORATION_UNIT_SEARCH hook (the hook itself landed
-        as c72955d1 on later main). All 7092 cells used this one binary —
+        as c72955d1 on later main). All cells used this one binary —
         internally consistent. The build predates the concurrent
         refactor/four-variant-removal series on main; the three measured
         arms are independent opt-in flags unaffected by that removal.
-data:   benchmarks/aom_keep_or_drop_2026-09-25.csv (7092 rows)
+data:   benchmarks/aom_keep_or_drop_2026-09-25.csv (10080 rows)
         benchmarks/aom_keep_or_drop_sweep_2026-09-25.py (harness +
         `analyze` mode that produced every number below)
         streams persisted by sha256: ~/tmp/aom-keep-or-drop-2026-09-25/
-        (3512 unique .obu, 57 MB)
+        (4632 unique .obu, 79 MB)
 
 ===================== 1. SWEEP DESIGN =====================
 
@@ -40,10 +40,14 @@ this workspace and ~/tmp was written.
 Screen class = codec-corpus/gb82-sc (local checkout, 10 PNGs;
 gmessages at the gates' crop@384,384 content window).
 
-Arms (each vs its own base at the same class/tune/preset/qp):
+Arms (each vs its own base at the same class/tune/preset/qp), briefed
+grid:
   photo: p-1 {base, ie, ru, ie+ru ("both"), st};  p6 {base, st}
   screen: p-1 {base, ie, ru, st};  p4 {base, st};  p6 {base, st}
-  supplemental: screen p8 {base, st} — see §3 note on why.
+Lead follow-up (st was byte-identical everywhere in the briefed grid —
+its fill requires BOTH ladder tools dead, which first happens at p8):
+  screen: p8/p10/p12 {base, st}   — all 10 gb82-sc images
+  photo:  p8/p10/p12 {base, st}   — first image of each of the 21 classes
   x tune {t1 default, t3 = SVTAV1_TUNE=3}
 Env arms: ie=SVTAV1_ZEN_INTRA_EDGE_FILTER=1,
 ru=SVTAV1_ZEN_RESTORATION_UNIT_SEARCH=1, st=SVTAV1_SCREEN_TOOLS=1.
@@ -52,39 +56,48 @@ BD-rate: per image, log-rate vs quality linear interpolation between qp
 points, 40-sample integral over the common quality range (same method as
 still_image_tune_v1_analyze_bd.py). win/loss = per-image BD < −0.3% /
 > +0.3%. cpuRatio = mean over images of Σ cpu_ms(arm)/Σ cpu_ms(base)
-over the 9 qps. err = encode+decode failures (0 everywhere).
+over the 9 qps. ident = cells byte-identical to base / cells compared.
+err = encode+decode failures (0 everywhere).
 
 ===================== 2. RESULTS =====================
 
-  class tune   p   arm  BDs2 mean    p25     p50     p75 | BDpy mean    p25     p50     p75 |  n win loss cpu
-  photo   t1  -1  both    +0.33  -0.91   +0.03   +0.90 |   +0.51  -0.17   +0.00   +0.67 | 42  19  20  1.09
-  photo   t1  -1  ie      +0.35  -0.90   +0.12   +1.07 |   +0.53  -0.13   +0.01   +0.67 | 42  18  20  1.04
-  photo   t1  -1  ru      -0.01  -0.01    0.00   +0.01 |   -0.03  -0.02    0.00    0.00 | 42   0   1  1.05
-  photo   t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
-  photo   t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
-  photo   t3  -1  both    +1.04  -0.35   +0.50   +1.18 |   +0.33  -0.13   +0.05   +0.63 | 42  11  25  1.13
-  photo   t3  -1  ie      +1.05  -0.35   +0.51   +1.18 |   +0.36  -0.08   +0.07   +0.62 | 42  11  26  1.04
-  photo   t3  -1  ru      +0.07  -0.01    0.00    0.00 |   -0.04  -0.03   -0.00    0.00 | 42   0   1  1.09
-  photo   t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
-  photo   t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00
-  screen  t1  -1  ie      +0.95  -0.55   +0.91   +2.55 |   +0.62  +0.20   +0.60   +0.97 | 10   5   5  1.02
-  screen  t1  -1  ru      +0.00   0.00    0.00    0.00 |   +0.01   0.00    0.00    0.00 | 10   0   0  1.02
-  screen  t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
-  screen  t1   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
-  screen  t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97
-  screen  t1   8  st     -22.99 -25.02  -22.30  -19.87 |  -28.85 -34.59  -31.88  -24.54 | 10   9   0  1.31
-  screen  t3  -1  ie      -0.20  -0.46   -0.22   +0.11 |   +0.59  +0.24   +0.52   +1.07 | 10   5   2  1.01
-  screen  t3  -1  ru      -0.00   0.00    0.00    0.00 |   +0.00   0.00    0.00    0.00 | 10   0   0  1.03
-  screen  t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00
-  screen  t3   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97
-  screen  t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.99
-  screen  t3   8  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.98
+  class tune   p   arm  BDs2 mean    p25     p50     p75 | BDpy mean    p25     p50     p75 |  n win loss cpu    ident
+  photo   t1  -1  both    +0.33  -0.91   +0.03   +0.90 |   +0.51  -0.17   +0.00   +0.67 | 42  19  20  1.09    0/378
+  photo   t1  -1  ie      +0.35  -0.90   +0.12   +1.07 |   +0.53  -0.13   +0.01   +0.67 | 42  18  20  1.04    0/378
+  photo   t1  -1  ru      -0.01  -0.01    0.00   +0.01 |   -0.03  -0.02    0.00    0.00 | 42   0   1  1.05  316/378
+  photo   t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00  378/378
+  photo   t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00  378/378
+  photo   t1   8  st      -4.02  -2.05    0.00    0.00 |   -5.32  -0.01    0.00    0.00 | 21   6   0  1.08  135/189
+  photo   t1  10  st      -6.22  -3.68    0.00    0.00 |   -7.34  -2.08    0.00    0.00 | 21   6   0  1.14  135/189
+  photo   t1  12  st      -6.22  -3.68    0.00    0.00 |   -7.34  -2.08    0.00    0.00 | 21   6   0  1.11  135/189
+  photo   t3  -1  both    +1.04  -0.35   +0.50   +1.18 |   +0.33  -0.13   +0.05   +0.63 | 42  11  25  1.13    0/378
+  photo   t3  -1  ie      +1.05  -0.35   +0.51   +1.18 |   +0.36  -0.08   +0.07   +0.62 | 42  11  26  1.04    0/378
+  photo   t3  -1  ru      +0.07  -0.01    0.00    0.00 |   -0.04  -0.03   -0.00    0.00 | 42   0   1  1.09  314/378
+  photo   t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00  378/378
+  photo   t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 42   0   0  1.00  378/378
+  photo   t3   8  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 21   0   0  1.01  189/189
+  photo   t3  10  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 21   0   0  0.99  189/189
+  photo   t3  12  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 21   0   0  1.02  189/189
+  screen  t1  -1  ie      +0.95  -0.55   +0.91   +2.55 |   +0.62  +0.20   +0.60   +0.97 | 10   5   5  1.02    0/90
+  screen  t1  -1  ru      +0.00   0.00    0.00    0.00 |   +0.01   0.00    0.00    0.00 | 10   0   0  1.02   88/90
+  screen  t1  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00   90/90
+  screen  t1   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00   90/90
+  screen  t1   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97   90/90
+  screen  t1   8  st     -22.99 -25.02  -22.30  -19.87 |  -28.85 -34.59  -31.88  -24.54 | 10   9   0  1.31    9/90
+  screen  t1  10  st     -28.89 -37.39  -29.22  -25.62 |  -36.60 -41.99  -41.04  -37.57 | 10   9   0  1.98    9/90
+  screen  t1  12  st     -28.89 -37.39  -29.22  -25.62 |  -36.60 -41.99  -41.04  -37.57 | 10   9   0  1.49    9/90
+  screen  t3  -1  ie      -0.20  -0.46   -0.22   +0.11 |   +0.59  +0.24   +0.52   +1.07 | 10   5   2  1.01    0/90
+  screen  t3  -1  ru      -0.00   0.00    0.00    0.00 |   +0.00   0.00    0.00    0.00 | 10   0   0  1.03   89/90
+  screen  t3  -1  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00   90/90
+  screen  t3   4  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.97   90/90
+  screen  t3   6  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.99   90/90
+  screen  t3   8  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.98   90/90
+  screen  t3  10  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  1.00   90/90
+  screen  t3  12  st       0.00   0.00    0.00    0.00 |    0.00   0.00    0.00    0.00 | 10   0   0  0.99   90/90
 
-Byte-identity vs base (same class/tune/preset/qp), confirming the zeros:
-  ie:   0/378 photo + 0/90 screen cells identical — always active.
-  ru:   314-316/378 photo, 88-89/90 screen — mostly inert, small diffs.
-  st:   100% identical at p-1/4/6 everywhere; 9/90 at p8 t1; 90/90 at
-        p8 t3.
+(p10 == p12 rows: the fill clamps palette to its M10 video-ladder level
+and IntraBC to M9's, so both presets get the same tool config and emit
+the same streams.)
 
 ===================== 3. READ =====================
 
@@ -98,33 +111,35 @@ Byte-identity vs base (same class/tune/preset/qp), confirming the zeros:
   photo and ~98% of screen cells; median BD 0.000 on both axes in every
   arm, means within ±0.07%. Costs +1.6..+9% encode time for no measured
   gain on this grid.
-- **AomScreenTools**: byte-identical in every cell of the *briefed*
-  grid — the arm only fills palette/IntraBC when the allintra ladder
-  killed BOTH (sc_class5 && palette_level==0 && intrabc_level==0),
-  which first happens at preset 8; at p-1/4/6 at least one tool is
-  already on, so the arm is structurally inert there. The supplemental
-  screen p8 arm measures its active zone: under default tune it saves
-  −23.0% mean / −22.3% median ssim2 BD and −28.8% mean / −31.9% median
-  PSNR-Y BD, improving 9/10 images, at +31% encode time. Under tune IQ
-  at p8 it is again byte-identical — the IQ bundle's
-  screen_content_mode=3 already derives tools at min(preset,7), leaving
-  no dead-tool state to fill. On photos it cannot act unless the screen
-  detector fires.
+- **AomScreenTools**: NOT inert — but only where designed to act. In the
+  briefed grid (p-1/4/6) it is byte-identical in 100% of cells: the fill
+  requires the allintra ladder to have killed BOTH palette and IntraBC,
+  which first happens at p8. In its active zone under default tune it is
+  a large win on real screen content — gb82-sc p8: −23.0% mean ssim2 BD
+  (−22.3% median), −28.8% mean PSNR-Y BD (−31.9% median); p10/p12:
+  −28.9% / −36.6% mean ssim2/PSNR-Y BD — 9/10 images improve, none
+  regress, at +31%..+98% encode time. On photos it fires only where the
+  screen detector fires: the 6 winning classes at p8-12 are exactly the
+  document/screenshot ones (nps brochures, noaa docs, patent scans,
+  plots, mobile + web screenshots); the 15 photo classes stay
+  byte-identical, 0 regressions. Under tune IQ it is byte-identical at
+  EVERY preset — the IQ bundle's screen_content_mode=3 already derives
+  the tools at min(preset,7), leaving no dead-tool state to fill.
 
 ===================== 4. HONEST LIMITS =====================
 
-- All-intra 512×512 crops only; presets -1/4/6/8 (and photo p6); no
-  inter claims. Screen n=10; per-image spreads are small-sample.
-- Two quality axes only (ssim2 0-100, PSNR-Y). The st@p8/t1 win is on
-  screenshot content where palette/IntraBC are designed to pay; its
-  cost on non-screen content at p8+ is unmeasured (detector-gated by
-  design, and at p-1/4/6 it is a proven no-op on photos).
+- All-intra 512×512 crops only; presets -1/4/6/8/10/12 (and photo p6);
+  no inter claims. Screen n=10; the p8-12 photo arm is 1 image/class
+  (n=21); per-image spreads are small-sample.
+- Two quality axes only (ssim2 0-100, PSNR-Y). The st wins are on
+  detector-positive (screen) content where palette/IntraBC are designed
+  to pay; on detector-negative photos it is a proven no-op at every
+  measured preset.
 - The first sweep run produced 4788 ENC-ERR rows on the 38 LFS-pointer
   inputs (PNG decode InvalidSignature — a harness/data issue, not an
   encoder fault); after materializing the objects those cells encoded
   and decoded clean, and the committed CSV contains only the final
-  deduped 7092 rows. Reproducing the photo arm needs
+  deduped 10080 rows. Reproducing the photo arm needs
   ~/tmp/aom_kod_images/ (or a materialized imazen-26-png-v3).
-- Encode-time ratios are wall/cpu of a spawned-process cell incl.
-  ~40-90 ms decode/PNG work per cell excluded — they measure the
-  identity_run encode process only.
+- Encode-time ratios measure the identity_run encode process only
+  (GNU time U+S around the spawn).
