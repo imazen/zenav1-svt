@@ -204,6 +204,24 @@ fn variance_diff_parts_impl_v3(
         }
         (s, t)
     };
+    // Whole 16-byte rows: no scalar tail and no per-row range arithmetic.
+    if width.is_multiple_of(16) && height > 0 && a_stride >= width && b_stride >= width {
+        let rows = a[..(height - 1) * a_stride + width]
+            .chunks(a_stride)
+            .zip(b[..(height - 1) * b_stride + width].chunks(b_stride));
+        let mut acc = zero;
+        for (ra, rb) in rows {
+            let (ca, _) = ra[..width].as_chunks::<16>();
+            let (cb, _) = rb[..width].as_chunks::<16>();
+            for (av, bv) in ca.iter().zip(cb) {
+                acc = fold(acc, av, bv);
+            }
+        }
+        return (
+            u64::from(acc.0.reduce_add() as u32),
+            i64::from(acc.1.reduce_add()),
+        );
+    }
     let mut acc = zero;
     let mut sse: u64 = 0;
     let mut sum: i64 = 0;
@@ -797,6 +815,41 @@ fn sse_impl_v3(
     height: usize,
 ) -> u64 {
     use magetypes::simd::generic::{i32x8, u8x32};
+    // Blocks of at most 128x128: the per-lane i32 sums (width*height/8
+    // squares of at most 255^2, 1.07e9) cannot overflow, so there is no drain
+    // and no per-row bookkeeping — at these sizes the row overhead, not the
+    // arithmetic, was the cost.
+    if width * height <= 128 * 128 && height > 0 && src_stride >= width && ref_stride >= width {
+        let rows = src[..(height - 1) * src_stride + width]
+            .chunks(src_stride)
+            .zip(ref_[..(height - 1) * ref_stride + width].chunks(ref_stride));
+        if width == 16 {
+            let mut acc = magetypes::simd::generic::i32x4::splat(token, 0);
+            for (s, r) in rows {
+                let a = magetypes::simd::generic::u8x16::load(token, s[..16].try_into().unwrap());
+                let b = magetypes::simd::generic::u8x16::load(token, r[..16].try_into().unwrap());
+                let d_lo = a.widen_low().bitcast_i16x8() - b.widen_low().bitcast_i16x8();
+                let d_hi = a.widen_high().bitcast_i16x8() - b.widen_high().bitcast_i16x8();
+                acc = acc + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+            }
+            return u64::from(acc.reduce_add() as u32);
+        }
+        if width.is_multiple_of(32) {
+            let mut acc = i32x8::splat(token, 0);
+            for (s, r) in rows {
+                let (sc, _) = s[..width].as_chunks::<32>();
+                let (rc, _) = r[..width].as_chunks::<32>();
+                for (a, b) in sc.iter().zip(rc) {
+                    let av = u8x32::load(token, a);
+                    let bv = u8x32::load(token, b);
+                    let d_lo = av.widen_low().bitcast_i16x16() - bv.widen_low().bitcast_i16x16();
+                    let d_hi = av.widen_high().bitcast_i16x16() - bv.widen_high().bitcast_i16x16();
+                    acc = acc + d_lo.madd_adjacent(d_lo) + d_hi.madd_adjacent(d_hi);
+                }
+            }
+            return u64::from(acc.reduce_add() as u32);
+        }
+    }
     if width >= 32 {
         // Direct 32-byte row loads — no staging copies. `widen_low` /
         // `widen_high` cover all 32 pixels; each `madd_adjacent` lane sums a
@@ -1382,6 +1435,17 @@ mod dispatch_tests {
             }
             for (sb, rb, w, h, e) in &bigs {
                 assert_eq!(sse(sb, *w, rb, *w, *w, *h), *e, "drain w{w} h{h}");
+            }
+            // The no-drain fast path's ceiling (width * height == 128 * 128)
+            // at the maximum difference.
+            for &(w, h) in &[(16usize, 1024usize), (32, 512), (64, 256), (128, 128)] {
+                let sb = alloc::vec![0u8; w * h];
+                let rb = alloc::vec![255u8; w * h];
+                assert_eq!(
+                    sse(&sb, w, &rb, w, w, h),
+                    255u64 * 255 * (w * h) as u64,
+                    "no-drain ceiling w{w} h{h}"
+                );
             }
         });
         assert!(

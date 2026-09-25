@@ -1,0 +1,22 @@
+Snapshot 2026-09-25 (i265): sse / variance_diff row overhead (v3 tier).
+
+Same cell and finding shape as perf_residual_pd0scratch_2026-09-25.meta: at
+1024x1024 gradient qp40 p10 (still) the port's `variance::sse` ran 13,584
+calls at 796 Ir/call against C's `svt_spatial_full_distortion_kernel_avx2` at
+13,584 calls and 194 Ir/call. Per-row slicing, a zero-length scalar tail loop
+and a drain counter cost more than the arithmetic.
+
+- sse (v3): blocks of at most 128x128 (per-lane i32 sums cannot overflow:
+  width*height/8 squares of at most 255^2 = 1.07e9) skip the drain; 16-wide
+  and multiple-of-32 widths walk rows with no per-row range arithmetic.
+  A max-difference test at the ceiling (16x1024, 32x512, 64x256, 128x128) was
+  added next to the existing drain cases.
+- variance_diff (v3): widths that are multiples of 16 walk whole rows the same
+  way, with no scalar tail.
+
+output: byte-identical (.obu cmp at the profiled cell)
+
+callgrind Ir, 1024 p10:
+  sse            10,812,112 -> 6,571,776
+  variance_diff   6,988,512 -> 4,665,024
+  total         336,290,577 -> 329,726,815   (-1.95%)
