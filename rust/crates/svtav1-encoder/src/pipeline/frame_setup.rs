@@ -547,7 +547,13 @@ impl EncodePipeline {
                 // which is exactly `ScArm::Allintra` here; `rtc` is never set by
                 // this port. Video frames therefore weight CHROMA rate at 20,
                 // not 13.
-                cq.allintra_rd_mult = matches!(sc_arm, crate::sc_detect::ScArm::Allintra);
+                //
+                // Ghost Robot 0c1c4dec ("Remove Luma bias") drops the
+                // `[allintra || rtc]` index entirely — the fork's
+                // `plane_rd_mult` IS this port's row [1] ({17,13}/{16,10})
+                // for every frame, so the arm is always "allintra" under it.
+                cq.allintra_rd_mult = matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                    || self.reference == crate::reference::SvtReference::GhostRobot;
                 Some(alloc::sync::Arc::new(cq))
             } else if let Some(me) = frame_me.as_ref() {
                 // The INTER frame's coding quantizer (docs/INTER-ENCODE-PLAN.md
@@ -611,7 +617,10 @@ impl EncodePipeline {
                 cq.input_coeff_level = coeff_lvl;
                 // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046):
                 // an inter frame is never `allintra`, so chroma rate weighs 20.
-                cq.allintra_rd_mult = false;
+                // Ghost Robot 0c1c4dec removes that index — the fork's flat
+                // `plane_rd_mult` (this port's row [1]) applies on video too.
+                cq.allintra_rd_mult =
+                    self.reference == crate::reference::SvtReference::GhostRobot;
                 Some(alloc::sync::Arc::new(cq))
             } else {
                 None
