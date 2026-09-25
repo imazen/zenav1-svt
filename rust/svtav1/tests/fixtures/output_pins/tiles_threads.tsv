@@ -1,0 +1,6 @@
+# output pins, group tiles_threads: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
+# Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
+edges-256x128-b8-p6-q30-Hybrid3115-Mainline-tc1	5987:03793bb8ef4c75246a5c8fb338432382
+edges-256x128-b8-p6-q30-Hybrid3115-Mainline-tc1-t4	5987:03793bb8ef4c75246a5c8fb338432382
+photo-256x128-b8-p6-q30-Hybrid3115-Mainline-tc1	10282:a95073a54c1bc0a81f29e5172c19e31d
+photo-256x128-b8-p6-q30-Hybrid3115-Mainline-tc1-t4	10282:a95073a54c1bc0a81f29e5172c19e31d

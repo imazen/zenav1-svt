@@ -1,0 +1,26 @@
+# output pins, group stills_10bit_mono: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
+# Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
+edges-64x64-b10-p10-q20-Hybrid3115-Mainline	3116:fd5a0cd49636f0ef9b9a1e9b8ef5cd0b
+edges-64x64-b10-p10-q50-Hybrid3115-Mainline	970:303ba6448084d9c8dd56d8bdc365084f
+edges-64x64-b10-p2-q20-Hybrid3115-Mainline	971:044de9778fbbcdd1a0620f285d519796
+edges-64x64-b10-p2-q50-Hybrid3115-Mainline	418:f0824678dde7e41cf40df293b22cf918
+edges-64x64-b10-p6-q20-Hybrid3115-Mainline	947:2f20c52b4f3d8b2a623fe584cec127e4
+edges-64x64-b10-p6-q50-Hybrid3115-Mainline	444:6383316a89f384e1a0c23f23edc749dd
+grad-64x64-b10-mono-p6-q30-Hybrid3115-Mainline	582:333c2eb87dc7a37265243c563adaa897
+grad-64x64-b10-p10-q20-Hybrid3115-Mainline	1035:2d0ef06e85949a7a33bc0715602beacb
+grad-64x64-b10-p10-q50-Hybrid3115-Mainline	85:9d767f0317926bd200fcb6c5e08ee142
+grad-64x64-b10-p2-q20-Hybrid3115-Mainline	958:ae54c9943d47d1569ed635178d8abcda
+grad-64x64-b10-p2-q50-Hybrid3115-Mainline	86:a670cdb97030199cb0a9c270c1e8f554
+grad-64x64-b10-p6-q20-Hybrid3115-Mainline	973:db45feeeb0b3627030fc724d760b7afb
+grad-64x64-b10-p6-q50-Hybrid3115-Mainline	86:d1a695b888e0b83dddc42fb3ab8432ed
+grad-64x64-b8-mono-p2-q30-Hybrid3115-Mainline	578:5e0afee83f83bbb2cb34d96863a688a9
+grad-64x64-b8-mono-p8-q30-Hybrid3115-Mainline	580:1aad54709b5a7e0484acb47bd4264c0b
+photo-64x64-b10-mono-p6-q30-Hybrid3115-Mainline	1155:032e48ddc82607b4df46c756db1e07d6
+photo-64x64-b10-p10-q20-Hybrid3115-Mainline	2016:cbe61fc8c8a12a19101441af31d9ba79
+photo-64x64-b10-p10-q50-Hybrid3115-Mainline	282:550dddd3e39c4a864d3c2bde4babdfde
+photo-64x64-b10-p2-q20-Hybrid3115-Mainline	1955:e73ac74f47d4ff03eec3e449760503d0
+photo-64x64-b10-p2-q50-Hybrid3115-Mainline	272:7f037c156b802410f17ba3fafab96a2e
+photo-64x64-b10-p6-q20-Hybrid3115-Mainline	1967:fa93eb4036074cf5827d61c1016a2938
+photo-64x64-b10-p6-q50-Hybrid3115-Mainline	292:fabf926f1df19bed56878d4216f5418c
+photo-64x64-b8-mono-p2-q30-Hybrid3115-Mainline	1139:ceb867ed4e07f2cda863743f46cda4ed
+photo-64x64-b8-mono-p8-q30-Hybrid3115-Mainline	1145:3fdaf9d04517d9acb2b9387626385771

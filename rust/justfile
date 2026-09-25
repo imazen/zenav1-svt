@@ -153,3 +153,12 @@ arm-rowpack:
 # complexity metrics for the port and the C reference. Tool setup: tools/review/run.sh.
 review out="~/tmp/zenav1-review":
     tools/review/run.sh {{out}}
+
+# Regenerate the port-output pins (svtav1/tests/output_pins.rs). Only for a
+# DELIBERATE behaviour change; the commit must say which cells moved and why.
+pins-update:
+    UPDATE_OUTPUT_PINS=1 cargo nextest run -p zenav1-svt --locked -E 'test(/output_pins/)'
+
+# Check the port-output pins (the refactoring safety net).
+pins:
+    cargo nextest run -p zenav1-svt --locked -E 'test(/output_pins/)'

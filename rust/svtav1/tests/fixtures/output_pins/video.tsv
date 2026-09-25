@@ -1,0 +1,12 @@
+# output pins, group video: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
+# Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
+grad-64x64-b10-p8-q35-f4-ld-Hybrid3115-Mainline	1593:fa64a3310f9297a31b5bc674bbb44367
+grad-64x64-b8-p10-q45-f4-ld-Hybrid3115-Mainline	915:751d7830839a28a264c5b9bc3334a534
+grad-64x64-b8-p4-q25-f4-ld-Hybrid3115-Mainline	2324:ebf5832dadf01a5f41e717c3ef52284c
+grad-64x64-b8-p8-q35-f5-ra-Hybrid3115-Mainline	1909:9a8676f9b390adfb25e37a86063c0aa8
+photo-64x64-b10-p8-q35-f4-ld-Hybrid3115-Mainline	3533:7fe307dd0b645bb59b5d211f5ecfe3ca
+photo-64x64-b8-mono-p8-q35-f3-ld-Hybrid3115-Mainline	3088:56ab74de4d93c3ade8f98f2040912721
+photo-64x64-b8-p10-q45-f4-ld-Hybrid3115-Mainline	2378:506cc7a89314348bb5dae195a21a953a
+photo-64x64-b8-p4-q25-f4-ld-Hybrid3115-Mainline	5554:b75af9715e6f69f8f65fa48a24cfaeb7
+photo-64x64-b8-p8-q35-f3-ld-Hybrid3115-HdrFork	2752:87d9b28385acae0038ce8f3de6a11ff5
+photo-64x64-b8-p8-q35-f5-ra-Hybrid3115-Mainline	3520:c38770a6da67daaa8ee9c2d70b37bbfb

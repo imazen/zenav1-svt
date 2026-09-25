@@ -23,5 +23,6 @@ mod issue11_repro;
 mod issue13_repro;
 mod issue18_repro;
 mod issue9_repro;
+mod output_pins;
 mod real_encode;
 mod thread_determinism;

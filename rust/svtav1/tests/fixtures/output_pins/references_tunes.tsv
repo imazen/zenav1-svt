@@ -1,0 +1,40 @@
+# output pins, group references_tunes: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
+# Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
+grad-64x64-b10-p6-q30-GhostRobot-HdrFork	529:c1dfe0b12a113a10a38cc36ab326f712
+grad-64x64-b10-p6-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+grad-64x64-b10-p6-q30-Hybrid3115-HdrFork	529:c1dfe0b12a113a10a38cc36ab326f712
+grad-64x64-b10-p6-q30-Hybrid3115-Mainline	611:eeac8b3c4f8b082a99b41b44814e26ff
+grad-64x64-b10-p6-q30-Mainline420-Mainline	611:eeac8b3c4f8b082a99b41b44814e26ff
+grad-64x64-b8-p4-q30-GhostRobot-HdrFork	492:118da306c47cfc9a0373dcaf473706e6
+grad-64x64-b8-p4-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+grad-64x64-b8-p4-q30-Hybrid3115-HdrFork	492:118da306c47cfc9a0373dcaf473706e6
+grad-64x64-b8-p4-q30-Hybrid3115-Mainline	571:4dc9f09475c81c468dd531b5fab3fa2c
+grad-64x64-b8-p4-q30-Mainline420-Mainline	571:4dc9f09475c81c468dd531b5fab3fa2c
+grad-64x64-b8-p9-q30-GhostRobot-HdrFork	605:9b2f99d29618ae6bfc17b3ab153ee7a3
+grad-64x64-b8-p9-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+grad-64x64-b8-p9-q30-Hybrid3115-HdrFork	605:9b2f99d29618ae6bfc17b3ab153ee7a3
+grad-64x64-b8-p9-q30-Hybrid3115-Mainline	658:83ccb65234a262789cdb4e99347096e0
+grad-64x64-b8-p9-q30-Mainline420-Mainline	658:83ccb65234a262789cdb4e99347096e0
+photo-64x64-b10-p6-q30-GhostRobot-HdrFork	980:c77e769c6d8ef081b5378fa964f4199a
+photo-64x64-b10-p6-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+photo-64x64-b10-p6-q30-Hybrid3115-HdrFork	980:c77e769c6d8ef081b5378fa964f4199a
+photo-64x64-b10-p6-q30-Hybrid3115-Mainline	1305:aa6ab708ca090144f8e2c0a7ba97e4be
+photo-64x64-b10-p6-q30-Mainline420-Mainline	1305:aa6ab708ca090144f8e2c0a7ba97e4be
+photo-64x64-b8-mono-p6-q30-Mainline420-Mainline	REFUSED:unsupported config: pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension
+photo-64x64-b8-p4-q30-GhostRobot-HdrFork	951:822bcc531e095c51ff2d68596bf48517
+photo-64x64-b8-p4-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+photo-64x64-b8-p4-q30-Hybrid3115-HdrFork	951:822bcc531e095c51ff2d68596bf48517
+photo-64x64-b8-p4-q30-Hybrid3115-Mainline	1269:baa56b16f164e6537ba94d989bbf6232
+photo-64x64-b8-p4-q30-Mainline420-Mainline	1269:baa56b16f164e6537ba94d989bbf6232
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune0	976:65311cf7541149e878172735c687226f
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune1	976:bcd590532dea5bdb1dd442de5e3a5daf
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune2	1020:68fe63784c443cc0793ae42043bc08f4
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune3	990:671e96e0334ae2c07b874aec7450ded2
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune4	953:bde032c70b61cb24e49e5aedde5934cc
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune5	REFUSED:unsupported config: tune 5 (VMAF) is not ported
+photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-tune6	976:65311cf7541149e878172735c687226f
+photo-64x64-b8-p9-q30-GhostRobot-HdrFork	1061:78e34a796ddd49eacc5667da7890d6d2
+photo-64x64-b8-p9-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
+photo-64x64-b8-p9-q30-Hybrid3115-HdrFork	1061:78e34a796ddd49eacc5667da7890d6d2
+photo-64x64-b8-p9-q30-Hybrid3115-Mainline	1488:9237e69ffe88152bb5c69600524bcbdb
+photo-64x64-b8-p9-q30-Mainline420-Mainline	1488:9237e69ffe88152bb5c69600524bcbdb
