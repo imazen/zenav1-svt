@@ -2379,6 +2379,13 @@ pub const MINI_GOP_MAX_COUNT: usize = 31;
 pub const MIN_HIERARCHICAL_LEVEL: u8 = 1;
 /// C `MAX_HIERARCHICAL_LEVEL` (`API/EbSvtAv1Enc.h:34`).
 pub const MAX_HIERARCHICAL_LEVEL: u8 = 6;
+/// C `HIERARCHICAL_LEVELS_AUTO` (`API/EbSvtAv1Enc.h:33`) — the `(uint32_t)~0`
+/// sentinel `cfg.hierarchical_levels` defaults to, resolved inside the
+/// library against pred_structure / rate_control_mode / enc_mode /
+/// input_resolution (`Globals/enc_handle.c:4556-4567`). The port's parameter
+/// is `u8`, so the sentinel is `u8::MAX`; see
+/// [`crate::pipeline::EncodePipeline::resolve_hierarchical_levels_auto`].
+pub const HIERARCHICAL_LEVELS_AUTO: u8 = u8::MAX;
 /// C `mini_gop_offset` (`utility.h:172`), indexed by
 /// `hierarchical_levels - MIN_HIERARCHICAL_LEVEL`.
 pub const MINI_GOP_OFFSET: [u8; (MAX_HIERARCHICAL_LEVEL - MIN_HIERARCHICAL_LEVEL) as usize] =

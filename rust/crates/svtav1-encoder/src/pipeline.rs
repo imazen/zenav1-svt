@@ -143,6 +143,13 @@ pub struct EncodePipeline {
     pub dpb: DecodedPictureBuffer,
     /// GOP structure.
     pub gop: GopStructure,
+    /// `true` while the constructor's `hierarchical_levels` argument carried
+    /// C's `HIERARCHICAL_LEVELS_AUTO` sentinel and the real level has not
+    /// been resolved yet — resolution runs against the final
+    /// `pred_structure` in [`Self::with_pred_structure`], or at the first
+    /// [`Self::encode_frame_impl`] when no setter ever ran. See
+    /// [`Self::resolve_hierarchical_levels_auto`].
+    hier_auto: bool,
     /// C `scs->static_config.pred_structure` — `LowDelay` (the default, and
     /// the only structure the sequential frame-in/frame-out contract can
     /// express directly) or `RandomAccess`, which buffers input frames into
@@ -661,6 +668,13 @@ impl EncodePipeline {
     ///
     /// Research-mode translation is in progress; accepting -1 is not a parity
     /// guarantee. See `docs/research-preset-port-map.md` for missing consumers.
+    ///
+    /// `hierarchical_levels` mirrors C's `cfg.hierarchical_levels`: an
+    /// explicit level (the envelope C supports is 0-5, refused above by
+    /// [`Self::gop_config_error`]) or
+    /// [`crate::port_picstruct::HIERARCHICAL_LEVELS_AUTO`], the API default
+    /// C ships — resolved in-library by
+    /// [`Self::resolve_hierarchical_levels_auto`].
     pub fn new_with_preset(
         width: u32,
         height: u32,
@@ -670,6 +684,14 @@ impl EncodePipeline {
         intra_period: u32,
     ) -> Self {
         let preset = preset.value();
+        // C `hierarchical_levels == HIERARCHICAL_LEVELS_AUTO` survives as a
+        // field until `enc_handle.c:4556` resolves it; here `gop`/`mg_map`
+        // need a literal immediately, so the sentinel parks a provisional
+        // flat structure until [`Self::resolve_hierarchical_levels_auto`]
+        // swaps in the resolved one — before any consumer can read it.
+        let hier_auto =
+            hierarchical_levels == crate::port_picstruct::HIERARCHICAL_LEVELS_AUTO;
+        let hierarchical_levels = if hier_auto { 0 } else { hierarchical_levels };
         // TWO boundary systems (frame_geom::FrameDims): the caller passes
         // TRUE dims; the encode runs on ALIGNED (8-rounded) dims. The
         // full-SB (aligned % 64 == 0) scope constraint is enforced on the
@@ -722,6 +744,7 @@ impl EncodePipeline {
             enable_tf_key: true,
             dpb: DecodedPictureBuffer::new(),
             gop: GopStructure::new(hierarchical_levels, intra_period),
+            hier_auto,
             pred_structure: crate::port_picstruct::PredStructure::LowDelay,
             ra_input: alloc::vec::Vec::new(),
             ra_stats: alloc::vec::Vec::new(),
@@ -3597,7 +3620,66 @@ impl EncodePipeline {
     /// trailing mini-GOP, which C codes low-delay (`is_pic_cutting_short_ra_mg`).
     pub fn with_pred_structure(mut self, p: crate::port_picstruct::PredStructure) -> Self {
         self.pred_structure = p;
+        // The AUTO arm reads `pred_structure`, so it resolves here where the
+        // structure becomes final — mirroring enc_handle, where resolution
+        // runs after the config fields are all copied into static_config.
+        self.resolve_hierarchical_levels_auto();
         self
+    }
+
+    /// C's `hierarchical_levels == HIERARCHICAL_LEVELS_AUTO` resolution
+    /// (`Globals/enc_handle.c:4556-4567`), run once the AUTO inputs are
+    /// final:
+    ///
+    /// ```text
+    /// pred_structure == LOW_DELAY && (rc == CBR || !(enc_mode <= ENC_M9)) -> 2
+    /// pred_structure == LOW_DELAY -> 3
+    /// rc == VBR || rc == CBR
+    ///   || (input_resolution >= 1080p_RANGE && enc_mode >= ENC_M8)
+    ///   || !(enc_mode <= ENC_M8) || input_resolution >= 8K_RANGE -> 4
+    /// otherwise -> 5
+    /// ```
+    ///
+    /// then the all-intra clamp (`enc_handle.c:4576-4579`, applied to AUTO
+    /// and explicit levels alike in C): `allintra` — `intra_period == 0 ||
+    /// avif || pred_structure == ALL_INTRA` in C, `intra_period == 1 ||
+    /// PredStructure::AllIntra` here — forces 2. C's single-pass low-delay
+    /// CBR clamp (`:4568-4573`) cannot move an AUTO result (the low-delay
+    /// arm is already `<= 2` whenever `rc == CBR`), so it is documented,
+    /// not run. `input_resolution` is the same class
+    /// [`crate::pd0::input_resolution_class`] derives on the ALIGNED luma
+    /// count (`scs->max_input_luma_width * height`, enc_handle.c:3992).
+    fn resolve_hierarchical_levels_auto(&mut self) {
+        if !self.hier_auto {
+            return;
+        }
+        let ld = self.pred_structure == crate::port_picstruct::PredStructure::LowDelay;
+        let mode = self.rc_config.mode;
+        let em = self.speed_config.preset;
+        let res = crate::pd0::input_resolution_class(
+            self.width as usize * self.height as usize,
+        );
+        let mut hier: u8 = if ld && (mode == crate::rate_control::RcMode::Cbr || em > 9) {
+            2
+        } else if ld {
+            3
+        } else if matches!(mode, crate::rate_control::RcMode::Vbr | crate::rate_control::RcMode::Cbr)
+            || (res >= crate::port_md_winner::INPUT_SIZE_1080P_RANGE && em >= 8)
+            || em > 8
+            || res >= crate::port_lr_level::INPUT_SIZE_8K_RANGE
+        {
+            4
+        } else {
+            5
+        };
+        if self.gop.intra_period == 1
+            || self.pred_structure == crate::port_picstruct::PredStructure::AllIntra
+        {
+            hier = 2;
+        }
+        self.gop = GopStructure::new(hier, self.gop.intra_period);
+        self.mg_map = crate::port_picstruct::MiniGopMap::for_sequence(hier);
+        self.hier_auto = false;
     }
 
     /// Enable/disable the opt-in 4:2:0 chroma mode (see `chroma_420` field).
@@ -5464,6 +5546,11 @@ impl EncodePipeline {
         chroma: Option<(&[u8], &[u8])>,
         decided: Option<FrameDecision>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        // An AUTO `hierarchical_levels` that survived to encode time (no
+        // `with_pred_structure` call — the low-delay default) resolves here,
+        // the last point before `self.gop` is first read. A no-op after
+        // `with_pred_structure` resolved it, or when the level was explicit.
+        self.resolve_hierarchical_levels_auto();
         // `chroma_420` is the configured-format check (refuses 4:4:4 where
         // `chroma.is_some()` would pass); `chroma.is_some()` is the per-frame
         // check (refuses the mono entry on a chroma-configured pipeline).
@@ -5829,16 +5916,20 @@ impl EncodePipeline {
         // configured `gop.hierarchical_levels` (`get_pred_struct_for_frame`).
         // Equals the configured level on every low-delay frame, so this is
         // byte-inert outside random access.
-        // `pd_process.c:968`: IDR pictures are stamped the CONFIGURED level,
-        // not their (possibly subdivided) mini-gop level — this is the value
-        // `cqp_qindex_calc`'s `percents[hier <= 4]` row select reads.
-        let frame_hier = if is_key {
-            self.gop.hierarchical_levels
-        } else {
-            pic_decision
-                .as_ref()
-                .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels)
-        };
+        //
+        // Two stamps land on the same field: `pd_process.c:968` gives an IDR
+        // the CONFIGURED level at decision time, then a DELAYED intra's TF
+        // setup re-stamps it with the following mini-GOP's level
+        // (`pd_process.c:3936-3943`, "Update the key frame pred structure" —
+        // `filter_delayed_intra` is the port's copy). The picture's own field
+        // therefore carries the right answer in both cases; reading
+        // `gop.hierarchical_levels` for a key instead skips the delayed-intra
+        // overwrite — measured 2026-09-25: a hier-5 RA cell coded the key's
+        // `percents[0][0]` (75) arm as qindex 70 where C takes the re-stamped
+        // level's `percents[1][0]` (76) arm and writes 67.
+        let frame_hier = pic_decision
+            .as_ref()
+            .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels);
 
         // C `av1_lambda_assign_md`'s TWO update-type selectors
         // (`pd0::inter_full_lambda_8bit`): the rdmult BASE reads
@@ -18409,6 +18500,33 @@ fn encode_tile_rows(
         // global dist-to-cost prune, product_coding_loop.c:1325) where the
         // allintra arm is a literal 0 at every preset. Byte-neutral on the
         // still path by construction.
+        //
+        // Level 1 (`pruning_method_th = 100`, the per-class arm at
+        // product_coding_loop.c:1311-1324) is assigned only on
+        // `M3..=M5 && !is_base` — reachable now that hierarchical GOPs
+        // produce non-base pictures. Its `mds0_best_cost_per_class`
+        // tracker and `MIN(md_me_dist, md_pme_dist)` gate are unported;
+        // refuse where the level is ASSIGNED rather than panic inside
+        // `apply`, or worse, silently skip a prune C runs
+        // (measured 2026-09-25: hier>0 + p3..=5 + non-base picture).
+        if crate::mds0_arm::mds0_level(
+            sc_arm,
+            md_eff_mode,
+            temporal_layer == 0,
+            matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
+        ) == 1
+        {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "mds0 level 1 (per-class dist-to-cost prune, \
+                 product_coding_loop.c:1311-1324) is unported: it needs C's \
+                 `mds0_best_cost_per_class` tracker and the \
+                 `MIN(md_me_dist, md_pme_dist)` gate — assigned only at \
+                 ENC_M3..=M5 for a non-base-layer picture, so hierarchical \
+                 GOPs (hierarchical_levels > 0) at presets 3-5 cannot encode \
+                 yet [C: encodes]",
+            )));
+        }
         crate::mds0_arm::apply(
             &mut funnel_cfg,
             sc_arm,

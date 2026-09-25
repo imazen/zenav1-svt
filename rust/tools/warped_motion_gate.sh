@@ -74,8 +74,13 @@ for spec in "${CELLS[@]}"; do
     # Frames 2+ reference an INTER
     # picture; without it this would be a two-frame cell and warp would barely
     # appear. Both flags are diagnostics — see `crate::dbgenv`.
+    # `SVTAV1_HIER_LEVELS=0` keeps the flat GOP the min_warped_blocks pins
+    # were measured against (vs C flat); unset resolves to C's AUTO
+    # hierarchy where the tl0 GM arming positions differ
+    # (`global_motion_gate.sh` pins the same way).
     if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
         SVTAV1_INTER_EXPERIMENTAL=1 \
+        SVTAV1_HIER_LEVELS=0 \
         SVTAV1_FRAMES="$FRAMES" SVTAV1_INTERDBG=1 SVTAV1_FINAL_RECON="$out/rec" \
         "$HERE/identity_run" "rawseq:$asset" "$w" "$h" "$QP" "$preset" "$out/p" \
         >"$out/stdout.txt" 2>"$out/idbg.txt"; then

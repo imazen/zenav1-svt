@@ -355,10 +355,13 @@ fn encode_sequence(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(64);
+    // Same default rule as identity_run: unset mirrors the C driver's
+    // untouched `cfg.hierarchical_levels`, which is `HIERARCHICAL_LEVELS_AUTO`
+    // resolved inside the library — flat 0 is NOT the library default.
     let hier: u8 = std::env::var("SVTAV1_HIER_LEVELS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(svtav1_encoder::port_picstruct::HIERARCHICAL_LEVELS_AUTO);
 
     // ONE copy of the sequence, and it is the one the encoder reads.
     //

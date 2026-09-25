@@ -100,6 +100,7 @@ mod c_parity_var_boost;
 mod cdef_screen_arm_reachability;
 mod entropy_inter_writers_traced;
 mod hbd_input_chunk1;
+mod hier_auto;
 mod inter_me_traced;
 mod inter_mvp_motion_field;
 mod lossless_fh_c_capture;

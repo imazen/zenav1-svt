@@ -895,10 +895,17 @@ fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(64);
+        // `SVTAV1_HIER_LEVELS` (C driver's `SVT_HIER_LEVELS`): unset means
+        // the LIBRARY default, which is C's `HIERARCHICAL_LEVELS_AUTO` — not
+        // flat. An unset-env cell must match the C driver's untouched
+        // `cfg.hierarchical_levels`, which `enc_handle.c:4556` resolves to
+        // 3 on low delay / 4 or 5 on random access; defaulting to 0 here
+        // silently encoded a flat stream where C built a pyramid
+        // (found 2026-09-25: the "RA emission-order divergence" was this).
         let hier: u8 = std::env::var("SVTAV1_HIER_LEVELS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+            .unwrap_or(svtav1_encoder::port_picstruct::HIERARCHICAL_LEVELS_AUTO);
         let rc = RcConfig {
             // `SVTAV1_RC_MODE` (C's `--rc`): 0 = CQP, 1 = VBR, 2 = CBR.
             // Default 0 keeps every existing cell. CBR is admitted only

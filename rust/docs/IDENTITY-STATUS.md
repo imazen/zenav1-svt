@@ -53,6 +53,52 @@ The claim is: RA streams are byte-identical to C on unambiguous
 synthetic content; on real video the generic inter envelope applies
 (decoder-verified via `ra_selfcheck_gate.sh`, 11/11).
 
+## hierarchical_levels AUTO — 2026-09-25
+
+`EncodePipeline::with_hierarchical_levels` now accepts
+`HIERARCHICAL_LEVELS_AUTO` (`u8::MAX`, C's `~0` sentinel), resolved
+inside the pipeline by `resolve_hierarchical_levels_auto` — a direct
+port of `enc_handle.c:4556-4579` (RA/LD, rate-mode, enc_mode and
+resolution arms). `identity_run`/`perf_encode` pass AUTO when
+`SVTAV1_HIER_LEVELS` is unset, matching the C driver's API-default
+behaviour; explicit 0..=5 is unchanged. Focused tests:
+`tests/hier_auto.rs` (7/7).
+
+Two defects fixed for this:
+
+- `frame_hier` read the configured level for `is_key`, skipping the
+  delayed-intra re-stamp (`pd_process.c:3936-3943`, "Update the key
+  frame pred structure") that `filter_delayed_intra` already mirrors.
+  The key frame now reads the decided picture's field like C — measured
+  fix: cut-short window key went 70 → 67 = C (the `percents[1][0]` arm
+  `cqp_qindex_calc` takes when the following mini-GOP's level ≤ 4).
+- `mds0` level 1 (`pruning_method_th = 100`, `M3..=M5` non-base) was a
+  panic — unreachable only when hier > 0 never ran. Now an explicit
+  `UnsupportedConfig` refusal at the level's assignment site; the
+  per-class tracker/`MIN(md_me_dist, md_pme_dist)` gate is unported.
+
+Measured vs C, unset `SVTAV1_HIER_LEVELS` on both sides, 256² qp40:
+
+- **RA (`SVT_PRED_STRUCT=2` → hl 5)**: byte-identical streams
+  (seq headers, all coded frames in decode order, `show_existing`
+  units, TU batching, entropy payloads) at p6, p8, p10, p13 — including
+  n∈{5,9,17} and qp∈{20,55} at p6. The 5f stream is 7 TUs: key, two
+  hidden coded pictures, shown, `show_existing`, shown, `show_existing`.
+  p0/p2: 7/7 headers identical, single-byte payload diffs — the
+  non-base inter-MD envelope below, not emission. p3..=5: refusal (mds0
+  level-1 arm above).
+- **Low delay (unset → hl 3, CBR-side hl 2)**: byte-identical at p6
+  (qp 20/40/55) and p13; divergent 2–50 bytes at p0/p2/p8/p10 — non-base
+  inter-MD arms that hier > 0 now exercises by default; same envelope
+  family as the carried "inter-MD ladder diverges at p0" item. p3..=5:
+  refusal (same arm). Explicit `SVTAV1_HIER_LEVELS=0` still yields the
+  old flat stream (verified identical to C flat at p10).
+
+Note the asymmetry the AUTO change intentionally removes: an
+unset-vs-unset cell comparison now means the same configuration on
+both sides; pinning `SVTAV1_HIER_LEVELS=0`/`SVT_HIER_LEVELS=0` still
+compares flat-vs-flat as before (the pinned gates are unaffected).
+
 ## Tune surface (`--tune`) — 2026-09-19
 
 `SvtTune` (`zenav1-svt::SvtTune`, builder `with_tune`) exposes C's
@@ -155,18 +201,16 @@ Remaining measured gaps vs C:
 
 - `cdef_strengths[0]` on the key frame: C codes 28, the port 0 — a
   CDEF derivation difference under VQ, not yet root-caused.
-- Emission structure under hier ≥ 2: C interleaves
-  `show_existing_frame`/`FRAME_HEADER` display units and a different
-  frame order (C's second coded unit is order_hint 2, non-shown; the
-  port emits order_hint 1 shown). Frame-by-index header pairing is
-  therefore unreliable past index 0 — per-field diffs on "inter" frames
-  below index 0 in a hdr_diff run may be misaligned pairings, not real
-  field bugs. Byte parity needs the emission order and show-existing
-  units matched FIRST; only then do residual per-field diffs mean
-  something. The port codes `show_frame=false` on non-shown frames but
-  never emits the show_existing display units — decoder display-count
-  behavior of that stream is unverified (ra_selfcheck compares recon,
-  not display events).
+- ~~Emission structure under hier ≥ 2~~ — RESOLVED 2026-09-25, and it
+  was never a port defect: the "missing" `show_existing_frame` units
+  and decode-order permutation already worked (`encode_ra_window` +
+  `has_show_existing`). What the repro actually exposed was a harness
+  env gap — `identity_run` defaulted unset `SVTAV1_HIER_LEVELS` to 0
+  (flat) while the C driver leaves `hierarchical_levels` at its AUTO
+  sentinel (`~0`), which `enc_handle.c:4556-4579` resolves to 5 under
+  RA. With AUTO resolved inside the pipeline the flat-vs-pyramid
+  comparison disappeared. See "hierarchical_levels AUTO — 2026-09-25"
+  below for the measured envelope.
 
 `tools/decode_diff hdr_diff` gained `HDR_FULL=1` full-field header dump
 for this class of divergence; `HDR_DUMP=1` prints diff windows.
