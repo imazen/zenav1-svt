@@ -679,17 +679,21 @@ impl DeblockGeom {
         debug_assert!(w.is_power_of_two() || w == 4 * (w / 4)); // 4..=64 incl. rects
         let id = ((y / 4) * self.mi_cols + (x / 4)) as u32;
         let skip_inter = is_inter && skip;
+        let (c0, c1) = (x / 4, ((x + w) / 4).min(self.mi_cols));
+        if c0 >= c1 {
+            return;
+        }
+        // One slice fill per array per row: the per-element form paid seven
+        // bounds-checked stores per 4x4 unit.
         for my in y / 4..((y + h) / 4).min(self.mi_rows) {
-            for mx in x / 4..((x + w) / 4).min(self.mi_cols) {
-                let i = my * self.mi_cols + mx;
-                self.block_id[i] = id;
-                self.bw[i] = w as u8;
-                self.bh[i] = h as u8;
-                self.tw[i] = w as u8;
-                self.th[i] = h as u8;
-                self.skip_inter[i] = skip_inter;
-                self.skip[i] = skip;
-            }
+            let r = my * self.mi_cols + c0..my * self.mi_cols + c1;
+            self.block_id[r.clone()].fill(id);
+            self.bw[r.clone()].fill(w as u8);
+            self.bh[r.clone()].fill(h as u8);
+            self.tw[r.clone()].fill(w as u8);
+            self.th[r.clone()].fill(h as u8);
+            self.skip_inter[r.clone()].fill(skip_inter);
+            self.skip[r].fill(skip);
         }
     }
 
@@ -697,12 +701,14 @@ impl DeblockGeom {
     /// per txb after `record_block` when the block signals tx_depth > 0
     /// — the decoder's inverse-transform grid the luma edge mask sees).
     pub fn record_tx_dims(&mut self, x: usize, y: usize, tw: usize, th: usize) {
+        let (c0, c1) = (x / 4, ((x + tw) / 4).min(self.mi_cols));
+        if c0 >= c1 {
+            return;
+        }
         for my in y / 4..((y + th) / 4).min(self.mi_rows) {
-            for mx in x / 4..((x + tw) / 4).min(self.mi_cols) {
-                let i = my * self.mi_cols + mx;
-                self.tw[i] = tw as u8;
-                self.th[i] = th as u8;
-            }
+            let r = my * self.mi_cols + c0..my * self.mi_cols + c1;
+            self.tw[r.clone()].fill(tw as u8);
+            self.th[r].fill(th as u8);
         }
     }
 
