@@ -32,14 +32,13 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
   oracle is the decoder, never byte parity. 4:2:2 and 12-bit remain rejected,
   matching C.
 
-At implementation main **`0cbd1279`**, the latest native workspace gate passed
-**2631/2631 tests, zero skips**. PR #20 uses published archmage/magetypes
-**0.9.29**; 19 explicitly selected ARM SAD/variance tests passed under QEMU.
-[Verification and pre-existing ARM Clippy/MSRV debt](rust/benchmarks/arm_pairwise_release_2026-09-08.md).
-These local checks are not a claim of a new CI run.
-
-The preceding eight-bit landing matrix passed **1100/1100** in its named
-reference envelope. The four formerly deferred **native10 parity cells closed
+Measured 2026-09-25 on `i265` at main `b4bc75ad`: the workspace nextest
+suite passed **2771/2771, zero skips**; `identity_full_8bit.sh` **1100/1100**,
+`bd10_photo_gate.sh` **191/191** and `bd10_nonflat_gate.sh` **309/309**
+byte-identical to their C oracle. CI (`.github/workflows/rust-gates.yml`)
+runs the same suites; read `gh run list` for its current state rather than
+this paragraph. ARM: archmage/magetypes **0.9.29**;
+[verification and pre-existing ARM Clippy/MSRV debt](rust/benchmarks/arm_pairwise_release_2026-09-08.md). The four formerly deferred **native10 parity cells closed
 byte-identical on 2026-09-17**. See
 [identity status](rust/docs/IDENTITY-STATUS.md).
 HDR MODE=ON has a standing 10-bit gate; older 8-bit 48/48 prose is historical,
