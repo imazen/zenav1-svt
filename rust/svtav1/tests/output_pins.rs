@@ -250,10 +250,12 @@ impl Cell {
             p = p.with_chroma_420(true);
         }
         p.reference = self.reference;
-        p.hdr = match self.mode {
-            SvtHdrMode::HdrFork => HdrForkConfig::hdr_fork_c_mode1(),
-            SvtHdrMode::Mainline => HdrForkConfig::mainline(),
-        };
+        // The (reference, mode) pair resolves the defaults its oracle's
+        // `svt_av1_set_default_params` loads: GhostRobot gets the fork's
+        // real defaults, Hybrid3115+HdrFork the hybrid MODE1 set. The
+        // (GhostRobot, Mainline) cell keeps mainline() so it stays the
+        // pinned REFUSED arm.
+        p.hdr = HdrForkConfig::defaults_for(self.reference, self.mode);
         if let Some(t) = self.tune {
             p.hdr.tune = t;
         }

@@ -141,19 +141,24 @@ pub struct AvifEncoder {
     threads: Option<usize>,
     /// C `static_config.enable_qm` — quantization matrices. Wired to
     /// `EncodePipeline::hdr.enable_qm`; see [`AvifEncoder::with_qm`].
-    enable_qm: bool,
+    /// `None` = unset: the selected reference's own default applies (off
+    /// under mainline, ON under Ghost Robot).
+    enable_qm: Option<bool>,
     /// C `static_config.tune` (`--tune`) — the per-tune configuration
     /// bundle C applies in `svt_av1_enc_set_parameter`. Wired to
     /// `EncodePipeline::hdr.tune`; see [`AvifEncoder::with_tune`].
     tune: SvtTune,
     /// C `static_config.enable_variance_boost` — the per-superblock
     /// delta-q that IS SVT-AV1's still-image adaptive quantization. Wired to
-    /// `EncodePipeline::hdr.enable_variance_boost`.
-    enable_variance_boost: bool,
+    /// `EncodePipeline::hdr.enable_variance_boost`. `None` = unset: the
+    /// selected reference's own default applies (off under mainline, ON
+    /// under Ghost Robot).
+    enable_variance_boost: Option<bool>,
     /// C `static_config.variance_boost_strength` (1-4, default 2; the docs
     /// recommend 3 for stills). Wired to
-    /// `EncodePipeline::hdr.variance_boost_strength`.
-    variance_boost_strength: u8,
+    /// `EncodePipeline::hdr.variance_boost_strength`. `None` = the selected
+    /// reference's default (2 on every oracle).
+    variance_boost_strength: Option<u8>,
     film_grain: svtav1_encoder::film_grain_config::FilmGrainConfig,
     /// Lossless encoding mode.
     lossless: bool,
@@ -195,16 +200,17 @@ impl AvifEncoder {
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
-            // Both default OFF, which is C v4.2.0's mainline default
-            // (`svt_av1_set_default_params`: `enable_qm = 0`,
-            // `enable_variance_boost = 0` at SVT_HDR_MODE=0) AND the bytes
-            // this encoder has always emitted — the two knobs used to be
-            // recorded-and-ignored, and defaulting them to `true` now that
-            // they are live would silently change every caller's output.
-            enable_qm: false,
+            // `None` = unset: the selected reference's own defaults apply
+            // (`HdrForkConfig::defaults_for` — off under mainline, which is
+            // also the bytes this encoder has always emitted; ON under
+            // Ghost Robot, which ships `enable_qm = 1` /
+            // `enable_variance_boost = true`). The two knobs used to be
+            // recorded-and-ignored; they are live now, so a hard default
+            // here would silently override the reference's defaults.
+            enable_qm: None,
             tune: SvtTune::Psnr,
-            enable_variance_boost: false,
-            variance_boost_strength: 2,
+            enable_variance_boost: None,
+            variance_boost_strength: None,
             film_grain: Default::default(),
             lossless: false,
             color_primaries: 1,           // BT.709
@@ -458,12 +464,13 @@ impl AvifEncoder {
     /// Enable or disable quantization matrices (C `--enable-qm`).
     ///
     /// LIVE: sets `EncodePipeline::hdr.enable_qm`, which drives the frame
-    /// header's `using_qmatrix` + qm levels and the quantizer itself. Off by
-    /// default, matching C's mainline default. Proven to change the emitted
+    /// header's `using_qmatrix` + qm levels and the quantizer itself. Unset,
+    /// the selected reference's default applies (off under mainline,
+    /// on under Ghost Robot). Proven to change the emitted
     /// bytes by `qm_knob_changes_bytes` below. Lossless encoding uses identity
     /// matrices, as required by the decoder's lossless reconstruction.
     pub fn with_qm(mut self, enable: bool) -> Self {
-        self.enable_qm = enable;
+        self.enable_qm = Some(enable);
         self
     }
 
@@ -475,12 +482,13 @@ impl AvifEncoder {
     /// and signal delta-q in the frame header. `strength` is C's 1-4 scale
     /// (default 2; `Docs/Appendix-Variance-Boost.md:43` recommends 3 for
     /// still images) and is clamped into that range — NOT the old
-    /// `with_vaq`'s inert 0.0-1.0 float. Off by default, matching C's
-    /// mainline default. Proven to change the emitted bytes by
-    /// `variance_boost_knob_changes_bytes` below.
+    /// `with_vaq`'s inert 0.0-1.0 float. Unset, the selected reference's
+    /// default applies (off under mainline, on under Ghost Robot). Proven
+    /// to change the emitted bytes by `variance_boost_knob_changes_bytes`
+    /// below.
     pub fn with_variance_boost(mut self, enable: bool, strength: u8) -> Self {
-        self.enable_variance_boost = enable;
-        self.variance_boost_strength = strength.clamp(1, 4);
+        self.enable_variance_boost = Some(enable);
+        self.variance_boost_strength = Some(strength.clamp(1, 4));
         self
     }
 
@@ -652,14 +660,36 @@ impl AvifEncoder {
         }
         pipeline.color_description = self.color_description();
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
-        // now the real pipeline settings. Defaults are off, so this is
-        // byte-neutral for a caller that sets neither.
+        // now the real pipeline settings. Unset, the reference's own
+        // `svt_av1_set_default_params` defaults apply — off under mainline
+        // (byte-neutral), on under Ghost Robot.
+        pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::defaults_for(
+            self.reference,
+            self.implied_hdr_mode(),
+        );
         pipeline.film_grain = self.film_grain.clone();
-        pipeline.hdr.enable_qm = self.enable_qm;
+        if let Some(v) = self.enable_qm {
+            pipeline.hdr.enable_qm = v;
+        }
         pipeline.hdr.tune = self.tune.to_raw();
-        pipeline.hdr.enable_variance_boost = self.enable_variance_boost;
-        pipeline.hdr.variance_boost_strength = self.variance_boost_strength;
+        if let Some(v) = self.enable_variance_boost {
+            pipeline.hdr.enable_variance_boost = v;
+        }
+        if let Some(v) = self.variance_boost_strength {
+            pipeline.hdr.variance_boost_strength = v;
+        }
         pipeline
+    }
+
+    /// The HDR mode this facade's pipeline runs in. Ghost Robot has no
+    /// mainline mode (`SvtReference::validate_hdr_config`), so that
+    /// reference implies `HdrFork`; every other reference keeps the
+    /// facade's historical mainline base.
+    fn implied_hdr_mode(&self) -> svtav1_encoder::hdr_mode::SvtHdrMode {
+        match self.reference {
+            SvtReference::GhostRobot => svtav1_encoder::hdr_mode::SvtHdrMode::HdrFork,
+            _ => svtav1_encoder::hdr_mode::SvtHdrMode::Mainline,
+        }
     }
 
     /// Encode a single MONOCHROME (Y-only) still image using the full pipeline.
@@ -934,13 +964,23 @@ impl AvifEncoder {
         self.film_grain
             .validate()
             .map_err(EncodeError::UnsupportedConfig)?;
-        let hdr = svtav1_encoder::hdr_mode::HdrForkConfig {
-            enable_qm: self.enable_qm,
-            enable_variance_boost: self.enable_variance_boost,
-            variance_boost_strength: self.variance_boost_strength,
-            tune: self.tune.to_raw(),
-            ..Default::default()
-        };
+        // Validate against the same resolved config the encode will use:
+        // the reference's defaults (Ghost Robot is HdrFork-only) plus the
+        // caller's explicit knob overrides.
+        let mut hdr = svtav1_encoder::hdr_mode::HdrForkConfig::defaults_for(
+            self.reference,
+            self.implied_hdr_mode(),
+        );
+        if let Some(v) = self.enable_qm {
+            hdr.enable_qm = v;
+        }
+        if let Some(v) = self.enable_variance_boost {
+            hdr.enable_variance_boost = v;
+        }
+        if let Some(v) = self.variance_boost_strength {
+            hdr.variance_boost_strength = v;
+        }
+        hdr.tune = self.tune.to_raw();
         self.reference
             .validate_hdr_config(&hdr)
             .map_err(EncodeError::UnsupportedConfig)?;
@@ -1024,10 +1064,10 @@ mod tests {
         assert_eq!(enc.bit_depth, 8);
         assert_eq!(enc.chroma_subsampling, ChromaSubsampling::Yuv420);
         assert!(enc.threads.is_none());
-        // Both default OFF (C mainline defaults) now that they are LIVE.
-        assert!(!enc.enable_qm);
-        assert!(!enc.enable_variance_boost);
-        assert_eq!(enc.variance_boost_strength, 2);
+        // Unset: the selected reference's defaults apply (C mainline: off).
+        assert_eq!(enc.enable_qm, None);
+        assert_eq!(enc.enable_variance_boost, None);
+        assert_eq!(enc.variance_boost_strength, None);
         assert!(!enc.lossless);
     }
 
@@ -1046,9 +1086,9 @@ mod tests {
         assert_eq!(enc.speed, 3);
         assert_eq!(enc.bit_depth, 10);
         assert_eq!(enc.threads, Some(4));
-        assert!(enc.enable_qm);
-        assert!(enc.enable_variance_boost);
-        assert_eq!(enc.variance_boost_strength, 3);
+        assert_eq!(enc.enable_qm, Some(true));
+        assert_eq!(enc.enable_variance_boost, Some(true));
+        assert_eq!(enc.variance_boost_strength, Some(3));
         assert!(enc.lossless);
     }
 
@@ -1084,13 +1124,13 @@ mod tests {
             AvifEncoder::new()
                 .with_variance_boost(true, 0)
                 .variance_boost_strength,
-            1
+            Some(1)
         );
         assert_eq!(
             AvifEncoder::new()
                 .with_variance_boost(true, 9)
                 .variance_boost_strength,
-            4
+            Some(4)
         );
     }
 

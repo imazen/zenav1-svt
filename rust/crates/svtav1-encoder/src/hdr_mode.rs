@@ -26,6 +26,14 @@
 //! the fork was rebased onto v4.2, not a live status table. The oracle
 //! carries only the fork's hdr-v4.1.0 "Chromedome" delta, so later fork
 //! behavior is absent on both sides (see docs/CODE-REVIEW-2026-09-25.md).
+//!
+//! [`HdrForkConfig::ghost_robot`] is the third defaults arm: svt-av1-hdr
+//! 4.2 "Ghost Robot" (`9dabe3ca`) ships the fork's real feature defaults
+//! with no hybrid-style neutralization. [`HdrForkConfig::defaults_for`]
+//! maps each (`SvtReference`, `SvtHdrMode`) pair to its oracle's
+//! `svt_av1_set_default_params` output.
+
+use crate::reference::SvtReference;
 
 /// Which C oracle this encode targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -253,6 +261,88 @@ impl HdrForkConfig {
         }
     }
 
+    /// svt-av1-hdr 4.2 "Ghost Robot" (`9dabe3ca`) defaults — the values its
+    /// own `svt_av1_set_default_params` ships (`reference/svt-av1-hdr`
+    /// `Source/Lib/Globals/enc_settings.c:1010-1193`). Unlike the hybrid's
+    /// MODE1 build ([`Self::hdr_fork_c_mode1`]) nothing is neutralized: the
+    /// fork's real feature defaults all apply, on top of the same six flips
+    /// MODE1 made (QM on at 6..10, variance boost, `tf_strength` 1,
+    /// `sharpness` 1). Notably `alt_lambda_factors` ships OFF here
+    /// (`:1185`) even though the older Chromedome fork shipped it on.
+    ///
+    /// This is the byte-identity target for `SVT_ORACLE=ghost-robot`:
+    /// `capture_c_trace` under that oracle runs the C encoder on
+    /// `svt_av1_enc_init_handle`'s output plus only the dimensions, preset,
+    /// qp and bit depth the harness passes.
+    ///
+    /// Ghost-Robot-only config fields this struct does not yet carry
+    /// (phase-1.2 surface) and their shipped defaults:
+    /// `enable_qmpsnr = -1` (`:1190`; auto → on only at `TUNE_IQ`,
+    /// resolved in `copy_api_from_app`, `enc_handle.c:4971-4972`),
+    /// `luminance_qp_bias = 0` (`:1158`), `hbd_mds = DEFAULT` (`:1174`),
+    /// `max_hierarchical_levels = 0` (`:1181`). All neutral at these
+    /// defaults, so the missing surface changes nothing on the ported
+    /// paths — except tune IQ, where C turns QM-PSNR on and the port
+    /// cannot match until that metric lands (plan item 3.5).
+    ///
+    /// Caller-decision fields (`encoder_bit_depth` 10 at `:1019`,
+    /// `enc_mode` M4 at `:1052`) are inputs to this port's pipeline, not
+    /// carried here — same convention as the other two constructors.
+    pub fn ghost_robot() -> Self {
+        Self {
+            mode: SvtHdrMode::HdrFork,
+            sharp_tx: 1,                     // enc_settings.c:1186
+            kf_tf_strength: 1,               // :1184
+            alt_lambda_factors: false,       // :1185
+            alt_ssim_tuning: false,          // :1187
+            tune: TUNE_PSNR_DEFAULT,         // :1109
+            tx_bias: 0,                      // :1188
+            complex_hvs: 0,                  // :1189
+            noise_norm_strength: 1,          // :1183
+            noise_adaptive_filtering: 2,     // :1191
+            cdef_scaling: 15,                // :1192
+            noise_strength: 0,               // :1091
+            noise_strength_chroma: -1,       // :1092
+            noise_chroma_from_luma: 0,       // :1093
+            noise_size: -1,                  // :1094
+            ac_bias: 1.0,                    // :1173
+            qp_scale_compress_strength: 1.0, // :1162
+            enable_variance_boost: true,     // :1153
+            variance_boost_strength: 2,      // :1154
+            variance_octile: 5,              // :1155
+            variance_boost_curve: 0,         // :1157
+            sharpness: 1,                    // :1159
+            max_tx_size: 64,                 // :1171
+            screen_content_mode: None,       // :1080 (2 = auto)
+            enable_qm: true,                 // :1139
+            min_qm_level: 6,                 // :1140
+            max_qm_level: 10,                // :1141
+            min_chroma_qm_level: 8,          // :1142
+            max_chroma_qm_level: 15,         // :1143
+            tf_strength: 1,                  // :1156
+        }
+    }
+
+    /// The defaults the pinned C oracle for (`reference`, `mode`) loads
+    /// from its `svt_av1_set_default_params` — the single place that
+    /// mapping lives, so `identity_run`, the output pins and the facade
+    /// cannot resolve it three different ways.
+    ///
+    /// `SvtReference::GhostRobot` + `SvtHdrMode::Mainline` returns
+    /// [`Self::mainline`]: that combination is refused by
+    /// [`SvtReference::validate_hdr_config`] (the fork has no mainline
+    /// mode), and returning the mainline defaults is what keeps that
+    /// refusal — and its output pin — in place.
+    pub fn defaults_for(reference: SvtReference, mode: SvtHdrMode) -> Self {
+        match mode {
+            SvtHdrMode::HdrFork => match reference {
+                SvtReference::GhostRobot => Self::ghost_robot(),
+                _ => Self::hdr_fork_c_mode1(),
+            },
+            SvtHdrMode::Mainline => Self::mainline(),
+        }
+    }
+
     /// Build a config from the environment, using the SAME variable names the
     /// C driver (`rust/tools/capture_c_trace`) reads. One env vector then
     /// configures BOTH encoders, which is what makes a fork-mode byte
@@ -279,16 +369,37 @@ impl HdrForkConfig {
     }
 
     /// [`Self::from_env`] with the base mode given by the caller instead of
-    /// read from `SVT_HDR_MODE` — the entry point for a harness that selects
-    /// its oracle by name (`SVT_ORACLE`, `rust/oracles/oracles.tsv`), where the
-    /// registry row fixes the mode. `SVT_FORK_*` overrides still apply.
+    /// read from `SVT_HDR_MODE`. Mode alone cannot distinguish the two fork
+    /// oracles — `GhostRobot` and `hybrid-3115-hdr` are both `HdrFork` — so a
+    /// harness that selects its oracle by name (`SVT_ORACLE`,
+    /// `rust/oracles/oracles.tsv`) should call
+    /// [`Self::from_env_for_reference`], where the registry row fixes the
+    /// reference. `SVT_FORK_*` overrides still apply.
     #[cfg(feature = "std")]
     pub fn from_env_with_mode(mode: SvtHdrMode) -> Self {
         let mut c = match mode {
             SvtHdrMode::HdrFork => Self::hdr_fork_c_mode1(),
             SvtHdrMode::Mainline => Self::mainline(),
         };
+        c.apply_env_overrides();
+        c
+    }
 
+    /// [`Self::from_env_with_mode`] keyed on the pinned reference as well as
+    /// the mode: `GhostRobot` resolves [`Self::ghost_robot`] defaults rather
+    /// than the hybrid MODE1 set the bare-mode entry assumes.
+    #[cfg(feature = "std")]
+    pub fn from_env_for_reference(reference: SvtReference, mode: SvtHdrMode) -> Self {
+        let mut c = Self::defaults_for(reference, mode);
+        c.apply_env_overrides();
+        c
+    }
+
+    /// The `SVT_FORK_*` overrides — applied identically to every base so a
+    /// knob can never reach only one arm of the (reference, mode) matrix.
+    #[cfg(feature = "std")]
+    fn apply_env_overrides(&mut self) {
+        let c = self;
         fn get<T: std::str::FromStr>(name: &str, slot: &mut T) {
             if let Ok(v) = std::env::var(name) {
                 *slot = v.parse().unwrap_or_else(|_| {
@@ -350,7 +461,6 @@ impl HdrForkConfig {
             "SVT_FORK_ENABLE_VARIANCE_BOOST",
             &mut c.enable_variance_boost,
         );
-        c
     }
 
     /// `no_std` has no process environment, so the `SVT_HDR_MODE` / `SVT_FORK_*`
@@ -477,5 +587,57 @@ mod tests {
         );
         assert_eq!(upstream.ac_bias, 1.0);
         assert_eq!(upstream.sharp_tx, 1);
+    }
+
+    /// Ghost Robot ships the fork's real feature defaults with no
+    /// neutralization (enc_settings.c:1010-1193 @ 9dabe3ca): the same six
+    /// flips MODE1 made, plus the fork knobs the hybrid forced off. Pinned
+    /// so a careless "= hdr_fork_c_mode1()" or "= hdr_fork()" edit fails
+    /// loudly — neither is this oracle's config.
+    #[test]
+    fn ghost_robot_defaults_are_the_fork_defaults_not_the_hybrids() {
+        let g = HdrForkConfig::ghost_robot();
+        assert!(g.is_fork());
+        // The six MODE1 flips Ghost Robot shares.
+        assert!(g.enable_qm);
+        assert_eq!((g.min_qm_level, g.max_qm_level), (6, 10));
+        assert_eq!((g.min_chroma_qm_level, g.max_chroma_qm_level), (8, 15));
+        assert!(g.enable_variance_boost);
+        assert_eq!((g.tf_strength, g.sharpness), (1, 1));
+        // The five knobs the hybrid neutralized; Ghost Robot ships them on.
+        assert_eq!(g.sharp_tx, 1);
+        assert_eq!(g.kf_tf_strength, 1);
+        assert_eq!(g.noise_norm_strength, 1);
+        assert_eq!(g.ac_bias, 1.0);
+        assert_eq!(g.qp_scale_compress_strength, 1.0);
+        // Alt lambda factors flipped back OFF in Ghost Robot
+        // (enc_settings.c:1185) — it matches MODE1 here and is where
+        // ghost_robot() differs from the shipped Chromedome defaults
+        // (hdr_fork()'s `true`).
+        assert!(!g.alt_lambda_factors);
+        assert_ne!(g, HdrForkConfig::hdr_fork_c_mode1());
+        assert_ne!(g, HdrForkConfig::hdr_fork());
+
+        // defaults_for maps each (reference, mode) pair to its oracle.
+        assert_eq!(
+            HdrForkConfig::defaults_for(SvtReference::GhostRobot, SvtHdrMode::HdrFork),
+            g
+        );
+        assert_eq!(
+            HdrForkConfig::defaults_for(SvtReference::Hybrid3115, SvtHdrMode::HdrFork),
+            HdrForkConfig::hdr_fork_c_mode1()
+        );
+        for r in [
+            SvtReference::Mainline420,
+            SvtReference::Hybrid3115,
+            SvtReference::GhostRobot,
+        ] {
+            assert_eq!(
+                HdrForkConfig::defaults_for(r, SvtHdrMode::Mainline),
+                HdrForkConfig::mainline(),
+                "{r:?} + Mainline resolves the mainline defaults so the \
+                 (GhostRobot, Mainline) refusal pin stays REFUSED"
+            );
+        }
     }
 }

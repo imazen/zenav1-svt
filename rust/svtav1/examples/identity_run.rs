@@ -1603,13 +1603,21 @@ fn apply_oracle_env(pipeline: &mut svtav1_encoder::pipeline::EncodePipeline) {
     use svtav1_encoder::reference::SvtReference;
     const REGISTRY: &str = include_str!("../../oracles/oracles.tsv");
     let Ok(name) = std::env::var("SVT_ORACLE") else {
-        pipeline.hdr = HdrForkConfig::from_env();
+        // Legacy switches: `SVT_HDR_MODE` picks the mode, `SVTAV1_REFERENCE`
+        // the pinned source. The reference resolves WHICH fork defaults the
+        // mode means (GhostRobot ships its own; see `defaults_for`).
         if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
             pipeline.reference = reference
                 .parse()
                 .expect("SVTAV1_REFERENCE must be a pinned source id");
             eprintln!("SVTAV1_REFERENCE={}", pipeline.reference.id());
         }
+        let mode = if std::env::var("SVT_HDR_MODE").as_deref() == Ok("1") {
+            SvtHdrMode::HdrFork
+        } else {
+            SvtHdrMode::Mainline
+        };
+        pipeline.hdr = HdrForkConfig::from_env_for_reference(pipeline.reference, mode);
         return;
     };
     let header: Vec<&str> = REGISTRY
@@ -1665,7 +1673,7 @@ fn apply_oracle_env(pipeline: &mut svtav1_encoder::pipeline::EncodePipeline) {
         name,
         "oracles.tsv row {name} disagrees with SvtReference::oracle_name"
     );
-    pipeline.hdr = HdrForkConfig::from_env_with_mode(mode);
+    pipeline.hdr = HdrForkConfig::from_env_for_reference(reference, mode);
     pipeline.reference = reference;
     eprintln!(
         "SVT_ORACLE={name} reference={} mode={mode:?}",
