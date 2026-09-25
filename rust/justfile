@@ -59,6 +59,10 @@ symtrace-check:
 test-minimal:
     cargo nextest run --workspace --no-default-features
 
+# incant! sites missing an x86 or neon tier match the checked-in ledger.
+tier-gaps:
+    python3 tools/review/incant_tiers.py --check docs/INCANT-TIER-GAPS.tsv
+
 # Every .rs file stays at most 3,000 lines (the split tools are named in the script).
 file-size:
     python3 tools/file_size_check.py

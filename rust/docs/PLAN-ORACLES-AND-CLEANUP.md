@@ -286,6 +286,13 @@ In dependency order:
 - S6 one scratch strategy;
 - S7 diagnostics behind an observer and a `trace` feature;
 - S8 uniform `incant!` plus the tier gate.
+  - Done (this change): `docs/INCANT-TIER-GAPS.tsv` lists the 24 `incant!`
+    sites that run scalar on one architecture: 20 without an x86 tier
+    (10-bit intra, directional, CfL, palette, IntraBC hash) and 4 without
+    NEON (SATD, warp). `incant_tiers.py --check` runs in CI and fails on a
+    new gap or a closed one still listed. Closing the gaps is Phase 5 item
+    1, a good delegate task: one kernel per commit, pins unchanged,
+    `perf_ab` on the kernel bench.
 
 Each is a series of small commits, each green on `output_pins`.
 

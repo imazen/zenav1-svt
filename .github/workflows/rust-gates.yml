@@ -303,6 +303,13 @@ jobs:
         # files ran twice after d2abc282b. rust/docs/PLAN-ORACLES-AND-CLEANUP.md 0.7.
         run: python3 tools/test_targets_check.py
 
+      - name: SIMD tier ledger is current (incant! sites without x86 or neon)
+        if: matrix.shard == 3
+        working-directory: rust
+        # A new scalar-only dispatch site fails, and so does a closed gap still
+        # listed; the ledger is docs/INCANT-TIER-GAPS.tsv (plan S8).
+        run: python3 tools/review/incant_tiers.py --check docs/INCANT-TIER-GAPS.tsv
+
       - name: every .rs file is at most 3,000 lines
         if: matrix.shard == 3
         working-directory: rust
