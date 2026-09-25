@@ -26,7 +26,7 @@ arm=${1:?usage: heaptrack_alloc_cell.sh [--c] <arm-name>}
 cd "$OUT"
 rm -f "$arm.zst" "$arm.txt"
 if [ "$mode" = c ]; then
-  heaptrack -o "$arm" "$ROOT/tools/capture_c_trace/capture_c_trace.bin" \
+  heaptrack -o "$arm" "$ROOT/tools/capture_c_trace/capture_c_trace" \
     512 320 20 -1 ./p.yuv "./$arm.obu" >/dev/null 2>&1
 else
   heaptrack -o "$arm" "$ROOT/target/release/examples/identity_run" \

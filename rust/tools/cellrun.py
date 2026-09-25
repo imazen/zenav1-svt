@@ -77,7 +77,9 @@ def run_cell(row, root, timeout):
             return "ERROR", "PORT", f"identity_run exited {r.returncode} (see {d}/rs.trace)"
         # The byte-only driver (no --wrap on this linker) has no op trace; the
         # verdict is unaffected, only the localization is.
-        sel = HERE / "capture_c_trace" / f".selected.{env.get('SVT_HDR_MODE', '0')}"
+        oracle = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
+                                capture_output=True, text=True).stdout.strip()
+        sel = HERE / "capture_c_trace" / f".selected.{oracle}"
         nowrap = sel.exists() and sel.read_text().strip().endswith(".nowrap.bin")
         cenv = dict(env)
         cenv["SVT_TRACE_OUT"] = os.devnull if nowrap else str(d / "c.trace")

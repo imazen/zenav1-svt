@@ -59,7 +59,7 @@ mkdir -p "$OUTDIR"
 # rather than implying the traces were checked and agreed.
 C_TRACE_ARGS=()
 c_trace_env="$OUTDIR/c.trace"
-if [[ "$(cat "$HERE/capture_c_trace/.selected.${SVT_HDR_MODE:-0}" 2>/dev/null)" == *.nowrap.bin ]]; then
+if [[ "$(cat "$HERE/capture_c_trace/.selected.$("$HERE/oracle" resolve)" 2>/dev/null)" == *.nowrap.bin ]]; then
     c_trace_env=/dev/null
     : >"$OUTDIR/c.trace"
     echo "NOTE: byte-only C driver (this linker has no --wrap) — op-trace localization is" \

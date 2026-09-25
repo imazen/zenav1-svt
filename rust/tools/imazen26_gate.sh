@@ -33,7 +33,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
-CT_BIN="$HERE/capture_c_trace/capture_c_trace.bin"
+# The driver build.sh published for the resolved oracle (a fixed name here
+# would silently run whichever oracle was built last).
+CT_BIN_FOR() { cat "$HERE/capture_c_trace/.selected.$("$HERE/oracle" resolve)" 2>/dev/null; }
+CT_BIN="$HERE/capture_c_trace/capture_c_trace.unresolved"
 IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
 # NO SILENT SKIP. This corpus is not committed and, until 2026-09-10, was not
 # materialised on any host reachable from this repo -- so `corpus_dir` resolved
@@ -143,6 +146,7 @@ echo "priming builds..." >&2
     cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
+CT_BIN="$(CT_BIN_FOR)"
 [ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] || { echo "binaries missing" >&2; exit 2; }
 
 OUT="$RS_ROOT/target/imazen26_gate"
