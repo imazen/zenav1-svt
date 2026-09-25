@@ -194,7 +194,7 @@ In dependency order:
     helper structs), the plane helpers and the three constants move to
     `pipeline/state.rs`; `palette_cache` moves to its own file.
     `pipeline.rs` is 3,792 lines, nearly all of it `encode_frame_impl`.
-  - Done (this change): `encode_frame_impl` is three phases: setup stays in
+  - Done (`7988f2a4`): `encode_frame_impl` is three phases: setup stays in
     `pipeline.rs`; `tile_phase::decide_and_encode_tiles` (mode decision,
     tiles, bd10 post-pass); `pack_phase::filter_and_pack_frame` (entropy
     walk, deblock/CDEF/LR, bitstream, recon outputs, reference). `pipeline.rs`
@@ -267,3 +267,8 @@ Order, by expected size:
     fall back to fresh buffers on every call.
   - Open: the tier gate (S8) and a dead-code gate.
 - [ ] T7 inline tests out of product files.
+  - Done (this change): 38 inline `#[cfg(test)]` modules in the 23 files
+    over 2 kloc moved to sibling files (`<file>/tests.rs` and so on) with
+    `tools/split_inline_mod.py`. The test count is unchanged (2770).
+  - Open: the smaller files, and `crates/*/tests/` binaries that test
+    private internals, which belong in-crate (T2).
