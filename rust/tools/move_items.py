@@ -2,6 +2,7 @@
 """Move a contiguous run of top-level items from a Rust file into a child module.
 
     tools/move_items.py <file.rs> <child> <first_item_regex> <end_item_regex>
+    tools/move_items.py <file.rs> <child> @<first_line> @<end_line>
 
 The regexes each match exactly one line (searched with `re.match`, so they
 anchor at column 0): the first item to move, and the first item to KEEP
@@ -49,19 +50,27 @@ def main():
             sys.exit(f"move_items: {rx!r} matches {len(hits)} lines, need exactly 1")
         return hits[0]
 
-    first = find(sys.argv[3])
-    end = len(lines) if sys.argv[4] == "EOF" else find(sys.argv[4])
+    # `@N` gives a 1-based line directly (e.g. a section banner). Safe when
+    # applied bottom-up: a move only edits lines at and after its own range.
+    by_line = sys.argv[3].startswith("@")
+    first = int(sys.argv[3][1:]) - 1 if by_line else find(sys.argv[3])
+    if sys.argv[4] == "EOF":
+        end = len(lines)
+    elif sys.argv[4].startswith("@"):
+        end = int(sys.argv[4][1:]) - 1
+    else:
+        end = find(sys.argv[4])
     if end <= first:
         sys.exit("move_items: end item is not after the first item")
-    if not ITEM.match(lines[first]):
+    if not by_line and not ITEM.match(lines[first]):
         sys.exit(f"move_items: line {first + 1} is not a top-level item: {lines[first]!r}")
     if end < len(lines) and lines[end].strip() and not ITEM.match(lines[end]) and not lines[end].startswith(("///", "#[", "//")):
         sys.exit(f"move_items: end line {end + 1} is not an item boundary: {lines[end]!r}")
     start = first
-    while start > 0 and lines[start - 1].startswith(("///", "#[", "//")):
+    while not by_line and start > 0 and lines[start - 1].startswith(("///", "#[", "//")):
         start -= 1
     stop = end
-    while stop > start and lines[stop - 1].startswith(("///", "#[", "//")):
+    while not sys.argv[4].startswith("@") and stop > start and lines[stop - 1].startswith(("///", "#[", "//")):
         stop -= 1  # docs, attrs and comments of the item at `end` stay with it
     body = lines[start:stop]
     # `mod x;` declarations and `use` imports stay in the parent: moving a
@@ -80,8 +89,14 @@ def main():
     body = filtered
 
     out_lines = []
-    in_struct = in_impl = False
+    in_struct = in_impl = in_extern = False
     for l in body:
+        if re.match(r'^(unsafe )?extern "C" \{', l):
+            in_extern = True
+        elif in_extern and l.startswith("}"):
+            in_extern = False
+        elif in_extern and re.match(r"^    (safe |unsafe )?(fn|static)\b", l):
+            l = "    pub(super) " + l[4:]
         if ITEM.match(l) and not VIS.match(l) and not l.startswith(("impl", "use ", "mod ", "macro_rules!")):
             l = "pub(super) " + l
         if re.match(r"^(pub(\([^)]*\))? )?struct \w+.*\{\s*$", l):
