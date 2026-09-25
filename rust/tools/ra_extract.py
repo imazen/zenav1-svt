@@ -150,6 +150,7 @@ def main():
                 break
     print(f"ra_extract: indexed in {time.time() - t0:.0f}s", flush=True)
 
+    skipped = 0
     for first, last, name in jobs:
         lines = text.split("\n")
         end_char = len(lines[last - 1].encode("utf-16-le")) // 2
@@ -161,7 +162,11 @@ def main():
         })
         act = next((a for a in actions or [] if a.get("title") == "Extract into function"), None)
         if act is None:
-            sys.exit(f"ra_extract: no 'Extract into function' for {first}-{last}: {[a.get('title') for a in actions or []]}")
+            # Skip, do not abort: the jobs already applied are real work.
+            print(f"ra_extract: SKIPPED {first}-{last} ({name}): no 'Extract into function' "
+                  f"(offered: {[a.get('title') for a in actions or []]})", flush=True)
+            skipped += 1
+            continue
         if "edit" not in act:
             act = lsp.request("codeAction/resolve", act)
         edit = act["edit"]
@@ -184,6 +189,8 @@ def main():
         print(f"ra_extract: {first}-{last} -> {name}", flush=True)
     path.write_text(text)
     lsp.p.terminate()
+    if skipped:
+        sys.exit(f"ra_extract: {skipped} range(s) skipped; the rest were applied")
 
 
 if __name__ == "__main__":

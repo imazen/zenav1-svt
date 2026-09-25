@@ -57,8 +57,8 @@ def main():
     while start > 0 and lines[start - 1].startswith(("///", "#[", "//")):
         start -= 1
     stop = end
-    while stop > start and lines[stop - 1].startswith(("///", "#[")):
-        stop -= 1  # docs/attrs of the item at `end` stay with it
+    while stop > start and lines[stop - 1].startswith(("///", "#[", "//")):
+        stop -= 1  # docs, attrs and comments of the item at `end` stay with it
     body = lines[start:stop]
 
     out_lines = []
@@ -84,6 +84,11 @@ def main():
         sys.exit(f"move_items: {out} already exists")
     out.parent.mkdir(exist_ok=True)
     out.write_text("use super::*;\n\n" + "\n".join(out_lines).strip("\n") + "\n")
+    # Format BEFORE touching the parent: if the child does not parse, nothing
+    # has been removed from the parent yet.
+    if subprocess.run(["rustfmt", "--edition", "2024", str(out)]).returncode != 0:
+        out.unlink()
+        sys.exit(f"move_items: {out} does not parse; parent left unchanged")
     rest = lines[:start] + lines[stop:]
     while rest and rest[-1] == "":
         rest.pop()
@@ -97,7 +102,6 @@ def main():
         vis = ""
     rest += ["", f"mod {child};", f"{vis}use {child}::*;", ""]
     path.write_text("\n".join(rest))
-    subprocess.run(["rustfmt", "--edition", "2024", str(out)], check=True)
     print(f"moved lines {start + 1}..{stop} ({stop - start}) -> {out}")
 
 

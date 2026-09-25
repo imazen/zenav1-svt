@@ -159,7 +159,7 @@ In dependency order:
     (`tools/move_methods.py`) into
     `pipeline/{ra, tpl_stage, setup, entry, grain, config_check, superres,
     cbr}.rs`, taking `pipeline.rs` to 8,497 lines.
-  - Done (this change): 14 stages extracted from `encode_frame_impl`
+  - Done (`cd862116`): 14 stages extracted from `encode_frame_impl`
     (`tools/ra_extract.py` drives rust-analyzer's "Extract into function",
     which works out every stage's inputs and outputs) and moved into
     `pipeline/{frame_setup, inter_setup, restoration_stage,
@@ -170,6 +170,13 @@ In dependency order:
     stages take `&self` and hand their `self` writes back to the caller
     (`search_restoration`). `build_inter_md_frame` and `bd10_post_pass` are
     left inline until they can take the specific fields they borrow.
+  - Done (this change): 12 more stages move to `pipeline/{md_setup,
+    loop_filters, recon_output, diagnostics}.rs`, so the debug dumps sit in
+    `diagnostics.rs` (S7). `pipeline.rs` is 5,788 lines;
+    `encode_frame_impl` is 4,900. rust-analyzer failed on four ranges (the
+    `run_entropy_walk` closure body, the TPL r0 block, the chroma and HBD
+    source prep), each for its own reason: invalid code, a closure left
+    `FnOnce`, moves out of borrowed values. They remain inline.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting

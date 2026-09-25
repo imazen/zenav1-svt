@@ -1,5 +1,9 @@
 use super::*;
 
+/// Encode tile rows, returning per-tile recon buffers.
+///
+/// When the `std` feature is enabled and there are multiple tile rows,
+/// uses `std::thread::scope` for parallel encoding. Otherwise sequential.
 #[allow(clippy::type_complexity)] // ported C signature: a `type` alias here would hide the shape and churn the byte-identity gate for no benefit
 pub(super) fn encode_tile_rows(
     encode_input: &[u8],

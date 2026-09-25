@@ -69,6 +69,11 @@ def main():
         sys.exit(f"move_methods: {out} already exists")
     out.parent.mkdir(exist_ok=True)
     out.write_text("use super::*;\n\n" + header + "\n" + "\n".join(body).rstrip("\n") + "\n}\n")
+    # Format BEFORE touching the parent: if the child does not parse, nothing
+    # has been removed from the parent yet.
+    if subprocess.run(["rustfmt", "--edition", "2024", str(out)]).returncode != 0:
+        out.unlink()
+        sys.exit(f"move_methods: {out} does not parse; parent left unchanged")
 
     keep = []
     cut = set()
@@ -82,7 +87,6 @@ def main():
         keep.pop()
     keep += ["", f"mod {child};", ""]
     path.write_text("\n".join(keep))
-    subprocess.run(["rustfmt", "--edition", "2024", str(out)], check=True)
     print(f"moved {len(spans)} methods ({sum(e - s for s, e, _ in spans)} lines) -> {out}")
 
 
