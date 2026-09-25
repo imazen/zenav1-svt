@@ -427,12 +427,19 @@ Order, by expected size:
      (`benchmarks/perf_residual_pd0scratch_2026-09-25.meta`).
    - Done (`afbcf7f6`): `sse` and `variance_diff` row overhead, -1.95%
      (`benchmarks/perf_sse_variance_rows_2026-09-25.meta`).
-   - Done (this change): eob from a generated inverse scan and C's cul-level
-     form, -3.06%, 1.015-1.030x wall
-     (`benchmarks/perf_eob_iscan_2026-09-25.meta`).
-   - Open, by excess over C at that cell: memset (14.8M vs 3.0M),
-     `cost_coeffs_txb` (10.8M; C runs no exact coefficient rate there, a
-     delegate brief), memcpy (10.3M vs 3.1M).
+   - Done (`d3c2b789`, `ea3a3d96`): eob from a generated inverse scan (also
+     in the pack walk) and C's cul-level form, -4.8%
+     (`benchmarks/perf_eob_iscan_2026-09-25.meta`); `6f7d8a2f`
+     `DeblockGeom` row fills, -0.6%.
+   - Measured after all of the above (`benchmarks/perf_2026-09-25-gap2.meta`):
+     1.17x C at 256 p6, 1.21x at 1024 p6, 1.33x at 1024 p10 (p25 1.20);
+     1024 p10 is 312M instructions to C's 199M (the port's figure includes
+     about 21M of harness content generation that is not timed).
+   - Open, by excess over C at 1024 p10: the exact luma and chroma
+     coefficient rate and chroma MD reconstruction that C does not compute
+     there (about 25M; brief `coeff-rate-gap`), `optimize_b` (38.3M vs
+     30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
+     (14.8M vs 3.0M), memcpy (10.3M vs 3.1M).
 
 ## Maintenance backlog
 
