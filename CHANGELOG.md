@@ -77,7 +77,7 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Removed
 
-- **Four libaom-derived Zen enhancements** (this change), each on its own
+- **Four libaom-derived Zen enhancements** (30fa9a3a), each on its own
   measurement: `StillImageTune` (v1 was exactly tune IQ), `AomAdaptiveSharpness`
   (a no-op under IQ in 252/252 cells), `AomAdaptiveCdef` (+0.4 to +0.9 %
   ssim2 BD against SVT's own CDEF pick) and `AomDeltaQLf` (RD-neutral).
@@ -303,7 +303,7 @@ Crates are not published to crates.io yet — depend by git.
 - `ZenEnhancement::{StillImageTune, AomAdaptiveCdef, AomAdaptiveSharpness,
   AomDeltaQLf}`, `enhancements::apply_still_image_tune`, the
   `cdef::aom_adaptive_cdef_*` helpers and `deblock::SbDeltaLf` (with the
-  `dlf` parameter of `apply_deblock_frame*`) are removed (this change).
+  `dlf` parameter of `apply_deblock_frame*`) are removed (30fa9a3a).
   Measured: no RD gain, or a regression (see Removed).
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->

@@ -180,7 +180,7 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-encoder/src/leaf_funnel/inject.rs` | 2 |
 | `crates/svtav1-encoder/src/entropy/context.rs` | 2 |
 | `crates/svtav1-encoder/tests/c_parity_palette.rs` | 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | 1 |
+| `crates/svtav1-encoder/src/pipeline/tile_walk.rs` | 1 |
 | `crates/svtav1-encoder/src/partition.rs` | 1 |
 | `crates/svtav1-encoder/src/leaf_funnel/mds3.rs` | 1 |
 | `crates/svtav1-encoder/src/intrabc_pred.rs` | 1 |
