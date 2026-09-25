@@ -368,6 +368,14 @@ pub(super) fn pd0_tx_size(bw: usize, tx_h: usize) -> (svtav1_types::transform::T
 /// `qcoeff`/`dqcoeff` outputs land in `s.qcoeff[..used]` /
 /// `s.dqcoeff[..used]` where `used = min(sq_size,32) * min(tx_h,32)`.
 /// Returns `(eob, dist, c_tx_size)`.
+///
+/// `bit_depth`/`sharpness` are C's `perform_tx_pd0` `bit_depth` argument
+/// (product_coding_loop.c:4470) and the `scs->static_config.sharpness`
+/// `svt_av1_build_quantizer` folds into the table — Ghost Robot `2c66d9ea`
+/// passes `EB_TEN_BIT` whenever `SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)`, which
+/// is what the 16-bit arm reads `quants_bd`/`deq_bd` and the highbd
+/// quantize kernels (no INT16 clamp) for. `(8, 0)` is the pre-existing
+/// 8-bit arm.
 pub(super) fn tx_quant_core(
     s: &mut Pd0Scratch,
     sq_size: usize,
@@ -375,6 +383,8 @@ pub(super) fn tx_quant_core(
     qindex_off: u8,
     qm_level: u8,
     subres_step: u32,
+    bit_depth: u8,
+    sharpness: i8,
 ) -> (u16, u64, usize) {
     use svtav1_types::transform::TxType;
     let (tx_size, c_tx_size) = pd0_tx_size(sq_size, tx_h);
@@ -432,7 +442,6 @@ pub(super) fn tx_quant_core(
     let packed_w = sq_size.min(32);
     let packed_h = tx_h.min(32);
     let log_scale = TX_SCALE_TAB[c_tx_size];
-    let entry = build_quant_entry(qindex_off);
     let scan = crate::entropy::scan_tables::scan(c_tx_size, 0);
     debug_assert_eq!(scan.len(), packed_w * packed_h);
     // [SVT_HDR_MODE] Quantization matrices in PD0. C's md_encode_block_pd0
@@ -443,31 +452,56 @@ pub(super) fn tx_quant_core(
     // IS_2D_TRANSFORM, so the matrix applies whenever the frame luma
     // `qm_level < 15`. The matrix LEVEL is the frame value derived from
     // base_qindex (`frm_hdr.quantization_params.qm[PLANE_Y]`,
-    // md_config_process.c:270), NOT the `qindex_off` quant step. C passes
-    // `bit_depth = EB_EIGHT_BIT` to the PD0 quantize (product_coding_loop.c:
-    // 4397/4471), so even at bd10 it is the 8-bit QM kernel over the 8-bit
-    // `quants_8bit` tables `build_quant_entry` already models — this fix is
-    // 8-bit-domain and carries no highbd term. Without it PD0 dequantized
-    // WITHOUT matrices, so a QM-tipped partition near-tie (top-left 32x32 of
-    // a smooth SB) coded SPLIT where C keeps NONE (fork x bd10 Class A).
+    // md_config_process.c:270), NOT the `qindex_off` quant step.
+    //
+    // The 8-bit arm below (every reference but Ghost Robot at `hbd_md`)
+    // still matches `perform_tx_pd0`'s pre-`2c66d9ea` form — `EB_EIGHT_BIT`
+    // and `quants_8bit` (product_coding_loop.c:4397/4471) — because
+    // mainline keeps the `hbd_md = 0` pin around the multi-pass PD loop
+    // that the fork commit removes.
     let used = packed_w * packed_h;
-    let eob = match (qm_level < 15)
-        .then(|| crate::qm::qm_slices(usize::from(qm_level), false, c_tx_size))
-        .flatten()
-    {
-        Some((wt, iwt)) => {
-            // `quantize_b_qm` writes only the positions that pass the
-            // weighted dead zone — the reused buffers must start at zero.
-            let q = scratch_i32(&mut s.qcoeff, used);
-            let dq = scratch_i32(&mut s.dqcoeff, used);
-            q.fill(0);
-            dq.fill(0);
-            quantize_b_qm_into(&s.coeffs[..used], scan, &entry, log_scale, wt, iwt, q, dq)
+    let eob = if bit_depth == 10 {
+        // Ghost Robot `2c66d9ea` — `quants_bd`/`deq_bd` (the 10-bit table
+        // `svt_av1_build_quantizer` built with `static_config.sharpness`
+        // folded in) and the highbd kernels: `svt_av1_highbd_quantize_b`
+        // / `svt_av1_highbd_quantize_b_qm` (full_loop.c:1346 hbd arm),
+        // which run WITHOUT the bd8 kernels' INT16 clamp.
+        let t = crate::quant::build_quant_table_bd_sharp(qindex_off, 10, sharpness);
+        match (qm_level < 15)
+            .then(|| crate::qm::qm_slices(usize::from(qm_level), false, c_tx_size))
+            .flatten()
+        {
+            Some((wt, iwt)) => {
+                let q = scratch_i32(&mut s.qcoeff, used);
+                let dq = scratch_i32(&mut s.dqcoeff, used);
+                crate::qm::quantize_b_hbd_qm(&s.coeffs[..used], scan, &t, log_scale, wt, iwt, q, dq)
+            }
+            None => {
+                let q = scratch_i32(&mut s.qcoeff, used);
+                let dq = scratch_i32(&mut s.dqcoeff, used);
+                crate::quant::quantize_b_hbd(&s.coeffs[..used], scan, &t, log_scale, q, dq)
+            }
         }
-        None => {
-            let q = scratch_i32(&mut s.qcoeff, used);
-            let dq = scratch_i32(&mut s.dqcoeff, used);
-            quantize_b_into(&s.coeffs[..used], scan, &entry, log_scale, q, dq)
+    } else {
+        let entry = build_quant_entry(qindex_off);
+        match (qm_level < 15)
+            .then(|| crate::qm::qm_slices(usize::from(qm_level), false, c_tx_size))
+            .flatten()
+        {
+            Some((wt, iwt)) => {
+                // `quantize_b_qm` writes only the positions that pass the
+                // weighted dead zone — the reused buffers must start at zero.
+                let q = scratch_i32(&mut s.qcoeff, used);
+                let dq = scratch_i32(&mut s.dqcoeff, used);
+                q.fill(0);
+                dq.fill(0);
+                quantize_b_qm_into(&s.coeffs[..used], scan, &entry, log_scale, wt, iwt, q, dq)
+            }
+            None => {
+                let q = scratch_i32(&mut s.qcoeff, used);
+                let dq = scratch_i32(&mut s.dqcoeff, used);
+                quantize_b_into(&s.coeffs[..used], scan, &entry, log_scale, q, dq)
+            }
         }
     };
 

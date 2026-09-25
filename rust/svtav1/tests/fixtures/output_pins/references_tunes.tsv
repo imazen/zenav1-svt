@@ -15,7 +15,7 @@ grad-64x64-b8-p9-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot
 grad-64x64-b8-p9-q30-Hybrid3115-HdrFork	605:9b2f99d29618ae6bfc17b3ab153ee7a3
 grad-64x64-b8-p9-q30-Hybrid3115-Mainline	658:83ccb65234a262789cdb4e99347096e0
 grad-64x64-b8-p9-q30-Mainline420-Mainline	658:83ccb65234a262789cdb4e99347096e0
-photo-64x64-b10-p6-q30-GhostRobot-HdrFork	1365:1e4c26cce29e19f5012dfd4ee3ac00d8
+photo-64x64-b10-p6-q30-GhostRobot-HdrFork	980:c77e769c6d8ef081b5378fa964f4199a
 photo-64x64-b10-p6-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
 photo-64x64-b10-p6-q30-Hybrid3115-HdrFork	980:c77e769c6d8ef081b5378fa964f4199a
 photo-64x64-b10-p6-q30-Hybrid3115-Mainline	1305:aa6ab708ca090144f8e2c0a7ba97e4be

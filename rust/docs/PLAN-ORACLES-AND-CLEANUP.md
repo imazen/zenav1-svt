@@ -247,10 +247,42 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     (temporal_filtering.c) are video-only — no still-grid effect;
     `560f7453`'s chroma `effective_ac_bias` was already the port's
     behaviour (the pre-commit C bug was never ported).
-  - Open: `ec7e414d` (TF `use_8bit_subpel` — video TF only),
-    `2c66d9ea` (full 10-bit PD0: 16-bit neighbour arrays, `vf_hbd_10`,
-    HBD tx in `perform_tx_pd0`, `hbd_md = 0` removal — reaches bd10
-    stills via the forced `PD0_LVL_0` path; sizeable, not yet ported).
+  - Open: `ec7e414d` (TF `use_8bit_subpel` — video TF only).
+  - `2c66d9ea` ("restoring the full 10bit PD0 path") — PORTED for the
+    allintra arm (`pd0.rs`/`pd0/entry.rs`/`pd0/quantize.rs`,
+    `tile_walk/{cu,tile_body}.rs`). What the port carries: `Pd0Hbd`
+    (the `input_frame16bit` plane, `full_sb_lambda_md[EB_10_BIT_MD]`,
+    `sharpness`, luma QM level) threads into the LVL_0 entry and the
+    LVL_1-family refinement eval; `Pd0Ctx::src16` switches every block
+    cost to `extract_neighbors_hbd` (16-bit neighbour arrays) +
+    `predict_dc_hbd` (`vf_hbd_10`'s DC_PRED arm — the `intra_level =
+    MAX_INTRA_LEVEL - 1` injects DC-only, enc_mode_config.c:7363) +
+    `residual_kernel_16bit` + `tx_quant_core`'s `bit_depth == 10` arm
+    (`build_quant_table_bd_sharp` = `quants_bd` at
+    `static_config.sharpness`, `quantize_b_hbd`/`quantize_b_hbd_qm`,
+    no INT16 clamp) + `kf_full_lambda_bd10_tuned` for the per-SB
+    `full_sb_lambda_md[EB_10_BIT_MD]` (the `av1_lambda_assign_md` chain
+    at bd10, including the delta-q stats factor under variance boost).
+    `video_pd0_params`' `hbd_md` input got the fork's derivation
+    (enc_mode_config.c:2180-2199 — I-slices at every enc_mode, inter
+    <= M9 inside the TL bound). Gate state (this change): ghost-robot
+    still grid **41/288** (the last recorded count before this change
+    was 39/288 at `9f7c2d1d`, with `d3c2b789` and the upstream
+    fmt/mono commits in between — so the net +2 cannot be attributed
+    to this arm alone; the 16-bit arm is verified LIVE by
+    `SVTAV1_PD0DBG` (`hbd=1` block costs on `gradient-64-q20-bd10`
+    p10) and the u8/u16 PD0 trees agree on every measured cell — the
+    residual bd10 divergences are downstream of the partition search,
+    matching the `B:v1`-vs-`CDF10` lead below). mainline-4.2.0
+    **288/288**; `just pins`: only
+    `photo-64x64-b10-p6-q30-GhostRobot-HdrFork` moved (1365B -> 980B —
+    the m6_eval path's PD0 eval now runs at 16 bits); nextest
+    2771/2771; spotcheck 147/147. Not yet ported from the commit: the
+    VIDEO arm's 16-bit PD0 (needs the u16 recon canvas —
+    `pd0_use_src_samples` is `allintra`-only after the commit, so video
+    PD0 predicts from 16-bit recon; its `hbd_md` ladder now resolves
+    PD0_LVL_0 but still prices the 8-bit LVL_1 model) and the HBD inter
+    PD0 arm (`product_prediction_fun_table_pd0[1]` at `EB_TEN_BIT`).
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0
   ac-bias dampening (`c65c2bfa`), chroma noise `pow(luma, 0.75)`
   (`9f54af57`), delta-q all-skip (`2f08c8e8`), lossless across tunes

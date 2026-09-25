@@ -1,0 +1,33 @@
+Ghost Robot port 2c66d9ea ("restoring the full 10bit PD0 path"), the
+allintra arm, on lilith.
+
+What landed: `Pd0Hbd` (input_frame16bit plane + the per-SB
+full_sb_lambda_md[EB_10_BIT_MD] + sharpness + luma QM level) threaded
+into `pd0_pick_sb_partition_lvl0` and `pd0_pick_sb_partition_m6_eval`;
+`Pd0Ctx::src16` switches block costs to the 16-bit arm —
+extract_neighbors_hbd + predict_dc_hbd + residual_kernel_16bit +
+tx_quant_core's `bit_depth == 10` arm (build_quant_table_bd_sharp =
+quants_bd, quantize_b_hbd / quantize_b_hbd_qm, no INT16 clamp);
+kf_full_lambda_bd10_tuned carries the bd10 av1_lambda_assign_md chain.
+video_pd0_params' hbd_md input now uses the fork's derivation
+(enc_mode_config.c:2180-2199) under SvtReference::GhostRobot. Arm is
+verified live: SVTAV1_PD0DBG prints `hbd=1` block costs on
+gradient-64-q20-bd10 p10.
+
+ghost-robot:    41/288 IDENTICAL. The prior recorded count is 39/288 at
+  9f7c2d1d; d3c2b789 (eob-iscan) and the upstream fmt/mono commits sit
+  between the two measurements, so the +2 is not attributable to this
+  arm alone. The u8/u16 PD0 trees agree on every cell — the residual
+  bd10 divergences are downstream of the partition search (the
+  B:v1-vs-CDF10 tile-op lead in plan 3.3).
+mainline-4.2.0: 288/288 IDENTICAL (control).
+
+Pins: 1 cell moved — photo-64x64-b10-p6-q30-GhostRobot-HdrFork
+(1365->980 bytes); regenerated via UPDATE_OUTPUT_PINS. No Hybrid3115 or
+Mainline420 cell moved.
+
+Gates: nextest 2771/2771, regression_spotcheck 147/147, output_pins 6/6.
+
+Not yet ported from the commit: the video arm's 16-bit PD0 (u16 recon
+canvas; pd0_use_src_samples is allintra-only after the commit) and the
+HBD inter PD0 arm.

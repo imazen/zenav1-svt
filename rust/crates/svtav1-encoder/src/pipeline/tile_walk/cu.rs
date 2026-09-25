@@ -72,6 +72,13 @@ pub(super) fn encode_coding_unit(
     sb_x0: usize,
     sb_y0: usize,
     sb_md_full_lambda: u64,
+    // Ghost Robot `2c66d9ea` — `pcs->input_frame16bit` for PD0, `Some`
+    // only where `SVT_EFFECTIVE_HBD_MD` is live AND `pd0_use_src_samples`
+    // (the allintra arm — video frames predict PD0 from the 16-bit recon
+    // canvas, not threaded here). `sb_md_full_lambda10` is the per-SB
+    // `full_sb_lambda_md[EB_10_BIT_MD]` the 16-bit arm prices with.
+    pd0_hbd_src: Option<(&[u16], usize)>,
+    sb_md_full_lambda10: u64,
     ref_ctx: Option<crate::partition::RefFrameCtx<'_>>,
     sb_qindex: u8,
     units: Vec<(usize, usize)>,
@@ -108,6 +115,17 @@ pub(super) fn encode_coding_unit(
     } else {
         0.0
     };
+    // Ghost Robot `2c66d9ea` — the `hbd` arm bundle every PD0 entry
+    // takes (`hbd_md` effective → `input_frame16bit` source, `quants_bd`
+    // at `static_config.sharpness`, `full_sb_lambda_md[EB_10_BIT_MD]`,
+    // frame luma QM). `None` on every other surface.
+    let pd0_hbd = pd0_hbd_src.map(|(s, st)| crate::pd0::Pd0Hbd {
+        src16: s,
+        stride16: st,
+        lambda10: sb_md_full_lambda10,
+        sharpness: c_quant.as_ref().map_or(0, |q| q.sharpness),
+        qm_level: qm_levels[0],
+    });
     for &(x0, y0) in units.iter() {
         let cur_w = unit_size.min(w - x0);
         let cur_h = unit_size.min(h - y0);
@@ -247,8 +265,11 @@ pub(super) fn encode_coding_unit(
                         max_tx_size,
                         // C `full_sb_lambda_md[EB_8_BIT_MD]`
                         // (svt_aom_full_cost_pd0's lambda — PD0
-                        // runs at 8-bit even at bd10).
+                        // runs at 8-bit even at bd10 pre-`2c66d9ea`;
+                        // the hbd bundle below swaps in the
+                        // EB_10_BIT_MD value under Ghost Robot).
                         Some(sb_md_full_lambda),
+                        pd0_hbd,
                         ac_bias_eff,
                     )
                 } else if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) {
@@ -759,6 +780,7 @@ pub(super) fn encode_coding_unit(
                             // C `full_sb_lambda_md[EB_8_BIT_MD]`
                             // (svt_aom_full_cost_pd0's lambda).
                             Some(sb_md_full_lambda),
+                            pd0_hbd,
                             ac_bias_eff,
                         )
                     }
@@ -934,6 +956,7 @@ pub(super) fn encode_coding_unit(
                                     // C `full_sb_lambda_md`
                                     // (svt_aom_full_cost_pd0's lambda).
                                     Some(sb_md_full_lambda),
+                                    pd0_hbd,
                                     ac_bias_eff,
                                 )
                                 .max_min_picked(&mut mx, &mut mn);
@@ -1390,6 +1413,7 @@ pub(super) fn encode_coding_unit(
                                 // C `full_sb_lambda_md[EB_8_BIT_MD]`
                                 // (svt_aom_full_cost_pd0's lambda).
                                 Some(sb_md_full_lambda),
+                                pd0_hbd,
                                 ac_bias_eff,
                             )
                         }

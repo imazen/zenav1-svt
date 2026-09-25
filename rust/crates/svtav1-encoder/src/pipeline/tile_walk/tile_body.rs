@@ -798,6 +798,45 @@ pub(super) fn encode_one_tile_body(
     if funnel_src10.is_some() {
         hbd_used.store(true, core::sync::atomic::Ordering::Relaxed);
     }
+    // Ghost Robot `2c66d9ea` — `pcs->input_frame16bit` for PD0: the fork
+    // removed the `hbd_md = 0` pin around the multi-pass PD loop, so at
+    // bd10 PD0 runs its forced `PD0_LVL_0` full-RD search on the 16-bit
+    // input (u16 neighbours/DC pred/residual, `quants_bd`, the
+    // `full_sb_lambda_md[EB_10_BIT_MD]` lambda). Scoped to the ALLINTRA
+    // arm: `pd0_use_src_samples` is `allintra`-only after the commit —
+    // a video frame's PD0 predicts from the 16-bit RECON canvas, which
+    // is not threaded here.
+    //
+    // The plane mirrors the u8 arm's extent: real `hbd_src` rows where
+    // a true 16-bit input reached the tile, `<<2`-widened `sb_input`
+    // rows otherwise (`unpack_plane` clears `bit_inc`, so C's
+    // `input_frame16bit` holds the same MSB<<2 image there), with the
+    // bottom margin replicated to the SB extent like the padded plane.
+    let pd0_hbd_active = reference == crate::reference::SvtReference::GhostRobot
+        && bit_depth == 10
+        && matches!(sc_arm, crate::sc_detect::ScArm::Allintra);
+    let pd0_src16_owned = pd0_hbd_active.then(|| {
+        let rows = ext_h.max(h);
+        let mut v = alloc::vec::Vec::with_capacity(in_stride * rows);
+        for y in 0..rows {
+            let sy = y.min(h - 1);
+            match hbd_src {
+                Some((y10, _, _)) => {
+                    v.extend_from_slice(&y10[sy * in_stride..sy * in_stride + in_stride]);
+                }
+                None => {
+                    let shift = u32::from(bit_depth - 8);
+                    v.extend(
+                        sb_input[sy * in_stride..(sy + 1) * in_stride]
+                            .iter()
+                            .map(|&s| u16::from(s) << shift),
+                    );
+                }
+            }
+        }
+        v
+    });
+    let pd0_hbd_src = pd0_src16_owned.as_deref().map(|v| (v, in_stride));
     let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_plumb {
         svtav1_types::try_vec![512u16; ext_w * ext_h]?
     } else {
@@ -903,6 +942,28 @@ pub(super) fn encode_one_tile_body(
                     || c_quant.as_ref().map_or(0, |cq| u64::from(cq.lambda)),
                     |l| u64::from(l.full_8bit),
                 );
+            // Ghost Robot `2c66d9ea` — `full_sb_lambda_md[EB_10_BIT_MD]`:
+            // the lambda the fork's 16-bit PD0 prices every block with.
+            // `av1_lambda_assign_md` at this SB's qindex — dc_qlookup_10
+            // rdmult, KF frame-type factor (alt row under
+            // `alt_lambda_factors`), the delta-q stats factor,
+            // `lambda_weight`, then `*16` (md_process.c:753).
+            let mut sb_md_full_lambda10: u64 = if pd0_hbd_src.is_some() {
+                u64::from(crate::pd0::kf_full_lambda_bd10_tuned(
+                    base_qindex,
+                    u32::from(picture_qp),
+                    hdr_alt_lambda,
+                    0,
+                    Some(crate::pd0::frame_lambda_weight_for_preset(
+                        speed_config.preset,
+                        u32::from(picture_qp),
+                        tune_iq,
+                        lw_bump,
+                    )),
+                ))
+            } else {
+                0
+            };
 
             // [SVT_HDR_MODE] variance boost: this SB searches/quantizes
             // at its PLANNED qindex (luma + per-plane chroma) with the
@@ -940,6 +1001,19 @@ pub(super) fn encode_one_tile_body(
                     );
                 }
                 if ssim_rdmult.is_none() {
+                    // Frame `lambda_weight` + the extended-CRF bump.
+                    // `None` with a zero bump keeps the pre-existing
+                    // per-SB PSNR ladder this site has always used.
+                    let lw_opt = match (hdr_iq_lambda_weight, lw_bump) {
+                        (Some(w), b) => Some(w + b),
+                        (None, 0) => None,
+                        (None, b) => Some(crate::pd0::frame_lambda_weight_for_preset(
+                            speed_config.preset,
+                            u32::from(picture_qp),
+                            false,
+                            b,
+                        )),
+                    };
                     let sb_assigned = u64::from(crate::pd0::kf_full_lambda_8bit_tuned(
                         sbq,
                         // C keys `pcs->lambda_weight` on `ppcs->picture_qp`
@@ -952,19 +1026,7 @@ pub(super) fn encode_one_tile_body(
                         u32::from(picture_qp),
                         hdr_alt_lambda,
                         i32::from(sbq) - i32::from(fh_base_qindex),
-                        // Frame `lambda_weight` + the extended-CRF bump.
-                        // `None` with a zero bump keeps the pre-existing
-                        // per-SB PSNR ladder this site has always used.
-                        match (hdr_iq_lambda_weight, lw_bump) {
-                            (Some(w), b) => Some(w + b),
-                            (None, 0) => None,
-                            (None, b) => Some(crate::pd0::frame_lambda_weight_for_preset(
-                                speed_config.preset,
-                                u32::from(picture_qp),
-                                false,
-                                b,
-                            )),
-                        },
+                        lw_opt,
                     ));
                     f.lambda = sb_assigned;
                     // C `full_sb_lambda_md` (md_process.c:763-764): the
@@ -977,6 +1039,18 @@ pub(super) fn encode_one_tile_body(
                     // is the key/allintra-frame path.
                     if sb_inter_lambda.is_none() {
                         sb_md_full_lambda = sb_assigned;
+                        // Ghost Robot `2c66d9ea`: the SAME snapshot at
+                        // `EB_10_BIT_MD` for the 16-bit PD0 arm — the
+                        // bd10 twin chain at this SB's qindex.
+                        if pd0_hbd_src.is_some() {
+                            sb_md_full_lambda10 = u64::from(crate::pd0::kf_full_lambda_bd10_tuned(
+                                sbq,
+                                u32::from(picture_qp),
+                                hdr_alt_lambda,
+                                i32::from(sbq) - i32::from(fh_base_qindex),
+                                lw_opt,
+                            ));
+                        }
                     }
                 }
             }
@@ -1224,16 +1298,27 @@ pub(super) fn encode_one_tile_body(
                     temporal_layer,
                     // C `pcs->hbd_md != 0` — `set_pd0_ctrls`
                     // (enc_mode_config.c:5415) forces `PD0_LVL_0` on
-                    // exactly these frames. The derivation is the
-                    // frame-type ladder (`is_islice ? 2 : 0` at M6+,
-                    // `is_base ? 2 : 0` at M0..M5, 1 at MR —
-                    // enc_mode_config.c:2158-2163); `is_base` is
-                    // always true on this port's flat GOP and MR is
-                    // below the preset floor, so the term reduces to
-                    // `preset <= 5 || I-slice`. FALSE on a bd10
-                    // P-slice at M6+, which is exactly what makes
-                    // its PD0 keep the video ladder's level.
-                    bit_depth == 10 && (speed_config.preset <= 5 || inter_md.is_none()),
+                    // exactly these frames. MAINLINE derivation
+                    // (`is_islice ? 2 : 0` at M6+, `is_base ? 2 : 0` at
+                    // M0..M5, 1 at MR — enc_mode_config.c:2158-2163);
+                    // `is_base` is always true on this port's flat GOP
+                    // and MR is below the preset floor, so the term
+                    // reduces to `preset <= 5 || I-slice`. GHOST ROBOT
+                    // (`2c66d9ea`, enc_mode_config.c:2180-2199) keeps
+                    // `hbd_md` set on inter frames through M9 inside the
+                    // temporal-layer bound (<= M5 always, <= M8 at
+                    // TL<=2, <= M9 at TL<=1) as well as on every
+                    // I-slice — a bd10 non-I frame at M6..M9 also runs
+                    // PD0_LVL_0 there.
+                    bit_depth == 10
+                        && if reference == crate::reference::SvtReference::GhostRobot {
+                            inter_md.is_none()
+                                || md_eff_mode <= 5
+                                || (md_eff_mode <= 8 && temporal_layer <= 2)
+                                || (md_eff_mode <= 9 && temporal_layer <= 1)
+                        } else {
+                            speed_config.preset <= 5 || inter_md.is_none()
+                        },
                     &pd0_sb_in,
                     &crate::part_arm::Pd0SigDerivInput {
                         is_not_last_layer: pd0_det_frame.is_not_last_layer,
@@ -1631,6 +1716,8 @@ pub(super) fn encode_one_tile_body(
                 sb_x0,
                 sb_y0,
                 sb_md_full_lambda,
+                pd0_hbd_src,
+                sb_md_full_lambda10,
                 ref_ctx,
                 sb_qindex,
                 units,

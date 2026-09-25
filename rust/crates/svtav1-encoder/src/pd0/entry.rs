@@ -62,6 +62,8 @@ pub fn pd0_pick_sb_partition(
     let mut ctx = Pd0Ctx {
         src,
         stride,
+        src16: None,
+        sharpness: 0,
         sb_x,
         sb_y,
         aligned_w,
@@ -184,8 +186,14 @@ pub fn pd0_pick_sb_partition_lvl0(
     // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
     // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
     // factor whenever the SB qindex differs from base). See
-    // [`pd0_frame_lambda_and_min_sq`].
+    // [`pd0_frame_lambda_and_min_sq`]. When `hbd` is set this slot is
+    // ignored — `hbd.lambda10` (the `EB_10_BIT_MD` lambda) wins.
     sb_lambda: Option<u64>,
+    // Ghost Robot `2c66d9ea`: `Some` puts PD0 on the 16-bit arm
+    // (`SVT_EFFECTIVE_HBD_MD` — `input_frame16bit`, `quants_bd`, the
+    // `full_sb_lambda_md[EB_10_BIT_MD]` lambda). `None` keeps the 8-bit
+    // MSB-truncated arm — mainline's pinned surface.
+    hbd: Option<Pd0Hbd<'_>>,
     // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
     // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
     // bits inside `perform_tx_pd0`. 0.0 under mainline.
@@ -196,10 +204,22 @@ pub fn pd0_pick_sb_partition_lvl0(
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
     let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
-    let lambda = sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
+    // `full_loop_core_pd0` prices at `full_sb_lambda_md[EB_10_BIT_MD]` under
+    // `SVT_EFFECTIVE_HBD_MD` (Ghost Robot `2c66d9ea`,
+    // product_coding_loop.c:5967) — `hbd.lambda10` — and
+    // `full_sb_lambda_md[EB_8_BIT_MD]` otherwise.
+    let lambda = hbd.as_ref().map_or_else(
+        || sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64),
+        |h| h.lambda10,
+    );
     let mut ctx = Pd0Ctx {
         src,
         stride,
+        src16: hbd.map(|h| Pd0Src16 {
+            src: h.src16,
+            stride: h.stride16,
+        }),
+        sharpness: hbd.map_or(0, |h| h.sharpness),
         sb_x,
         sb_y,
         aligned_w,
@@ -207,7 +227,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         vars,
         qp,
         qindex,
-        qm_level,
+        qm_level: hbd.as_ref().map_or(qm_level, |h| h.qm_level),
         lambda,
         mode: Pd0Mode::Lvl0,
         lvl1: None,
@@ -309,6 +329,8 @@ pub fn pd0_pick_sb_partition_m6(
     let mut ctx = Pd0Ctx {
         src,
         stride,
+        src16: None,
+        sharpness: 0,
         sb_x,
         sb_y,
         aligned_w,
@@ -494,8 +516,14 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
     // C `full_sb_lambda_md[EB_8_BIT_MD]` for this SB — `Some` skips the
     // `qindex`/`lambda_weight` rederivation (which drops the delta-q stats
     // factor whenever the SB qindex differs from base). See
-    // [`pd0_frame_lambda_and_min_sq`].
+    // [`pd0_frame_lambda_and_min_sq`]. When `hbd` is set this slot is
+    // ignored — `hbd.lambda10` (the `EB_10_BIT_MD` lambda) wins.
     sb_lambda: Option<u64>,
+    // Ghost Robot `2c66d9ea`: `Some` puts PD0 on the 16-bit arm
+    // (`SVT_EFFECTIVE_HBD_MD` — `input_frame16bit`, `quants_bd`, the
+    // `full_sb_lambda_md[EB_10_BIT_MD]` lambda). `None` keeps the 8-bit
+    // MSB-truncated arm — mainline's pinned surface.
+    hbd: Option<Pd0Hbd<'_>>,
     // Fork `get_effective_ac_bias(ac_bias, is_islice, tl)` — drives
     // C's `svt_psy_adjust_rate_light` subtraction on the PD0 coeff
     // bits inside `perform_tx_pd0`. 0.0 under mainline.
@@ -505,8 +533,14 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let (lambda, min_sq) =
-        pd0_frame_lambda_and_min_sq(qindex, lambda_weight, min_sq, inter, sb_lambda);
+    // `full_loop_core_pd0` prices at `full_sb_lambda_md[EB_10_BIT_MD]` under
+    // `SVT_EFFECTIVE_HBD_MD` (Ghost Robot `2c66d9ea`,
+    // product_coding_loop.c:5967) — `hbd.lambda10` — and
+    // `full_sb_lambda_md[EB_8_BIT_MD]` otherwise.
+    let (lambda, min_sq) = match hbd {
+        Some(h) => (h.lambda10, min_sq),
+        None => pd0_frame_lambda_and_min_sq(qindex, lambda_weight, min_sq, inter, sb_lambda),
+    };
     // C `get_max_block_size_allintra` (enc_mode_config.c:7042): the
     // 64-variance cap fires ONLY at enc_mode >= M8 (base_var_th_cap is
     // (uint16_t)~0 = unlimited through M7, 7500 at M8+). A busy SB
@@ -525,6 +559,11 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
     let mut ctx = Pd0Ctx {
         src,
         stride,
+        src16: hbd.map(|h| Pd0Src16 {
+            src: h.src16,
+            stride: h.stride16,
+        }),
+        sharpness: hbd.map_or(0, |h| h.sharpness),
         sb_x,
         sb_y,
         aligned_w,
@@ -534,7 +573,10 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         qindex,
         // Non-bd10 PD0 paths never carry a live QM level (mainline QM-off; the
         // bd8 fork LVL_5/LVL_6 path is left byte-inert per the fork-bd10 scope).
-        qm_level: 15,
+        // Under `hbd` the luma QM is live — `svt_aom_quantize_inv_quantize_
+        // light` reads `frm_hdr.quantization_params.qm[PLANE_Y]` regardless
+        // of the `hbd_md` state (full_loop.c:1300).
+        qm_level: hbd.map_or(15, |h| h.qm_level),
         lambda,
         mode,
         lvl1: Some(tables),
@@ -870,6 +912,8 @@ pub fn pd0_pick_sb_partition_video_eval(
     let mut ctx = Pd0Ctx {
         src,
         stride,
+        src16: None,
+        sharpness: 0,
         sb_x,
         sb_y,
         aligned_w,

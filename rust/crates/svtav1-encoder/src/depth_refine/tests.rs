@@ -230,6 +230,7 @@ fn m5_gradient64_scan_matches_capture() {
             None,
             None,
             None,
+            None,
             0.0,
         );
         assert!(eval.split, "q{qp}: PD0 splits the 64");
@@ -268,6 +269,7 @@ fn m5_gradient64_scan_matches_capture() {
         64,
         None,
         // These are KEY-frame scans (no reference exists in a unit test).
+        None,
         None,
         None,
         None,
@@ -311,6 +313,7 @@ fn m4_gradient64_scan_shape() {
         64,
         None,
         // These are KEY-frame scans (no reference exists in a unit test).
+        None,
         None,
         None,
         None,

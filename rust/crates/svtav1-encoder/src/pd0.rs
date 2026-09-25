@@ -618,9 +618,64 @@ fn pd0_bsize(bw: usize, bh: usize) -> u8 {
     b as u8
 }
 
+/// C `pcs->input_frame16bit` — the packed 16-bit input picture
+/// (`y_buffer` + `y_buffer_bit_inc` folded to plain `u16` samples) that
+/// `svt_aom_pick_partition_pd0` selects when `SVT_EFFECTIVE_HBD_MD` is set
+/// (product_coding_loop.c:10492). Ghost Robot `2c66d9ea` ("restoring the
+/// full 10bit PD0 path") removes the `md_ctx->hbd_md = 0` pin around the
+/// multi-pass PD loop (enc_dec_process.c), so PD0's whole per-block encode
+/// — neighbour edges, DC prediction, residual, `quants_bd` quantization
+/// and the `full_sb_lambda_md[EB_10_BIT_MD]` lambda — runs at 16 bits.
+///
+/// `None` on [`Pd0Ctx::src16`] keeps the 8-bit arm: mainline's pinned
+/// surface (its `hbd_md = 0` window still stands) and every path where
+/// the caller has no u16 plane.
+#[derive(Clone, Copy)]
+pub(crate) struct Pd0Src16<'a> {
+    /// The frame luma plane at the aligned stride, u16 samples.
+    pub(crate) src: &'a [u16],
+    pub(crate) stride: usize,
+}
+
+/// The `hbd_md` arm's inputs for a PD0 entry point, bundled so the
+/// entry signatures carry one Option instead of three.
+///
+/// `None` = `hbd_md` is 0 inside the PD0 window — the 8-bit arm every
+/// reference but Ghost Robot keeps (and what the fork's video frames use
+/// too: `pd0_use_src_samples` is `allintra`-only after `2c66d9ea`, so a
+/// non-allintra picture predicts PD0 blocks from the 16-bit RECON canvas —
+/// that arm is not threaded here yet).
+#[derive(Clone, Copy)]
+pub struct Pd0Hbd<'a> {
+    /// `pcs->input_frame16bit` at the aligned stride.
+    pub(crate) src16: &'a [u16],
+    /// Its stride (== `in_stride` for the tile walk).
+    pub(crate) stride16: usize,
+    /// C `full_sb_lambda_md[EB_10_BIT_MD]` for this superblock —
+    /// `av1_lambda_assign_md` at the SB's qindex (`kf_full_lambda_bd10_tuned`
+    /// on a key frame; the `SbInterLambda.full_10bit` arm on an inter frame).
+    pub(crate) lambda10: u64,
+    /// `scs->static_config.sharpness`, folded into the `quants_bd` table
+    /// `svt_av1_build_quantizer` built at sequence init.
+    pub(crate) sharpness: i8,
+    /// `frm_hdr.quantization_params.qm[PLANE_Y]` — the frame luma QM level;
+    /// 15 = no matrix.
+    pub(crate) qm_level: u8,
+}
+
 struct Pd0Ctx<'a> {
     src: &'a [u8],
     stride: usize,
+    /// Ghost Robot `2c66d9ea` — set to put the WHOLE block-cost path on
+    /// [`Pd0Src16`] (see [`Pd0Ctx::lvl5_like_block_cost_rect`] /
+    /// [`Pd0Ctx::lvl1_block_cost_rect`]). While set, `lambda` holds
+    /// `full_sb_lambda_md[EB_10_BIT_MD]` and `qm_level`/`sharpness` are the
+    /// `quants_bd` inputs.
+    src16: Option<Pd0Src16<'a>>,
+    /// `scs->static_config.sharpness` for the `quants_bd` build — read only
+    /// while `src16` is set (the 8-bit PD0 quantizer keeps `sharpness 0`,
+    /// matching `build_quant_entry`).
+    sharpness: i8,
     sb_x: usize,
     sb_y: usize,
     /// ALIGNED frame dims (mi-grid extent) — the spec-5.11.4 /
@@ -815,6 +870,9 @@ struct Pd0Scratch {
     cand: alloc::vec::Vec<u8>,
     /// `bw * tx_h` residuals.
     residual: alloc::vec::Vec<i16>,
+    /// `bw * bh` u16 prediction buffer — the Ghost Robot 16-bit PD0 arm
+    /// (`src16`) only.
+    pred16: alloc::vec::Vec<u16>,
     /// `bw * tx_h` forward-transform output (pre-64-fold).
     coeffs: alloc::vec::Vec<i32>,
     /// Packed `min(bw,32) * min(tx_h,32)` quantized coefficients.
@@ -832,7 +890,8 @@ std::thread_local! {
     static PD0_SCRATCH: core::cell::RefCell<Pd0Scratch> =
         const { core::cell::RefCell::new(Pd0Scratch {
             pred: alloc::vec::Vec::new(), cand: alloc::vec::Vec::new(),
-            residual: alloc::vec::Vec::new(), coeffs: alloc::vec::Vec::new(),
+            residual: alloc::vec::Vec::new(), pred16: alloc::vec::Vec::new(),
+            coeffs: alloc::vec::Vec::new(),
             qcoeff: alloc::vec::Vec::new(), dqcoeff: alloc::vec::Vec::new(),
             full: alloc::vec::Vec::new(), inv: alloc::vec::Vec::new(),
         }) };
@@ -880,6 +939,14 @@ fn scratch_u8(v: &mut alloc::vec::Vec<u8>, n: usize) -> &mut [u8] {
 
 /// [`scratch_i32`] for `i16` buffers.
 fn scratch_i16(v: &mut alloc::vec::Vec<i16>, n: usize) -> &mut [i16] {
+    if v.len() < n {
+        v.resize(n, 0);
+    }
+    &mut v[..n]
+}
+
+/// [`scratch_i32`] for `u16` buffers (the 16-bit PD0 arm's prediction).
+fn scratch_u16(v: &mut alloc::vec::Vec<u16>, n: usize) -> &mut [u16] {
     if v.len() < n {
         v.resize(n, 0);
     }
@@ -991,6 +1058,114 @@ impl<'a> Pd0Ctx<'a> {
         self.lvl5_like_block_cost(sq_size, org_x, org_y, 0)
     }
 
+    /// The 16-bit twin of the closed-form PD0 block cost — Ghost Robot
+    /// `2c66d9ea` ("restoring the full 10bit PD0 path"). Under
+    /// `SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)`:
+    ///
+    /// - `svt_av1_intra_prediction`/`svt_av1_predict_intra_block` run at
+    ///   `EB_TEN_BIT` on `input_frame16bit` — `copy_neighbour_arrays_pd0`
+    ///   fills the 16-bit neighbour arrays from the SOURCE rows/columns
+    ///   (`pd0_use_src_samples` on the allintra arm, which is the only arm
+    ///   [`Pd0Hbd`] is wired to), then `av1_highbd_dc_predictor` predicts —
+    ///   = `extract_neighbors_hbd` + `predict_dc_hbd`.
+    /// - `svt_aom_residual_kernel` runs `svt_residual_kernel16bit` —
+    ///   `(u16 src) - (u16 pred)` as wrapping i16.
+    /// - `perform_tx_pd0` passes `EB_TEN_BIT` to
+    ///   `svt_aom_quantize_inv_quantize_light` — `quants_bd`/`deq_bd` and
+    ///   the highbd kernels ([`tx_quant_core`]'s `bit_depth == 10` arm).
+    /// - `full_loop_core_pd0` prices with `full_sb_lambda_md[EB_10_BIT_MD]`
+    ///   — bound on `self.lambda` by the caller.
+    ///
+    /// `mds_subres_step` is 0 (PD0_LVL_0 — `pd0_level <= PD0_LVL_2` forces
+    /// `subres_level` 0, enc_mode_config.c:7327), so `tx_h == bh` and no
+    /// subres-safety check runs; `self.lambda` is already the 10-bit value.
+    fn lvl0_block_cost_hbd(
+        &mut self,
+        s16: Pd0Src16<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+    ) -> u64 {
+        // `copy_neighbour_arrays_pd0` + `svt_av1_predict_intra_block` on
+        // the 16-bit picture — the source-neighbour arm (stills), so the
+        // u8 `recon_canvas`/`inter` arms cannot be live.
+        debug_assert!(self.inter.is_none() && self.recon_canvas.is_none());
+        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors_hbd(
+            s16.src,
+            s16.stride,
+            abs_x,
+            abs_y,
+            bw,
+            bh,
+            10,
+            self.tile_top,
+            self.tile_left,
+            self.aligned_w,
+            self.aligned_h,
+        );
+        let mut pred16 = core::mem::take(&mut self.scratch.pred16);
+        svtav1_dsp::hbd::predict_dc_hbd(
+            scratch_u16(&mut pred16, bw * bh),
+            bw,
+            &above,
+            &left,
+            bw,
+            bh,
+            has_above,
+            has_left,
+            10,
+        );
+        // `svt_aom_residual_kernel` — `is_16bit` arm (enc_dec_process.c's
+        // residual dispatch under `hbd_md`).
+        svtav1_dsp::pic_operators::residual_kernel_16bit(
+            &s16.src[abs_y * s16.stride + abs_x..],
+            s16.stride,
+            &pred16[..bw * bh],
+            bw,
+            scratch_i16(&mut self.scratch.residual, bw * bh),
+            bw,
+            bw,
+            bh,
+        );
+        self.scratch.pred16 = pred16;
+        let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
+        let (eob, dist, _c_tx) = tx_quant_core(
+            &mut self.scratch,
+            bw,
+            bh,
+            qindex_off,
+            self.qm_level,
+            0,
+            10,
+            self.sharpness,
+        );
+        self.note_root_eob(bw, bh, abs_x, abs_y, eob);
+        let mut bits = 5000 + self.ires_factor * 1600 + 100 * eob as u64;
+        if self.ac_bias_eff != 0.0 {
+            let pw = bw.min(32);
+            let ph = bh.min(32);
+            bits = svtav1_dsp::ac_bias::psy_adjust_rate_light(
+                &self.scratch.dqcoeff[..pw * ph],
+                bits,
+                pw,
+                ph,
+                self.ac_bias_eff,
+            );
+        }
+        let (skip0, none0) = self.skip0_none0_bits();
+        let rate = bits + skip0 + none0;
+        let cost = rdcost(self.lambda, rate, dist);
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            eprintln!(
+                "PD0BLK org=({abs_x},{abs_y}) {bw}x{bh} dist={dist} ybits={bits} cost={cost} lambda={} subres=0 hbd=1",
+                self.lambda,
+            );
+        }
+        cost
+    }
+
     /// Shared closed-form PD0 block cost (`full_loop_core_pd0` at
     /// `coeff_rate_est_lvl == 0`, `lpd0_qp_offset = 8`). `subres_step_cfg` is
     /// C's `subres_ctrls.step`: 1 for LVL_5 (the 64x64 odd/even-deviation
@@ -1031,6 +1206,11 @@ impl<'a> Pd0Ctx<'a> {
     ) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
+        // Ghost Robot `2c66d9ea` — `hbd_md` effective: the whole PD0 block
+        // encode runs on `input_frame16bit`, not the 8-bit MSB plane.
+        if let Some(s16) = self.src16 {
+            return self.lvl0_block_cost_hbd(s16, bw, bh, abs_x, abs_y);
+        }
         // C `product_prediction_fun_table_pd0[is_inter_mode(mode)]`
         // (product_coding_loop.c:970): on a non-I slice PD0's ONLY candidate
         // is an inter NEWMV — `intra_ctrls.enable_intra` is 0 there — so C
@@ -1132,8 +1312,16 @@ impl<'a> Pd0Ctx<'a> {
             scratch_i16(&mut self.scratch.residual, bw * tx_h),
         );
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, _c_tx) =
-            tx_quant_core(&mut self.scratch, bw, tx_h, qindex_off, self.qm_level, step);
+        let (eob, dist, _c_tx) = tx_quant_core(
+            &mut self.scratch,
+            bw,
+            tx_h,
+            qindex_off,
+            self.qm_level,
+            step,
+            8,
+            0,
+        );
         self.note_root_eob(bw, bh, abs_x, abs_y, eob);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
@@ -1264,6 +1452,43 @@ impl<'a> Pd0Ctx<'a> {
         if let Some(ir) = self.inter {
             return self.lvl1_block_cost_inter(ir, bw, bh, abs_x, abs_y);
         }
+        // Ghost Robot `2c66d9ea` — `hbd_md` effective: 16-bit source
+        // neighbours + u16 DC prediction + `svt_residual_kernel16bit` + the
+        // `quants_bd` quantize, priced at `full_sb_lambda_md[EB_10_BIT_MD]`
+        // (`self.lambda`). On the allintra arm this serves the LVL_0-forced
+        // refinement eval too — `svt_aom_sig_deriv_enc_dec_pd0` resolves
+        // `rate_est_level` 2/4 there (`lpd0_qp_offset` 0 + real coeff rate),
+        // which is exactly this block cost's shape.
+        if let Some(s16) = self.src16 {
+            let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors_hbd(
+                s16.src,
+                s16.stride,
+                abs_x,
+                abs_y,
+                bw,
+                bh,
+                10,
+                self.tile_top,
+                self.tile_left,
+                self.aligned_w,
+                self.aligned_h,
+            );
+            let mut pred16 = core::mem::take(&mut self.scratch.pred16);
+            svtav1_dsp::hbd::predict_dc_hbd(
+                scratch_u16(&mut pred16, bw * bh),
+                bw,
+                &above,
+                &left,
+                bw,
+                bh,
+                has_above,
+                has_left,
+                10,
+            );
+            let cost = self.lvl1_cost_from_pred_hbd(s16, bw, bh, abs_x, abs_y, &pred16);
+            self.scratch.pred16 = pred16;
+            return cost;
+        }
         let nb = match self.recon_canvas.as_ref() {
             None => crate::partition::extract_neighbors_tiled(
                 self.src,
@@ -1390,6 +1615,8 @@ impl<'a> Pd0Ctx<'a> {
             self.qindex,
             self.qm_level,
             step,
+            8,
+            0,
         );
         // TEMPORARY drill: residual + coeff dump pinned to one block.
         // `SVTAV1_ETXF=<px>,<py>` parsed once — a per-block env lookup would
@@ -1553,6 +1780,100 @@ impl<'a> Pd0Ctx<'a> {
                 u8::from(nb.is_some_and(|n| n.3)),
                 nb.map_or(&[][..], |n| &n.0[..n.0.len().min(4)]),
                 nb.map_or(&[][..], |n| &n.1[..n.1.len().min(4)])
+            );
+        }
+        cost
+    }
+
+    /// [`Pd0Ctx::lvl1_cost_from_pred`]'s 16-bit twin — Ghost Robot
+    /// `2c66d9ea` (`hbd_md` effective): `svt_residual_kernel16bit` diffs the
+    /// u16 prediction against `input_frame16bit`, `perform_tx_pd0` at
+    /// `EB_TEN_BIT` quantizes with `quants_bd` + the highbd kernels, and
+    /// `svt_aom_full_cost_pd0` prices at `full_sb_lambda_md[EB_10_BIT_MD]`
+    /// (`self.lambda`). The coeff-rate arms and the psy adjustment are
+    /// depth-independent — identical to the 8-bit twin.
+    ///
+    /// `mds_subres_step` is 0 on every arm `src16` serves (the `hbd_md`
+    /// force resolves PD0_LVL_0; `pd0_level <= PD0_LVL_2` forces
+    /// `subres_level` 0 — enc_mode_config.c:7327), so `tx_h == bh` and no
+    /// subres-safety check runs. The u8 `recon_canvas` arm is skipped for
+    /// the same reason [`Pd0Hbd`] documents: `pd0_use_src_samples` stays
+    /// true on the allintra arm.
+    fn lvl1_cost_from_pred_hbd(
+        &mut self,
+        s16: Pd0Src16<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+        pred16: &[u16],
+    ) -> u64 {
+        debug_assert_eq!(
+            self.subres_step_cfg(),
+            0,
+            "hbd PD0 is PD0_LVL_0 — subres off"
+        );
+        svtav1_dsp::pic_operators::residual_kernel_16bit(
+            &s16.src[abs_y * s16.stride + abs_x..],
+            s16.stride,
+            pred16,
+            bw,
+            scratch_i16(&mut self.scratch.residual, bw * bh),
+            bw,
+            bw,
+            bh,
+        );
+        let (eob, dist, c_tx) = tx_quant_core(
+            &mut self.scratch,
+            bw,
+            bh,
+            self.qindex,
+            self.qm_level,
+            0,
+            10,
+            self.sharpness,
+        );
+        self.note_root_eob(bw, bh, abs_x, abs_y, eob);
+        let tables = self.lvl1.expect("LVL_1 requires tables");
+        // The same `perform_tx_pd0` rate arms the u8 twin runs —
+        // `coeff_rate_est_lvl >= 2` shortcut, `eob == 0` skip cost, else the
+        // real coefficient rate.
+        let cw = bw.min(32);
+        let ch = bh.min(32);
+        let th = (cw * ch) >> 5;
+        let mut bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
+            6000 + eob as u64 * 500
+        } else if eob == 0 {
+            cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
+        } else {
+            cost_coeffs_txb_pd0(
+                &self.scratch.qcoeff[..cw * ch],
+                eob,
+                c_tx,
+                &tables.coeff,
+                Pd0TxRates::Intra(&tables.tx_rates),
+                0,
+            ) as u64
+        };
+        // `svt_psy_adjust_rate_light` on `txb_coeff_bits`
+        // (product_coding_loop.c:4511-4514) — `recon_coeff` is the packed
+        // dequantized tx block.
+        if self.ac_bias_eff != 0.0 {
+            bits = svtav1_dsp::ac_bias::psy_adjust_rate_light(
+                &self.scratch.dqcoeff[..cw * ch],
+                bits,
+                cw,
+                ch,
+                self.ac_bias_eff,
+            );
+        }
+        let rate = bits + tables.skip0_bits + tables.none_bits_ctx0;
+        let cost = rdcost(self.lambda, rate, dist);
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            eprintln!(
+                "PD0BLK org=({abs_x},{abs_y}) {bw}x{bh} dist={dist} ybits={bits} cost={cost} lambda={} eob={eob} qidx={} subres=0 hbd=1",
+                self.lambda, self.qindex,
             );
         }
         cost

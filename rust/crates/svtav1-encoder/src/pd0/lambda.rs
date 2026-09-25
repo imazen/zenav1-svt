@@ -357,6 +357,56 @@ pub(crate) fn inter_full_lambda_bd10(
     lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16
 }
 
+/// [`kf_full_lambda_bd10`]'s tuned twin (C `update_lambda`, rc_process.c:
+/// 401-449 at `EB_TEN_BIT`) — `full_sb_lambda_md[EB_10_BIT_MD]`, the lambda
+/// Ghost Robot's 16-bit PD0 prices every block with (`2c66d9ea`'s
+/// `full_loop_core_pd0` reads `full_sb_lambda_md[EB_10_BIT_MD]` under
+/// `SVT_EFFECTIVE_HBD_MD`, product_coding_loop.c:5967).
+///
+/// Differences from [`kf_full_lambda_bd10`], all shared with the 8-bit twin
+/// [`kf_full_lambda_8bit_tuned`]:
+/// * `alt_lambda_factors` (fork flag, OFF at Ghost Robot's own defaults)
+///   swaps the KF frame-type factor for `rd_frame_type_factor_alt[KF_UPDATE]`
+///   = 140 — at bd10 the non-alt row's factor is already a 128 no-op, so the
+///   alt flag is the only way this multiply does anything.
+/// * `qdiff_vs_base` (`q_index - base_q_idx`) drives
+///   `stats_based_sb_lambda_modulation`'s delta_q_present arm:
+///   {<=-8: 90, <0: 115, <=8: 135, >8: 150} — live only where the frame
+///   signals per-SB delta-q (variance boost); 128 otherwise.
+/// * `lambda_weight_override` is the caller-resolved `pcs->lambda_weight`
+///   (tune-IQ curve OR PSNR ladder + extended-CRF bump); `None` re-derives
+///   the PSNR ladder from `picture_qp`.
+pub(crate) fn kf_full_lambda_bd10_tuned(
+    qindex: u8,
+    picture_qp: u32,
+    alt_lambda_factors: bool,
+    qdiff_vs_base: i32,
+    lambda_weight_override: Option<u32>,
+) -> u32 {
+    let q = crate::bd10::dc_qlookup_10(qindex) as i64;
+    let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
+    rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — EB_TEN_BIT
+    // `rd_frame_type_factor[1][KF_UPDATE]` = 128 (a no-op); the alt row's
+    // KF_UPDATE entry is 140 on both depth rows.
+    let ftf: i64 = if alt_lambda_factors { 140 } else { 128 };
+    rdmult = (rdmult * ftf) >> 7;
+    let stats_factor: i64 = if qdiff_vs_base < 0 {
+        if qdiff_vs_base <= -8 { 90 } else { 115 }
+    } else if qdiff_vs_base > 0 {
+        if qdiff_vs_base <= 8 { 135 } else { 150 }
+    } else {
+        128
+    };
+    rdmult = (rdmult * stats_factor) >> 7;
+    let mut lambda = rdmult as u32;
+    let lambda_weight: u32 =
+        lambda_weight_override.unwrap_or_else(|| frame_lambda_weight(picture_qp, false, 0));
+    if lambda_weight != 0 {
+        lambda = ((u64::from(lambda) * u64::from(lambda_weight)) >> 7) as u32;
+    }
+    lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16
+}
+
 /// bd10 twin of [`kf_full_lambda_8bit_unweighted`]: C
 /// `svt_aom_compute_rd_mult(pcs, q, q, EB_TEN_BIT)` -> `update_lambda`
 /// (rc_process.c:365-449) with NO `lambda_weight` ladder and NO `*= 16`.

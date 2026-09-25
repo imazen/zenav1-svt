@@ -121,6 +121,8 @@ fn lvl0_block_costs_match_c() {
     let mut ctx = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
@@ -196,6 +198,7 @@ fn lvl0_gradient64_tree_matches_c() {
         None,
         64,
         None,
+        None,
         0.0,
     );
     assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
@@ -216,6 +219,7 @@ fn lvl0_gradient64_tree_matches_c() {
         64,
         None,
         64,
+        None,
         None,
         0.0,
     );
@@ -255,6 +259,8 @@ fn lvl5_block_costs_match_c_q40() {
     let mut ctx = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
@@ -313,6 +319,8 @@ fn lvl5_block_costs_match_c_q55_with_subres() {
     let mut ctx = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
@@ -492,6 +500,8 @@ fn lvl1_block_costs_match_c() {
     let mut ctx = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
@@ -546,6 +556,8 @@ fn lvl1_block_costs_match_c() {
     let mut ctx40 = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
@@ -596,6 +608,8 @@ fn lvl1_block_costs_match_c() {
     let mut ctx20 = Pd0Ctx {
         src: &y,
         stride: 64,
+        src16: None,
+        sharpness: 0,
         sb_x: 0,
         sb_y: 0,
         aligned_w: 64,
