@@ -16,6 +16,10 @@
  * od_ec coder — those are compared at the byte level by identity_diff.py.
  *
  * Usage: capture_c_trace <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>
+ * Env: SVT_WRAP_REPORT=1 (stderr) or =<file> (appended) — at exit, one
+ *      `WRAP_FIRED\t<symbol>\t<count>` line per --wrap interposer, zeros
+ *      included (wrap_fired.c; the symbols are listed once, in wrap_list.h).
+ *      A gate that relies on an interposer can assert it fired.
  * Env: SVT_TILE_ROWS (default: unset -> library default, 0 tile rows) —
  *      direct passthrough to cfg.tile_rows, i.e. TileRowsLog2 (task #86;
  *      same log2 units as the Rust driver's SVTAV1_TILE_ROWS_LOG2 —

@@ -27,6 +27,7 @@
  *
  * If $SVT_TRACE_OUT is unset the wrappers are pure pass-through.
  */
+#include "wrap_fired.h"
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -58,6 +59,7 @@ static FILE* tf(void) {
 }
 
 void __wrap_svt_od_ec_encode_cdf_q15(OdEcEnc* enc, int32_t s, const uint16_t* icdf, int32_t nsyms) {
+    ZEN_WRAP_FIRED(svt_od_ec_encode_cdf_q15);
     FILE* f = tf();
     if (f) {
         /* Mirror the Rust print: first three icdf entries, 0-padded.
@@ -71,6 +73,7 @@ void __wrap_svt_od_ec_encode_cdf_q15(OdEcEnc* enc, int32_t s, const uint16_t* ic
 }
 
 void __wrap_svt_od_ec_encode_bool_q15(OdEcEnc* enc, int32_t val, unsigned f_q15) {
+    ZEN_WRAP_FIRED(svt_od_ec_encode_bool_q15);
     FILE* f = tf();
     if (f)
         fprintf(f, "W BOOL val=%d f=%u rng=%u\n", val, f_q15, enc->rng);
@@ -78,6 +81,7 @@ void __wrap_svt_od_ec_encode_bool_q15(OdEcEnc* enc, int32_t val, unsigned f_q15)
 }
 
 void __wrap_svt_od_ec_encode_bool_eq_q15(OdEcEnc* enc, int32_t val) {
+    ZEN_WRAP_FIRED(svt_od_ec_encode_bool_eq_q15);
     FILE* f = tf();
     if (f)
         fprintf(f, "W BOOLEQ val=%d rng=%u\n", val, enc->rng);
@@ -85,6 +89,7 @@ void __wrap_svt_od_ec_encode_bool_eq_q15(OdEcEnc* enc, int32_t val) {
 }
 
 void __wrap_svt_od_ec_enc_init(OdEcEnc* enc) {
+    ZEN_WRAP_FIRED(svt_od_ec_enc_init);
     FILE* f = tf();
     if (f)
         fprintf(f, "W INIT ec=%p\n", (void*)enc);
@@ -92,6 +97,7 @@ void __wrap_svt_od_ec_enc_init(OdEcEnc* enc) {
 }
 
 void __wrap_svt_od_ec_enc_reset(OdEcEnc* enc) {
+    ZEN_WRAP_FIRED(svt_od_ec_enc_reset);
     FILE* f = tf();
     if (f)
         fprintf(f, "W RESET ec=%p\n", (void*)enc);
@@ -99,6 +105,7 @@ void __wrap_svt_od_ec_enc_reset(OdEcEnc* enc) {
 }
 
 unsigned char* __wrap_svt_od_ec_enc_done(OdEcEnc* enc, uint32_t* nbytes) {
+    ZEN_WRAP_FIRED(svt_od_ec_enc_done);
     unsigned char* ret = __real_svt_od_ec_enc_done(enc, nbytes);
     FILE*          f   = tf();
     if (f) {

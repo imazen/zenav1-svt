@@ -144,9 +144,14 @@ if [[ -z "${1:-}" ]]; then
     printf '%s\n' "$OUT" >"$HERE/.selected.$ORACLE"
 fi
 
+# The --wrap flags come from the one interposer list (wrap_list.h).
+mapfile -t WRAP_FLAGS < <(sed -n 's/^ZEN_WRAP(\(.*\))$/-Wl,--wrap=\1/p' "$HERE/wrap_list.h")
+((${#WRAP_FLAGS[@]} > 0)) || { echo "capture_c_trace: wrap_list.h yields no --wrap flags" >&2; exit 1; }
+
 # Skip rebuild when up to date (sources + lib older than binary).
 if [[ -x "$OUT" && "$OUT" -nt "$HERE/capture_c_trace.c" && "$OUT" -nt "$HERE/wrap_odec.c" &&
-    "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" &&
+    "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/wrap_fired.c" &&
+    "$OUT" -nt "$HERE/wrap_fired.h" && "$OUT" -nt "$HERE/wrap_list.h" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" &&
     "$OUT" -nt "$HERE/../../oracles/oracles.tsv" ]]; then
     echo "capture_c_trace: up to date ($OUT)"
     exit 0
@@ -178,56 +183,12 @@ cc -O2 -g -o "$OUT" "${API_DEFS[@]}" \
     "$HERE/capture_c_trace.c" \
     "$HERE/wrap_odec.c" \
     "$HERE/wrap_recon.c" \
+    "$HERE/wrap_fired.c" \
     -I"$C_ROOT/Source/API" \
     -I"$C_ROOT/Source/Lib/Codec" \
     -I"$C_ROOT/Source/Lib/Globals" \
     -I"$C_ROOT/Source/Lib/C_DEFAULT" \
-    -Wl,--wrap=svt_od_ec_encode_cdf_q15 \
-    -Wl,--wrap=svt_od_ec_encode_bool_q15 \
-    -Wl,--wrap=svt_od_ec_encode_bool_eq_q15 \
-    -Wl,--wrap=svt_od_ec_enc_init \
-    -Wl,--wrap=svt_od_ec_enc_reset \
-    -Wl,--wrap=svt_od_ec_enc_done \
-    -Wl,--wrap=svt_av1_loop_filter_init \
-    -Wl,--wrap=svt_av1_loop_filter_frame \
-    -Wl,--wrap=svt_aom_txb_estimate_coeff_bits \
-    -Wl,--wrap=svt_aom_partition_rate_cost \
-    -Wl,--wrap=svt_aom_pick_partition \
-    -Wl,--wrap=svt_aom_pick_partition_pd0 \
-    -Wl,--wrap=svt_aom_estimate_syntax_rate \
-    -Wl,--wrap=svt_aom_intra_fast_cost \
-    -Wl,--wrap=svt_aom_inter_fast_cost \
-    -Wl,--wrap=svt_aom_update_mi_map \
-    -Wl,--wrap=svt_aom_update_stats \
-    -Wl,--wrap=svt_aom_full_loop_uv \
-    -Wl,--wrap=svt_av1_intra_prediction \
-    -Wl,--wrap=svt_aom_get_intra_uv_fast_rate \
-    -Wl,--wrap=svt_aom_full_cost \
-    -Wl,--wrap=svt_aom_full_cost_pd0 \
-    -Wl,--wrap=svt_aom_quantize_inv_quantize \
-    -Wl,--wrap=svt_aom_sig_deriv_enc_dec_pd0 \
-    -Wl,--wrap=svt_av1_reset_cdf_symbol_counters \
-    -Wl,--wrap=svt_aom_motion_estimation_b64 \
-    -Wl,--wrap=svt_av1_find_best_sub_pixel_tree_pruned \
-    -Wl,--wrap=svt_av1_compute_qdelta_by_rate \
-    -Wl,--wrap=svt_aom_inter_pu_prediction_av1 \
-    -Wl,--wrap=svt_aom_global_motion_estimation \
-    -Wl,--wrap=svt_aom_gm_get_params_cost \
-    -Wl,--wrap=svt_av1_refine_integerized_param \
-    -Wl,--wrap=svt_av1_warp_error \
-    -Wl,--wrap=svt_aom_wm_motion_refinement \
-    -Wl,--wrap=svt_aom_estimate_transform \
-    -Wl,--wrap=svt_aom_encode_sb \
-    -Wl,--wrap=svt_aom_estimate_coefficients_rate \
-    -Wl,--wrap=svt_aom_write_modes_sb \
-    -Wl,--wrap=svt_aom_generate_av1_mvp_table \
-    -Wl,--wrap=svt_aom_update_part_stats \
-    -Wl,--wrap=svt_aom_quantize_inv_quantize_light \
-    -Wl,--wrap=svt_aom_inv_transform_recon_wrapper \
-    -Wl,--wrap=svt_aom_product_full_mode_decision \
-    -Wl,--wrap=svt_av1_get_q_index_from_qstep_ratio \
-    -Wl,--wrap=svt_av1_rc_init_sb_qindex \
-    -Wl,--wrap=svt_av1_rc_calc_qindex_crf_cqp \
+    "${WRAP_FLAGS[@]}" \
     -Wl,--wrap=svt_aom_set_tuned_blk_lambda \
     "$LIB" -lpthread -lm
 

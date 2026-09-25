@@ -71,6 +71,7 @@
  * using a negative offset"), so a row is buffer[p] + r*stride[p] and maps
  * directly onto the port's tightly-packed recon[r*w + c].
  */
+#include "wrap_fired.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -260,6 +261,7 @@ static void dump_pd0_costs(FILE* f, const PC_TREE* t, unsigned poc) {
 int svt_wrap_in_pd0 = 0;
 bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                        MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_pick_partition_pd0);
     svt_wrap_in_pd0++;
     const bool  r    = __real_svt_aom_pick_partition_pd0(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
     svt_wrap_in_pd0--;
@@ -288,6 +290,7 @@ bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSe
 
 bool __wrap_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                    MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_pick_partition);
     bool r = __real_svt_aom_pick_partition(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
     const char* path = getenv("SVT_PICKPART_OUT");
     /* Dump every SB-root's chosen tree (the cross-TU top-level call fires once
@@ -338,6 +341,7 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
     EbPictureBufferDesc* coeff_buffer_sb, uint32_t y_eob, uint32_t cb_eob, uint32_t cr_eob,
     uint64_t* y_txb_coeff_bits, uint64_t* cb_txb_coeff_bits, uint64_t* cr_txb_coeff_bits, TxSize txsize,
     TxSize txsize_uv, TxType tx_type, TxType tx_type_uv, COMPONENT_TYPE component_type) {
+    ZEN_WRAP_FIRED(svt_aom_txb_estimate_coeff_bits);
     EbErrorType ret = __real_svt_aom_txb_estimate_coeff_bits(
         ctx, allow_update_cdf, ec_ctx, pcs, cand_bf, txb_origin_index, txb_chroma_origin_index, coeff_buffer_sb, y_eob,
         cb_eob, cr_eob, y_txb_coeff_bits, cb_txb_coeff_bits, cr_txb_coeff_bits, txsize, txsize_uv, tx_type, tx_type_uv,
@@ -475,6 +479,7 @@ int64_t __real_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const B
 int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const BlockSize bsize, const int mi_row,
                                            const int mi_col, MdRateEstimationContext* md_rate_est_ctx, PartitionType p,
                                            const PartitionContextType left_ctx, const PartitionContextType above_ctx) {
+    ZEN_WRAP_FIRED(svt_aom_partition_rate_cost);
     int64_t ret = __real_svt_aom_partition_rate_cost(
         pcs, bsize, mi_row, mi_col, md_rate_est_ctx, p, left_ctx, above_ctx);
     const char* path = getenv("SVT_PART_OUT");
@@ -545,6 +550,7 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
                                              uint32_t component_type, uint32_t bit_depth, TxType tx_type,
                                              int16_t txb_skip_context, int16_t dc_sign_context,
                                              PredictionMode pred_mode, uint32_t lambda, bool is_encode_pass) {
+    ZEN_WRAP_FIRED(svt_aom_quantize_inv_quantize);
     uint8_t ret = __real_svt_aom_quantize_inv_quantize(
         pcs, ctx, coeff, quant_coeff, recon_coeff, qindex, segmentation_qp_offset, txsize, eob, component_type,
         bit_depth, tx_type, txb_skip_context, dc_sign_context, pred_mode, lambda, is_encode_pass);
@@ -608,6 +614,7 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
  * exposes stale/reused geometry or mode records without changing C behavior. */
 void __real_svt_aom_update_stats(PictureControlSet* pcs, BlkStruct* blk, int mi_row, int mi_col);
 void __wrap_svt_aom_update_stats(PictureControlSet* pcs, BlkStruct* blk, int mi_row, int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_update_stats);
     const char* path = getenv("SVT_MDSTATS_OUT");
     if (path && *path) {
         static FILE* f = NULL;
@@ -640,6 +647,7 @@ void __real_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_s
 void __wrap_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_slice, uint8_t pic_filter_intra_level,
                                          uint8_t allow_screen_content_tools, uint8_t enable_restoration,
                                          uint8_t allow_intrabc, FRAME_CONTEXT* fc) {
+    ZEN_WRAP_FIRED(svt_aom_estimate_syntax_rate);
     __real_svt_aom_estimate_syntax_rate(r, is_i_slice, pic_filter_intra_level, allow_screen_content_tools,
                                         enable_restoration, allow_intrabc, fc);
     const char* path = getenv("SVT_SEED_OUT");
@@ -702,6 +710,7 @@ void __real_svt_aom_update_part_stats(PictureControlSet* pcs, const PartitionTyp
 void __wrap_svt_aom_update_part_stats(PictureControlSet* pcs, const PartitionType partition,
                                       const BlockSize bsize, const uint16_t tile_idx,
                                       const uint32_t sb_index, const int mi_row, const int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_update_part_stats);
     const char* path = getenv("SVT_PARTSYM_OUT");
     if (path && *path) {
         static FILE* pf = NULL;
@@ -760,6 +769,7 @@ void __wrap_svt_aom_write_modes_sb(struct EntropyCodingContext* ec_ctx, SuperBlo
                                    PictureControlSet* pcs, uint16_t tile_idx, struct EntropyCoder* ec,
                                    EbPictureBufferDesc* coeff_ptr, PARTITION_TREE* ptree, int mi_row,
                                    int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_write_modes_sb);
     const char* path = getenv("SVT_PARTSYM_OUT");
     if (path && *path) {
         static FILE* wf = NULL;
@@ -788,6 +798,7 @@ void __wrap_svt_aom_generate_av1_mvp_table(struct ModeDecisionContext* ctx, BlkS
                                            const BlockGeom* blk_geom, uint16_t blk_org_x,
                                            uint16_t blk_org_y, MvReferenceFrame* ref_frames,
                                            uint32_t tot_refs, PictureControlSet* pcs) {
+    ZEN_WRAP_FIRED(svt_aom_generate_av1_mvp_table);
     __real_svt_aom_generate_av1_mvp_table(
         ctx, blk_ptr, blk_geom, blk_org_x, blk_org_y, ref_frames, tot_refs, pcs);
     const char* path = getenv("SVT_MVP_OUT");
@@ -835,6 +846,7 @@ uint64_t __real_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionCont
 uint64_t __wrap_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                         ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
                                         uint64_t luma_distortion) {
+    ZEN_WRAP_FIRED(svt_aom_intra_fast_cost);
     uint64_t    ret  = __real_svt_aom_intra_fast_cost(pcs, ctx, cand_bf, lambda, luma_distortion);
     const char* path = getenv("SVT_FASTCOST_OUT");
     const char* xy   = getenv("SVT_FASTCOST_XY");
@@ -922,6 +934,7 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                               uint64_t cb_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
                               uint64_t cr_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* y_coeff_bits,
                               uint64_t* cb_coeff_bits, uint64_t* cr_coeff_bits) {
+    ZEN_WRAP_FIRED(svt_aom_full_cost);
     __real_svt_aom_full_cost(
         pcs, ctx, cand_bf, lambda, y_distortion, cb_distortion, cr_distortion, y_coeff_bits, cb_coeff_bits,
         cr_coeff_bits);
@@ -1053,6 +1066,7 @@ uint8_t __real_svt_aom_wm_motion_refinement(PictureControlSet* pcs, ModeDecision
 
 uint8_t __wrap_svt_aom_wm_motion_refinement(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                           ModeDecisionCandidate* cand, const bool shut_approx) {
+    ZEN_WRAP_FIRED(svt_aom_wm_motion_refinement);
     const int in_mvy = cand->block_mi.mv[0].y, in_mvx = cand->block_mi.mv[0].x;
     const int in_pmy = cand->pred_mv[0].y, in_pmx = cand->pred_mv[0].x;
     const int in_drl = (int)cand->drl_index;
@@ -1118,6 +1132,7 @@ uint64_t __real_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionCont
 uint64_t __wrap_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                         ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
                                         uint64_t luma_distortion) {
+    ZEN_WRAP_FIRED(svt_aom_inter_fast_cost);
     const uint64_t rc = __real_svt_aom_inter_fast_cost(pcs, ctx, cand_bf, lambda, luma_distortion);
     const char* path = getenv("SVT_IFCOST_OUT");
     const char* xy   = getenv("SVT_IFCOST_XY");
@@ -1180,6 +1195,7 @@ EbErrorType __real_svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionC
 
 EbErrorType __wrap_svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                                    ModeDecisionCandidateBuffer* cand_bf) {
+    ZEN_WRAP_FIRED(svt_aom_inter_pu_prediction_av1);
     const char* path = getenv("SVT_IFS_OUT");
     if (!(path && *path))
         return __real_svt_aom_inter_pu_prediction_av1(hbd_md, ctx, pcs, cand_bf);
@@ -1231,6 +1247,7 @@ EbErrorType __wrap_svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionC
  */
 void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
                                       int32_t plane_end) {
+    ZEN_WRAP_FIRED(svt_av1_loop_filter_frame);
     __real_svt_av1_loop_filter_frame(frame_buffer, pcs, plane_start, plane_end);
 
     const char* binpath = getenv("SVT_LFRECON_BIN");
@@ -1294,6 +1311,7 @@ void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, Picture
 }
 
 void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
+    ZEN_WRAP_FIRED(svt_av1_loop_filter_init);
     __real_svt_av1_loop_filter_init(pcs);
 
     /* Snapshot the completed grid, excluding tentative search stamps from
@@ -1440,6 +1458,7 @@ void __real_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
 
 void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* ctx, const PartitionType part,
                                   const BlockSize bsize, const int mi_row, const int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_update_mi_map);
     __real_svt_aom_update_mi_map(pcs, ctx, part, bsize, mi_row, mi_col);
     const BlkStruct*     b = ctx->blk_ptr;
     const BlockModeInfo* m = &b->block_mi;
@@ -1720,6 +1739,7 @@ EbErrorType __real_svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext*
 
 EbErrorType __wrap_svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                             ModeDecisionCandidateBuffer* cand_bf) {
+    ZEN_WRAP_FIRED(svt_av1_intra_prediction);
     EbErrorType r = __real_svt_av1_intra_prediction(hbd_md, ctx, pcs, cand_bf);
     const char* path = getenv("SVT_NBDUMP_OUT");
     if (path && *path && hbd_md && ctx->has_uv) {
@@ -1785,6 +1805,7 @@ uint64_t __real_svt_aom_get_intra_uv_fast_rate(PictureControlSet* pcs, ModeDecis
 
 uint64_t __wrap_svt_aom_get_intra_uv_fast_rate(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                ModeDecisionCandidateBuffer* cand_bf, bool use_accurate_cfl) {
+    ZEN_WRAP_FIRED(svt_aom_get_intra_uv_fast_rate);
     const uint64_t r = __real_svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, use_accurate_cfl);
     const char*    path = getenv("SVT_UVRATE_OUT");
     if (path && *path) {
@@ -1852,6 +1873,7 @@ void __wrap_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ct
                                  uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
                                  uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
                                  uint64_t* cr_coeff_bits, bool is_full_loop) {
+    ZEN_WRAP_FIRED(svt_aom_full_loop_uv);
     /* Prediction origin samples, captured BEFORE the real call so nothing the
      * full loop does can perturb them. */
     unsigned pu = 0, pv = 0;
@@ -1939,6 +1961,7 @@ EbErrorType __real_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
 
 EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
                                          uint64_t* y_distortion, uint64_t lambda, uint64_t* y_coeff_bits) {
+    ZEN_WRAP_FIRED(svt_aom_full_cost_pd0);
     EbErrorType ret = __real_svt_aom_full_cost_pd0(ctx, cand_bf, y_distortion, lambda, y_coeff_bits);
     const char* path = getenv("SVT_PD0COST_OUT");
     if (path && *path) {
@@ -2030,6 +2053,7 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
 void __real_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx);
 
 void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
+    ZEN_WRAP_FIRED(svt_aom_sig_deriv_enc_dec_pd0);
     __real_svt_aom_sig_deriv_enc_dec_pd0(scs, pcs, ctx);
     /* ---- REFERENCE-PICTURE CODED-AREA STATS (frame-2 scoping, 2026-09-02) --
      * Env: SVT_REFSTATS_OUT (file). Pure pass-through when unset.
@@ -2234,6 +2258,7 @@ static void fctx_dump_nmv(FILE *f, unsigned n, const char *prefix, const NmvCont
 }
 
 void __wrap_svt_av1_reset_cdf_symbol_counters(FRAME_CONTEXT *fc) {
+    ZEN_WRAP_FIRED(svt_av1_reset_cdf_symbol_counters);
     __real_svt_av1_reset_cdf_symbol_counters(fc);
     const char *path = getenv("SVT_FCTX_OUT");
     if (!path || !*path)
@@ -2350,6 +2375,7 @@ EbErrorType __real_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, u
 EbErrorType __wrap_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, uint32_t b64_index,
                                                  uint32_t b64_origin_x, uint32_t b64_origin_y, MeContext* me_ctx,
                                                  EbPictureBufferDesc* input_ptr) {
+    ZEN_WRAP_FIRED(svt_aom_motion_estimation_b64);
     EbErrorType rc = __real_svt_aom_motion_estimation_b64(pcs, b64_index, b64_origin_x, b64_origin_y, me_ctx,
                                                           input_ptr);
     const char* path = getenv("SVT_HME_OUT");
@@ -2607,6 +2633,7 @@ int __real_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, 
 int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
                                                    SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv,
                                                    int* distortion, unsigned int* sse1, BlockSize bsize) {
+    ZEN_WRAP_FIRED(svt_av1_find_best_sub_pixel_tree_pruned);
     const int rc = __real_svt_av1_find_best_sub_pixel_tree_pruned(
         ictx, xd, cm, ms_params, start_mv, bestmv, distortion, sse1, bsize);
     const char*  path = getenv("SVT_SUBPEL_OUT");
@@ -2682,6 +2709,7 @@ int __real_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType fra
 
 int __wrap_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType frame_type, int qindex,
                                           double rate_target_ratio, int bit_depth, int is_screen_content_type) {
+    ZEN_WRAP_FIRED(svt_av1_compute_qdelta_by_rate);
     const int ret = __real_svt_av1_compute_qdelta_by_rate(
         rc, frame_type, qindex, rate_target_ratio, bit_depth, is_screen_content_type);
     const char*  path = getenv("SVT_QDELTA_OUT");
@@ -2736,6 +2764,7 @@ int __wrap_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType fra
 void __real_svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPictureBufferDesc* input_pic);
 
 void __wrap_svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPictureBufferDesc* input_pic) {
+    ZEN_WRAP_FIRED(svt_aom_global_motion_estimation);
     /* Snapshot the ME-derived inputs BEFORE the call — the real function does
      * not modify them, but reading them after would not prove that. */
     uint32_t total_me_sad = 0;
@@ -2849,6 +2878,7 @@ static FILE* gmsearch_file(void) {
 int __real_svt_aom_gm_get_params_cost(const WarpedMotionParams* gm, const WarpedMotionParams* ref_gm, int allow_hp);
 
 int __wrap_svt_aom_gm_get_params_cost(const WarpedMotionParams* gm, const WarpedMotionParams* ref_gm, int allow_hp) {
+    ZEN_WRAP_FIRED(svt_aom_gm_get_params_cost);
     const int    ret = __real_svt_aom_gm_get_params_cost(gm, ref_gm, allow_hp);
     FILE* const  f   = gmsearch_file();
     if (f) {
@@ -2877,6 +2907,7 @@ int64_t __wrap_svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMoti
                                                 int r_stride, uint8_t* dst, int d_width, int d_height, int d_stride,
                                                 int n_refinements, uint8_t chess_refn, int64_t best_frame_error,
                                                 uint32_t pic_sad, int params_cost) {
+    ZEN_WRAP_FIRED(svt_av1_refine_integerized_param);
     WarpedMotionParams in = *wm;
     const int64_t      rc = __real_svt_av1_refine_integerized_param(gm_ctrls,
                                                                wm,
@@ -2932,6 +2963,7 @@ int64_t __wrap_svt_av1_warp_error(WarpedMotionParams* wm, const uint8_t* ref, in
                                   int stride, uint8_t* dst, int p_col, int p_row, int p_width,
                                   int p_height, int p_stride, int subsampling_x, int subsampling_y,
                                   uint8_t chess_refn, int64_t best_error) {
+    ZEN_WRAP_FIRED(svt_av1_warp_error);
     const int64_t rc = __real_svt_av1_warp_error(wm,
                                                  ref,
                                                  width,
@@ -2976,6 +3008,7 @@ EbErrorType __wrap_svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisi
                                               TxSize transform_size, uint64_t* three_quad_energy,
                                               uint32_t bit_depth, TxType transform_type,
                                               PlaneType component_type, TxCoeffShape trans_coeff_shape) {
+    ZEN_WRAP_FIRED(svt_aom_estimate_transform);
     extern int svt_wrap_in_pd0;
     const char* path = getenv("SVT_ETXFM_OUT");
     int dump = 0;
@@ -3047,6 +3080,7 @@ void __real_svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t*
 void __wrap_svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t* coeff, int32_t* quant_coeff,
                                               int32_t* recon_coeff, uint32_t qindex, TxSize txsize, uint16_t* eob,
                                               uint32_t bit_depth, TxType tx_type) {
+    ZEN_WRAP_FIRED(svt_aom_quantize_inv_quantize_light);
     __real_svt_aom_quantize_inv_quantize_light(pcs, coeff, quant_coeff, recon_coeff, qindex, txsize, eob,
                                              bit_depth, tx_type);
     if (svt_wrap_expect_qlev) {
@@ -3074,6 +3108,7 @@ void __wrap_svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t*
  * coeff_base_eob rows for a CHAINDUMP join. Env: SVT_CSEED_OUT. */
 void __real_svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc);
 void __wrap_svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc) {
+    ZEN_WRAP_FIRED(svt_aom_estimate_coefficients_rate);
     const char* path = getenv("SVT_CSEED_OUT");
     if (path && *path) {
         static FILE* f = NULL;
@@ -3150,6 +3185,7 @@ void __real_svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, E
 void __wrap_svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx,
                               SuperBlock* sb_ptr, PC_TREE* pc_tree, PARTITION_TREE* ptree,
                               int mi_row, int mi_col) {
+    ZEN_WRAP_FIRED(svt_aom_encode_sb);
     static int depth = 0;
     const char* path = getenv("SVT_CSEED_OUT");
     const int top = depth == 0;
@@ -3205,6 +3241,7 @@ void __wrap_svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDeci
                                                 int32_t* rec_coeff_buffer, uint32_t coeff_offset,
                                                 bool hbd, TxSize txsize, TxType transform_type,
                                                 PlaneType component_type, uint32_t eob) {
+    ZEN_WRAP_FIRED(svt_aom_inv_transform_recon_wrapper);
     const char* path = getenv("SVT_ITX_OUT");
     const char* xy   = getenv("SVT_ITX_XY");
     int         hit  = 0;
@@ -3272,6 +3309,7 @@ uint32_t __real_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeD
 uint32_t __wrap_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                     ModeDecisionCandidateBuffer** buffer_ptr_array,
                                                     uint32_t candidate_total_count, uint32_t* best_candidate_index_array) {
+    ZEN_WRAP_FIRED(svt_aom_product_full_mode_decision);
     uint32_t idx = __real_svt_aom_product_full_mode_decision(
         pcs, ctx, buffer_ptr_array, candidate_total_count, best_candidate_index_array);
     const char* path = getenv("SVT_WINDEC_OUT");
@@ -3324,6 +3362,7 @@ uint32_t __wrap_svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeD
 int __real_svt_av1_get_q_index_from_qstep_ratio(int leaf_qindex, double qstep_ratio, int bit_depth);
 
 int __wrap_svt_av1_get_q_index_from_qstep_ratio(int leaf_qindex, double qstep_ratio, int bit_depth) {
+    ZEN_WRAP_FIRED(svt_av1_get_q_index_from_qstep_ratio);
     const int ret = __real_svt_av1_get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, bit_depth);
     const char*  path = getenv("SVT_QSTEP_OUT");
     static FILE* f    = NULL;
@@ -3357,6 +3396,7 @@ int __wrap_svt_av1_get_q_index_from_qstep_ratio(int leaf_qindex, double qstep_ra
 void __real_svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct SequenceControlSet* scs);
 
 void __wrap_svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct SequenceControlSet* scs) {
+    ZEN_WRAP_FIRED(svt_av1_rc_init_sb_qindex);
     __real_svt_av1_rc_init_sb_qindex(pcs, scs);
     const char*  path = getenv("SVT_TPLQP_OUT");
     static FILE* f    = NULL;
@@ -3423,6 +3463,7 @@ void __wrap_svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct Sequ
 void __real_svt_aom_set_tuned_blk_lambda(struct ModeDecisionContext* ctx, struct PictureControlSet* pcs);
 
 void __wrap_svt_aom_set_tuned_blk_lambda(struct ModeDecisionContext* ctx, struct PictureControlSet* pcs) {
+    ZEN_WRAP_FIRED(svt_aom_set_tuned_blk_lambda);
     __real_svt_aom_set_tuned_blk_lambda(ctx, pcs);
     const char*  path = getenv("SVT_BLKLAMBDA_OUT");
     static FILE* f    = NULL;
@@ -3468,6 +3509,7 @@ void __wrap_svt_aom_set_tuned_blk_lambda(struct ModeDecisionContext* ctx, struct
 void __real_svt_av1_rc_calc_qindex_crf_cqp(PictureControlSet* pcs, SequenceControlSet* scs);
 
 void __wrap_svt_av1_rc_calc_qindex_crf_cqp(PictureControlSet* pcs, SequenceControlSet* scs) {
+    ZEN_WRAP_FIRED(svt_av1_rc_calc_qindex_crf_cqp);
     PictureParentControlSet* ppcs  = pcs->ppcs;
     double                   r0_in = ppcs->r0;
     double                   adj   = ppcs->tpl_ctrls.r0_adjust_factor;

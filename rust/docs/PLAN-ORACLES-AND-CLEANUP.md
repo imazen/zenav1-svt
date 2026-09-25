@@ -118,8 +118,15 @@ typed facade setter or an explicit refusal that names it.
     `driver_defs` macros, as the capture driver does. Fork-only oracles
     must be selected by the caller (a per-oracle test list), never skipped
     inside a test.
-- [ ] 2.3 Wrap-fired check in `capture_c_trace`: report every `--wrap`
+- [x] 2.3 (this change) Wrap-fired check in `capture_c_trace`: report every `--wrap`
   interposer that never fired on a cell known to reach it.
+  - `SVT_WRAP_REPORT=1|<file>` prints a fire count for all 47 interposers
+    at exit. The one list is `tools/capture_c_trace/wrap_list.h`: `build.sh`
+    generates the `--wrap` flags from it, so the flags and the report
+    cannot drift. Measured on a 64x64 q30 p6 key frame: 31 fire; the 16
+    at zero are the inter / global-motion paths, plus the deblock frame
+    filter (level 0 on that cell). Gates add their own "must fire"
+    assertions for the interposers they depend on.
 - [x] 2.4 (`2169f16f`) Citation remap: `tools/citations.py remap --to <oracle>`
   rewrites `moved` citations in place. Run it in the same change that bumps
   or retires a pin, not before.
