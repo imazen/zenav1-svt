@@ -286,8 +286,8 @@ pub struct FrameContext {
     pub delta_q_cdf: [AomCdfProb; DELTA_Q_PROBS + 2],
     /// Delta-LF CDFs [DELTA_LF_PROBS+1+1] — spec `default_delta_lf_cdf` is
     /// `default_delta_q_cdf` verbatim; coded only when the frame header
-    /// signals `delta_lf_present` (`ZenEnhancement::AomDeltaQLf`; C never
-    /// sets it — resource_coordination_process.c:434-441).
+    /// signals `delta_lf_present`, which C never sets
+    /// (resource_coordination_process.c:434-441).
     /// `delta_lf_multi_cdf` stays absent while `delta_lf_multi` is never
     /// signaled.
     pub delta_lf_cdf: [AomCdfProb; DELTA_Q_PROBS + 2],

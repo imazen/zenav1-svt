@@ -39,10 +39,9 @@
 //!
 //! # Two things this module does NOT carry, named rather than dropped
 //!
-//! * **`delta_lf_cdf` is carried; `delta_lf_multi_cdf` is not.** The single
-//!   table landed with `ZenEnhancement::AomDeltaQLf` (the frame header may
-//!   now signal `delta_lf_present`); C's four-slot `delta_lf_multi_cdf`
-//!   stays absent because `delta_lf_multi` is never signalled — a saved
+//! * **`delta_lf_cdf` is carried; `delta_lf_multi_cdf` is not.** C carries
+//!   both, and never signals `delta_lf_present`; the single table stays
+//!   (it is C's). The four-slot `delta_lf_multi_cdf` stays absent because `delta_lf_multi` is never signalled — a saved
 //!   state that omits it is indistinguishable from one that carries it at
 //!   its defaults.
 //! * **The duplicated inter tables.** `FrameContext` carries `newmv_cdf`,

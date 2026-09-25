@@ -150,7 +150,15 @@ fn cases() -> Vec<Case> {
             for mono in [false, true] {
                 for preset in [-1i8, 0, 4, 8, 13] {
                     for qp in [0u8, 12, 40, 63] {
-                        out.push(Case { w, h, bd, mono, preset, qp, ..base });
+                        out.push(Case {
+                            w,
+                            h,
+                            bd,
+                            mono,
+                            preset,
+                            qp,
+                            ..base
+                        });
                     }
                 }
             }
@@ -182,10 +190,6 @@ fn cases() -> Vec<Case> {
     for e in [
         ZenEnhancement::AomIntraEdgeFilter,
         ZenEnhancement::AomRestorationUnitSearch,
-        ZenEnhancement::StillImageTune,
-        ZenEnhancement::AomAdaptiveCdef,
-        ZenEnhancement::AomAdaptiveSharpness,
-        ZenEnhancement::AomDeltaQLf,
         ZenEnhancement::AomScreenTools,
         ZenEnhancement::DeepSearch,
     ] {
@@ -225,19 +229,31 @@ fn every_accepted_configuration_ends_in_ok_or_err() {
                 .cloned()
                 .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
                 .unwrap_or_else(|| "<non-string panic>".into());
-            panics.push(format!("  {c:?}\n    -> {}", msg.lines().next().unwrap_or("")));
+            panics.push(format!(
+                "  {c:?}\n    -> {}",
+                msg.lines().next().unwrap_or("")
+            ));
         }
     }
     std::panic::set_hook(hook);
-    eprintln!("never_panics: {} cells: {ok} Ok, {} refused", all.len(), refused.values().sum::<usize>());
+    eprintln!(
+        "never_panics: {} cells: {ok} Ok, {} refused",
+        all.len(),
+        refused.values().sum::<usize>()
+    );
     for (why, n) in &refused {
         eprintln!("  {n:>4}  {why}");
     }
     // Anti-vacuity: a sweep whose cells are all refused proves nothing.
-    // MEASURED 2026-09-25 on i265: 453 of 536 cells encode, 83 refuse
-    // explicitly. A drop below the floor means configurations stopped being
-    // encoded; look at the refusal list above before moving it.
-    assert!(ok >= 440, "only {ok} of {} cells encoded (floor 440)", all.len());
+    // MEASURED 2026-09-25 on i265: 445 of 524 cells encode, 79 refuse
+    // explicitly (453 of 536 before four enhancements were removed). A drop
+    // below the floor means configurations stopped being encoded; look at
+    // the refusal list above before moving it.
+    assert!(
+        ok >= 440,
+        "only {ok} of {} cells encoded (floor 440)",
+        all.len()
+    );
     assert!(
         panics.is_empty(),
         "{} of {} cells PANICKED (each must end in Ok or an explicit Err):\n{}",

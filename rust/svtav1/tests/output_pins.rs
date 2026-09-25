@@ -520,10 +520,6 @@ fn output_pins_fork_knobs_and_enhancements() {
     let enhancements = [
         (ZenEnhancement::AomIntraEdgeFilter, -1i8),
         (ZenEnhancement::AomRestorationUnitSearch, -1),
-        (ZenEnhancement::StillImageTune, 6),
-        (ZenEnhancement::AomAdaptiveCdef, 6),
-        (ZenEnhancement::AomAdaptiveSharpness, 6),
-        (ZenEnhancement::AomDeltaQLf, 6),
         (ZenEnhancement::AomScreenTools, 8),
         (ZenEnhancement::DeepSearch, 8),
     ];
@@ -538,14 +534,6 @@ fn output_pins_fork_knobs_and_enhancements() {
             ..Cell::still(content, 64, 64, preset, 30)
         });
     }
-    // Delta-LF only signals when a per-SB delta-q plan exists.
-    cells.push(Cell {
-        reference: SvtReference::Hybrid3115,
-        mode: SvtHdrMode::HdrFork,
-        enhancement: Some(ZenEnhancement::AomDeltaQLf),
-        knob: Some(("vboost", |h| h.enable_variance_boost = true)),
-        ..Cell::still(Content::Photo, 128, 128, 6, 30)
-    });
     check_group("fork_knobs_enhancements", cells);
 }
 

@@ -1,7 +1,6 @@
 # output pins, group fork_knobs_enhancements: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
 # Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
 edges-64x64-b8-p8-q30-Hybrid3115-Mainline-aom-screen-tools-v1	873:c90a0ba2393d0bb6e70e28302236201b
-photo-128x128-b8-p6-q30-Hybrid3115-HdrFork-aom-delta-q-lf-v1-vboost	3822:33d6c9616a7ee69c4936030c15d61965
 photo-64x64-b10-p6-q30-Hybrid3115-HdrFork-acbias	980:c77e769c6d8ef081b5378fa964f4199a
 photo-64x64-b10-p6-q30-Hybrid3115-HdrFork-altssim	976:f9e00c31367f8d1272363a13ec0079b6
 photo-64x64-b10-p6-q30-Hybrid3115-HdrFork-noisenorm	980:c77e769c6d8ef081b5378fa964f4199a
@@ -20,8 +19,4 @@ photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-sharp7	985:cb9014ee1d4dcfb98b3437915f8c
 photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-txbias	976:bcd590532dea5bdb1dd442de5e3a5daf
 photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-vboost	976:bcd590532dea5bdb1dd442de5e3a5daf
 photo-64x64-b8-p6-q30-Hybrid3115-HdrFork-vboost-pq	976:bcd590532dea5bdb1dd442de5e3a5daf
-photo-64x64-b8-p6-q30-Hybrid3115-Mainline-aom-adaptive-cdef-v1	1290:aada2174396c324669ab110c36a9d56d
-photo-64x64-b8-p6-q30-Hybrid3115-Mainline-aom-adaptive-sharpness-v1	1290:e79fc067264b7b9e8b1ac1be5055008d
-photo-64x64-b8-p6-q30-Hybrid3115-Mainline-aom-delta-q-lf-v1	1290:e79fc067264b7b9e8b1ac1be5055008d
-photo-64x64-b8-p6-q30-Hybrid3115-Mainline-still-image-tune-v1	987:9b7eedcf7686f9ffa989c890b15e7243
 photo-64x64-b8-p8-q30-Hybrid3115-Mainline-deep-search-v1	1278:4ac57e5ab015a652aba9786c0be6b9a2

@@ -7,7 +7,7 @@
 //!
 //! `configure` is the tune/enhancement hook: it runs after the pipeline's
 //! baseline is built and before the frame is encoded, so every trial
-//! inherits `hdr.tune` (IQ), `enhancements` (`StillImageTune`), QM and
+//! inherits `hdr.tune` (IQ), `enhancements`, QM and
 //! variance-boost overrides — whatever the caller sets. That is what
 //! makes "target-quality under tune IQ" expressible: without it the
 //! search could only encode default-tune trials.
@@ -203,7 +203,7 @@ where
 /// `configure` runs on every trial's pipeline between construction and
 /// the frame encode — e.g.
 /// `|p: &mut EncodePipeline| p.hdr.tune = svt_tune::SvtTune::Iq.to_raw()`
-/// or `p.enhancements = p.enhancements.with(ZenEnhancement::StillImageTune)`.
+/// or `p.enhancements = p.enhancements.with(ZenEnhancement::DeepSearch)`.
 /// It MUST be deterministic and identical across trials or the qp→score
 /// curve is not comparable.
 ///

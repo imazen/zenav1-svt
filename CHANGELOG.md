@@ -75,9 +75,19 @@ Crates are not published to crates.io yet — depend by git.
   `debug_assert` that said the port needed it. Byte-inert on every still:
   `identity_full_8bit.sh` 1100/1100.
 
+### Removed
+
+- **Four libaom-derived Zen enhancements** (this change), each on its own
+  measurement: `StillImageTune` (v1 was exactly tune IQ), `AomAdaptiveSharpness`
+  (a no-op under IQ in 252/252 cells), `AomAdaptiveCdef` (+0.4 to +0.9 %
+  ssim2 BD against SVT's own CDEF pick) and `AomDeltaQLf` (RD-neutral).
+  C's delta-LF syntax and `delta_lf_cdf` stay, because they are C's; nothing
+  signals them now, as in C. Output pins: five enhancement cells were removed,
+  and every other cell is unchanged.
+
 ### Fixed
 
-- **no_std build of `zenav1-svt-encoder`** (this change): it did not compile
+- **no_std build of `zenav1-svt-encoder`** (9d610a64): it did not compile
   (121 errors), and nothing noticed, because `test-minimal` runs at workspace
   level where dev-dependencies re-enable `std`. The encoder's `std` feature
   now forwards to `types/std` and `dsp/std`. `just nostd-check` and a CI step
@@ -290,6 +300,11 @@ Crates are not published to crates.io yet — depend by git.
 - Raw tune value 5 now means VMAF, as in every C oracle, and is refused
   (not ported); film grain moved from 5 to 6 (`50c683a4`). Callers passing a
   raw `hdr.tune = 5` for film grain must pass `tune::TUNE_FILM_GRAIN`.
+- `ZenEnhancement::{StillImageTune, AomAdaptiveCdef, AomAdaptiveSharpness,
+  AomDeltaQLf}`, `enhancements::apply_still_image_tune`, the
+  `cdef::aom_adaptive_cdef_*` helpers and `deblock::SbDeltaLf` (with the
+  `dlf` parameter of `apply_deblock_frame*`) are removed (this change).
+  Measured: no RD gain, or a regression (see Removed).
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
 - **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;

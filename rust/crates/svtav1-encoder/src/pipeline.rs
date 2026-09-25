@@ -5563,12 +5563,6 @@ impl EncodePipeline {
         let zen_intra_edge_filter = self
             .enhancements
             .contains(crate::enhancements::ZenEnhancement::AomIntraEdgeFilter);
-        let zen_adaptive_cdef = self
-            .enhancements
-            .contains(crate::enhancements::ZenEnhancement::AomAdaptiveCdef);
-        let zen_adaptive_sharpness = self
-            .enhancements
-            .contains(crate::enhancements::ZenEnhancement::AomAdaptiveSharpness);
         self.reference
             .validate_hdr_config(&self.hdr)
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
@@ -5604,22 +5598,15 @@ impl EncodePipeline {
         // already visible when the sb-size rule runs — and that rule forces
         // SB64 whenever variance boost is on. `new()` cannot reproduce that
         // ordering because `self.hdr` is caller-mutated after construction.
-        if self
-            .enhancements
-            .contains(crate::enhancements::ZenEnhancement::StillImageTune)
-        {
-            crate::enhancements::apply_still_image_tune(&mut self.hdr, self.rc_config.qp);
-        } else {
-            self.hdr.apply_tune_overrides(self.rc_config.qp);
-        }
+        self.hdr.apply_tune_overrides(self.rc_config.qp);
         // C derives `super_block_size` in `svt_av1_enc_init_handle` — AFTER
         // the full static_config exists — and `enable_variance_boost` forces
         // 64 (enc_handle.c:4075-4078). This port mutates `self.hdr` AFTER
         // `new()` ran the derivation with `variance_boost: false`, so an
-        // encode-time VB request (tune IQ, `with_variance_boost`, the still
-        // recipe) could leave a sb128 derivation in place that C never
-        // emits — and whose delta-q emission then desynced the tile. Re-run
-        // the derivation at the encode choke point with the true VB input.
+        // encode-time VB request (tune IQ, `with_variance_boost`) could
+        // leave a sb128 derivation in place that C never emits — and whose
+        // delta-q emission then desynced the tile. Re-run the derivation at
+        // the encode choke point with the true VB input.
         // An explicit `with_sb_size(128)` override still wins (that config
         // is a port extension C cannot express; the emission path below now
         // codes it decodably, just not byte-identically to anything C makes).
@@ -7789,31 +7776,6 @@ impl EncodePipeline {
             let _ = std::fs::write(path, txt);
         }
         let delta_q_res_signal = delta_q_plan.map(|p| p.delta_q_res);
-        // aom `--delta-lf-mode=1` (ZenEnhancement::AomDeltaQLf): per-SB
-        // delta_lf_from_base = ((delta_qindex/4 + res/2) & ~(res-1))
-        // clamped to +-MAX_LOOP_FILTER, res=2, single — derived off the
-        // SAME sb_qindex plan the delta-q symbols code (aom
-        // encodeframe.c:377-399). Nested inside delta_q_present, so it
-        // exists exactly when a plan is live.
-        let delta_q_lf_armed = delta_q_plan.is_some()
-            && self
-                .enhancements
-                .contains(crate::enhancements::ZenEnhancement::AomDeltaQLf);
-        let sb_delta_lf: Option<alloc::vec::Vec<i8>> = delta_q_lf_armed.then(|| {
-            let plan = delta_q_plan.expect("checked by delta_q_lf_armed");
-            let base = i32::from(base_qindex);
-            plan.sb_qindex
-                .iter()
-                .map(|&q| (((i32::from(q) - base) / 4 + 1) & !1).clamp(-63, 63) as i8)
-                .collect()
-        });
-        // The same map the walk codes per-SB is what the recon deblock
-        // applies — signal and application share ONE derivation.
-        let sb_dlf = sb_delta_lf.as_ref().map(|map| crate::deblock::SbDeltaLf {
-            map,
-            sb_cols,
-            sb_size,
-        });
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
         // [SVT_HDR_MODE] tune SSIM/IQ/MS_SSIM: per-16x16 SSIM rdmult
@@ -7882,33 +7844,15 @@ impl EncodePipeline {
         // application consistently (one effective value).
         let lf_sharp_eff: u8 = {
             let base = self.hdr.sharpness.clamp(0, 7) as u8;
-            let c_derived = if !is_key
+            if !is_key
                 && matches!(
                     self.hdr.tune,
                     crate::tune::TUNE_VQ | crate::tune::TUNE_FILM_GRAIN
-                ) {
+                )
+            {
                 base
             } else {
                 crate::tune::lf_sharpness_for_tune(base, self.hdr.tune, base_qindex)
-            };
-            // libaom `enable_adaptive_sharpness` (aom-encode lf_search
-            // `frame_lf_sharpness`): on an all-intra frame `level` starts
-            // at `sharpness_cfg` and the adaptive arm caps it by the
-            // qindex ladder — `<= 112 -> 7, <= 160 -> 1, else 0` — at
-            // ANY tune. Identical arithmetic to C's IQ/MS_SSIM arm of
-            // `lf_sharpness_for_tune`, so under those tunes this is a
-            // no-op; it exists to apply the cap elsewhere.
-            if zen_adaptive_sharpness {
-                let max = if base_qindex <= 112 {
-                    7
-                } else if base_qindex <= 160 {
-                    1
-                } else {
-                    0
-                };
-                base.min(max)
-            } else {
-                c_derived
             }
         };
         let sharp_tx_active =
@@ -10372,13 +10316,6 @@ impl EncodePipeline {
                     ectx.delta_q_state = Some((res, i32::from(base_qindex), sb_size));
                     ectx.delta_q_sb_qindex = i32::from(base_qindex);
                 }
-                // aom `--delta-lf-mode`: prev_delta_lf_from_base resets to 0
-                // per tile (aom start_tile / C SVT's dead twin at
-                // entropy_coding.c:3584), exactly like prev_qindex.
-                if delta_q_lf_armed {
-                    ectx.delta_lf_state = Some(0);
-                    ectx.delta_lf_sb = 0;
-                }
                 let mut chroma_pass = sb_chroma_owned.as_ref().map(|(u_src, v_src)| ChromaPass {
                     u_src: u_src.as_slice(),
                     v_src: v_src.as_slice(),
@@ -10424,10 +10361,6 @@ impl EncodePipeline {
                             let sbq = i32::from(plan.sb_qindex[sb_idx]);
                             if delta_q_plan.is_some() {
                                 ectx.delta_q_sb_qindex = sbq;
-                            }
-                            if delta_q_lf_armed {
-                                ectx.delta_lf_sb =
-                                    i32::from(sb_delta_lf.as_ref().expect("armed above")[sb_idx]);
                             }
                             if let Some(cp) = chroma_pass.as_mut() {
                                 cp.qindex_u =
@@ -11085,7 +11018,6 @@ impl EncodePipeline {
                 &lf_levels,
                 lf_sharp_eff,
                 self.bit_depth,
-                sb_dlf.as_ref(),
                 &stop,
             )?;
         }
@@ -11110,7 +11042,6 @@ impl EncodePipeline {
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
-                sb_dlf.as_ref(),
                 &stop,
             )?;
             // C `dlf_process.c:114-117`: the FILTERED SSE, measured after
@@ -11442,21 +11373,7 @@ impl EncodePipeline {
             // path for now: still self-consistent (signal == apply),
             // but their signaled strengths diverge from C's searched
             // ones (gap 2a, narrowed to the non-all-skip case).
-            // libaom CDEF_ADAPTIVE arm 1 (pickcdef.c:846-857): the
-            // AomAdaptiveCdef experiment turns CDEF off before any pick
-            // once the mapped qindex (which IS `base_qindex` here —
-            // aom's `cq_level` is the same quantizer_to_qindex domain)
-            // drops to <= 32. SVT C has no equivalent knob; gated on
-            // `cdef_ctrls.enabled != 0` so a level-0 CDEF-off frame keeps
-            // its C damping quirk instead of aom's.
-            if zen_adaptive_cdef && cdef_ctrls.enabled != 0 && base_qindex <= 32 {
-                (
-                    crate::cdef::aom_adaptive_cdef_off_pick(base_qindex),
-                    // No finish_cdef_search ran — same "no search" value
-                    // the from_qp arm carries.
-                    -1,
-                )
-            } else if cdef_ctrls.enabled != 0 && !cdef_ctrls.use_qp_strength {
+            if cdef_ctrls.enabled != 0 && !cdef_ctrls.use_qp_strength {
                 if deblock_geom.cdef_frame_all_skip() {
                     (
                         crate::cdef::CdefPick::single(
@@ -11544,13 +11461,6 @@ impl EncodePipeline {
                             if self.hdr.is_fork() {
                                 crate::cdef::scale_strengths(&mut p, self.hdr.cdef_scaling);
                             }
-                            // libaom CDEF_ADAPTIVE arm 2 (pickcdef.c:
-                            // 1032-1091): halve picked strengths at
-                            // qindex <= 220, zero the halved-low ones at
-                            // <= 140. Post-pick so signal == apply.
-                            if zen_adaptive_cdef {
-                                crate::cdef::aom_adaptive_cdef_reduce(&mut p, base_qindex);
-                            }
                             (p, dist_dev)
                         }
                         crate::cdef::CdefSearchPick::AllSkip => (
@@ -11579,22 +11489,11 @@ impl EncodePipeline {
                 // (enc_cdef.c:912-926), before `cdef_dist_dev` is computed —
                 // it keeps the -1 seed.
                 (
-                    {
-                        let mut p =
-                            crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
-                                base_qindex,
-                                self.bit_depth,
-                                sc_derivation.classes.sc_class5,
-                            ));
-                        // libaom CDEF_ADAPTIVE `avoid_uv_cdef`
-                        // (pickcdef.c:822-832/:1287): the qp-pick's chroma
-                        // strength is forced to 0 — luma keeps the
-                        // polynomial value, chroma is unfiltered.
-                        if zen_adaptive_cdef {
-                            crate::cdef::aom_adaptive_cdef_avoid_uv(&mut p);
-                        }
-                        p
-                    },
+                    crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
+                        base_qindex,
+                        self.bit_depth,
+                        sc_derivation.classes.sc_class5,
+                    )),
                     -1,
                 )
             } else {
@@ -12507,10 +12406,9 @@ impl EncodePipeline {
                 // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
                 // same value gates the walk's per-SB delta symbols.
                 delta_q_res_signal,
-                // aom `--delta-lf-mode` (ZenEnhancement::AomDeltaQLf):
-                // nested inside delta_q_present, so it signals exactly
-                // when a per-SB plan is live AND the extension is on.
-                delta_q_lf_armed,
+                // C hardwires `delta_lf_present = 0`
+                // (resource_coordination_process.c:434-441).
+                false,
                 // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
                 // mainline mode. The quantizers used the SAME levels.
                 if qm_levels == [15; 3] {
@@ -12571,7 +12469,7 @@ impl EncodePipeline {
                 ($input:expr, $deblock:path, $cdef:path $(, $depth:expr)?) => {{
                     let (mut y, mut u, mut v) = $input;
                     $deblock(&mut y, &mut u, &mut v, w, h, filter_chroma, &deblock_geom,
-                        &lf_levels, lf_sharp_eff $(, $depth)?, sb_dlf.as_ref());
+                        &lf_levels, lf_sharp_eff $(, $depth)?);
                     let before_cdef = output_restoration.as_ref().map(|_| (y.clone(), u.clone(), v.clone()));
                     $cdef(&mut y, &mut u, &mut v, w, h, filter_chroma, &deblock_geom,
                         &cdef_params $(, $depth)?);
@@ -22436,225 +22334,6 @@ mod tests {
             p.sb_size, 64,
             "variance boost (via tune IQ) must force SB64 — C never emits a VB+SB128 stream"
         );
-    }
-
-    /// `ZenEnhancement::AomAdaptiveCdef` reaches the CDEF pick: at qindex
-    /// <= 220 the searched strengths halve (libaom pickcdef.c:1032-1091),
-    /// and the signaled triple — which [`Self::last_cdef_signaled`]
-    /// captures — shows it. Zen extension: the bytes MUST differ from
-    /// the unadorned encode, and the encode must still be valid.
-    #[test]
-    fn aom_adaptive_cdef_reaches_the_pick() {
-        // Non-flat content so the unadorned search picks nonzero CDEF
-        // strengths — a flat image is all-skip either way and the
-        // witness would be vacuous.
-        let (w, h) = (128usize, 128usize);
-        let mut y = vec![0u8; w * h];
-        let mut u = vec![128u8; w * h / 4];
-        let mut v = vec![128u8; w * h / 4];
-        for r in 0..h {
-            for c in 0..w {
-                y[r * w + c] = ((c * 2 + r * 3) % 256) as u8;
-            }
-        }
-        for r in 0..h / 2 {
-            for c in 0..w / 2 {
-                u[r * w / 2 + c] = ((c * 5 + r) % 256) as u8;
-                v[r * w / 2 + c] = ((200 + c * 3 + r * 2) % 256) as u8;
-            }
-        }
-        let mk = |enh: bool| {
-            let mut p = EncodePipeline::new(
-                w as u32,
-                h as u32,
-                6,
-                RcConfig {
-                    mode: RcMode::Cqp,
-                    qp: 30,
-                    ..RcConfig::default()
-                },
-                0,
-                1,
-            )
-            .with_chroma_420(true);
-            if enh {
-                p.enhancements = crate::enhancements::ZenEnhancements::default()
-                    .with(crate::enhancements::ZenEnhancement::AomAdaptiveCdef);
-            }
-            p
-        };
-        let mut p0 = mk(false);
-        let mut p1 = mk(true);
-        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        let s0 = p0.last_cdef_signaled.expect("CDEF pick ran");
-        let s1 = p1.last_cdef_signaled.expect("CDEF pick ran");
-        // The qp-30 qindex sits in the <= 220 halving band: a nonzero
-        // unadorned luma pick must halve (or zero under <= 140 zero_low).
-        assert!(
-            s0.y_strength == 0 || s1.y_strength <= s0.y_strength,
-            "adaptive CDEF must not strengthen luma: {s0:?} -> {s1:?}"
-        );
-        assert!(
-            s0.uv_strength == 0 || s1.uv_strength <= s0.uv_strength,
-            "adaptive CDEF must not strengthen chroma: {s0:?} -> {s1:?}"
-        );
-        // The pick really changed — a no-op transform would be invisible.
-        assert_ne!(
-            (s0.y_strength, s0.uv_strength),
-            (s1.y_strength, s1.uv_strength),
-            "expected the adaptive transform to alter the pick: {s0:?}"
-        );
-        assert_ne!(b0, b1, "the changed pick must reach the bitstream");
-    }
-
-    /// `ZenEnhancement::AomAdaptiveSharpness` caps the LF sharpness by the
-    /// aom qindex ladder at ANY tune — at `base_qindex > 160` the cap is
-    /// 0 while the default (tune PSNR) leaves `hdr.sharpness` alone.
-    #[test]
-    fn aom_adaptive_sharpness_caps_by_qindex() {
-        let (w, h) = (64usize, 64usize);
-        let mut y = vec![0u8; w * h];
-        for r in 0..h {
-            for c in 0..w {
-                y[r * w + c] = ((c * 3 + r * 5) % 256) as u8;
-            }
-        }
-        let u = vec![128u8; w * h / 4];
-        let v = vec![128u8; w * h / 4];
-        let mk = |enh: bool| {
-            let mut p = EncodePipeline::new(
-                w as u32,
-                h as u32,
-                6,
-                RcConfig {
-                    mode: RcMode::Cqp,
-                    qp: 55, // mapped qindex > 160 -> cap is 0
-                    ..RcConfig::default()
-                },
-                0,
-                1,
-            )
-            .with_chroma_420(true);
-            p.hdr.sharpness = 4;
-            if enh {
-                p.enhancements = crate::enhancements::ZenEnhancements::default()
-                    .with(crate::enhancements::ZenEnhancement::AomAdaptiveSharpness);
-            }
-            p
-        };
-        let mut p0 = mk(false);
-        let mut p1 = mk(true);
-        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        // sharpness lands in the frame header (3-bit literal): capping 4
-        // to 0 changes the bytes.
-        assert_ne!(b0, b1, "qindex > 160 must cap signaled sharpness 4 -> 0");
-    }
-
-    /// `ZenEnhancement::AomDeltaQLf` (aom `--delta-lf-mode`): with
-    /// variance boost live the FH signals `delta_lf_present` and the walk
-    /// codes one delta-lf symbol per SB after the delta-qindex — the
-    /// stream MUST differ from the delta-q-only encode, and the encoder's
-    /// own recon must shift with it (the same `sb_delta_lf` map feeds
-    /// both, so signal == application). Decoder-verified separately with
-    /// aomdec (2026-09-20: bd8/bd10, sb64/sb128, multi-tile — all
-    /// `dec == recon`).
-    #[test]
-    fn aom_delta_q_lf_reaches_stream_and_recon() {
-        let (w, h) = (128usize, 128usize);
-        let mut y = vec![0u8; w * h];
-        let mut u = vec![128u8; w * h / 4];
-        let mut v = vec![128u8; w * h / 4];
-        for r in 0..h {
-            for c in 0..w {
-                y[r * w + c] = ((c * 2 + r * 3 + (c / 16) * 40) % 256) as u8;
-            }
-        }
-        for r in 0..h / 2 {
-            for c in 0..w / 2 {
-                u[r * w / 2 + c] = ((c * 5 + r) % 256) as u8;
-                v[r * w / 2 + c] = ((200 + c * 3 + r * 2) % 256) as u8;
-            }
-        }
-        let mk = |dlf: bool| {
-            let mut p = EncodePipeline::new(
-                w as u32,
-                h as u32,
-                6,
-                RcConfig {
-                    mode: RcMode::Cqp,
-                    qp: 30,
-                    ..RcConfig::default()
-                },
-                0,
-                1,
-            )
-            .with_chroma_420(true)
-            .with_recon_output(true);
-            p.hdr.enable_variance_boost = true;
-            if dlf {
-                p.enhancements = crate::enhancements::ZenEnhancements::default()
-                    .with(crate::enhancements::ZenEnhancement::AomDeltaQLf);
-            }
-            p
-        };
-        let mut p0 = mk(false);
-        let mut p1 = mk(true);
-        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        assert_ne!(
-            b0, b1,
-            "delta_lf_present + per-SB delta-lf symbols must reach the bitstream"
-        );
-        let r0 = p0.last_recon.as_ref().expect("recon exists");
-        let r1 = p1.last_recon.as_ref().expect("recon exists");
-        assert_ne!(
-            r0.0, r1.0,
-            "the signaled per-SB delta-lf must reach the encoder recon"
-        );
-    }
-
-    /// The flip side: `AomDeltaQLf` is NESTED inside `delta_q_present`
-    /// (spec 5.9.18) — armed without a per-SB delta-q plan it must emit
-    /// exactly the disarmed bitstream (no stray header bit, no symbols).
-    #[test]
-    fn aom_delta_q_lf_inert_without_delta_q() {
-        let (w, h) = (64usize, 64usize);
-        let mut y = vec![0u8; w * h];
-        for r in 0..h {
-            for c in 0..w {
-                y[r * w + c] = ((c * 3 + r * 5) % 256) as u8;
-            }
-        }
-        let u = vec![128u8; w * h / 4];
-        let v = vec![128u8; w * h / 4];
-        let mk = |dlf: bool| {
-            let mut p = EncodePipeline::new(
-                w as u32,
-                h as u32,
-                6,
-                RcConfig {
-                    mode: RcMode::Cqp,
-                    qp: 30,
-                    ..RcConfig::default()
-                },
-                0,
-                1,
-            )
-            .with_chroma_420(true);
-            // NO enable_variance_boost -> no delta_q_plan -> unarmed.
-            if dlf {
-                p.enhancements = crate::enhancements::ZenEnhancements::default()
-                    .with(crate::enhancements::ZenEnhancement::AomDeltaQLf);
-            }
-            p
-        };
-        let mut p0 = mk(false);
-        let mut p1 = mk(true);
-        let b0 = p0.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        let b1 = p1.try_encode_frame_420(&y, &u, &v, w).unwrap();
-        assert_eq!(b0, b1, "delta-lf armed without delta_q must be byte-inert");
     }
 
     /// Task #91: the b64 coding units of one superblock, in C's coding

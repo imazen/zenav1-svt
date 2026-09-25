@@ -139,55 +139,14 @@ Byte-parity vs C is per-variant, measured through `tools/issue9_knobs_gate.sh`
   AVX-512 campaign — documented, not silently green. Every variant's output
   is decoder-valid (aomdec-verified in the tune sweep).
 
-`ZenEnhancement::StillImageTune` ("still-image-tune-v1") is the opt-in Zen
-bundle: tune IQ's overrides verbatim, with caller-set values on
-bundle-covered knobs surviving (its only delta vs `with_tune(Iq)` — with
-no caller extras the stream is byte-identical to tune IQ). Requires
-`EncodingPolicy::Zen` (SvtParity refuses all enhancements); validated for
-all-intra 4:2:0, NOT byte-pinned to C — verified by aomdec decode and the
-RD record in `benchmarks/still_image_tune_v1_2026-09-19.meta`. The
-extras candidates measured on the subset (variance_octile 6–8, vb
-strength/curve, ac_bias, min_qm, sharpness 3–6) were all neutral-or-worse
-than plain IQ on ssim2-BD-rate — the best, sharpness 5, buys −0.34%
-pooled median at p75 +0.55 (inside per-image noise) — so v1 pins nothing
-beyond IQ's own bundle.
-
-`ZenEnhancement::AomAdaptiveCdef` ("aom-adaptive-cdef-v1") and
-`ZenEnhancement::AomAdaptiveSharpness` ("aom-adaptive-sharpness-v1") are
-libaom-semantics experiments SVT C does not carry (`--enable-cdef=3` /
-`--enable-adaptive-sharpness`): adaptive CDEF turns the pick off at
-`base_qindex <= 32`, halves every picked strength at `<= 220` and zeroes
-the halved-low ones at `<= 140`, and zeroes the qp-path chroma strength;
-adaptive sharpness applies the `<=112 -> 7 / <=160 -> 1 / else 0` LF
-cap at any tune (identical arithmetic to C's IQ/MS_SSIM ladder — a no-op
-under those tunes, by construction). Both are applied post-pick so
-signal and application stay in agreement, are validated all-intra 4:2:0,
-and are decoder-verified, never byte-claimed against C. Measured on the
-42-image subset (`benchmarks/aom_features_2026-09-20.meta`, 1260 port
-cells, zero decode errors): adaptive sharpness under IQ is byte-identical
-in 252/252 cells (the no-op is proven, not just derived); adaptive CDEF
-fires in 53/252 IQ cells and is a small consistent ssim2-BD *regression*
-vs SVT's own pick (+0.4% @p6, +0.9% @p10) — opt-in experiment, not
-recommended on ssim2 grounds. Against `zenav1-aom`, port tune IQ lands
-within +1.5–2.2% BD at matched zones and beats aom-iq at p8-vs-cpu8
-(−1.45%); the 30 aom-side DEC-ERR cells (screen/grayscale documents)
-count against the reference, not the port.
-
-`ZenEnhancement::AomDeltaQLf` ("aom-delta-q-lf-v1") is libaom's
-`delta_q_lf` semantics SVT C ships dead (`delta_lf_present` hardwired 0
-in C): when a per-SB delta-q plan exists it signals
-`delta_lf_present`/`delta_lf_res=2`/`delta_lf_multi=0`, codes one
-delta-lf symbol `((sb_q − base_q)/4 + 1) & !1` immediately after each
-per-SB delta-q symbol on `delta_lf_cdf` (new `FrameContext` field,
-save/restored through `FrameCdfs`), resets prev per tile, and applies
-the same map in encoder deblock with libaom's two-sided edge rule
-(filter if either side's level is nonzero; use the current side unless
-it is 0). Byte-inert when no delta-q plan exists or the enhancement is
-off; decoder-verified — encoder recon == `aomdec` on 8-bit SB64/SB128/
-multi-tile and 10-bit cells — never byte-claimed against C. Measured
-RD-neutral on the subset (−0.01% @p6, +0.24% @p10 vs tune IQ,
-`benchmarks/aom_features_2026-09-20.meta`): a consistency tool, not an
-RD lever.
+Four libaom-derived enhancements were removed on 2026-09-25 on their
+measurements: `StillImageTune` (v1 was exactly tune IQ;
+`benchmarks/still_image_tune_v1_2026-09-19.meta`), `AomAdaptiveSharpness`
+(byte-identical under IQ in 252/252 cells), `AomAdaptiveCdef` (+0.4% ssim2
+BD at p6, +0.9% at p10 against SVT's own pick) and `AomDeltaQLf`
+(RD-neutral: −0.01% at p6, +0.24% at p10; all three in
+`benchmarks/aom_features_2026-09-20.meta`). In that record, port tune IQ
+lands within +1.5–2.2% BD of libaom's tune IQ at matched zones.
 
 ### Tunes on video paths — 2026-09-25
 

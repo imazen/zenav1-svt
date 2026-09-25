@@ -1218,9 +1218,9 @@ pub fn write_frame_header_full_lr_sb(
     chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
     // `frm_hdr->delta_lf_params.delta_lf_present` — signaled only when
-    // `delta_q_res.is_some()` (spec 5.9.18 nests it inside delta_q_params);
-    // aom `--delta-lf-mode` via `ZenEnhancement::AomDeltaQLf`. C never
-    // sets it (resource_coordination_process.c:434-441).
+    // `delta_q_res.is_some()` (spec 5.9.18 nests it inside delta_q_params).
+    // C never sets it (resource_coordination_process.c:434-441); the port
+    // keeps C's syntax and every caller passes false.
     delta_lf: bool,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
