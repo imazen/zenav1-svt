@@ -128,8 +128,9 @@ pub const LAST_FRAME: i8 = 1;
 pub struct IfsFrameKnobs {
     /// `scs->vq_ctrls.sharpness_ctrls.ifs && pcs->ppcs->is_noise_level`
     /// (`:2166`). The first term is `tune::sharpness_ifs`; the second is
-    /// not derived at the picture level by this port, so the pipeline
-    /// REFUSES the frame when the first is set rather than guess it.
+    /// `PicParams::is_noise_level` (always 0 on low delay — C's `last_i`
+    /// carry never updates there). The pipeline refuses a frame where the
+    /// pair would be 1, so admitted frames always read 0 — same as C.
     pub smooth_bias: bool,
     /// `scs->static_config.tx_bias > 0` (`:2173`).
     pub tx_bias: bool,

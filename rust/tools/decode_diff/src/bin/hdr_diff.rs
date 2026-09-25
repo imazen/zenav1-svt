@@ -164,6 +164,9 @@ fn main() {
             }
             continue;
         }
+        if std::env::var_os("HDR_FULL").is_some() {
+            println!("frame {i} C:\n{xs}");
+        }
         if xs == ys {
             println!("frame {i}: headers identical");
             continue;

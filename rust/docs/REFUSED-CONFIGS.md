@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **69
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **71
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **9** name a configuration C v4.2.0 actually encodes — the
+refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -44,12 +44,12 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) inter frames are not implemented outside 8-bit 4:2:0: the 10-bit path mis-predicts intra per-block vs the decoder's per-TXB rule and the monochrome / 4:4:4 arms have no inter WHT residual path — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | bitrate-targeted rate control (VBR/CBR) is not implemented: target_bitrate is read nowhere on the encode path and assign_picture_qp's VBR/CBR arm starts from RcState::default().qp = 30 instead of the caller's qp, so the frame's base_q_idx would come from qp 30 while every qp-keyed level derivation still reads rc_config.qp — a mixed-qp stream. The C ports exist but are unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, port_pass2_gop. Use RcMode::Cqp or RcMode::Crf |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | film-grain denoise with 10-bit superres is not implemented: the native-input u8 canvas exists only after the u16 downscale, which runs after denoise — C's packed-buffer order has no u16 equivalent here |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented for this frame: C's svt_aom_global_motion_estimation would search (global_me.c:190), and this port could not run the search — the picture-analysis reference for a (list, ref) slot the search needs is missing, or the derived downsample level is not GM_FULL (crate::port_global_me::GmSearchError) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a model it could not code. This refusal is RETIRED — `port_entropy_inter::gm:: write_global_motion` codes the frame's real models — and reaching it means a caller constructed the variant by hand |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres on an INTER frame is not implemented: stills are the measured surface and the reference-geometry signaling under a changing coded width is decoder-ungated (C accepts it — this is a port capability gap, not a C envelope) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts VBR only outside LOW_DELAY, enc_settings.c:177 | VBR rate control is not implemented: the ported two-pass arm (`svt_aom_process_rc_stat`/`av1_set_target_rate`, pass2_strategy.c) needs first-pass statistics, and firstpass.c is not ported — wiring VBR without them would emit CRF-shaped output under a bitrate label. Use RcMode::Cbr (LOW_DELAY) or RcMode::Cqp/Crf |
 | `crates/svtav1-encoder/src/pipeline.rs` | logs the same config as an error | this GOP shape's reference structure is not implemented: every top-level branch of C's av1_generate_rps_info is translated, so this is a case C itself rejects — LD-CBR outside hierarchical levels 1-2, or a mini-GOP position outside the ported tables |
 
 ## CONTRACT — caller misuse (permanent, correct)
@@ -61,10 +61,10 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | 4:2:2 planes: y at y_stride over true dims, u/v at (true_w+1)/2 x true_h |
 | `crates/svtav1-encoder/src/pipeline.rs` | 4:4:4 planes must each cover the true dims (u/v full-resolution) |
 | `crates/svtav1-encoder/src/pipeline.rs` | C film grain requires 8/10-bit 4:2:0 |
+| `crates/svtav1-encoder/src/pipeline.rs` | CBR rate control could not resolve this frame's qindex bounds: `rc_pick_q_and_bounds_no_stats_cbr` reads the LAST reference unconditionally and its DPB slot is empty |
 | `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
-| `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cand_reduction_level is outside C's set_cand_reduction_ctrls switch (crate::inter_hdr_arm::enc_dec_cand_reduction) |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
@@ -79,7 +79,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd planes must cover the input dims (y at y_stride, u/v at w/2; FULL width under superres) |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd source carries a sample above the configured bit depth |
-| `crates/svtav1-encoder/src/pipeline.rs` | interpolation-filter search smooth bias (tune vq / film-grain, or alt-ssim tuning) needs `is_noise_level`, which this port does not derive for an inter picture |
 | `crates/svtav1-encoder/src/pipeline.rs` | kf_tf_strength must be 0..=4 (C verify_settings, enc_settings.c:950) |
 | `crates/svtav1-encoder/src/pipeline.rs` | max_tx_size must be 32 or 64 (C verify_settings, enc_settings.c:922) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome luma plane must cover the true dims at y_stride |
@@ -90,6 +89,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | noise_norm_strength must be 0..=4 (C verify_settings, enc_settings.c:945) |
 | `crates/svtav1-encoder/src/pipeline.rs` | pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `crates/svtav1-encoder/src/pipeline.rs` | sharp_tx must be 0 or 1 (C verify_settings, enc_settings.c:955) |
+| `crates/svtav1-encoder/src/pipeline.rs` | subjective-tune sharpness arms (tune vq / film-grain, or alt-ssim tuning) on an inter frame are supported only where they are inert: is_noise_level == 0 (always true on low delay) and no delta-q plan — this frame sets one, where C's unipred_bias/cdef/restoration or `use_sharpness` rdoq arms fire and this port does not model them |
 | `crates/svtav1-encoder/src/pipeline.rs` | superblock size override must be 64 or 128 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is not wired for frames that run loop restoration (allintra preset <= 6, except small frames where restoration is disabled) — C runs LR on the UPSCALED frame; use preset >= 7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is not wired for monochrome — the mono entry has no downscale arm and would code a left-cropped plane under an upscale header (C has no mono mode at any depth; this is a port-extension gap, not a C envelope) |
@@ -105,11 +105,13 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame reached header signalling without a picture decision — unreachable since run_picture_decision covers every intra_period != 1 config (defensive; remove the caller's is_key guard instead of emitting a header that disagrees with the encode) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
+| `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0 or 2: 2 is C's default TPL-gated per-SB deltaq (rc_aq.c:899), ported and live under random access; 1 (variance AQ) and 3 (complexity AQ) are different C derivations that are not ported |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess is wired on try_encode_frame_420 only; this entry takes the sequential path, which cannot buffer a mini-GOP |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess with film grain is untested: C's show_existing headers would have to re-signal grain state |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess with superres is untested: references at a different coded width inside the window need decoder verification first |
 | `crates/svtav1-encoder/src/pipeline.rs` | pred_structure RandomAccess needs a GOP: intra_period == 1 makes every frame a key frame, so there is no mini-GOP to reorder, and intra_period == 0 (single key then low-delay inter) is untested on the RA path |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override is set but this frame is monochrome: there is no U/V quantizer to override; clear the override for mono frames |
+| `crates/svtav1-encoder/src/pipeline.rs` | CBR rate control requires pred_structure == LOW_DELAY — C's own constraint (enc_settings.c:157, \"CBR Rate control is currently not supported for RANDOM_ACCESS/ALL_INTRA, use VBR mode\") |
 | `crates/svtav1-encoder/src/pipeline.rs` | hierarchical_levels > 5 is outside C's own supported range (enc_settings.c:275, \"Hierarchical Levels supported: [0-5]\") and the pred-struct tables end at level 5. Use hierarchical_levels <= 5 |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres supports 8/10-bit only — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists outside that envelope |

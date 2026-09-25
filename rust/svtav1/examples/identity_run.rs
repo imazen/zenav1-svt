@@ -979,6 +979,15 @@ fn main() {
         // the fork knobs entirely (`SVT_FORK_KF_TF_STRENGTH` swept to
         // byte-identical streams, measured 2026-09-24).
         pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+        // `SVTAV1_TUNE` — same override as the single-frame path below. This
+        // block returns before that code runs, so without this line a
+        // multi-frame cell silently encodes PSNR whatever the env asks for
+        // (found 2026-09-25: a "tune-VQ" RA cell compared C-VQ vs port-PSNR).
+        if let Ok(t) = std::env::var("SVTAV1_TUNE")
+            && let Ok(v) = t.parse::<u8>()
+        {
+            pipeline.hdr.tune = v;
+        }
         apply_enhancement_env(&mut pipeline);
         let frame_len = w * h + 2 * cw * ch;
         let mut all = Vec::new();

@@ -126,6 +126,51 @@ RD-neutral on the subset (−0.01% @p6, +0.24% @p10 vs tune IQ,
 `benchmarks/aom_features_2026-09-20.meta`): a consistency tool, not an
 RD lever.
 
+### Tunes on video paths — 2026-09-25
+
+Two harness facts to know before reading ANY multi-frame tune cell:
+
+- `identity_run`'s multi-frame block (`SVTAV1_FRAMES>1`) returned before
+  the `SVTAV1_TUNE` override ran, so every multi-frame "tune" encode
+  silently produced PSNR — including both earlier "tune-VQ" verdicts.
+  Fixed 2026-09-25; `SVTAV1_TUNE` now applies inside that block. The
+  env split to remember: the PORT reads `SVTAV1_TUNE`, the C driver
+  reads `SVT_TUNE`.
+- C v4.2.0 itself forces `--tune 0` → PSNR under low delay
+  (`Tune 0 is not applicable for low-delay, tune will be forced to 1`),
+  so an LD tune-VQ cell is vacuous on both sides — only RA exercises
+  tune-VQ's real arms.
+
+With tune actually armed, the old unconditional subjective-tune refusal
+was narrowed: it now fires only when C's arms are provably LIVE —
+`is_noise_level == 1` (real under RA+TF, always 0 on LD because C's
+`last_i` carry only updates inside `derive_tf_window_params`) or a live
+`delta_q_plan` feeding the non-noise-gated `use_sharpness` RDOQ term
+(full_loop.c) the port does not model. LD inter + tune-VQ is admitted
+and inert-identical.
+
+RA tune-VQ (gradient 256² qp40 p6 hier-auto, 5 frames): the key frame
+now codes C's VQ +2 `sharpness_level`/`filter_level=[12,12]` correctly.
+Remaining measured gaps vs C:
+
+- `cdef_strengths[0]` on the key frame: C codes 28, the port 0 — a
+  CDEF derivation difference under VQ, not yet root-caused.
+- Emission structure under hier ≥ 2: C interleaves
+  `show_existing_frame`/`FRAME_HEADER` display units and a different
+  frame order (C's second coded unit is order_hint 2, non-shown; the
+  port emits order_hint 1 shown). Frame-by-index header pairing is
+  therefore unreliable past index 0 — per-field diffs on "inter" frames
+  below index 0 in a hdr_diff run may be misaligned pairings, not real
+  field bugs. Byte parity needs the emission order and show-existing
+  units matched FIRST; only then do residual per-field diffs mean
+  something. The port codes `show_frame=false` on non-shown frames but
+  never emits the show_existing display units — decoder display-count
+  behavior of that stream is unverified (ra_selfcheck compares recon,
+  not display events).
+
+`tools/decode_diff hdr_diff` gained `HDR_FULL=1` full-field header dump
+for this class of divergence; `HDR_DUMP=1` prints diff windows.
+
 `ChromaFormat` (types crate, C `EbColorFormat` numbering) now carries
 `Yuv400/420/422/444` on `EncodePipeline` plus `subsampling_x/y`,
 `required_profile(bit_depth)` and chroma-dim derivation; `SeqTools` and

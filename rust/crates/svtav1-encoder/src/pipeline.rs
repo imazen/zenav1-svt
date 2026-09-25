@@ -2417,9 +2417,6 @@ impl EncodePipeline {
                 // picture inherits the stale carried value at `:5122`. The
                 // filtered pixels land in `frames[pic_idx]`, which the
                 // encode loop substitutes for the source.
-                #[cfg(feature = "std")]
-                std::eprintln!("TFMEM pic_idx={pic_idx} frames={} members={:?}", frames.len(),
-                    pics[pic_idx].as_ref().unwrap().tf_window.as_ref().map(|w| w.members.iter().flatten().map(|m| m.index).collect::<alloc::vec::Vec<_>>()));
                 let out = crate::port_tf_driver::ra_mctf_filter(
                     &scs_tf,
                     pic_idx,
@@ -8705,14 +8702,32 @@ impl EncodePipeline {
                 })?;
                 // `sharpness_ctrls.ifs` (enc_handle.c:3279-3285) arms the
                 // IFS smooth bias together with `pcs->ppcs->is_noise_level`
-                // (enc_inter_prediction.c:2166), which this port does not
-                // derive at the picture level. Refuse rather than guess it
-                // (docs/WORKING-ON-THIS.md §6).
-                if crate::tune::sharpness_ifs(self.hdr.tune, self.hdr.alt_ssim_tuning) {
+                // (enc_inter_prediction.c:2166). `is_noise_level` IS derived
+                // (port_picstruct::tf_window_noise + the `:4240` stamps): C's
+                // `last_i_noise_levels_log1p_fp16` updates only inside
+                // `derive_tf_window_params`, which runs on no LD picture —
+                // the flag is 0 for the whole low-delay envelope on both
+                // sides — and is real under RA+TF. Every subjective-tune arm
+                // (`ifs`, `unipred_bias`, `cdef`, `restoration`) ANDs with
+                // it, so a 0 makes all of them inert — except
+                // `sharpness_ctrls.rdoq`, which is NOT noise-gated:
+                // `(use_sharpness || sharp_tx) && delta_q_present`
+                // (full_loop.c:1070). The port's `optimize_b` has no
+                // `use_sharpness` term, so a sharpness tune meeting a live
+                // delta-q plan diverges; and under is_noise_level = 1 the
+                // unipred/cdef/restoration arms are unwired. Refuse the
+                // union rather than guess either — the admitted surface is
+                // exactly where every arm is provably inert.
+                let sharp_tune =
+                    crate::tune::sharpness_ifs(self.hdr.tune, self.hdr.alt_ssim_tuning);
+                let is_noise = pic_decision.as_ref().is_some_and(|p| p.is_noise_level);
+                if sharp_tune && (is_noise || delta_q_plan.is_some()) {
                     return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                        "interpolation-filter search smooth bias (tune vq / film-grain, or \
-                         alt-ssim tuning) needs `is_noise_level`, which this port does not \
-                         derive for an inter picture",
+                        "subjective-tune sharpness arms (tune vq / film-grain, or alt-ssim \
+                         tuning) on an inter frame are supported only where they are inert: \
+                         is_noise_level == 0 (always true on low delay) and no delta-q plan \
+                         — this frame sets one, where C's unipred_bias/cdef/restoration or \
+                         `use_sharpness` rdoq arms fire and this port does not model them",
                     )));
                 }
                 Some(crate::inter_md_arm::InterMdFrame {
@@ -8833,7 +8848,11 @@ impl EncodePipeline {
                         .as_ref()
                         .map_or(0, |sigs| sigs.pic_obmc_level),
                     ifs: crate::inter_md_arm::IfsFrameKnobs {
-                        smooth_bias: false, // the refusal above holds the first term off
+                        // `sharpness_ctrls.ifs && is_noise_level` — the
+                        // refusal above admits only `is_noise_level == 0`
+                        // frames under a sharpness tune, so this is 0 for
+                        // exactly the same reason C's gate is.
+                        smooth_bias: sharp_tune && is_noise,
                         tx_bias: self.hdr.tx_bias > 0,
                         // C `ppcs->picture_qp` — the index into
                         // `ifs_smooth_bias` (enc_inter_prediction.c:2171);
