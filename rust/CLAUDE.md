@@ -99,6 +99,13 @@ detail, and they are regenerated or gated rather than narrated.
 
 ## Reference and envelope guards
 
+- Every byte claim names its C oracle. `rust/oracles/oracles.tsv` is the
+  registry and `SVT_ORACLE=<name>` the one switch, read by both
+  `capture_c_trace` and `identity_run` ([docs/ORACLES.md](docs/ORACLES.md)).
+  The targets are `mainline-4.2.0` and `ghost-robot`; the `hybrid-3115*` rows
+  are legacy and retire per
+  [docs/PLAN-ORACLES-AND-CLEANUP.md](docs/PLAN-ORACLES-AND-CLEANUP.md).
+
 - C v4.2.0 accepts 8/10-bit 4:2:0. Mono/alpha are Rust extensions; wider chroma
   and 12-bit are alternate-backend/extension work, not shipping-C omissions.
 - Legacy constructors use Hybrid3115. Pristine Mainline420 is explicit; HDR-off

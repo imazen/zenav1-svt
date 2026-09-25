@@ -42,16 +42,14 @@ fi
 rm -f "$_bl"
 
 # Exec the binary build.sh just resolved. It publishes the path (per
-# SVT_HDR_MODE) in `.selected.<mode>` rather than having this wrapper re-derive
+# oracle, rust/tools/oracle resolve) in `.selected.<oracle>` rather than having this wrapper re-derive
 # it, because the name now depends on a LINKER CAPABILITY probe too: on a host
 # whose ld lacks `-Wl,--wrap` (Apple ld64) build.sh produces a byte-only
 # `.nowrap.bin`. Re-deriving that here would mean two copies of the same rule.
-_sel="$HERE/.selected.${SVT_HDR_MODE:-0}"
+_oracle=$("$HERE/../oracle" resolve) || exit 1
+_sel="$HERE/.selected.$_oracle"
 if [[ -f "$_sel" ]]; then
     exec "$(cat "$_sel")" "$@"
 fi
-# Fallback for a tree where build.sh predates the sidecar.
-if [[ "${SVT_HDR_MODE:-0}" == "1" ]]; then
-    exec "$HERE/capture_c_trace.hdr.bin" "$@"
-fi
-exec "$HERE/capture_c_trace.bin" "$@"
+echo "capture_c_trace: build.sh did not publish a driver for oracle $_oracle" >&2
+exit 1

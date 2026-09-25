@@ -122,6 +122,26 @@ static void emit_pkt(EbBufferHeaderType* pkt, FILE* fo, const char* out, uint32_
         }                                                                        \
     } while (0)
 
+/* svt-av1-hdr-only fields. A mainline-API oracle (rust/oracles/oracles.tsv
+ * `api` = mainline, built with -DZEN_ORACLE_MAINLINE_API=1) has no such field
+ * in EbSvtAv1EncConfiguration, so the setter compiles out — and a request for
+ * one REFUSES (exit 2) rather than encoding the default and reporting it as if
+ * the knob had been honoured. */
+#ifdef ZEN_ORACLE_MAINLINE_API
+#define FORK_ONLY_SET(envname, field, conv)                                      \
+    do {                                                                         \
+        if (getenv(envname)) {                                                   \
+            fprintf(stderr,                                                      \
+                    "capture_c_trace: %s is an svt-av1-hdr knob; this oracle "   \
+                    "has the mainline API (pick a fork oracle via SVT_ORACLE)\n", \
+                    envname);                                                    \
+            return 2;                                                            \
+        }                                                                        \
+    } while (0)
+#else
+#define FORK_ONLY_SET(envname, field, conv) FORK_SET(envname, field, conv)
+#endif
+
 #define FORK_I(s)   ((int)atoi(s))
 #define FORK_U8(s)  ((uint8_t)atoi(s))
 #define FORK_I8(s)  ((int8_t)atoi(s))
@@ -495,15 +515,15 @@ int main(int argc, char** argv) {
     FORK_SET("SVT_FORK_AC_BIAS", ac_bias, FORK_D);
     FORK_SET("SVT_FORK_QP_SCALE_COMPRESS_STRENGTH", qp_scale_compress_strength, FORK_D);
     FORK_SET("SVT_FORK_HBD_MDS", hbd_mds, FORK_I);
-    FORK_SET("SVT_FORK_SHARP_TX", sharp_tx, FORK_U8);
-    FORK_SET("SVT_FORK_TX_BIAS", tx_bias, FORK_U8);
-    FORK_SET("SVT_FORK_COMPLEX_HVS", complex_hvs, FORK_U8);
-    FORK_SET("SVT_FORK_NOISE_NORM_STRENGTH", noise_norm_strength, FORK_U8);
-    FORK_SET("SVT_FORK_NOISE_ADAPTIVE_FILTERING", noise_adaptive_filtering, FORK_U8);
-    FORK_SET("SVT_FORK_CDEF_SCALING", cdef_scaling, FORK_U8);
-    FORK_SET("SVT_FORK_NOISE_STRENGTH", noise_strength, FORK_U8);
-    FORK_SET("SVT_FORK_NOISE_CHROMA_FROM_LUMA", noise_chroma_from_luma, FORK_U8);
-    FORK_SET("SVT_FORK_KF_TF_STRENGTH", kf_tf_strength, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_SHARP_TX", sharp_tx, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_TX_BIAS", tx_bias, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_COMPLEX_HVS", complex_hvs, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_NOISE_NORM_STRENGTH", noise_norm_strength, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_NOISE_ADAPTIVE_FILTERING", noise_adaptive_filtering, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_CDEF_SCALING", cdef_scaling, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_NOISE_STRENGTH", noise_strength, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_NOISE_CHROMA_FROM_LUMA", noise_chroma_from_luma, FORK_U8);
+    FORK_ONLY_SET("SVT_FORK_KF_TF_STRENGTH", kf_tf_strength, FORK_U8);
     FORK_SET("SVT_FORK_TF_STRENGTH", tf_strength, FORK_U8);
     FORK_SET("SVT_FORK_TUNE", tune, FORK_U8);
     FORK_SET("SVT_FORK_VARIANCE_BOOST_STRENGTH", variance_boost_strength, FORK_U8);
@@ -513,11 +533,11 @@ int main(int argc, char** argv) {
     FORK_SET("SVT_FORK_MAX_QM_LEVEL", max_qm_level, FORK_U8);
     FORK_SET("SVT_FORK_MIN_CHROMA_QM_LEVEL", min_chroma_qm_level, FORK_U8);
     FORK_SET("SVT_FORK_MAX_CHROMA_QM_LEVEL", max_chroma_qm_level, FORK_U8);
-    FORK_SET("SVT_FORK_NOISE_STRENGTH_CHROMA", noise_strength_chroma, FORK_I32);
-    FORK_SET("SVT_FORK_NOISE_SIZE", noise_size, FORK_I8);
+    FORK_ONLY_SET("SVT_FORK_NOISE_STRENGTH_CHROMA", noise_strength_chroma, FORK_I32);
+    FORK_ONLY_SET("SVT_FORK_NOISE_SIZE", noise_size, FORK_I8);
     FORK_SET("SVT_FORK_SHARPNESS", sharpness, FORK_I8);
-    FORK_SET("SVT_FORK_ALT_LAMBDA_FACTORS", alt_lambda_factors, FORK_B);
-    FORK_SET("SVT_FORK_ALT_SSIM_TUNING", alt_ssim_tuning, FORK_B);
+    FORK_ONLY_SET("SVT_FORK_ALT_LAMBDA_FACTORS", alt_lambda_factors, FORK_B);
+    FORK_ONLY_SET("SVT_FORK_ALT_SSIM_TUNING", alt_ssim_tuning, FORK_B);
     FORK_SET("SVT_FORK_ENABLE_QM", enable_qm, FORK_B);
     FORK_SET("SVT_FORK_ENABLE_VARIANCE_BOOST", enable_variance_boost, FORK_B);
 

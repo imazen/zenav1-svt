@@ -17,6 +17,8 @@ somewhere useful, and it answers exactly one question — *where do I look?*
 | What does this encoder support, and what is only partly there? | [README.md](README.md) — the support tables, with the gate that backs each row |
 | What is byte-identical to C, what is verified against a decoder instead, and what is open? | [rust/docs/IDENTITY-STATUS.md](rust/docs/IDENTITY-STATUS.md) |
 | How do I work in this repo — gates, heavy jobs, hosts, measurement rules? | [rust/CLAUDE.md](rust/CLAUDE.md) and [rust/docs/WORKING-ON-THIS.md](rust/docs/WORKING-ON-THIS.md) |
+| Which C build does a byte-identity claim target, and how do I switch it? | [rust/docs/ORACLES.md](rust/docs/ORACLES.md) — the oracle registry and the one `SVT_ORACLE` switch |
+| What is the plan to bit-match mainline and Ghost Robot and clean up? | [rust/docs/PLAN-ORACLES-AND-CLEANUP.md](rust/docs/PLAN-ORACLES-AND-CLEANUP.md) — live, ticked in the change that lands each item |
 | What configuration is refused, and why? | [rust/docs/REFUSED-CONFIGS.md](rust/docs/REFUSED-CONFIGS.md) — generated from the refusal strings, so it cannot drift from them |
 | What did the inter campaign try, in what order? | [rust/docs/INTER-ENCODE-PLAN.md](rust/docs/INTER-ENCODE-PLAN.md) — a chronology, NOT a status document |
 | What needs cleanup or restructuring, and how big is each subsystem against C? | [rust/docs/CODE-REVIEW-2026-09-25.md](rust/docs/CODE-REVIEW-2026-09-25.md) — a dated review; regenerate its inputs with `rust/tools/review/run.sh` |

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Resolve, build and locate the named C oracles in rust/oracles/oracles.tsv.
+# See rust/docs/ORACLES.md.
+#
+#   tools/oracle list                 every oracle, its pin and build state
+#   tools/oracle resolve              the active oracle name (see below)
+#   tools/oracle build  [NAME]        build it if needed (idempotent); prints libdir
+#   tools/oracle libdir [NAME]        dir holding libSvtAv1Enc.a (no build)
+#   tools/oracle srcdir [NAME]        C source root used for headers (no build)
+#   tools/oracle field  NAME COLUMN   one registry column
+#
+# NAME defaults to the active oracle: $SVT_ORACLE if set; otherwise the legacy
+# switch, SVT_HDR_MODE=1 -> hybrid-3115-hdr, anything else -> hybrid-3115.
+#
+# `live` oracles build the submodule's working tree into the legacy paths
+# (Bin/Release, Bin/ReleaseHdr), so every existing consumer keeps working, and
+# refuse if the submodule is not checked out at the registry pin. `pinned`
+# oracles are materialised from their commit with `git archive` into
+# $ZENAV1_ORACLE_CACHE/<name>-<commit12>/ (default ~/.cache/zenav1-oracles) and
+# stamped; a changed pin is a new directory, so a stale build cannot answer for
+# a new pin. Build flags match tools/capture_c_trace/build.sh: static, no LTO,
+# no -march=native — a bit-identity oracle must not differ by optimisation.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RUST="$(cd "$HERE/.." && pwd)"
+ROOT="$(cd "$RUST/.." && pwd)"
+REG="$RUST/oracles/oracles.tsv"
+CACHE="${ZENAV1_ORACLE_CACHE:-$HOME/.cache/zenav1-oracles}"
+COLS=(name source commit mode cmake_flags api driver_defs rust_reference rust_hdr_mode description)
+
+die() { echo "oracle: $*" >&2; exit 1; }
+
+row() { # row NAME -> the registry line, or die
+    local line
+    line=$(awk -F'\t' -v n="$1" '!/^#/ && $1 == n' "$REG")
+    [[ -n "$line" ]] || die "unknown oracle '$1' (known: $(names | tr '\n' ' '))"
+    printf '%s\n' "$line"
+}
+names() { awk -F'\t' '!/^#/ && NF {print $1}' "$REG"; }
+field() { # field NAME COLUMN
+    local i
+    for i in "${!COLS[@]}"; do
+        if [[ "${COLS[$i]}" == "$2" ]]; then
+            row "$1" | awk -F'\t' -v c=$((i + 1)) '{print $c}'
+            return
+        fi
+    done
+    die "unknown column '$2' (columns: ${COLS[*]})"
+}
+
+resolve() {
+    if [[ -n "${SVT_ORACLE:-}" ]]; then
+        row "$SVT_ORACLE" >/dev/null
+        if [[ -n "${SVT_HDR_MODE:-}" ]]; then
+            local want="Mainline"
+            [[ "$SVT_HDR_MODE" == "1" ]] && want="HdrFork"
+            [[ "$(field "$SVT_ORACLE" rust_hdr_mode)" == "$want" ]] ||
+                die "SVT_ORACLE=$SVT_ORACLE conflicts with SVT_HDR_MODE=$SVT_HDR_MODE; unset one"
+        fi
+        printf '%s\n' "$SVT_ORACLE"
+    elif [[ "${SVT_HDR_MODE:-0}" == "1" ]]; then
+        printf 'hybrid-3115-hdr\n'
+    else
+        printf 'hybrid-3115\n'
+    fi
+}
+
+# Legacy fixed paths for the live oracles (consumed by svtav1-cref/build.rs
+# and many gates). Kept exactly as they were.
+live_libdir() { case "$1" in hybrid-3115) echo "$ROOT/Bin/Release" ;; hybrid-3115-hdr) echo "$ROOT/Bin/ReleaseHdr" ;; *) die "no live paths for $1" ;; esac; }
+live_builddir() { case "$1" in hybrid-3115) echo "$ROOT/cbuild-static" ;; hybrid-3115-hdr) echo "$ROOT/cbuild-static-hdr" ;; *) die "no live paths for $1" ;; esac; }
+pinned_dir() { echo "$CACHE/$1-$(field "$1" commit | cut -c1-12)"; }
+
+srcdir() {
+    if [[ "$(field "$1" mode)" == "live" ]]; then
+        echo "$ROOT/$(field "$1" source)"
+    else
+        echo "$(pinned_dir "$1")/src"
+    fi
+}
+libdir() {
+    if [[ "$(field "$1" mode)" == "live" ]]; then live_libdir "$1"; else echo "$(pinned_dir "$1")/lib"; fi
+}
+
+cmake_build() { # cmake_build SRC BUILD LIB FLAGS...
+    local src=$1 build=$2 lib=$3
+    shift 3
+    if [[ ! -f "$build/CMakeCache.txt" ]]; then
+        cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DNATIVE=OFF \
+            -DCMAKE_OUTPUT_DIRECTORY="$lib/" "$@" >/dev/null
+    fi
+    nice -n19 cmake --build "$build" -j "${SVT_BUILD_JOBS:-8}" >/dev/null
+    [[ -f "$lib/libSvtAv1Enc.a" ]] || die "build finished but $lib/libSvtAv1Enc.a is missing"
+}
+
+build() {
+    local name=$1 src commit flags
+    commit=$(field "$name" commit)
+    read -r -a flags <<<"$(field "$name" cmake_flags)"
+    src="$ROOT/$(field "$name" source)"
+    [[ -d "$src" ]] || die "$name: submodule $(field "$name" source) is not checked out (git submodule update --init)"
+    if [[ "$(field "$name" mode)" == "live" ]]; then
+        local head
+        head=$(git -C "$src" rev-parse HEAD)
+        [[ "$head" == "$commit" ]] ||
+            die "$name: $(field "$name" source) is at ${head:0:12}, registry pins ${commit:0:12}"
+        cmake_build "$src" "$(live_builddir "$name")" "$(live_libdir "$name")" "${flags[@]}"
+    else
+        local dir stamp want
+        dir=$(pinned_dir "$name")
+        stamp="$dir/STAMP"
+        want="$commit ${flags[*]}"
+        if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$want" || ! -f "$dir/lib/libSvtAv1Enc.a" ]]; then
+            git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null ||
+                die "$name: commit ${commit:0:12} is not in $(field "$name" source); fetch it there"
+            rm -rf "$dir"
+            mkdir -p "$dir/src"
+            git -C "$src" archive "$commit" | tar -x -C "$dir/src"
+            cmake_build "$dir/src" "$dir/build" "$dir/lib" "${flags[@]}"
+            printf '%s\n' "$want" >"$stamp"
+        fi
+    fi
+    libdir "$name"
+}
+
+cmd=${1:-list}
+shift || true
+case "$cmd" in
+    list)
+        printf '%-18s %-13s %-7s %-9s %s\n' NAME COMMIT MODE API BUILT
+        for n in $(names); do
+            lib="$(libdir "$n")/libSvtAv1Enc.a"
+            built=no
+            [[ -f "$lib" ]] && built=yes
+            printf '%-18s %-13s %-7s %-9s %s\n' "$n" "$(field "$n" commit | cut -c1-12)" \
+                "$(field "$n" mode)" "$(field "$n" api)" "$built"
+        done
+        echo "active: $(resolve)"
+        ;;
+    resolve) resolve ;;
+    build) build "${1:-$(resolve)}" ;;
+    libdir) libdir "${1:-$(resolve)}" ;;
+    srcdir) srcdir "${1:-$(resolve)}" ;;
+    field) [[ $# -eq 2 ]] || die "usage: oracle field NAME COLUMN"; field "$1" "$2" ;;
+    *) die "unknown command '$cmd' (list|resolve|build|libdir|srcdir|field)" ;;
+esac

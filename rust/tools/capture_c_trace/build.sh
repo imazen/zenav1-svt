@@ -37,44 +37,48 @@ ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/capture_c_trace -> repo 
 C_ROOT="$ROOT/reference/svt-av1" # the C reference submodule (imazen/svt-av1-ref)
 
 # ---------------------------------------------------------------------------
-# SVT_HDR_MODE — which C oracle to link (see rust/docs/HDR-ON-4.2.md).
+# WHICH C ORACLE — resolved through the registry (rust/oracles/oracles.tsv,
+# rust/docs/ORACLES.md): $SVT_ORACLE names it; unset, the legacy switch
+# SVT_HDR_MODE=1 means hybrid-3115-hdr and anything else hybrid-3115, so every
+# pre-existing caller keeps byte-for-byte the same oracle.
 #
-#   unset / 0 : MAINLINE v4.2.0 semantics. Lib <repo>/Bin/Release, cmake dir
-#               cbuild-static, driver capture_c_trace.bin. UNCHANGED — every
-#               pre-existing caller keeps byte-for-byte the same oracle.
-#   1         : svt-av1-hdr (Chromedome) FORK semantics on the v4.2 base
-#               (`cmake -DSVT_HDR_MODE=ON`). Lib <repo>/Bin/ReleaseHdr, cmake
-#               dir cbuild-static-hdr, driver capture_c_trace.hdr.bin.
-#
-# The two modes MUST use distinct lib dirs AND distinct driver binaries. Both
-# halves are load-bearing:
+# Every oracle MUST have its own lib dir AND its own driver binary. Both halves
+# are load-bearing:
 #   * distinct lib dirs — the cmake output dir is CMAKE_OUTPUT_DIRECTORY, which
-#     defaults to Bin/${CMAKE_BUILD_TYPE} for BOTH configs; an HDR build left at
-#     the default silently OVERWRITES the mainline libSvtAv1Enc.a and every
-#     "mainline" gate then compares against the fork oracle. (This happened once
-#     while wiring this switch — hence -DCMAKE_OUTPUT_DIRECTORY below.)
+#     defaults to Bin/${CMAKE_BUILD_TYPE} for EVERY config; an HDR build left at
+#     the default once silently OVERWROTE the mainline libSvtAv1Enc.a, and every
+#     "mainline" gate then compared against the fork oracle. tools/oracle gives
+#     each oracle its own lib dir.
 #   * distinct binaries — the staleness guard below is a set of mtime
-#     comparisons against ONE $LIB. Sharing a binary across modes defeats it in
-#     the most dangerous direction: after linking mode B, switching back to mode
-#     A finds the binary NEWER than mode A's (older) lib, so no relink fires and
-#     mode A silently runs mode B's oracle. Per-mode $OUT makes each guard chain
-#     independent and self-consistent.
+#     comparisons against ONE $LIB. Sharing a binary across oracles defeats it
+#     in the most dangerous direction: after linking oracle B, switching back to
+#     A finds the binary NEWER than A's (older) lib, so no relink fires and A
+#     silently runs B's code. Per-oracle $OUT keeps each guard chain independent.
 #
-# Both builds must also agree on SVT_AV1_LTO (=OFF): LTO changes codegen, and a
-# bit-identity oracle may not differ from its counterpart by optimization level.
+# All oracles agree on SVT_AV1_LTO=OFF and NATIVE=OFF: a bit-identity oracle may
+# not differ from its counterpart by optimisation level.
 # ---------------------------------------------------------------------------
-HDR_MODE="${SVT_HDR_MODE:-0}"
-if [[ "$HDR_MODE" == "1" ]]; then
-    DEFAULT_LIB_DIR="$ROOT/Bin/ReleaseHdr"
-    CMAKE_DIR="$ROOT/cbuild-static-hdr"
-    DEFAULT_OUT="$HERE/capture_c_trace.hdr.bin"
-    CMAKE_HDR_FLAG="-DSVT_HDR_MODE=ON"
-else
-    DEFAULT_LIB_DIR="$ROOT/Bin/Release"
-    CMAKE_DIR="$ROOT/cbuild-static"
-    DEFAULT_OUT="$HERE/capture_c_trace.bin"
-    CMAKE_HDR_FLAG="-DSVT_HDR_MODE=OFF"
+ORACLE_TOOL="$HERE/../oracle"
+ORACLE=$("$ORACLE_TOOL" resolve)
+ORACLE_MODE=$("$ORACLE_TOOL" field "$ORACLE" mode)
+ORACLE_API=$("$ORACLE_TOOL" field "$ORACLE" api)
+C_ROOT=$("$ORACLE_TOOL" srcdir "$ORACLE")
+DEFAULT_LIB_DIR=$("$ORACLE_TOOL" libdir "$ORACLE")
+case "$ORACLE" in
+    hybrid-3115) DEFAULT_OUT="$HERE/capture_c_trace.bin" CMAKE_DIR="$ROOT/cbuild-static" ;;
+    hybrid-3115-hdr) DEFAULT_OUT="$HERE/capture_c_trace.hdr.bin" CMAKE_DIR="$ROOT/cbuild-static-hdr" ;;
+    *) DEFAULT_OUT="$HERE/capture_c_trace.$ORACLE.bin" CMAKE_DIR="" ;;
+esac
+# C API differences the driver must bridge, declared per oracle in the registry
+# (`driver_defs`). ZEN_ORACLE_MAINLINE_API: no svt-av1-hdr config fields, so
+# those FORK_SET lines compile out and a request for one REFUSES.
+read -r -a API_DEFS <<<"$("$ORACLE_TOOL" field "$ORACLE" driver_defs)"
+if [[ "$ORACLE_API" == "mainline" && " ${API_DEFS[*]} " != *" -DZEN_ORACLE_MAINLINE_API=1 "* ]]; then
+    echo "error: oracle $ORACLE has api=mainline but no -DZEN_ORACLE_MAINLINE_API=1 in driver_defs" >&2
+    exit 1
 fi
+# Kept for the log lines below and for callers that still print it.
+HDR_MODE="${SVT_HDR_MODE:-0}"
 
 OUT="${1:-$DEFAULT_OUT}"
 LIB_DIR="${SVT_CREF_LIB_DIR:-$DEFAULT_LIB_DIR}"
@@ -83,7 +87,12 @@ LIB="$LIB_DIR/libSvtAv1Enc.a"
 # Hole #1: make the static lib itself current with Source/. Only for the
 # in-tree default — an explicit SVT_CREF_LIB_DIR is the caller's own artifact
 # and we must not build into it.
-if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$CMAKE_DIR" ]]; then
+if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && "$ORACLE_MODE" == "pinned" ]]; then
+    # Pinned oracles are materialised and built by the registry tool; it is a
+    # no-op when the stamped build for this commit already exists.
+    "$ORACLE_TOOL" build "$ORACLE" >/dev/null
+fi
+if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -n "$CMAKE_DIR" && -d "$CMAKE_DIR" ]]; then
     if ! cmake --build "$CMAKE_DIR" -j "${SVT_BUILD_JOBS:-8}" >/dev/null 2>&1; then
         echo "error: 'cmake --build $CMAKE_DIR' FAILED — refusing to run against a" >&2
         echo "       possibly stale $LIB. Fix the C build first, or re-run with" >&2
@@ -93,7 +102,7 @@ if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$CMAKE_DI
 fi
 
 if [[ ! -f "$LIB" ]]; then
-    echo "error: $LIB not found (SVT_HDR_MODE=$HDR_MODE). Build the C reference first —" >&2
+    echo "error: $LIB not found (oracle $ORACLE). Build it first: rust/tools/oracle build $ORACLE —" >&2
     echo "  cargo does it (both variants, SHA-stamped; rust/crates/svtav1-cref/build.rs):" >&2
     echo "    (cd $ROOT/rust && cargo build -p zenav1-svt-cref)" >&2
     echo "  or by hand, with the same flags:" >&2
@@ -132,12 +141,13 @@ fi
 # Per-mode, like $OUT itself. Only for the default invocation — an explicit
 # argv[1] is the caller's own artifact and must not move the wrapper's target.
 if [[ -z "${1:-}" ]]; then
-    printf '%s\n' "$OUT" >"$HERE/.selected.$HDR_MODE"
+    printf '%s\n' "$OUT" >"$HERE/.selected.$ORACLE"
 fi
 
 # Skip rebuild when up to date (sources + lib older than binary).
 if [[ -x "$OUT" && "$OUT" -nt "$HERE/capture_c_trace.c" && "$OUT" -nt "$HERE/wrap_odec.c" &&
-    "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" ]]; then
+    "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" &&
+    "$OUT" -nt "$HERE/../../oracles/oracles.tsv" ]]; then
     echo "capture_c_trace: up to date ($OUT)"
     exit 0
 fi
@@ -153,18 +163,18 @@ if [[ "$WRAP_SUPPORTED" == "0" ]]; then
     echo "                 sb128_gate, partial_sb_gate, ...) work; op-level localization" >&2
     echo "                 (identity_diff.sh's symbol trace, tile_map.sh) needs a GNU-ld host." >&2
     cc -O2 -g -o "$OUT" \
-        -DSVT_NO_WRAP_TRACE=1 \
+        -DSVT_NO_WRAP_TRACE=1 "${API_DEFS[@]}" \
         "$HERE/capture_c_trace.c" \
         -I"$C_ROOT/Source/API" \
         -I"$C_ROOT/Source/Lib/Codec" \
         -I"$C_ROOT/Source/Lib/Globals" \
         -I"$C_ROOT/Source/Lib/C_DEFAULT" \
         "$LIB" -lpthread -lm
-    echo "capture_c_trace: built $OUT (byte-only, SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"
+    echo "capture_c_trace: built $OUT (byte-only, oracle=$ORACLE, lib=$LIB)"
     exit 0
 fi
 
-cc -O2 -g -o "$OUT" \
+cc -O2 -g -o "$OUT" "${API_DEFS[@]}" \
     "$HERE/capture_c_trace.c" \
     "$HERE/wrap_odec.c" \
     "$HERE/wrap_recon.c" \
@@ -221,4 +231,4 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_set_tuned_blk_lambda \
     "$LIB" -lpthread -lm
 
-echo "capture_c_trace: built $OUT (SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"
+echo "capture_c_trace: built $OUT (oracle=$ORACLE, lib=$LIB)"

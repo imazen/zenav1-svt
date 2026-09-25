@@ -85,6 +85,24 @@
 #include "coding_loop.h"
 #include "inv_transforms.h"
 #include "md_process.h"
+
+/* ---- per-oracle C API bridges (rust/oracles/oracles.tsv `driver_defs`) ----
+ * ZEN_ORACLE_NO_MDS0_DIST_TYPE: `Mds0Ctrls.mds0_dist_type` is an svt-av1-hdr
+ *   field (absent from pristine v4.2.0); the dump prints -1 there.
+ * ZEN_ORACLE_MV_BY_VALUE: Ghost Robot's `svt_aom_mv_err_cost` takes `Mv` by
+ *   value and `MV_COST_PARAMS.ref_mv` is an `Mv`, not a pointer. */
+#ifdef ZEN_ORACLE_NO_MDS0_DIST_TYPE
+#define ZEN_MDS0_DIST_TYPE(ctx) (-1)
+#else
+#define ZEN_MDS0_DIST_TYPE(ctx) ((int)(ctx)->mds0_ctrls.mds0_dist_type)
+#endif
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+#define ZEN_MV_ARG(mv) (mv)
+#define ZEN_MV_FIELD(mv, f) ((mv).f)
+#else
+#define ZEN_MV_ARG(mv) (&(mv))
+#define ZEN_MV_FIELD(mv, f) ((mv)->f)
+#endif
 #include "me_context.h"
 #include "motion_estimation.h"
 #include "mcomp.h"
@@ -876,7 +894,7 @@ uint64_t __wrap_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionCont
                         (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
                         (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
                         (unsigned long long)luma_distortion, (unsigned long long)lambda, (unsigned long long)ret,
-                        (int)ctx->hbd_md, p0, p1, pS, pmean, (int)ctx->mds0_ctrls.mds0_dist_type,
+                        (int)ctx->hbd_md, p0, p1, pS, pmean, ZEN_MDS0_DIST_TYPE(ctx),
                         (int)ctx->mds0_use_hadamard_blk, (int)ctx->mds_subres_step,
                         (unsigned long long)cand_bf->luma_fast_dist, (int)rs[0], (int)rs[1], rmean, rmin, rmax,
                         (unsigned)rst);
@@ -2611,12 +2629,12 @@ int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, 
                 (int)start_mv.y, (int)start_mv.x, (int)bestmv->y, (int)bestmv->x, rc,
                 distortion ? *distortion : -1,
                 (ms_params->mv_cost_params.mvcost && ms_params->mv_cost_params.mvcost[0])
-                    ? svt_aom_mv_err_cost(&start_mv, ms_params->mv_cost_params.ref_mv,
+                    ? svt_aom_mv_err_cost(ZEN_MV_ARG(start_mv), ms_params->mv_cost_params.ref_mv,
                                           ms_params->mv_cost_params.mvjcost,
                                           (const int* const*)ms_params->mv_cost_params.mvcost,
                                           ms_params->mv_cost_params.error_per_bit)
                     : -1,
-                (int)ms_params->mv_cost_params.ref_mv->y, (int)ms_params->mv_cost_params.ref_mv->x,
+                (int)ZEN_MV_FIELD(ms_params->mv_cost_params.ref_mv, y), (int)ZEN_MV_FIELD(ms_params->mv_cost_params.ref_mv, x),
                 (int)ms_params->mv_cost_params.error_per_bit,
                 (int)ms_params->mv_cost_params.sad_per_bit,
                 (int)ms_params->mv_cost_params.mv_cost_type,

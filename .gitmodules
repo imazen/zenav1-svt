@@ -2,3 +2,6 @@
 	path = reference/svt-av1
 	url = https://github.com/imazen/zenav1-svt-c.git
 	branch = imazen-parity
+[submodule "svt-av1-hdr"]
+	path = reference/svt-av1-hdr
+	url = https://github.com/juliobbv-p/svt-av1-hdr.git
