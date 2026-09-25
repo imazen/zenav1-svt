@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **71
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **71
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -50,7 +50,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres on an INTER frame is not implemented: stills are the measured surface and the reference-geometry signaling under a changing coded width is decoder-ungated (C accepts it — this is a port capability gap, not a C envelope) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts VBR only outside LOW_DELAY, enc_settings.c:177 | VBR rate control is not implemented: the ported two-pass arm (`svt_aom_process_rc_stat`/`av1_set_target_rate`, pass2_strategy.c) needs first-pass statistics, and firstpass.c is not ported — wiring VBR without them would emit CRF-shaped output under a bitrate label. Use RcMode::Cbr (LOW_DELAY) or RcMode::Cqp/Crf |
-| `crates/svtav1-encoder/src/pipeline.rs` | encodes | mds0 level 1 (per-class dist-to-cost prune, product_coding_loop.c:1311-1324) is unported: it needs C's `mds0_best_cost_per_class` tracker and the `MIN(md_me_dist, md_pme_dist)` gate — assigned only at ENC_M3..=M5 for a non-base-layer picture, so hierarchical GOPs (hierarchical_levels > 0) at presets 3-5 cannot encode yet |
 | `crates/svtav1-encoder/src/pipeline.rs` | logs the same config as an error | this GOP shape's reference structure is not implemented: every top-level branch of C's av1_generate_rps_info is translated, so this is a case C itself rejects — LD-CBR outside hierarchical levels 1-2, or a mini-GOP position outside the ported tables |
 
 ## CONTRACT — caller misuse (permanent, correct)

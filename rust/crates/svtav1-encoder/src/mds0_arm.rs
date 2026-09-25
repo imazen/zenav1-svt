@@ -39,6 +39,19 @@
 //! far (`:1717`), and an abandoned candidate can never lower it because
 //! `MAX_MODE_COST` is not less than anything.
 //!
+//! # What level 1 does
+//!
+//! `set_mds0_controls` case 1 sets `pruning_method_th = 100` and
+//! `per_class_dist_to_cost_th = {50, 10, 10, 50}` for classes 0..=3 (class
+//! 4 keeps the context's zero-init — armed). In `fast_loop_core` the
+//! `!= (uint8_t)~0` guard PLUS `MIN(md_me_dist, md_pme_dist) / (bw*bh) > 100`
+//! routes to the **per-class** arm: same compare shape, but against
+//! `mds0_best_cost_per_class[cand->cand_class]` and that class's own
+//! threshold. On a gate miss the else branch runs the global compare with
+//! `dist_to_cost_th` still at its zero-init — armed-0, same rule as level
+//! 2. The [`crate::leaf_funnel::inject`] funnel applies it at every
+//! candidate lane (intra 0, inter 1/2, palette 3, IntraBC 4).
+//!
 //! It is a PD1-only rule (`ctx->pd_pass == PD_PASS_1`); PD0 has its own fast
 //! loop (`fast_loop_core_pd0`) and never reaches this code.
 //!
@@ -64,7 +77,9 @@ use crate::sc_detect::ScArm;
 /// C `Mds0Ctrls`, restricted to the three fields `set_mds0_controls` writes
 /// (`enc_mode_config.c:6764-6785`).
 ///
-/// `per_class_dist_to_cost_th` is indexed by `CandClass` (`CAND_CLASS_0..3`).
+/// `per_class_dist_to_cost_th` is indexed by `CandClass` (`CAND_CLASS_0..=4`).
+/// Level 1 writes only classes 0..=3 in C; index 4 keeps the context's
+/// zero-init, so it is 0 here — armed, since the consumer checks `!= ~0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Mds0Ctrls {
     /// `ctrls->pruning_method_th`. 0 disables MDS0 pruning outright;
@@ -74,7 +89,7 @@ pub(crate) struct Mds0Ctrls {
     /// `ctrls->dist_to_cost_th`, read only by the global arm.
     pub dist_to_cost_th: u16,
     /// `ctrls->per_class_dist_to_cost_th`, read only by the per-class arm.
-    pub per_class_dist_to_cost_th: [u16; 4],
+    pub per_class_dist_to_cost_th: [u16; 5],
 }
 
 /// C `set_mds0_controls` (`enc_mode_config.c:6764`).
@@ -91,17 +106,17 @@ pub(crate) fn set_mds0_controls(mds0_level: u8) -> Mds0Ctrls {
         0 => Mds0Ctrls {
             pruning_method_th: 0,
             dist_to_cost_th: 0,
-            per_class_dist_to_cost_th: [0; 4],
+            per_class_dist_to_cost_th: [0; 5],
         },
         1 => Mds0Ctrls {
             pruning_method_th: 100,
             dist_to_cost_th: 0,
-            per_class_dist_to_cost_th: [50, 10, 10, 50],
+            per_class_dist_to_cost_th: [50, 10, 10, 50, 0],
         },
         2 => Mds0Ctrls {
             pruning_method_th: u8::MAX,
             dist_to_cost_th: 0,
-            per_class_dist_to_cost_th: [0; 4],
+            per_class_dist_to_cost_th: [0; 5],
         },
         _ => panic!("mds0 level {mds0_level} outside C's switch"),
     }
@@ -118,30 +133,29 @@ pub(crate) fn mds0_level(arm: ScArm, enc_mode: i8, is_base: bool, is_islice: boo
     }
 }
 
-/// Stamp this arm's MDS0 pruning threshold onto a [`FunnelCfg`].
+/// Stamp this arm's MDS0 pruning thresholds onto a [`FunnelCfg`].
 ///
-/// `None` means "no MDS0 prune runs", which is level 0 — and, per the module
-/// header, the only level the ALLINTRA arm ever assigns.
-///
-/// # Panics
-/// On level 1, which the port cannot execute: its per-class arm is gated on
-/// `MIN(ctx->md_me_dist, ctx->md_pme_dist)`, motion-estimation distortions
-/// that only exist on an inter picture. Level 1 is assigned exclusively at
-/// M3..M5 for a NON-base video picture, and the port's public entry point
-/// refuses inter frames, so every picture it encodes has `is_base == true`.
-/// Panicking is deliberate: silently skipping the prune would emit a stream
-/// that is neither C's nor a refusal, which
-/// `docs/WORKING-ON-THIS.md` §6 forbids. `level_1_is_unreachable_on_every_
-/// key_frame_preset` pins the reachability claim.
+/// `None` on `mds0_dist_to_cost_th` means "no MDS0 prune runs", which is
+/// level 0 — and, per the module header, the only level the ALLINTRA arm
+/// ever assigns. Level 2 (`pruning_method_th = (uint8_t)~0`) arms the
+/// global `dist_to_cost_th` compare; level 1 arms BOTH the per-class arm
+/// (`mds0_per_class_prune`) AND the same global compare — C's else branch
+/// fires whenever the `MIN(md_me_dist, md_pme_dist)` gate misses
+/// (product_coding_loop.c:1325), and level 1 leaves `dist_to_cost_th` at
+/// its zero-init, so `Some(0)` here is the armed-0 sentinel, not a spare
+/// default.
 pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool, is_islice: bool) {
     let ctrls = set_mds0_controls(mds0_level(arm, enc_mode, is_base, is_islice));
     cfg.mds0_dist_to_cost_th = match ctrls.pruning_method_th {
         0 => None,
-        u8::MAX => Some(ctrls.dist_to_cost_th),
-        th => panic!(
-            "mds0 pruning_method_th {th} selects C's per-class arm, which reads \
-             md_me_dist / md_pme_dist — inter-only state this port has none of"
-        ),
+        _ => Some(ctrls.dist_to_cost_th),
+    };
+    cfg.mds0_per_class_prune = match ctrls.pruning_method_th {
+        u8::MAX | 0 => None,
+        th => Some(crate::leaf_funnel::Mds0PerClassPrune {
+            min_dist_div_area_th: th,
+            dist_to_cost_th: ctrls.per_class_dist_to_cost_th,
+        }),
     };
 }
 
@@ -187,8 +201,8 @@ mod tests {
         }
     }
 
-    /// The reachability claim [`apply`]'s panic rests on: no key frame, on
-    /// either arm, at any preset, reaches level 1.
+    /// The reachability map: no key frame, on either arm, at any preset,
+    /// reaches level 1 — it is exclusively a non-base picture's level.
     #[test]
     fn level_1_is_unreachable_on_every_key_frame_preset() {
         for preset in 0i8..=13 {
@@ -200,12 +214,55 @@ mod tests {
                 );
             }
         }
-        // ... and the positive control: level 1 IS what C assigns for the
-        // non-base video pictures the port cannot yet encode, so the panic
-        // guards a real case rather than a dead one.
+        // ... and the positive control: level 1 IS what C assigns for
+        // non-base video pictures at M3..=M5 — which hierarchical GOPs
+        // produce, so the arm is live, not dead code.
         assert_eq!(
             mds0_level(ScArm::Video { is_islice: false }, 4, false, false),
             1
         );
+    }
+
+    /// Level 1 stamps BOTH arms — the per-class thresholds {50,10,10,50}
+    /// (class 4 keeps C's zero-init) and the armed-0 global compare C's
+    /// else branch falls back to on a `MIN(md_me_dist, md_pme_dist)` gate
+    /// miss (product_coding_loop.c:1310-1334).
+    #[test]
+    fn level_1_stamps_the_per_class_and_fallback_arms() {
+        let mut cfg = FunnelCfg::for_preset(4);
+        apply(&mut cfg, ScArm::Video { is_islice: false }, 4, false, false);
+        let pc = cfg
+            .mds0_per_class_prune
+            .expect("level 1 arms the per-class prune");
+        assert_eq!(pc.min_dist_div_area_th, 100);
+        assert_eq!(pc.dist_to_cost_th, [50, 10, 10, 50, 0]);
+        assert_eq!(cfg.mds0_dist_to_cost_th, Some(0));
+    }
+
+    /// Levels 0 and 2 leave the per-class arm unset — level 2 keeps the
+    /// armed-0 global compare it had before level 1 existed.
+    #[test]
+    fn other_levels_never_arm_the_per_class_prune() {
+        for preset in [0i8, 2, 6, 8, 11, 13] {
+            let mut cfg = FunnelCfg::for_preset(preset);
+            apply(
+                &mut cfg,
+                ScArm::Video { is_islice: false },
+                preset,
+                false,
+                false,
+            );
+            assert!(cfg.mds0_per_class_prune.is_none(), "M{preset}");
+        }
+        // Level 2 (M11+ non-base) keeps the global arm alone.
+        let mut cfg = FunnelCfg::for_preset(11);
+        apply(
+            &mut cfg,
+            ScArm::Video { is_islice: false },
+            11,
+            false,
+            false,
+        );
+        assert_eq!(cfg.mds0_dist_to_cost_th, Some(0));
     }
 }

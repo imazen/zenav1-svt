@@ -584,6 +584,24 @@ impl FunnelFrame {
     }
 }
 
+/// C `mds0_ctrls`'s per-class arm fields, populated only when
+/// `pruning_method_th` is neither 0 nor `(uint8_t)~0` — i.e. level 1
+/// (`set_mds0_controls`, enc_mode_config.c:6770-6776), assigned at
+/// `M3..=M5` for a non-base picture.
+#[derive(Clone, Copy, Debug)]
+pub struct Mds0PerClassPrune {
+    /// C `pruning_method_th` (100): the per-class arm runs when
+    /// `MIN(md_me_dist, md_pme_dist) / (bwidth * bheight)` exceeds it
+    /// (product_coding_loop.c:1310-1313). On a miss the GLOBAL arm
+    /// (via `mds0_dist_to_cost_th`, armed-0 at level 1) decides instead.
+    pub min_dist_div_area_th: u8,
+    /// C `per_class_dist_to_cost_th[CAND_CLASS_TOTAL]`: level 1 writes
+    /// `{50, 10, 10, 50}` for classes 0..=3 and leaves class 4 at the
+    /// context's zero-init — armed, so an IntraBC candidate is dropped
+    /// whenever its distortion cost exceeds the class's running best.
+    pub dist_to_cost_th: [u16; 5],
+}
+
 /// Per-preset leaf-funnel configuration (allintra still, presets 6/7/8),
 /// verified against the instrumented C `svt_aom_sig_deriv_enc_dec_allintra`
 /// config dump (enc_mode_config.c:11294). All fields are pure functions of
@@ -899,6 +917,12 @@ pub struct FunnelCfg {
     /// (product_coding_loop.c:1325-1333). Stamped by [`crate::mds0_arm`],
     /// which documents the rule and why level 1 cannot be reached here.
     pub mds0_dist_to_cost_th: Option<u16>,
+    /// C `mds0_ctrls`'s LEVEL-1 fields — `pruning_method_th` when it is
+    /// neither 0 nor `(uint8_t)~0` (the per-class arm,
+    /// product_coding_loop.c:1311-1324). `None` at every other level;
+    /// the per-class gate then never routes, and `mds0_dist_to_cost_th`
+    /// alone decides — same as before this field existed.
+    pub mds0_per_class_prune: Option<Mds0PerClassPrune>,
     /// `cfl_ctrls.enabled` (set_cfl_ctrls, enc_mode_config.c:8304). In the
     /// still/allintra path (OPT_NSC_STILL_IMAGE) cfl_level is 1 for M0, 4 for
     /// M1..M6, 0 for M7+. C `cfl_prediction` runs for EVERY MDS3 intra
@@ -1051,6 +1075,7 @@ impl FunnelCfg {
             edge_filter: false,
             mds0_use_hadamard_sb: true,
             mds0_dist_to_cost_th: None,
+            mds0_per_class_prune: None,
             // M6 cfl_level 4: enabled, itr_th 1, cplx_th 10 (detector-gated
             // — see chroma path). Presets that spread m6_tail but do
             // independent chroma (M0..M5) are excluded by the uv-follows-luma

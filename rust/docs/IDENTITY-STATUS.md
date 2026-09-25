@@ -73,26 +73,30 @@ Two defects fixed for this:
   fix: cut-short window key went 70 → 67 = C (the `percents[1][0]` arm
   `cqp_qindex_calc` takes when the following mini-GOP's level ≤ 4).
 - `mds0` level 1 (`pruning_method_th = 100`, `M3..=M5` non-base) was a
-  panic — unreachable only when hier > 0 never ran. Now an explicit
-  `UnsupportedConfig` refusal at the level's assignment site; the
-  per-class tracker/`MIN(md_me_dist, md_pme_dist)` gate is unported.
+  panic — unreachable only when hier > 0 never ran. The per-class arm
+  is now ported: `mds0_best_cost_per_class` tracker,
+  `MIN(md_me_dist, md_pme_dist) / (bw*bh)` gate, per-class thresholds
+  {50,10,10,50,0} and the armed-0 global fallback on a gate miss —
+  stamped across all four candidate lanes (`inject.rs`). Byte-verified
+  vs C on the exact cells that used to panic.
 
 Measured vs C, unset `SVTAV1_HIER_LEVELS` on both sides, 256² qp40:
 
 - **RA (`SVT_PRED_STRUCT=2` → hl 5)**: byte-identical streams
   (seq headers, all coded frames in decode order, `show_existing`
-  units, TU batching, entropy payloads) at p6, p8, p10, p13 — including
-  n∈{5,9,17} and qp∈{20,55} at p6. The 5f stream is 7 TUs: key, two
-  hidden coded pictures, shown, `show_existing`, shown, `show_existing`.
-  p0/p2: 7/7 headers identical, single-byte payload diffs — the
-  non-base inter-MD envelope below, not emission. p3..=5: refusal (mds0
-  level-1 arm above).
-- **Low delay (unset → hl 3, CBR-side hl 2)**: byte-identical at p6
-  (qp 20/40/55) and p13; divergent 2–50 bytes at p0/p2/p8/p10 — non-base
-  inter-MD arms that hier > 0 now exercises by default; same envelope
-  family as the carried "inter-MD ladder diverges at p0" item. p3..=5:
-  refusal (same arm). Explicit `SVTAV1_HIER_LEVELS=0` still yields the
-  old flat stream (verified identical to C flat at p10).
+  units, TU batching, entropy payloads) at p4, p5, p6, p8, p10, p13 —
+  including n∈{5,9,17} and qp∈{20,55} at p6. The 5f stream is 7 TUs:
+  key, two hidden coded pictures, shown, `show_existing`, shown,
+  `show_existing`. p0/p2/p3: 7/7 headers identical, 1–2-byte payload
+  diffs — the non-base inter-MD envelope below, not emission.
+- **Low delay (unset → hl 3, CBR-side hl 2)**: byte-identical at p5,
+  p6 (qp 20/40/55) and p13; divergent 2–50 bytes at p0/p2/p3/p8/p10 —
+  non-base inter-MD arms that hier > 0 now exercises by default; same
+  envelope family as the carried "inter-MD ladder diverges at p0" item.
+  p4 adds a `wmtype` global-motion header diff (port detects
+  translation where C finds none) — GM-detection family, also carried.
+  Explicit `SVTAV1_HIER_LEVELS=0` still yields the old flat stream
+  (verified identical to C flat at p10).
 
 Note the asymmetry the AUTO change intentionally removes: an
 unset-vs-unset cell comparison now means the same configuration on

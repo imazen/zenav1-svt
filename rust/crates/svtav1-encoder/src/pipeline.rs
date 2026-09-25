@@ -18500,33 +18500,6 @@ fn encode_tile_rows(
         // global dist-to-cost prune, product_coding_loop.c:1325) where the
         // allintra arm is a literal 0 at every preset. Byte-neutral on the
         // still path by construction.
-        //
-        // Level 1 (`pruning_method_th = 100`, the per-class arm at
-        // product_coding_loop.c:1311-1324) is assigned only on
-        // `M3..=M5 && !is_base` — reachable now that hierarchical GOPs
-        // produce non-base pictures. Its `mds0_best_cost_per_class`
-        // tracker and `MIN(md_me_dist, md_pme_dist)` gate are unported;
-        // refuse where the level is ASSIGNED rather than panic inside
-        // `apply`, or worse, silently skip a prune C runs
-        // (measured 2026-09-25: hier>0 + p3..=5 + non-base picture).
-        if crate::mds0_arm::mds0_level(
-            sc_arm,
-            md_eff_mode,
-            temporal_layer == 0,
-            matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
-                || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
-        ) == 1
-        {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "mds0 level 1 (per-class dist-to-cost prune, \
-                 product_coding_loop.c:1311-1324) is unported: it needs C's \
-                 `mds0_best_cost_per_class` tracker and the \
-                 `MIN(md_me_dist, md_pme_dist)` gate — assigned only at \
-                 ENC_M3..=M5 for a non-base-layer picture, so hierarchical \
-                 GOPs (hierarchical_levels > 0) at presets 3-5 cannot encode \
-                 yet [C: encodes]",
-            )));
-        }
         crate::mds0_arm::apply(
             &mut funnel_cfg,
             sc_arm,

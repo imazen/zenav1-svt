@@ -133,6 +133,48 @@ fn process_cand_itr(
     (mine - best.max(1)) * 100 <= i128::from(th) * best
 }
 
+/// `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334), the
+/// PD1 arm. `pruning_method_th` selects which compare runs:
+///
+/// - any value besides 0/`(uint8_t)~0` (level 1): the PER-CLASS arm, but
+///   only when `MIN(md_me_dist, md_pme_dist) / (bw * bh)` exceeds it — the
+///   `min_dist_div_area` argument carries that precomputed ratio; on a
+///   miss the per-class check does NOT run and the global arm decides.
+/// - `(uint8_t)~0` (level 2), or a level-1 gate miss: the GLOBAL arm —
+///   `dist_to_cost_th`, which is armed-0 at both levels (level 1 leaves it
+///   at the context's zero-init, level 2 writes 0 explicitly), so the
+///   check degenerates to `distortion_cost > best`.
+///
+/// Level 0 carries `mds0_dist_to_cost_th = None` and never reaches here.
+/// `cand_class` is the CAND_CLASS the candidate was injected under —
+/// intra 0, inter 1/2, palette 3, IntraBC 4 (`mode_decision.c:3646-3672`).
+fn mds0_prune_fires(
+    cfg: &FunnelCfg,
+    min_dist_div_area: Option<u64>,
+    distortion_cost: u64,
+    mds0_best_cost: Option<u64>,
+    mds0_best_cost_per_class: &[Option<u64>; 5],
+    cand_class: u8,
+) -> bool {
+    if let (Some(pc), Some(mda)) = (cfg.mds0_per_class_prune, min_dist_div_area)
+        && mda > u64::from(pc.min_dist_div_area_th)
+    {
+        let cls = usize::from(cand_class);
+        let th = pc.dist_to_cost_th[cls];
+        return th != u16::MAX
+            && mds0_best_cost_per_class[cls].is_some_and(|best| {
+                100i128 * (i128::from(distortion_cost) - i128::from(best))
+                    > i128::from(best) * i128::from(th)
+            });
+    }
+    matches!(
+        (cfg.mds0_dist_to_cost_th, mds0_best_cost),
+        (Some(th), Some(best))
+            if 100i128 * (i128::from(distortion_cost) - i128::from(best))
+                > i128::from(best) * i128::from(th)
+    )
+}
+
 pub(super) fn inject_candidates(
     fx: &mut FunnelCtx<'_>,
     g: &LeafGeom,
@@ -844,11 +886,31 @@ pub(super) fn inject_candidates(
     // prune below, which is why it is `None` until the first candidate is
     // scored — C's sentinel is checked explicitly at `:1326`.
     let mut mds0_best_cost: Option<u64> = None;
+    // C `ctx->mds0_best_cost_per_class` (reset to `(uint64_t)~0` per block at
+    // product_coding_loop.c:9477): the per-class best fast cost, read by the
+    // level-1 arm of the MDS0 prune. Unlike `mds0_best_cost` it only ever
+    // compares within one CAND_CLASS, so it is immune to the interleaved
+    // lane order this funnel evaluates in.
+    let mut mds0_best_cost_per_class: [Option<u64>; 5] = [None; 5];
     // C `ctx->mds0_best_idx` + `cand_bf_ptr_array[mds0_best_idx]->luma_fast_dist`
     // (:1019): the best-so-far candidate's un-shifted luma variance, read by the
     // `cand_elimination` early-out (:1020-1030). `None` until the first
     // candidate is scored — same sentinel as `mds0_best_cost`.
     let mut mds0_best_dist: Option<u64> = None;
+    // `MIN(ctx->md_me_dist, ctx->md_pme_dist) / (bwidth * bheight)` — the
+    // level-1 gate of `fast_loop_core`'s MDS0 prune (:1310-1313), block-level
+    // and constant for every candidate. `None` where the inter prelude is
+    // absent (intra-only pictures — which never assign level 1 anyway).
+    let mds0_min_dist_div_area: Option<u64> = cfg
+        .mds0_per_class_prune
+        .is_some()
+        .then(|| {
+            inter_pre.as_ref().map(|(prelude, ..)| {
+                let m = prelude.search.md_me_dist().min(prelude.search.md_pme_dist());
+                u64::from(m) / (w as u64) / (h as u64)
+            })
+        })
+        .flatten();
     // All candidates predict from the same `y_recon` neighbourhood at the
     // same (abs_x, abs_y, w, h) — the extraction is loop-invariant.
     let mut nb_y = None;
@@ -1125,18 +1187,26 @@ pub(super) fn inject_candidates(
             // become `best_reg_intra_mode` (`:1727` stores the sentinel it now
             // holds). `None` (allintra, and video through M10 on a key frame) is
             // byte-identical to the pre-arm path by construction.
-            let fast_cost = match (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
-                (Some(th), Some(best))
-                    if 100i128 * (i128::from(distortion_cost) - i128::from(best))
-                        > i128::from(best) * i128::from(th) =>
-                {
-                    crate::port_md::lpd1_loop::MAX_MODE_COST
-                }
-                _ => fast_cost,
+            // Every intra candidate here is CAND_CLASS_0 (no palette, no
+            // IntraBC — `mode_decision.c:3649-3652`).
+            let fast_cost = if mds0_prune_fires(
+                &cfg,
+                mds0_min_dist_div_area,
+                distortion_cost,
+                mds0_best_cost,
+                &mds0_best_cost_per_class,
+                0,
+            ) {
+                crate::port_md::lpd1_loop::MAX_MODE_COST
+            } else {
+                fast_cost
             };
             if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
                 mds0_best_cost = Some(fast_cost);
                 mds0_best_dist = Some(fast_dist_metric);
+            }
+            if fast_cost < mds0_best_cost_per_class[0].unwrap_or(u64::MAX) {
+                mds0_best_cost_per_class[0] = Some(fast_cost);
             }
             #[cfg(feature = "std")]
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
@@ -1236,9 +1306,10 @@ pub(super) fn inject_candidates(
     // ---- inject_palette_candidates (mode_decision.c:3356-3406) ----
     // C order: regular+fi intra first, palette after (IBC would follow).
     // PORT-NOTE(unverified): C classes palette CAND_CLASS_3 with its own
-    // MDS lanes/pool + class dist-to-cost th 50 (enc_mode_config.c:6775);
-    // this funnel is single-class, so palette candidates share the one
-    // pool — near-tie survivor sets can differ from C. Verify on the
+    // MDS lanes/pool; the class dist-to-cost th 50
+    // (enc_mode_config.c:6775) IS honoured — `mds0_prune_fires` indexes it
+    // per lane for the level-1 arm. The pool itself is still shared, so
+    // near-tie survivor sets can differ from C. Verify on the
     // EPICA cells; if a cell diverges on survivor membership, split the
     // pool per class. Neighbor state (mode ctx `pal_mode_ctx` + color cache
     // `pal_cache`) is read from the MD decision grid (stamped by commit_leaf
@@ -1558,17 +1629,31 @@ pub(super) fn inject_candidates(
             // C fast_loop_core selects the lambda by hbd_md for palette
             // candidates as well as regular intra. Using the u8 lambda here
             // changes NIC admission even when palette predictions match C.
-            let fast_cost = rdcost(
-                if bd10_decide {
-                    lambda_bd10_fast
-                } else {
-                    lambda
-                },
-                flr + fcr,
-                if frame.mds0_ssd { satd } else { satd << 4 },
-            );
+            // Palette candidates are CAND_CLASS_3 (`mode_decision.c:3654-3656`)
+            // — same `fast_loop_core` MDS0 prune as every other class.
+            let lam_p = if bd10_decide {
+                lambda_bd10_fast
+            } else {
+                lambda
+            };
+            let pal_dist = if frame.mds0_ssd { satd } else { satd << 4 };
+            let fast_cost = if mds0_prune_fires(
+                &cfg,
+                mds0_min_dist_div_area,
+                rdcost(lam_p, 0, pal_dist),
+                mds0_best_cost,
+                &mds0_best_cost_per_class,
+                3,
+            ) {
+                crate::port_md::lpd1_loop::MAX_MODE_COST
+            } else {
+                rdcost(lam_p, flr + fcr, pal_dist)
+            };
             if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
                 mds0_best_cost = Some(fast_cost);
+            }
+            if fast_cost < mds0_best_cost_per_class[3].unwrap_or(u64::MAX) {
+                mds0_best_cost_per_class[3] = Some(fast_cost);
             }
             #[cfg(feature = "std")]
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
@@ -1872,17 +1957,32 @@ pub(super) fn inject_candidates(
                     &rates.intrabc_fac_bits,
                 );
                 let flr = u64::from(flr32);
-                let fast_cost = if bd10_decide {
-                    rdcost(
-                        lambda_bd10_fast,
-                        flr,
-                        if frame.mds0_ssd { satd } else { satd << 4 },
-                    )
+                // IntraBC candidates are CAND_CLASS_4 (`mode_decision.c:
+                // 3657-3660`) — same `fast_loop_core` MDS0 prune; class 4's
+                // threshold is the zero-init C leaves live (armed-0).
+                let lam_i = if bd10_decide {
+                    lambda_bd10_fast
                 } else {
-                    rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
+                    lambda
+                };
+                let ibc_dist = if frame.mds0_ssd { satd } else { satd << 4 };
+                let fast_cost = if mds0_prune_fires(
+                    &cfg,
+                    mds0_min_dist_div_area,
+                    rdcost(lam_i, 0, ibc_dist),
+                    mds0_best_cost,
+                    &mds0_best_cost_per_class,
+                    4,
+                ) {
+                    crate::port_md::lpd1_loop::MAX_MODE_COST
+                } else {
+                    rdcost(lam_i, flr, ibc_dist)
                 };
                 if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
                     mds0_best_cost = Some(fast_cost);
+                }
+                if fast_cost < mds0_best_cost_per_class[4].unwrap_or(u64::MAX) {
+                    mds0_best_cost_per_class[4] = Some(fast_cost);
                 }
                 cands.push(Cand {
                     mode: 0, // DC_PRED (the coded neighbour-visible mode)
@@ -2259,16 +2359,23 @@ pub(super) fn inject_candidates(
             // C's `SVT_IFCOST` dump showed the NEWMV candidates injected but
             // never fast-costed. A pruned candidate carries MAX_MODE_COST
             // into the pool exactly like the intra lane's.
-            let mut fast_cost = rdcost(lam, charged, d);
-            if let (Some(th), Some(best)) = (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
-                if 100i128 * (i128::from(rdcost(lam, 0, d)) - i128::from(best))
-                    > i128::from(best) * i128::from(th)
-                {
-                    fast_cost = crate::port_md::lpd1_loop::MAX_MODE_COST;
-                }
-            }
+            let fast_cost = if mds0_prune_fires(
+                &cfg,
+                mds0_min_dist_div_area,
+                rdcost(lam, 0, d),
+                mds0_best_cost,
+                &mds0_best_cost_per_class,
+                c.cand_class,
+            ) {
+                crate::port_md::lpd1_loop::MAX_MODE_COST
+            } else {
+                rdcost(lam, charged, d)
+            };
             if fast_cost < mds0_best_cost.unwrap_or(u64::MAX) {
                 mds0_best_cost = Some(fast_cost);
+            }
+            if fast_cost < mds0_best_cost_per_class[usize::from(c.cand_class)].unwrap_or(u64::MAX) {
+                mds0_best_cost_per_class[usize::from(c.cand_class)] = Some(fast_cost);
             }
             // The intra lanes above each print an `NSQDBG PFAST` line; without
             // this one the inter candidate is INVISIBLE in the candidate dump,
