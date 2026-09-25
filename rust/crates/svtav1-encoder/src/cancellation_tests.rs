@@ -246,6 +246,7 @@ fn restoration_checks<P: restoration::LrPixel>(src: &[P], bd: u8) {
             1000,
             bd,
             stop,
+            crate::reference::SvtReference::Mainline420,
         )
     });
     let mut info = restoration::search_restoration_still_bd(

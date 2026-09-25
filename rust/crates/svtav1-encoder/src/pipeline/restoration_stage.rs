@@ -258,6 +258,7 @@ impl EncodePipeline {
                                 ),
                                 self.sb_size,
                                 stop,
+                                self.reference,
                             )?
                         }
                         None => {
@@ -280,6 +281,7 @@ impl EncodePipeline {
                                 ),
                                 self.sb_size,
                                 stop,
+                                self.reference,
                             )?
                         }
                     };

@@ -1,0 +1,23 @@
+Ghost Robot port 8b1f9a0d ("In loop filters bug fixes"), i265.
+
+Only the restoration_pick.c hunk is reachable on this port: the
+seq_header.enable_restoration change needs the (absent)
+enable_restoration_filtering config knob, the stat_report guards need
+stat_report=1 (no knob), and the unit_info_valid guard needs
+use_prev_frame_coeffs (wn level 6, unreachable). Ported: in
+search_restoration_unit_size_with_stop, GhostRobot's finish walk counts
+wiener bits with a plane-based window (WIENER_WIN luma) while the seg
+phase keeps the filter_tap_lvl-derived wn_luma.
+
+ghost-robot:    32/288 IDENTICAL (unchanged). 2 cells moved:
+  photo-128-b10-p2-q55 tile-op 6 -> 0; photo-64-b8-p6-q20
+  tile-payload -> FH cdef_uv_pri_strength (the moved FH is the
+  consequence of different unit picks; neither cell became identical).
+  gradient-128-b8-p4-q20 spot-check: lr_type[1] FH divergence resolved,
+  now cdef_y_pri_strength + tile-op lr-taps at op 36.
+mainline-4.2.0: 288/288 IDENTICAL (control).
+
+Pins: 1 cell moved — grad-64x64-b10-p6-q30-GhostRobot-HdrFork
+(529->524 bytes); regenerated via UPDATE_OUTPUT_PINS.
+
+Gates: nextest 2776/2776, regression_spotcheck 147/147, output_pins 6/6.

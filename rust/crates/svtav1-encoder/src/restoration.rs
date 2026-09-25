@@ -1046,6 +1046,11 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     rdmult: i64,
     bit_depth: u8,
 ) -> crate::EncodeResult<FrameRestInfo> {
+    // The public helpers pin pre-commit (mainline/hybrid) semantics — the
+    // instrumented C captures in `lr_search_c_capture` were taken off
+    // 3115c0c1b, which has the un-fixed `search_wiener_finish`. The
+    // pipeline path carries the real `reference` through
+    // `search_restoration_still_configured_with_stop`.
     search_restoration_still_bd_with_stop(
         wn_ctrls,
         sg_ctrls,
@@ -1061,6 +1066,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         rdmult,
         bit_depth,
         &enough::Unstoppable,
+        crate::reference::SvtReference::Mainline420,
     )
 }
 
@@ -1079,6 +1085,7 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
     rdmult: i64,
     bit_depth: u8,
     stop: &dyn enough::Stop,
+    reference: crate::reference::SvtReference,
 ) -> crate::EncodeResult<FrameRestInfo> {
     search_restoration_unit_size_with_stop(
         wn_ctrls,
@@ -1096,6 +1103,7 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
         bit_depth,
         RESTORATION_UNITSIZE_MAX,
         stop,
+        reference,
     )
     .map(|(info, _, _)| info)
 }
@@ -1121,11 +1129,12 @@ pub(crate) fn search_restoration_still_configured_with_stop<P: LrPixel>(
     search_sizes: bool,
     sb_size: usize,
     stop: &dyn enough::Stop,
+    reference: crate::reference::SvtReference,
 ) -> crate::EncodeResult<FrameRestInfo> {
     if !search_sizes {
         return search_restoration_still_bd_with_stop(
             wn_ctrls, sg_ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma,
-            rdmult, bit_depth, stop,
+            rdmult, bit_depth, stop, reference,
         );
     }
     debug_assert!(matches!(sb_size, 64 | 128));
@@ -1136,7 +1145,7 @@ pub(crate) fn search_restoration_still_configured_with_stop<P: LrPixel>(
         }
         let (info, bits, sse) = search_restoration_unit_size_with_stop(
             wn_ctrls, sg_ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma,
-            rdmult, bit_depth, size, stop,
+            rdmult, bit_depth, size, stop, reference,
         )?;
         // Frame type is a fixed two bits per plane. Unit-size and UV-shift
         // bits exist only when the corresponding planes restore (lr_params).
@@ -1183,6 +1192,7 @@ fn search_restoration_unit_size_with_stop<P: LrPixel>(
     bit_depth: u8,
     unit_size: i32,
     stop: &dyn enough::Stop,
+    reference: crate::reference::SvtReference,
 ) -> crate::EncodeResult<(FrameRestInfo, i64, i64)> {
     crate::stop_check(stop)?;
     debug_assert!(wn_ctrls.enabled || sg_ctrls.enabled);
@@ -1190,6 +1200,14 @@ fn search_restoration_unit_size_with_stop<P: LrPixel>(
         WIENER_WIN
     } else {
         WIENER_WIN_CHROMA
+    };
+    // `search_wiener_finish`'s luma window: Ghost Robot 8b1f9a0d ("In loop
+    // filters bug fixes", restoration_pick.c) pins it at WIENER_WIN
+    // regardless of `filter_tap_lvl`; pre-commit C derived it from
+    // `wn_luma` like the seg phase, so Mainline420/Hybrid3115 keep that.
+    let wn_luma_finish = match reference {
+        crate::reference::SvtReference::GhostRobot => WIENER_WIN,
+        _ => wn_luma,
     };
     let wiener_restore_cost = wiener_restore_cost();
     let sgrproj_restore_cost = sgrproj_restore_cost();
@@ -1241,6 +1259,11 @@ fn search_restoration_unit_size_with_stop<P: LrPixel>(
         };
         let wiener_win = if plane == 0 {
             wn_luma
+        } else {
+            WIENER_WIN_CHROMA
+        };
+        let wiener_win_finish = if plane == 0 {
+            wn_luma_finish
         } else {
             WIENER_WIN_CHROMA
         };
@@ -1508,7 +1531,7 @@ fn search_restoration_unit_size_with_stop<P: LrPixel>(
                             continue;
                         }
                         let cnt = crate::entropy::lr::count_wiener_bits(
-                            wiener_win,
+                            wiener_win_finish,
                             &u.wiener.vfilter,
                             &u.wiener.hfilter,
                             &ref_wiener.vfilter,
