@@ -2902,6 +2902,48 @@ int64_t __wrap_svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMoti
     return rc;
 }
 
+/* Per-call trace of the refine hill-climb's error evaluations — same file as
+ * SVT_GMSEARCH_OUT, one GMWARP line per call, joinable against the port's
+ * `GMWARP` dump in `port_global_motion::av1_warp_error`. */
+int64_t __real_svt_av1_warp_error(WarpedMotionParams* wm, const uint8_t* ref, int width, int height,
+                                  int stride, uint8_t* dst, int p_col, int p_row, int p_width,
+                                  int p_height, int p_stride, int subsampling_x, int subsampling_y,
+                                  uint8_t chess_refn, int64_t best_error);
+
+int64_t __wrap_svt_av1_warp_error(WarpedMotionParams* wm, const uint8_t* ref, int width, int height,
+                                  int stride, uint8_t* dst, int p_col, int p_row, int p_width,
+                                  int p_height, int p_stride, int subsampling_x, int subsampling_y,
+                                  uint8_t chess_refn, int64_t best_error) {
+    const int64_t rc = __real_svt_av1_warp_error(wm,
+                                                 ref,
+                                                 width,
+                                                 height,
+                                                 stride,
+                                                 dst,
+                                                 p_col,
+                                                 p_row,
+                                                 p_width,
+                                                 p_height,
+                                                 p_stride,
+                                                 subsampling_x,
+                                                 subsampling_y,
+                                                 chess_refn,
+                                                 best_error);
+    FILE* const   f  = gmsearch_file();
+    if (f) {
+        fprintf(f,
+                "GMWARP wm=%d,%d,%d,%d,%d,%d,%d p=%d,%d,%dx%d/%d chess=%d best=%lld -> %lld\n",
+                (int)wm->wmtype,
+                wm->wmmat[0], wm->wmmat[1], wm->wmmat[2], wm->wmmat[3], wm->wmmat[4], wm->wmmat[5],
+                p_col, p_row, p_width, p_height, p_stride,
+                (int)chess_refn,
+                (long long)best_error,
+                (long long)rc);
+        fflush(f);
+    }
+    return rc;
+}
+
 /* TEMPORARY PD0 transform drill: dump residual + coeff at a pinned block.
  * Env: SVT_ETXFM_OUT (file), SVT_ETXFM_XY "x,y" (pixel org), SVT_ETXFM_TXS (int). */
 EbErrorType __real_svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionContext* ctx,

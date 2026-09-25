@@ -8867,6 +8867,15 @@ impl EncodePipeline {
                     sframe_ref_pruned: pic_decision
                         .as_ref()
                         .is_some_and(|p| p.sframe_ref_pruned),
+                    // C `pcs->ppcs->max_can_count` —
+                    // `svt_aom_get_max_can_count(enc_mode, rtc)`; the rtc
+                    // half is false on every config this port accepts
+                    // (the same `false` `sig_deriv_multi_processes`
+                    // passes at multi_processes.rs).
+                    max_can_count: crate::port_enc_mode_config::leaf::get_max_can_count(
+                        i8::try_from(self.speed_config.preset).unwrap_or(i8::MAX),
+                        false,
+                    ),
                 })
             }
             _ => None,

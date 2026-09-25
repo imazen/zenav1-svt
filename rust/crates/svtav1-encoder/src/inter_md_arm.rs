@@ -322,6 +322,16 @@ pub struct InterMdFrame<'a> {
     /// C `pcs->ppcs->sframe_ref_pruned` — when set, C skips
     /// `determine_best_references` entirely (product_coding_loop.c:9379).
     pub sframe_ref_pruned: bool,
+    /// C `pcs->ppcs->max_can_count` — `svt_aom_get_max_can_count`
+    /// (enc_mode_config.c:1921). `INC_MD_CAND_CNT` caps
+    /// `fast_cand_array` at this and C allocates the array to exactly
+    /// this size (md_process.c:386), so the injection port must take the
+    /// same value: a smaller cap saturates mid-injection, leaves
+    /// `inj_comp_modes` reading a stale last candidate, and silently
+    /// drops candidates C evaluates. MEASURED at preset 0: a hardcoded
+    /// 64 overflowed once GM armed (1225 is C's value there) and the
+    /// stale last cand was a single-ref NEWMV.
+    pub max_can_count: u16,
 }
 
 /// The order-hint half of [`InterFrame`], owned so the borrow is local.
@@ -2145,7 +2155,11 @@ pub fn build_inter_candidates(
             .and_then(|m| mode_from_u8(m.mode).map(|md| (md, m.ref_frame))),
     };
 
-    let mut cands = CandArray::new(64);
+    // C allocates `ctx->fast_cand_array` to `pcs->ppcs->max_can_count`
+    // (md_process.c:386) and `INC_MD_CAND_CNT` saturates at the same
+    // value — the two must agree or a saturated push leaves
+    // `inj_comp_modes` reading a stale last candidate.
+    let mut cands = CandArray::new(usize::from(f.max_can_count));
     let mut log = InjectedMvLog::default();
     // The block-scoped half of what the MDS1 refinement needs, filled here
     // because this is where the samples, the stacks and the derived controls

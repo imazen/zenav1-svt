@@ -380,7 +380,7 @@ pub fn av1_warp_error(
         // The sentinel is 1, not 0 and not i64::MAX.
         return 1;
     }
-    warp_error(
+    let ret = warp_error(
         wm,
         reference,
         width,
@@ -397,7 +397,27 @@ pub fn av1_warp_error(
         subsampling_y,
         chess_refn,
         best_error,
-    )
+    );
+    if crate::dbgenv::gmdbg() {
+        eprintln!(
+            "GMWARP wm={},{},{},{},{},{},{} p={},{},{}x{}/{} chess={} best={} -> {ret}",
+            wm.wm_type as u8,
+            wm.wmmat[0],
+            wm.wmmat[1],
+            wm.wmmat[2],
+            wm.wmmat[3],
+            wm.wmmat[4],
+            wm.wmmat[5],
+            p_col,
+            p_row,
+            p_width,
+            p_height,
+            p_stride,
+            u8::from(chess_refn),
+            best_error,
+        );
+    }
+    ret
 }
 
 // --------------------------------------------------------------------------

@@ -659,6 +659,16 @@ pub fn inj_comp_modes(ctx: &InjectCtx<'_>, cands: &mut CandArray, hooks: &mut im
         return;
     }
 
+    // A non-compound `avg_cand` is only reachable when the compound push
+    // just above hit `INC_MD_CAND_CNT`'s saturation branch: C then reads
+    // `ref_type_to_ref_idx[ref_frame[1]]` with `ref_frame[1] == -1`,
+    // i.e. `ref_type_to_ref_idx[255]` — 247 bytes past the array, into
+    // unrelated statics. The values it recovers decide whether clones
+    // are injected, so the outcome is layout-dependent garbage the port
+    // cannot reproduce; skip rather than read out of bounds.
+    if avg_cand.ref_frame[0] <= INTRA_FRAME || avg_cand.ref_frame[1] <= INTRA_FRAME {
+        return;
+    }
     let ref_idx_0 = get_ref_frame_idx(avg_cand.ref_frame[0]);
     let ref_idx_1 = get_ref_frame_idx(avg_cand.ref_frame[1]);
     let list_idx_0 = get_list_idx(avg_cand.ref_frame[0]);

@@ -204,6 +204,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_global_motion_estimation \
     -Wl,--wrap=svt_aom_gm_get_params_cost \
     -Wl,--wrap=svt_av1_refine_integerized_param \
+    -Wl,--wrap=svt_av1_warp_error \
     -Wl,--wrap=svt_aom_wm_motion_refinement \
     -Wl,--wrap=svt_aom_estimate_transform \
     -Wl,--wrap=svt_aom_encode_sb \
