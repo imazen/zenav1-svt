@@ -28,3 +28,8 @@ callgrind Ir, 1024 p10: 329,726,815 -> 319,646,721 (-3.06%)
 wall clock, tools/perf_ab.sh (interleaved, 9 rounds) vs afbcf7f6:
   perf_eob_iscan_2026-09-25.tsv
   256 p6 1.015   256 p10 1.024   1024 p6 1.022   1024 p10 1.030
+
+Follow-up (same day): the pack walk's private twin `eob_from_scan_rev`
+(block_syntax.rs; luma and both chroma sites) now calls the same path.
+  encode_block_syntax self: 13,802,873 -> 5,700,665 Ir
+  total, 1024 p10: 319,646,721 -> 313,865,101 (-1.81%); byte-identical

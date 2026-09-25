@@ -6,29 +6,15 @@ pub(super) fn use_angle_delta(width: u16, height: u16) -> bool {
 
 /// `eob = 1 + max{ i : coeffs[scan[i]] != 0 }`, else 0 — the scan-order
 /// end-of-block the coefficient writer codes, recovered from the finished
-/// raster `coeffs` by walking the scan BACKWARDS and returning on the first
-/// non-zero.
-///
-/// The reverse walk is not a style choice. The three pack sites below used to
-/// carry the forward form, `for (i, &pos) in scan.iter().enumerate() { if
-/// coeffs[pos] != 0 { eob = i + 1 } }`, which runs the whole transform block
-/// and takes a roughly even data-dependent branch at every position:
-/// `stall_attrib_2026-09-05` measured 316,928 simulated mispredicts at a
-/// 17.16 % rate on that one line — 82 % of `encode_block_syntax`'s total and
-/// 3.4 % of the photo_cid p6 frame's — against 3.10 % for the reverse form
-/// already written at `quant.rs:318`. This is a private twin of that helper
-/// rather than a call into it, deliberately: `quant::eob_from_qcoeff` is
-/// inlined into `quantize_fp`/`quantize_fp_hbd`, which are hot at preset 2,
-/// and adding three more call sites there would change that codegen for no
-/// reason.
+/// raster `coeffs`. [`crate::quant::eob_from_qcoeff`] takes it as a SIMD
+/// max over the generated inverse scan. The forward walk this replaced was
+/// the port's worst mispredict site (`stall_attrib_2026-09-05`: 17 %, 82 % of
+/// this function's), and the reverse walk after it still cost 8.1M of
+/// `encode_block_syntax`'s 13.8M self Ir at 1024x1024 gradient p10
+/// (`benchmarks/perf_eob_iscan_2026-09-25.meta`).
 #[inline]
 pub(super) fn eob_from_scan_rev(scan: &[u16], coeffs: &[i32]) -> i32 {
-    for i in (0..scan.len()).rev() {
-        if coeffs[scan[i] as usize] != 0 {
-            return i as i32 + 1;
-        }
-    }
-    0
+    i32::from(crate::quant::eob_from_qcoeff(scan, coeffs))
 }
 
 /// Write one chroma plane's transform block (`uv`: 0 = U, 1 = V) with the
