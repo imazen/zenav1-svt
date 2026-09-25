@@ -99,6 +99,18 @@ Measured vs C, unset `SVTAV1_HIER_LEVELS` on both sides, 256² qp40:
   picture under hierarchical LD. Explicit `SVTAV1_HIER_LEVELS=0` still
   yields the old flat stream (verified identical to C flat at p10).
 
+- **GlobalMv selection under-count** (`global_motion_gate` red, PRE-
+  EXISTING — every CI run since at least `e871632e0` fails it; the
+  ref-plane fix above does not move it): on the CID22 33/32-zoom cell at
+  flat-LD p2 the port codes 14 GlobalMv blocks where C's own CTREE
+  (`SVT_CTREE_OUT`) shows 23, with matching `wmtype`/model bytes — the
+  search itself joins field-for-field (`gm_join_gate` 4/4). The wider
+  census shows the same inter-MD family: C's inter frame commits 542
+  NEARESTMV / 348 NEWMV / ~1182 blocks against the port's 462 / 260 /
+  ~1000 — partition geometry diverges too, so this is the non-base
+  inter-MD campaign, not a GlobalMv-specific bug. The pin (22) tracks
+  C's real count; do NOT re-pin it as drift.
+
 Note the asymmetry the AUTO change intentionally removes: an
 unset-vs-unset cell comparison now means the same configuration on
 both sides; pinning `SVTAV1_HIER_LEVELS=0`/`SVT_HIER_LEVELS=0` still
