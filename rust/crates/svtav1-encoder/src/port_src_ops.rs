@@ -67,11 +67,7 @@ use svtav1_types::tables::block::{
     BLOCK_SIZE_HIGH, BLOCK_SIZE_HIGH_LOG2, BLOCK_SIZE_WIDE, BLOCK_SIZE_WIDE_LOG2,
 };
 
-/// `ROUND_POWER_OF_TWO(value, n)` on a `u64` accumulator.
-#[inline]
-fn round_power_of_two_u64(value: u64, n: u32) -> u64 {
-    (value + (1u64 << n >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_u64;
 
 /// The number of pixels in `bsize`, as `1 << eb_num_pels_log2_lookup[bsize]`.
 #[inline]

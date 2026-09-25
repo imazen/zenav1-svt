@@ -40,21 +40,7 @@
 use crate::port_convolve::{ConvolveParams, FILTER_BITS};
 use crate::port_masked_compound::{AOM_BLEND_A64_MAX_ALPHA, DIFF_FACTOR, DiffwtdMaskType};
 
-/// `ROUND_POWER_OF_TWO` (definitions.h) on a non-negative `i32`.
-///
-/// `n == 0` is `(value + 0) >> 0`, which C's macro also yields
-/// (`(1 << 0) >> 1 == 0`); it is reachable in principle with
-/// single-prediction rounding params at 8-bit, though every live caller of
-/// this module passes compound params.
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    debug_assert!((0..31).contains(&n));
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// The shift `diffwtd_mask_d16` applies to `|src0 - src1|`, and the one place
 /// its three inputs are combined.

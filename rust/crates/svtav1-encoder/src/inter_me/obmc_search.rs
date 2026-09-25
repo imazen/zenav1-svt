@@ -114,19 +114,9 @@ pub fn av1_get_filter(subpel_search: i32) -> &'static [InterpKernel; 16] {
     }
 }
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + (1 << (n - 1))) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
-#[inline]
-fn round_power_of_two_signed(value: i32, n: i32) -> i32 {
-    if value < 0 {
-        -round_power_of_two(-value, n)
-    } else {
-        round_power_of_two(value, n)
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_signed_i32 as round_power_of_two_signed;
 
 #[inline]
 fn clip_pixel(v: i32) -> u8 {

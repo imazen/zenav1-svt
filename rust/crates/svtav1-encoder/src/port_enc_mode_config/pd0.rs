@@ -94,17 +94,7 @@ pub fn set_rate_est_ctrls(rate_est_level: u8) -> Option<MdRateEstCtrls> {
     }
 }
 
-/// C `CLIP3(min, max, a)` (`Codec/utility.h:101`).
-#[must_use]
-pub const fn clip3(min_val: i64, max_val: i64, a: i64) -> i64 {
-    if a < min_val {
-        min_val
-    } else if a > max_val {
-        max_val
-    } else {
-        a
-    }
-}
+pub use svtav1_types::math::shift_u32::clip3_i64 as clip3;
 
 /// Everything `svt_aom_sig_deriv_enc_dec_pd0` reads off the SCS / PCS / PPCS /
 /// context, spelled out.

@@ -117,11 +117,7 @@ fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
     ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
 }
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478).
-#[inline]
-fn round_power_of_two(value: u32, n: u32) -> u32 {
-    (value + ((1u32 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_u32 as round_power_of_two;
 
 /// C's `svt_nxm_sad_kernel(a, a_stride << shift, b, b_stride << shift,
 /// h >> shift, w)` — every `1 << shift`-th row of the block.

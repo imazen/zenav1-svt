@@ -180,12 +180,7 @@ impl Default for WienerInfo {
     }
 }
 
-/// ROUND_POWER_OF_TWO on a signed value — C macro with arithmetic shift
-/// semantics (gcc), identical to Rust `>>` on i32.
-#[inline(always)]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + (1 << (n - 1))) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// The widest processing unit `wiener_filter_stripe` can ask for:
 /// `w = procunit_width.min(..)` and `procunit_width = RESTORATION_PROC_UNIT_SIZE

@@ -84,21 +84,9 @@ use svtav1_types::transform::TxType;
 // `palette.rs`'s `divide_and_round`/`lcg_next` for the same pattern).
 // =============================================================================
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478):
-/// `(value + (1<<n>>1)) >> n`. Only called with `n >= 1` in this module
-/// (matches every call site below).
-#[inline]
-fn round_power_of_two(value: i32, n: u32) -> i32 {
-    (value + ((1i32 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i32 as round_power_of_two;
 
-/// C `DIVIDE_AND_ROUND(x, y)` (utility.h:96): round-half-up for non-negative
-/// `x`/`y` (the only domain `svt_aom_get_qp_based_th_scaling_factors`'s
-/// caller uses it in).
-#[inline]
-fn divide_and_round(x: i64, y: i64) -> i64 {
-    (x + (y >> 1)) / y
-}
+use svtav1_types::math::shift_u32::divide_and_round_i64 as divide_and_round;
 
 // =============================================================================
 // §1. IbcCtrls — per-level search controls (`set_intrabc_level`,

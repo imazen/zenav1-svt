@@ -279,10 +279,7 @@ fn blk_var_map(block_size: usize, org_x: usize, org_y: usize) -> (usize, [usize;
 // QP-based threshold scaling + RDCOST + lambda
 // ---------------------------------------------------------------------------
 
-/// C `DIVIDE_AND_ROUND` (utility.h:96).
-fn divide_and_round(x: u64, y: u64) -> u64 {
-    (x + (y >> 1)) / y
-}
+use svtav1_types::math::shift_u32::divide_and_round_u64 as divide_and_round;
 
 /// C `svt_aom_get_qp_based_th_scaling_factors` (md_config_process.c) with
 /// scaling enabled (both users here — `lpd0_` and `cap_max_size_` — are
@@ -4600,8 +4597,7 @@ pub fn pd0_pick_sb_partition(
     } else {
         Pd0Mode::Lvl6
     };
-    let lambda =
-        sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
+    let lambda = sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -4733,8 +4729,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
     let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
-    let lambda =
-        sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
+    let lambda = sb_lambda.unwrap_or_else(|| kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64);
     let mut ctx = Pd0Ctx {
         src,
         stride,

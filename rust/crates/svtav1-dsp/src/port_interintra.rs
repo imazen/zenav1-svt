@@ -81,14 +81,7 @@ const MI_SIZE_HIGH: [usize; BLOCK_SIZES_ALL] = [
     1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
 ];
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// `AOM_BLEND_AVG(v0, v1)` (definitions.h:1275).
 #[inline]

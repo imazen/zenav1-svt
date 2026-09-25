@@ -270,11 +270,7 @@ pub fn delta_encode_bits(colors: &[u16], bit_depth: u32, min_val: u32) -> u32 {
     total
 }
 
-/// C `DIVIDE_AND_ROUND` (utility.h:96): `(x + (y >> 1)) / y`, round-half-up
-/// for the non-negative sums/counts k-means uses it on.
-fn divide_and_round(x: i32, y: i32) -> i32 {
-    (x + (y >> 1)) / y
-}
+use svtav1_types::math::shift_u32::divide_and_round_i32 as divide_and_round;
 
 /// C `lcg_next` (random.h:23-26): `*state = (uint32_t)(*state *
 /// 1103515245ULL + 12345)`, returning the new state. The multiply/add

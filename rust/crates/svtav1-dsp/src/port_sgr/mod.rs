@@ -127,11 +127,7 @@ pub struct SgrParamsType {
     pub s: [i32; 2],
 }
 
-/// `ROUND_POWER_OF_TWO(value, n)` on `i32` (definitions.h:478).
-#[inline]
-const fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + ((1 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// The unsigned form. C applies `ROUND_POWER_OF_TWO` to `uint32_t` operands
 /// inside the A/B loop (`a`, `b`, `p * s`, and the `B[k]` product), where the

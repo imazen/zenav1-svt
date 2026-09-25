@@ -108,10 +108,7 @@ impl ChromaQOverride {
     }
 }
 
-#[inline]
-fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
-    v.clamp(lo, hi)
-}
+use svtav1_types::math::shift_u32::clip3_i32 as clip3;
 
 /// MAINLINE v4.2.0's chroma qindex derivation (`rc_crf_cqp.c:592-602`, the
 /// `#else /* mainline v4.2.0-rc */` arm — a DIFFERENT block from the fork one

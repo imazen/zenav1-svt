@@ -51,14 +51,7 @@ fn clip_pixel_highbd(val: i32, bd: i32) -> u16 {
     val.clamp(0, (1 << bd) - 1) as u16
 }
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// A 16-bit source view whose logical origin sits `origin` elements into
 /// `data`, so the kernels can read the taps that precede it.

@@ -361,10 +361,7 @@ pub fn compute_rd_mult_based_on_qindex(
     }
 }
 
-/// C `ROUND_POWER_OF_TWO` on an `int64_t`.
-fn round_power_of_two_i64(value: i64, n: u32) -> i64 {
-    (value + (1 << (n - 1))) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i64;
 
 /// C's `svt_aom_dc_quant_qtx` result as the **integer** the RD-multiplier
 /// arms consume. Delegates to the port's existing DC quantizer tables.
@@ -1450,18 +1447,7 @@ pub fn clamp_qindex(min_qp_allowed: i32, max_qp_allowed: i32, qindex: i32) -> u8
     clip3(qmin, qmax, qindex) as u8
 }
 
-/// C `CLIP3` (utility.h:101). Note it is NOT `clamp`: with `min > max` it
-/// returns `min`, where `i32::clamp` panics.
-#[must_use]
-pub fn clip3(min_val: i32, max_val: i32, a: i32) -> i32 {
-    if a < min_val {
-        min_val
-    } else if a > max_val {
-        max_val
-    } else {
-        a
-    }
-}
+pub use svtav1_types::math::shift_u32::clip3_i32 as clip3;
 
 /// C `use_rtc_cbr_path` (rc_process.c:34). `static` — tier 4.
 /// `rc_cfg.mode == AOM_CBR && scs->static_config.rtc`.

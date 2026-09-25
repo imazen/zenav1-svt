@@ -69,11 +69,7 @@ pub struct NicScalingCtrls {
     pub stage3_scaling_num: u32,
 }
 
-/// C `DIVIDE_AND_ROUND` (utility.h:96): `(x + (y >> 1)) / y`.
-#[inline]
-fn divide_and_round(x: u64, y: u64) -> u64 {
-    (x + (y >> 1)) / y
-}
+use svtav1_types::math::shift_u32::divide_and_round_u64 as divide_and_round;
 
 /// C `svt_aom_get_qp_based_th_scaling_factors` (enc_mode_config.c:25-53,
 /// EXPORTED).

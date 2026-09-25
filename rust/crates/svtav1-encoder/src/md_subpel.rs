@@ -115,17 +115,9 @@ pub const NUM_PELS_LOG2_LOOKUP: [u8; 22] = [
 /// so every row of the block reads the same 128 bytes.
 pub const EB_AV1_VAR_OFFS: [u8; 128] = [128; 128];
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478).
-#[inline]
-fn round_power_of_two(value: u32, n: u32) -> u32 {
-    (value + ((1u32 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_u32 as round_power_of_two;
 
-/// C `ROUND_POWER_OF_TWO_64(value, n)` (definitions.h:485).
-#[inline]
-fn round_power_of_two_64(value: i64, n: u32) -> i64 {
-    (value + ((1i64 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i64 as round_power_of_two_64;
 
 /// C `svt_av1_is_subpelmv_in_range` (mcomp.h:127-130).
 #[inline]

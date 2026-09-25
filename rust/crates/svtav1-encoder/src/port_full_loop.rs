@@ -35,11 +35,7 @@
 //! **hand-derived vectors traced against the C source**, the weakest tier
 //! (`docs/WORKING-ON-THIS.md` §4), and they say so.
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478) on `int`.
-#[inline]
-fn round_power_of_two(value: i32, n: u32) -> i32 {
-    (value + ((1i32 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i32 as round_power_of_two;
 
 /// C `update_coeff_eob_fast` (full_loop.c:1006-1025).
 ///

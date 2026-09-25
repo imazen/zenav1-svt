@@ -54,15 +54,7 @@ pub fn log2f_safe(x: u32) -> i32 {
     get_msb(x | 1)
 }
 
-/// `ROUND_POWER_OF_TWO` on an i64.
-#[inline]
-fn round_power_of_two_i64(value: i64, n: u32) -> i64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1i64 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i64;
 
 /// `RDCOST(RM, R, D)` (rd_cost.h:36).
 pub fn rdcost(rate_mult: u32, rate: i64, dist: i64) -> i64 {

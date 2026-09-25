@@ -42,14 +42,7 @@ pub const SCALE_SUBPEL_MASK: i32 = (1 << SCALE_SUBPEL_BITS) - 1;
 /// `SCALE_EXTRA_BITS` (definitions.h:465).
 pub const SCALE_EXTRA_BITS: i32 = SCALE_SUBPEL_BITS - 4;
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 #[inline]
 fn clip_pixel_8(val: i32) -> u8 {

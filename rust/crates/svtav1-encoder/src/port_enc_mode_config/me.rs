@@ -48,15 +48,7 @@ pub const SUB_SAD_SEARCH: u8 = 0;
 /// C `FULL_SAD_SEARCH` (`definitions.h:1820`).
 pub const FULL_SAD_SEARCH: u8 = 1;
 
-/// C `DIVIDE_AND_ROUND(x, y)` (`Codec/utility.h:96`) — `((x) + ((y) >> 1)) / (y)`.
-///
-/// NOTE this is NOT a round-half-away-from-zero: it is an unsigned add-then-
-/// truncate, so it must be reproduced exactly rather than replaced with a
-/// "rounded division" helper.
-#[must_use]
-pub const fn divide_and_round(x: u32, y: u32) -> u32 {
-    (x + (y >> 1)) / y
-}
+pub use svtav1_types::math::shift_u32::divide_and_round_u32 as divide_and_round;
 
 /// C `svt_aom_get_qp_based_th_scaling_factors` (`enc_mode_config.c:25`).
 /// EXPORTED. Returns `(q_weight, q_weight_denom)`.

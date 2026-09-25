@@ -97,46 +97,13 @@ const DIV_LUT_BITS: i32 = 8;
 // Helper macros, transcribed
 // --------------------------------------------------------------------------
 
-/// `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478) on `i32`.
-///
-/// C's macro is `((value) + ((1 << n) >> 1)) >> n`. It is documented "for use
-/// when n >= 0, value >= 0" but `svt_av1_warp_affine_c` applies it to a
-/// possibly-negative `sx`, where C's `>>` on a signed value is an arithmetic
-/// shift on every compiler this project builds with. Rust's `>>` on `i32` is
-/// arithmetic too, so this is the same operation.
-#[inline]
-const fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + ((1 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
-/// `ROUND_POWER_OF_TWO_64(value, n)` (definitions.h:485).
-#[inline]
-const fn round_power_of_two_64(value: i64, n: i32) -> i64 {
-    (value + ((1i64 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i64 as round_power_of_two_64;
 
-/// `ROUND_POWER_OF_TWO_SIGNED(value, n)` (definitions.h:481) — note this is
-/// NOT the same as `round_power_of_two` on a negative input: C negates,
-/// rounds, and negates back, so it rounds AWAY from zero on ties for negative
-/// values while the plain macro rounds toward +inf.
-#[inline]
-const fn round_power_of_two_signed(value: i32, n: i32) -> i32 {
-    if value < 0 {
-        -round_power_of_two(-value, n)
-    } else {
-        round_power_of_two(value, n)
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_signed_i32 as round_power_of_two_signed;
 
-/// `ROUND_POWER_OF_TWO_SIGNED_64(value, n)` (definitions.h:488).
-#[inline]
-const fn round_power_of_two_signed_64(value: i64, n: i32) -> i64 {
-    if value < 0 {
-        -round_power_of_two_64(-value, n)
-    } else {
-        round_power_of_two_64(value, n)
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_signed_i64 as round_power_of_two_signed_64;
 
 /// `get_msb(n)` (definitions.h:617) — index of the most significant set bit.
 /// Undefined in C for `n == 0`; every call site here proves `n != 0` first.

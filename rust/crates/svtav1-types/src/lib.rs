@@ -19,6 +19,7 @@ pub mod constants;
 pub mod error;
 pub mod frame;
 pub mod interp;
+pub mod math;
 pub mod motion;
 pub mod partition;
 pub mod prediction;

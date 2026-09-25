@@ -71,23 +71,9 @@ pub enum DiffwtdMaskType {
     D38Inv = 1,
 }
 
-#[inline]
-fn round_power_of_two_u64(value: u64, n: u32) -> u64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1u64 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_u32::round_power_of_two_u64;
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// `AOM_BLEND_A64(a, v0, v1)` (definitions.h:1271).
 #[inline]

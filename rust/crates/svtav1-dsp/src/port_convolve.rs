@@ -220,15 +220,7 @@ impl ConvolveParams {
     }
 }
 
-/// `ROUND_POWER_OF_TWO(value, n)` — round-half-up on a signed value.
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 /// `clip_pixel_highbd(val, bd)` for `bd = 8`.
 #[inline]

@@ -89,33 +89,9 @@ pub fn fixed_point_scale_to_coarse_point_scale(scale_fp: i32) -> i32 {
     round_power_of_two(scale_fp, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS)
 }
 
-#[inline]
-fn round_power_of_two(value: i32, n: i32) -> i32 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
-/// `ROUND_POWER_OF_TWO_SIGNED_64` — round-half-away-from-zero on an i64.
-#[inline]
-fn round_power_of_two_signed_64(value: i64, n: i32) -> i64 {
-    if value < 0 {
-        -round_power_of_two_64(-value, n)
-    } else {
-        round_power_of_two_64(value, n)
-    }
-}
-
-#[inline]
-fn round_power_of_two_64(value: i64, n: i32) -> i64 {
-    if n == 0 {
-        value
-    } else {
-        (value + (1i64 << (n - 1))) >> n
-    }
-}
+use svtav1_types::math::shift_i32::round_power_of_two_signed_i64 as round_power_of_two_signed_64;
 
 impl ScaleFactors {
     /// `svt_av1_setup_scale_factors_for_frame` (inter_prediction.c:201).

@@ -128,7 +128,16 @@ and `ghost-robot`, and README states both.
 ## Phase 4 — structure and deduplication (every step pinned)
 
 In dependency order:
-- S5 shared vocabulary and math helpers in `svtav1-types`;
+- S5 shared vocabulary and math helpers in `svtav1-types`.
+  - Done: `svtav1_types::math` replaces 43 copies of `round_power_of_two*`,
+    `divide_and_round` and `clip3` in 30 files, imported under the old local
+    names, with pins unchanged (this change).
+  - Kept: the two `wrapping_add` variants (different overflow semantics), and
+    the copies in `intra_pred.rs` and `hbd.rs` (owned by the intra-x86
+    delegate; fold them in after it lands).
+  - Next: the 13 `rdcost` copies, AV1 vocabulary constants (`INTRA_FRAME` ×8,
+    `LAST_FRAME` ×9, `MI_SIZE` ×9), and same-name types (`SbVariance` ×3, and
+    others).
 - S4 a `Pixel` sample trait plus a `BitDepth` enum;
 - S3 derive signals once through the ported orchestrators;
 - S2 split `pipeline.rs` into stages;

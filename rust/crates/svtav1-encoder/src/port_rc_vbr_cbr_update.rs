@@ -88,22 +88,9 @@ pub struct ResizePendingParams {
     pub resize_denom: u8,
 }
 
-/// C `ROUND_POWER_OF_TWO(value, n)` for the 32-bit `int` sites in this file.
-///
-/// The rounding is `(v + (1 << (n-1))) >> n`, an ARITHMETIC shift, so a
-/// negative value rounds toward negative infinity rather than toward zero.
-/// Both call sites here feed it a sum of non-negative qindexes, but the shape
-/// is kept because `>> 2` on a negative `int` is what C does and `/ 4` is not.
-#[must_use]
-fn round_power_of_two(value: i32, n: u32) -> i32 {
-    (value + (1 << (n - 1))) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i32 as round_power_of_two;
 
-/// C `ROUND_POWER_OF_TWO_64(value, n)`.
-#[must_use]
-fn round_power_of_two_64(value: i64, n: u32) -> i64 {
-    (value + (1 << (n - 1))) >> n
-}
+use svtav1_types::math::shift_u32::round_power_of_two_i64 as round_power_of_two_64;
 
 /// The two post-encode updaters differ ONLY in where the rolling and total
 /// bit counters live: [`postencode_update`] keeps them on `RATE_CONTROL`,

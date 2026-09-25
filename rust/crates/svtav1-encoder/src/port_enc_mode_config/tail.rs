@@ -147,11 +147,7 @@ pub const AV1_PROB_COST_SHIFT: u32 = 9;
 /// C `RDDIV_BITS` (`rd_cost.h:34`).
 pub const RDDIV_BITS: u32 = 7;
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (`definitions.h:478`).
-#[must_use]
-pub const fn round_power_of_two(value: i64, n: u32) -> i64 {
-    (value + ((1i64 << n) >> 1)) >> n
-}
+pub use svtav1_types::math::shift_u32::round_power_of_two_i64 as round_power_of_two;
 
 /// C `RDCOST(RM, R, D)` (`rd_cost.h:36`).
 ///

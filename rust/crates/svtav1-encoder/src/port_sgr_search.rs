@@ -84,11 +84,7 @@ impl SgrprojInfo {
 /// module's signatures read like C's.
 pub use crate::port_lr_level::SgFilterCtrls;
 
-/// `ROUND_POWER_OF_TWO(value, n)` on `i32`.
-#[inline]
-const fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + ((1 << n) >> 1)) >> n
-}
+use svtav1_types::math::shift_i32::round_power_of_two_i32 as round_power_of_two;
 
 // --------------------------------------------------------------------------
 // Distortion (restoration_pick.c:161 / :228 / :301)

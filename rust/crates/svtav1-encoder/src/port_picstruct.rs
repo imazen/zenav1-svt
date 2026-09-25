@@ -157,9 +157,7 @@ pub enum RcMode {
 impl From<crate::rate_control::RcMode> for RcMode {
     fn from(m: crate::rate_control::RcMode) -> Self {
         match m {
-            crate::rate_control::RcMode::Cqp | crate::rate_control::RcMode::Crf => {
-                Self::CqpOrCrf
-            }
+            crate::rate_control::RcMode::Cqp | crate::rate_control::RcMode::Crf => Self::CqpOrCrf,
             crate::rate_control::RcMode::Vbr => Self::Vbr,
             crate::rate_control::RcMode::Cbr => Self::Cbr,
         }
@@ -4440,29 +4438,25 @@ pub fn derive_scd_delay(
     // (`intra_period_length == 0`) can put an I slice's TF window into the
     // lookahead.
     let scd_delay_islice = if intra_period_is_zero && tf_params_per_type[0].enabled {
-        u32::from(
-            tf_params_per_type[0]
-                .num_future_pics
-                .saturating_add(if tf_params_per_type[0].modulate_pics != 0 {
-                    TF_MAX_EXTENSION as u8
-                } else {
-                    0
-                }),
-        )
+        u32::from(tf_params_per_type[0].num_future_pics.saturating_add(
+            if tf_params_per_type[0].modulate_pics != 0 {
+                TF_MAX_EXTENSION as u8
+            } else {
+                0
+            },
+        ))
         .min(u32::from(tf_params_per_type[0].max_num_future_pics))
     } else {
         0
     };
     let scd_delay_base = if tf_params_per_type[1].enabled {
-        u32::from(
-            tf_params_per_type[1]
-                .num_future_pics
-                .saturating_add(if tf_params_per_type[1].modulate_pics != 0 {
-                    TF_MAX_EXTENSION as u8
-                } else {
-                    0
-                }),
-        )
+        u32::from(tf_params_per_type[1].num_future_pics.saturating_add(
+            if tf_params_per_type[1].modulate_pics != 0 {
+                TF_MAX_EXTENSION as u8
+            } else {
+                0
+            },
+        ))
         .min(u32::from(tf_params_per_type[1].max_num_future_pics))
     } else {
         0
@@ -5002,12 +4996,7 @@ pub const TF_MAX_L1_REF_PICS_SUB_6L: u8 = 1;
 /// C `VQ_NOISE_LVL_TH` (`definitions.h:83`).
 pub const VQ_NOISE_LVL_TH: i32 = 15000;
 
-/// C `DIVIDE_AND_ROUND(x, y)` (`utility.h:96`) — `((x) + ((y) >> 1)) / (y)`.
-#[inline]
-#[must_use]
-pub fn divide_and_round(x: i32, y: i32) -> i32 {
-    (x + (y >> 1)) / y
-}
+pub use svtav1_types::math::shift_u32::divide_and_round_i32 as divide_and_round;
 
 /// C `svt_aom_tf_max_ref_per_struct` (`enc_handle.c:2506-2519`) — EXPORTED.
 ///
