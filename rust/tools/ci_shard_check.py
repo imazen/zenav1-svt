@@ -28,7 +28,7 @@ except ImportError:
 WF = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "rust-gates.yml"
 # Steps before this index are shared setup (checkout, toolchain, caches, oracles)
 # and MUST run in every shard, so they carry no shard guard.
-GATE_START = 11
+GATE_START = 12  # +1 2026-09-25: the pinned-oracle cache step
 
 def main() -> int:
     if not WF.is_file():

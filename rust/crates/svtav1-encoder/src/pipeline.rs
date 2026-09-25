@@ -74,11 +74,6 @@ impl EncodePipeline {
         self.reference
             .validate_hdr_config(&self.hdr)
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
-        if self.reference == crate::reference::SvtReference::Mainline420 && chroma.is_none() {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension",
-            )));
-        }
         #[cfg(feature = "__expert")]
         if self.chroma_q_override.is_some() && chroma.is_none() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(

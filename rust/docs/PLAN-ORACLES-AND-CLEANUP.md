@@ -305,6 +305,10 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
 - [ ] 3.5 QM-PSNR (`dff0a9f8`).
 - [ ] 3.6 High Profile 4:4:4 (`f67a0f74`, `c4e1b9ce`). This is the largest
   item, and needs the 4:4:4 chroma paths completed first (S1).
+  - Ghost Robot accepts `EB_YUV444` with `profile == 1`
+    (`svt_av1_verify_settings`), so 4:4:4, today a decoder-verified Zen
+    extension, can get a C byte oracle under `ghost-robot`. First blocker:
+    `capture_c_trace.c` hardcodes `EB_YUV420`. Brief: `gr-444`.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
   `Hybrid3115` (a queued break), the hybrid gates, and `3115c0c1b` as the
   submodule pin.
@@ -317,12 +321,16 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     cells fail because `encode_frame_impl` refuses monochrome under
     `Mainline420` ("pristine mainline SVT supports 4:2:0 only"), so a default
     flip would break mono for default users.
-  - Next: decide the extension rule. Proposed: `Mainline420` follows
-    mainline's decisions and still accepts the Rust extensions (mono, 4:4:4,
-    alpha), which carry no C claim either way; `EncodingPolicy::SvtParity`
-    keeps refusing them. Then `just pins` with `Mainline420` as the default,
-    and flip the legacy constructors, `AvifEncoder::new` and the registry's
-    default row.
+  - Done (this change, owner-approved): `Mainline420` accepts the Rust
+    extensions and only `SvtParity` refuses them; the constructors,
+    `AvifEncoder::new` and `tools/oracle`'s default are `Mainline420` /
+    `mainline-4.2.0` (`SVT_HDR_MODE=1` keeps the hybrid fork oracle). One pin
+    moved: mono under `Mainline420` now encodes instead of refusing. CI caches
+    the pinned oracle, and `tools/oracle` fetches the pin into a shallow
+    submodule. nextest 2764/2764, spotcheck 147/147, hdr_bd10_gate 64/64.
+  - Open: the cref C-parity suite still builds the hybrid by default (its
+    fork-feature tests need a fork oracle); moves to mainline + ghost-robot
+    once those tests run against Ghost Robot.
 
 Done when each gate reports a pinned count under both `mainline-4.2.0`
 and `ghost-robot`, and README states both.

@@ -178,6 +178,16 @@ jobs:
             Bin/ReleaseHdr
           key: cref-v1-${{ runner.os }}-${{ steps.cref-key.outputs.sha }}-${{ hashFiles('rust/crates/svtav1-cref/build.rs') }}
 
+      - name: Cache the pinned mainline-4.2.0 oracle (the default C oracle since plan 3.7)
+        # capture_c_trace builds a pinned oracle on first use (tools/oracle
+        # build), which would cost every shard a C build. Its directory carries
+        # its own STAMP (commit + flags), so a restored entry is only reused
+        # for the registry row it was built from.
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/zenav1-oracles
+          key: oracles-v1-${{ runner.os }}-${{ hashFiles('rust/oracles/oracles.tsv', 'rust/tools/oracle') }}
+
       - name: Build C reference (static, the differential oracle) — cargo-driven
         working-directory: rust
         # Issue #4 invariant B: the C oracle is built by

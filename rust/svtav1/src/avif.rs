@@ -185,7 +185,7 @@ impl AvifEncoder {
             native_preset: None,
             policy: None,
             effort: None,
-            reference: SvtReference::Hybrid3115,
+            reference: SvtReference::Mainline420,
             enhancements: ZenEnhancements::default(),
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
@@ -362,7 +362,7 @@ impl AvifEncoder {
         })
     }
 
-    /// Select a pinned C source. Existing constructors retain Hybrid3115.
+    /// Select a pinned C source. The default is Mainline420 (pristine v4.2.0).
     /// Mainline420 uses pristine chroma ranking and refuses monochrome output.
     /// This selects decisions, not a certification of all-setting parity.
     pub fn with_reference(mut self, reference: SvtReference) -> Self {
@@ -927,11 +927,12 @@ impl AvifEncoder {
         // The same overflow/geometry guard used by actual raw-plane entry points.
         self.validate_dimensions(usize::MAX, width, height, width)?;
         if format == StillInputFormat::Monochrome {
-            if matches!(self.policy, Some(EncodingPolicy::SvtParity(_)))
-                || self.reference == SvtReference::Mainline420
-            {
+            // Monochrome is a Rust extension with no C claim; the reference
+            // still selects which C decisions its shared parts follow. Only
+            // the parity policy, which promises C's envelope, refuses it.
+            if matches!(self.policy, Some(EncodingPolicy::SvtParity(_))) {
                 return Err(EncodeError::UnsupportedConfig(
-                    "pristine C SVT supports 4:2:0 only; monochrome is a Rust extension",
+                    "SvtParity: C SVT supports 4:2:0 only; monochrome is a Rust extension",
                 ));
             }
             if self.film_grain.enabled() {

@@ -112,12 +112,24 @@ fn pristine_and_hybrid_chroma_reference_matches_c() {
             }
         }
     }
+    // Monochrome is a Rust extension: the parity policy refuses it, while
+    // Mainline420 under the default policy encodes it (plan 3.7, owner-approved
+    // 2026-09-25).
     let gray = [128u8; 64 * 64];
+    assert!(
+        AvifEncoder::new()
+            .with_policy(svtav1::avif::EncodingPolicy::SvtParity(
+                SvtReference::Mainline420
+            ))
+            .with_reference(SvtReference::Mainline420)
+            .encode_y8(&gray, 64, 64, 64)
+            .is_err()
+    );
     assert!(
         AvifEncoder::new()
             .with_reference(SvtReference::Mainline420)
             .encode_y8(&gray, 64, 64, 64)
-            .is_err()
+            .is_ok()
     );
     let mut incompatible = pipeline(64, 64, 0, 24.57, 8);
     incompatible.reference = SvtReference::Mainline420;

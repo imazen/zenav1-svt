@@ -20,7 +20,7 @@ two sides cannot silently disagree about the target.
 
 | name | C source | pairs with (Rust) | status |
 |---|---|---|---|
-| `hybrid-3115` | `reference/svt-av1` @ `3115c0c1b`, `SVT_HDR_MODE=OFF` | `Hybrid3115` + `SvtHdrMode::Mainline` | legacy default; every existing gate was measured against it |
+| `hybrid-3115` | `reference/svt-av1` @ `3115c0c1b`, `SVT_HDR_MODE=OFF` | `Hybrid3115` + `SvtHdrMode::Mainline` | legacy (the default until 2026-09-25) |
 | `hybrid-3115-hdr` | same commit, `SVT_HDR_MODE=ON` | `Hybrid3115` + `SvtHdrMode::HdrFork` | legacy fork target (Chromedome only) |
 | `mainline-4.2.0` | `reference/svt-av1` @ `9292ec8e3` (upstream tag `v4.2.0`) | `Mainline420` | pristine mainline target |
 | `ghost-robot` | `reference/svt-av1-hdr` @ `9dabe3ca` (svt-av1-hdr 4.2 "Ghost Robot") | `GhostRobot` | fork target; replaces the hybrid |
@@ -41,8 +41,11 @@ tools/oracle build ghost-robot      # materialise + build (idempotent)
 tools/oracle libdir ghost-robot     # where libSvtAv1Enc.a lives
 ```
 
-`SVT_ORACLE` unset keeps today's behaviour: `SVT_HDR_MODE=1` means
-`hybrid-3115-hdr`, anything else means `hybrid-3115`. A gate that pins
+`SVT_ORACLE` unset means `mainline-4.2.0` (since 2026-09-25, plan 3.7), and
+the port defaults to `Mainline420` to match; `SVT_HDR_MODE=1` still means
+`hybrid-3115-hdr`, the fork oracle until Ghost Robot replaces it. The
+C-parity suite (`svtav1-cref`) still builds the hybrid by default, because its
+fork-feature tests need a fork oracle. A gate that pins
 byte-identity numbers must name its oracle explicitly in its header and its
 output, the way refusal strings carry their date.
 

@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **122
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -85,7 +85,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | cand_reduction_level is outside C's set_cand_reduction_ctrls switch (crate::inter_hdr_arm::enc_dec_cand_reduction) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override changed U/V separation after the key frame; the sequence header fixes separate_uv_delta_q until the next key frame |
-| `crates/svtav1-encoder/src/pipeline.rs` | pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `crates/svtav1-encoder/src/pipeline.rs` | alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no inter skip arm) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override is set but this frame is monochrome: there is no U/V quantizer to override; clear the override for mono frames |
 | `crates/svtav1-encoder/src/pipeline/cbr.rs` | CBR rate control could not resolve this frame's qindex bounds: `rc_pick_q_and_bounds_no_stats_cbr` reads the LAST reference unconditionally and its DPB slot is empty |
@@ -168,13 +167,13 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `svtav1/src/animation.rs` | rotation must be 0..=3 and mirror axis must be 0..=1 |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `svtav1/src/avif.rs` | SvtParity forbids Zen enhancements |
+| `svtav1/src/avif.rs` | SvtParity: C SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `svtav1/src/avif.rs` | a chroma plane is shorter than ceil(height/2) * ceil(width/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | chroma plane size overflows usize |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
 | `svtav1/src/avif.rs` | parity policy conflicts with selected reference |
 | `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |
-| `svtav1/src/avif.rs` | pristine C SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `svtav1/src/avif.rs` | speed must be between 1 and 10 (use with_native_preset for C's preset scale) |
 | `svtav1/src/avif.rs` | stride is smaller than the width (rows would overlap) |
 | `svtav1/src/avif.rs` | strided pixel buffer size overflows usize |

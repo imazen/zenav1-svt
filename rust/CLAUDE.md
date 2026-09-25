@@ -109,8 +109,10 @@ detail, and they are regenerated or gated rather than narrated.
 
 - C v4.2.0 accepts 8/10-bit 4:2:0. Mono/alpha are Rust extensions; wider chroma
   and 12-bit are alternate-backend/extension work, not shipping-C omissions.
-- Legacy constructors use Hybrid3115. Pristine Mainline420 is explicit; HDR-off
-  on a hybrid build is not proof of pristine parity. SvtParity excludes Zen
+- Constructors default to Mainline420 (pristine v4.2.0) since 2026-09-25, and
+  the tools' default oracle is `mainline-4.2.0`; Hybrid3115 is legacy and
+  selected explicitly (or by `SVT_HDR_MODE=1`). HDR-off on a hybrid build is
+  not proof of pristine parity. SvtParity excludes Zen
   behavior but does not certify all combinations or hide known divergences.
 - Signed native −1 is implemented; −2/−3 are refused. C all-intra SGR research
   search and video SGR have different preset selectors; do not say SGR is absent.

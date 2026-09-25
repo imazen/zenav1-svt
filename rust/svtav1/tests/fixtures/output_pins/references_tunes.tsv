@@ -20,7 +20,7 @@ photo-64x64-b10-p6-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Rob
 photo-64x64-b10-p6-q30-Hybrid3115-HdrFork	980:c77e769c6d8ef081b5378fa964f4199a
 photo-64x64-b10-p6-q30-Hybrid3115-Mainline	1305:aa6ab708ca090144f8e2c0a7ba97e4be
 photo-64x64-b10-p6-q30-Mainline420-Mainline	1305:aa6ab708ca090144f8e2c0a7ba97e4be
-photo-64x64-b8-mono-p6-q30-Mainline420-Mainline	REFUSED:unsupported config: pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension
+photo-64x64-b8-mono-p6-q30-Mainline420-Mainline	1145:defcd1f29347b833884f15dec8ff3a2d
 photo-64x64-b8-p4-q30-GhostRobot-HdrFork	1125:9b73d593ac5a2041e3af75cece740dda
 photo-64x64-b8-p4-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
 photo-64x64-b8-p4-q30-Hybrid3115-HdrFork	951:822bcc531e095c51ff2d68596bf48517

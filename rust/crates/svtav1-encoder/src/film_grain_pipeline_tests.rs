@@ -105,8 +105,10 @@ fn table_precedence_preserves_seed_and_skips_denoising() {
         plain.dpb.get(0).unwrap().y_plane
     );
     // Supplied tables also override fork photon noise.
+    p.reference = crate::reference::SvtReference::Hybrid3115;
     p.hdr = crate::hdr_mode::HdrForkConfig::hdr_fork();
     p.hdr.noise_strength = 120;
+    plain.reference = crate::reference::SvtReference::Hybrid3115;
     plain.hdr = p.hdr.clone();
     plain.hdr.noise_strength = 0;
     assert_eq!(encode(&mut p, &s), encode(&mut plain, &s));

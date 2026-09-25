@@ -15,8 +15,10 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
 
 ## References, policy and coverage
 
-- Legacy constructors retain **Hybrid3115**, the historical patched-C oracle.
-  This is not synonymous with pristine mainline, even with HDR knobs off.
+- Constructors default to **Mainline420** (pristine v4.2.0) since 2026-09-25;
+  the historical patched-C **Hybrid3115** is legacy and must be selected
+  explicitly. The Rust extensions (monochrome, 4:4:4, alpha) encode under
+  either; only `SvtParity` refuses them.
 - `SvtReference::Mainline420` names pristine v4.2.0. `SvtParity(reference)`
   restricts the request to the named C envelope and rejects Zen enhancements.
   It does not certify every untested combination or erase known divergences.

@@ -11,7 +11,8 @@
 #   tools/oracle field  NAME COLUMN   one registry column
 #
 # NAME defaults to the active oracle: $SVT_ORACLE if set; otherwise the legacy
-# switch, SVT_HDR_MODE=1 -> hybrid-3115-hdr, anything else -> hybrid-3115.
+# switch SVT_HDR_MODE=1 -> hybrid-3115-hdr (the fork oracle until Ghost Robot
+# replaces it), anything else -> mainline-4.2.0 (the default since plan 3.7).
 #
 # `live` oracles build the submodule's working tree into the legacy paths
 # (Bin/Release, Bin/ReleaseHdr), so every existing consumer keeps working, and
@@ -63,7 +64,7 @@ resolve() {
     elif [[ "${SVT_HDR_MODE:-0}" == "1" ]]; then
         printf 'hybrid-3115-hdr\n'
     else
-        printf 'hybrid-3115\n'
+        printf 'mainline-4.2.0\n'
     fi
 }
 
@@ -117,8 +118,11 @@ build() {
         stamp="$dir/STAMP"
         want="$commit ${flags[*]}"
         if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$want" || ! -f "$dir/lib/libSvtAv1Enc.a" ]]; then
+            # A shallow checkout (CI's submodules) may not hold the pin: fetch
+            # exactly that commit before giving up.
             git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null ||
-                die "$name: commit ${commit:0:12} is not in $(field "$name" source); fetch it there"
+                git -C "$src" fetch --quiet --depth 1 origin "$commit" 2>/dev/null ||
+                die "$name: commit ${commit:0:12} is not in $(field "$name" source) and could not be fetched; fetch it there"
             rm -rf "$dir"
             mkdir -p "$dir/src"
             git -C "$src" archive "$commit" | tar -x -C "$dir/src"

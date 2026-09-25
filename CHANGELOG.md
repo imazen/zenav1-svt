@@ -13,6 +13,12 @@ Crates are not published to crates.io yet — depend by git.
 
 ### QUEUED BREAKING CHANGES
 
+- The default reference is `SvtReference::Mainline420` (was `Hybrid3115`) for
+  `EncodePipeline`'s constructors and `AvifEncoder::new`, and `tools/oracle`'s
+  default C oracle is `mainline-4.2.0`. Fork mode (`SvtHdrMode::HdrFork`) now
+  needs an explicit `Hybrid3115` or `GhostRobot` reference. Monochrome and the
+  other Rust extensions encode under `Mainline420`; only `SvtParity` refuses
+  them. Owner-approved; the ledger gates hold under the new pairing.
 - The facade's root no longer re-exports the internal crates: `svtav1::{encoder,
   dsp, types, entropy, tables}` need the `__expert` feature. The raw-OBU API is
   `svtav1::pipeline` (`EncodePipeline`, `RcConfig`, `RcMode`, `HdrForkConfig`,

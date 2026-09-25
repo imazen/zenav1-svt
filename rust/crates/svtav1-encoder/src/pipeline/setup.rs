@@ -75,7 +75,7 @@ impl EncodePipeline {
         let (sb_size, sb128_fallback) = Self::resolve_sb_size(derived_sb, None, preset);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
-            reference: crate::reference::SvtReference::Hybrid3115,
+            reference: crate::reference::SvtReference::Mainline420,
             enhancements: crate::enhancements::ZenEnhancements::default(),
             film_grain: Default::default(),
             #[cfg(feature = "__expert")]

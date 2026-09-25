@@ -1583,6 +1583,12 @@ fn apply_oracle_env(pipeline: &mut svtav1_encoder::pipeline::EncodePipeline) {
         } else {
             SvtHdrMode::Mainline
         };
+        // The legacy fork switch pairs with the hybrid-3115-hdr oracle
+        // (`tools/oracle`'s default for SVT_HDR_MODE=1), so without an explicit
+        // reference it means Hybrid3115, not the Mainline420 default.
+        if mode == SvtHdrMode::HdrFork && std::env::var_os("SVTAV1_REFERENCE").is_none() {
+            pipeline.reference = SvtReference::Hybrid3115;
+        }
         pipeline.hdr = HdrForkConfig::from_env_for_reference(pipeline.reference, mode);
         return;
     };

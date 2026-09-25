@@ -74,8 +74,8 @@ pub(super) struct FrameDecision {
 
 /// Encoder pipeline state.
 pub struct EncodePipeline {
-    /// Pinned source identity, independent of HDR mode. Legacy constructors
-    /// retain Hybrid3115; select Mainline420 for pristine chroma ranking.
+    /// Pinned source identity, independent of HDR mode. Constructors default
+    /// to Mainline420 (pristine v4.2.0); Hybrid3115 is legacy (plan 3.7).
     pub reference: crate::reference::SvtReference,
     /// Explicit Zen experiments, separate from the reference identity.
     /// Empty by default. Nonempty settings do not claim C parity.
