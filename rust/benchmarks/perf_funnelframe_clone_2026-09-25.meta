@@ -1,0 +1,21 @@
+Snapshot 2026-09-25 (i265): the per-leaf FunnelFrame lambda override.
+
+Under TPL blk_lambda_tuning or the SSIM/IQ/MS_SSIM tunes, `evaluate_leaf`
+replaces three lambdas per leaf by cloning `FunnelFrame`. It cloned twice (once
+for its own binding, once more into `fx.frame_ssim`), and each clone deep-copied
+`dv_tables`, the two ~128 KB IntraBC MV cost tables. Now the override is built
+once and shared through the Arc, and `dv_tables` is `Arc`'d.
+
+output: byte-identical (sha256 of the .obu equal in every cell; perf_ab ident=Y)
+
+cell: gb82-sc/gmessages.png, 512x512 crop (ffmpeg crop=512:512:0:0, yuv420p),
+      qp40, still, SVTAV1_TUNE=3 (IQ), perf_encode raw:
+      base = c9b35fe7 plus the SVTAV1_TUNE knob; cand = this change
+
+callgrind instructions:
+  p4   2,219,676,606 -> 1,725,786,845   -22.25%   (memcpy 516.4M -> 24.4M Ir)
+  p6     385,664,297 ->   385,380,333    -0.07%   (IntraBC off at p6: no dv_tables)
+  p10    153,237,162 ->   153,004,982    -0.15%
+
+wall clock, tools/perf_ab.sh (interleaved, 5 rounds): perf_funnelframe_clone_2026-09-25.tsv
+  512 p4  speedup 1.084   512 p6  speedup 1.019

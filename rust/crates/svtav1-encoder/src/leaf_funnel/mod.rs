@@ -298,10 +298,10 @@ pub(crate) fn evaluate_leaf(
     //
     // The swap is C's `ctx->full_lambda_md`/`fast_lambda_md` overwrite for
     // the whole block evaluation, so the port mirrors it as a per-leaf
-    // `frame` clone with the three lambda fields replaced: `frame_owned`
-    // serves this function's own binding (fx is borrowed `&mut` below),
-    // `fx.frame_ssim` serves every downstream `fx.frame()` reader (the
-    // u8 tx pipeline's RDOQ rdmult included) without a signature change.
+    // `frame` clone with the three lambda fields replaced, stored once as
+    // `fx.frame_ssim`: it serves every downstream `fx.frame()` reader (the
+    // u8 tx pipeline's RDOQ rdmult included) and, through a refcount clone,
+    // this function's own binding (fx is borrowed `&mut` below).
     let frame_owned: Option<FunnelFrame> = {
         let mut f: Option<FunnelFrame> = fx.frame.tpl_rdmult.as_ref().map(|t| {
             let mut f = (*fx.frame).clone();
@@ -378,8 +378,10 @@ pub(crate) fn evaluate_leaf(
         }
         f
     };
-    fx.frame_ssim = frame_owned.clone().map(alloc::sync::Arc::new);
-    let frame = frame_owned.as_ref().unwrap_or(fx.frame);
+    // One allocation serves both this function and every `fx.frame()` reader.
+    fx.frame_ssim = frame_owned.map(alloc::sync::Arc::new);
+    let frame_arc = fx.frame_ssim.clone();
+    let frame = frame_arc.as_deref().unwrap_or(fx.frame);
     let lambda = frame.lambda;
     // `quantize_inv_quantize`'s qindex (full_loop.c:1668-1676): the blk
     // `ctx->qp_index` ONLY when delta-q is signalled, else the frame
@@ -425,7 +427,7 @@ pub(crate) fn evaluate_leaf(
         // block first — already folded into `frame.lambda10` above — then
         // take `full_lambda_md[1] >> 4` for the fast cost
         // (product_coding_loop.c:1074).
-        if frame_owned.is_some() {
+        if frame_arc.is_some() {
             (frame.lambda10, frame.lambda10 >> 4)
         } else {
             (lf, lf / 16)
@@ -860,7 +862,7 @@ pub(crate) fn evaluate_leaf(
             &geom,
             &cx,
             &qt,
-            frame_owned.as_ref().map(|f| f.lambda),
+            frame_arc.as_ref().map(|f| f.lambda),
             cands,
             y_src,
             y_src_stride,

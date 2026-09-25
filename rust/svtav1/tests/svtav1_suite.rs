@@ -15,6 +15,7 @@
 //!   * files named directly by a gate: `--test tier_invariance` (CI),
 //!     `--test odd_frame_recon` and `--test still_policy` (spotcheck).
 
+mod config_surface;
 mod configuration_support;
 mod e2e_correctness;
 mod golden_parity;
@@ -24,7 +25,6 @@ mod issue13_repro;
 mod issue18_repro;
 mod issue9_repro;
 mod never_panics;
-mod config_surface;
 mod output_pins;
 mod real_encode;
 mod thread_determinism;

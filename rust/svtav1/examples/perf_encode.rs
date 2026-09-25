@@ -215,12 +215,14 @@ fn main() {
             qp,
             ..RcConfig::default()
         };
-        EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
-            .with_bit_depth(8)
-            .with_tile_rows_log2(0)
-            .with_tile_cols_log2(0)
-            .with_sb_size(None)
-            .with_chroma_420(true)
+        apply_tune_env(
+            EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+                .with_bit_depth(8)
+                .with_tile_rows_log2(0)
+                .with_tile_cols_log2(0)
+                .with_sb_size(None)
+                .with_chroma_420(true),
+        )
     };
 
     // Untimed warmup: fresh pipeline each time (frame_count=0 first-frame path).
@@ -289,12 +291,14 @@ fn encode_still_bd10(
             qp,
             ..RcConfig::default()
         };
-        EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
-            .with_bit_depth(10)
-            .with_tile_rows_log2(0)
-            .with_tile_cols_log2(0)
-            .with_sb_size(None)
-            .with_chroma_420(true)
+        apply_tune_env(
+            EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+                .with_bit_depth(10)
+                .with_tile_rows_log2(0)
+                .with_tile_cols_log2(0)
+                .with_sb_size(None)
+                .with_chroma_420(true),
+        )
     };
 
     for _ in 0..warmup {
@@ -392,12 +396,14 @@ fn encode_sequence(
             qp,
             ..RcConfig::default()
         };
-        EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
-            .with_bit_depth(8)
-            .with_tile_rows_log2(0)
-            .with_tile_cols_log2(0)
-            .with_sb_size(None)
-            .with_chroma_420(true)
+        apply_tune_env(
+            EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
+                .with_bit_depth(8)
+                .with_tile_rows_log2(0)
+                .with_tile_cols_log2(0)
+                .with_sb_size(None)
+                .with_chroma_420(true),
+        )
     };
 
     // Untimed warmup: whole sequences, fresh pipeline each time.
@@ -443,4 +449,14 @@ fn encode_sequence(
         all.len(),
         per.join(",")
     );
+}
+
+/// `SVTAV1_TUNE=<0..6>`: the mainline `--tune`, the same override
+/// `identity_run` reads, so a timing cell can exercise the per-block SSIM
+/// rdmult (tunes 2..4). Unset leaves the pipeline default untouched.
+fn apply_tune_env(mut p: EncodePipeline) -> EncodePipeline {
+    if let Ok(t) = std::env::var("SVTAV1_TUNE") {
+        p.hdr.tune = t.parse().expect("SVTAV1_TUNE must be a u8");
+    }
+    p
 }

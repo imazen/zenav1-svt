@@ -510,7 +510,8 @@ pub(super) fn encode_one_tile_body(
                 &crate::entropy::mv_coding::NmvContext::default(),
                 funnel_cfg.allow_intrabc,
                 false, // approx_inter_rate: structurally 0 on allintra
-            ),
+            )
+            .map(alloc::sync::Arc::new),
             frame_h_px: h,
             // The ALIGNED frame width (C `pcs->ppcs->aligned_width`) — the
             // other half of the cropped-TX RD distortion bound. `w`/`h` in

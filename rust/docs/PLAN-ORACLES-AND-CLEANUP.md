@@ -301,10 +301,9 @@ In dependency order:
     from 70/78 to 41/49 parameters. Instructions are unchanged (callgrind
     within 0.04%), so the +0.1..0.4% residue is NOT in the phase parameters;
     it is still open.
-  - Next: `encode_frame_impl` is ONE 7,646-line function, and
-    `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
-    under target; moves cannot. Then the other 21 files over 3 kloc, starting
-    with their inline tests (T7).
+  - Open: the residue itself. The 2026-09-25 dbgenv caching
+    (`c9b35fe7`, `benchmarks/perf_dbgenv_cache_2026-09-25.meta`: -0.3% to
+    -2.1%) more than pays it back, but its cause is not found.
 - S1 retire or quarantine the pre-port encoder;
 - S6 one scratch strategy;
 - S7 diagnostics behind an observer and a `trace` feature;
@@ -335,8 +334,20 @@ Order, by expected size:
      had already run) and the `tpl_sb_qp_offsets` full-frame pass (consumed
      by `let _`) are removed; the dead homegrown temporal-filter branch is
      gone from the pipeline (`092c7e27`).
-   - Open: the third symbol-writing walk (`recon_only`), and the per-leaf
-     `FunnelFrame` deep clones under TPL/SSIM lambdas.
+   - Closed, measured 2026-09-25 (i265, callgrind on `c9b35fe7`): the
+     "third walk" is gone. A frame runs at most two walks, a `recon_only`
+     one when a post-filter or a later frame reads the recon and the one
+     symbol-writing walk (`pack_phase.rs`); a 256x256 4-frame gradient
+     video calls `encode_block_syntax` 890 times for 445 leaves. Both walks
+     together cost 6.4% of instructions at p10 and 2.1% at p6. On a still
+     (one walk) the walk is 19.5% at p10, and 11.4% of that is
+     `write_coeffs_txb_1d`, which is real symbol coding. The walk never
+     calls `eval_uv` or `txt_search`; the 34% figure that suggested it did
+     was callgrind counting the recursive `encode_partition_tree'2` twice.
+   - Done (this change): the per-leaf `FunnelFrame` lambda override clones
+     once, not twice, and `dv_tables` is `Arc`'d. Tune IQ on a 512x512
+     screen still at p4: -22.3% instructions, 1.084x wall clock,
+     byte-identical (`benchmarks/perf_funnelframe_clone_2026-09-25.meta`).
    - Done (`9409e9f6`): `temporal_filter::temporal_filter`, `TfConfig`,
      `TfResult` and the f64 `estimate_noise` are deleted. The
      `fallible-alloc` test now calls `try_vec!` inside the encoder crate
@@ -375,7 +386,8 @@ Order, by expected size:
     `SC_TOOLS` bisect knob) moved into `dbgenv`, which reads each one once
     and returns `false` or `None` without std. OBMC's thread-local buffers
     fall back to fresh buffers on every call.
-  - Open: the tier gate (S8) and a dead-code gate.
+  - Done: the tier gate, as S8 (`deff9b73`).
+  - Open: a dead-code gate.
 - [ ] T7 inline tests out of product files.
   - Done (this change): 38 inline `#[cfg(test)]` modules in the 23 files
     over 2 kloc moved to sibling files (`<file>/tests.rs` and so on) with

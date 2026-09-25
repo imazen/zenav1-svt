@@ -356,9 +356,10 @@ impl MdRates {
 
 /// Frame-constant funnel parameters.
 ///
-/// `Clone` exists for `evaluate_leaf`'s per-leaf `frame_ssim` override —
-/// one clone per leaf under the SSIM/IQ/MS_SSIM tunes only; the `Arc`'d
-/// `ssim_rdmult` keeps the factor grid a refcount bump, not a copy.
+/// `Clone` exists for `evaluate_leaf`'s per-leaf lambda override — one clone
+/// per leaf under TPL `blk_lambda_tuning` or the SSIM/IQ/MS_SSIM tunes only.
+/// Every large member (`ssim_rdmult`, `tpl_rdmult`, `dv_tables`) is `Arc`'d,
+/// so the clone copies scalars and refcounts, not tables.
 #[derive(Clone)]
 pub struct FunnelFrame {
     /// Source-specific chroma presort: pristine variance versus hybrid SAD.
@@ -525,8 +526,10 @@ pub struct FunnelFrame {
     /// `dv_joint_cost`, `svt_aom_estimate_mv_rate`'s dv arm) — FRAME-
     /// CONSTANT on the allintra path (`update_mv` forced 0 on I-slices;
     /// `build_dv_cost_tables`'s doc), built from the default `ndvc` at
-    /// `MV_SUBPEL_NONE`. `None` unless `cfg.allow_intrabc`.
-    pub dv_tables: Option<crate::intrabc::MvCostTables>,
+    /// `MV_SUBPEL_NONE`. `None` unless `cfg.allow_intrabc`. `Arc` because
+    /// the two component tables are ~256 KB and the per-leaf lambda override
+    /// clones this struct.
+    pub dv_tables: Option<alloc::sync::Arc<crate::intrabc::MvCostTables>>,
     /// Frame height in pixels (`mi_rows * 4`, the ALIGNED height) — the
     /// C `mb_to_bottom_edge` bottom clip the inter var-tx walk applies
     /// (entropy_coding.c:4444-4452). Read by IBC candidates AND, with
