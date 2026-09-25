@@ -425,8 +425,11 @@ Order, by expected size:
    - Done (this change): `residual_i16` row overhead and a per-thread PD0
      scratch, -3.1% instructions at 1024 p10
      (`benchmarks/perf_residual_pd0scratch_2026-09-25.meta`).
-   - Done (this change): `sse` and `variance_diff` row overhead, -1.95%
+   - Done (`afbcf7f6`): `sse` and `variance_diff` row overhead, -1.95%
      (`benchmarks/perf_sse_variance_rows_2026-09-25.meta`).
+   - Done (this change): eob from a generated inverse scan and C's cul-level
+     form, -3.06%, 1.015-1.030x wall
+     (`benchmarks/perf_eob_iscan_2026-09-25.meta`).
    - Open, by excess over C at that cell: memset (14.8M vs 3.0M),
      `cost_coeffs_txb` (10.8M; C runs no exact coefficient rate there, a
      delegate brief), memcpy (10.3M vs 3.1M).

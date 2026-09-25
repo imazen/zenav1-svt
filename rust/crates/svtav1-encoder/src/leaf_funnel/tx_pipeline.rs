@@ -392,6 +392,27 @@ pub(crate) fn compute_cul_level(qcoeff: &[i32]) -> u8 {
     cul as u8
 }
 
+/// [`compute_cul_level`] in C's form (`svt_av1_compute_cul_level`,
+/// full_loop.c:1366): the scan prefix `0..eob`, stopping once the sum
+/// saturates.
+pub(crate) fn compute_cul_level_scan(qcoeff: &[i32], scan: &[u16], eob: u16) -> u8 {
+    let mut cul: u32 = 0;
+    for &pos in &scan[..eob as usize] {
+        cul += qcoeff[pos as usize].unsigned_abs();
+        if cul >= 63 {
+            break;
+        }
+    }
+    let mut cul = cul.min(63);
+    let dc = qcoeff.first().copied().unwrap_or(0);
+    if dc < 0 {
+        cul |= 1 << 6;
+    } else if dc > 0 {
+        cul += 2 << 6;
+    }
+    cul as u8
+}
+
 /// C's coefficient-SATD early exit, carried across one `tx_type_search` loop.
 ///
 /// C `tx_type_search`, `product_coding_loop.c:4741-4755`, verbatim:
@@ -1540,7 +1561,14 @@ pub(super) fn tx_unit_inner(
     } else {
         bits
     };
-    let cul = compute_cul_level(qcoeff);
+    // C's own form (`svt_av1_compute_cul_level`: `scan[0..eob]`, early exit)
+    // when eob is a small part of the block; the raster sum otherwise. Every
+    // position past eob is zero, so both give the same value.
+    let cul = if (eob as usize) * 8 <= qcoeff.len() {
+        compute_cul_level_scan(qcoeff, scan, eob)
+    } else {
+        compute_cul_level(qcoeff)
+    };
 
     Some(TxUnitMeta {
         eob,

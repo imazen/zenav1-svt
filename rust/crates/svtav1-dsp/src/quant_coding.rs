@@ -45,6 +45,42 @@
 use archmage::prelude::*;
 
 // ---------------------------------------------------------------------------
+// eob from the inverse scan
+// ---------------------------------------------------------------------------
+
+/// `eob = 1 + max{ i : qcoeff[scan[i]] != 0 }` (0 for an all-zero block),
+/// computed in raster order from the inverse scan: `iscan[rc]` is raster
+/// position `rc`'s scan index. The same identity C's AVX2 quantizers use, and
+/// a contiguous max instead of a scattered reverse walk. Reads
+/// `min(qcoeff.len(), iscan.len())` positions.
+pub fn eob_from_iscan(qcoeff: &[i32], iscan: &[u16]) -> u16 {
+    incant!(eob_iscan_impl(qcoeff, iscan), [v3, neon, scalar])
+}
+
+#[magetypes(define(i32x8), v3, neon, scalar)]
+fn eob_iscan_impl(token: Token, qcoeff: &[i32], iscan: &[u16]) -> u16 {
+    let n = qcoeff.len().min(iscan.len());
+    let (qc, qt) = qcoeff[..n].as_chunks::<8>();
+    let (ic, it) = iscan[..n].as_chunks::<8>();
+    let zero = i32x8::zero(token);
+    let none = i32x8::splat(token, -1);
+    // Lanes hold the largest nonzero scan index seen, -1 when none.
+    let mut best = none;
+    for (q, i) in qc.iter().zip(ic) {
+        let nz = i32x8::load(token, q).simd_ne(zero);
+        let idx = i32x8::from_array(token, i.map(i32::from));
+        best = best.max(i32x8::blend(nz, idx, none));
+    }
+    let mut m = best.to_array().into_iter().max().unwrap_or(-1);
+    for (&q, &i) in qt.iter().zip(it) {
+        if q != 0 {
+            m = m.max(i32::from(i));
+        }
+    }
+    (m + 1) as u16
+}
+
+// ---------------------------------------------------------------------------
 // quantize_fp (RDOQ initial quantize) — C quantize_fp_helper_c non-QM branch
 // ---------------------------------------------------------------------------
 

@@ -213,3 +213,81 @@ fn optimize_keeps_dequant_mirror() {
         );
     }
 }
+
+/// The inverse-scan eob (SIMD, every dispatch tier) equals the reverse scan
+/// walk for every generated scan, on all-zero, single-coefficient and random
+/// sparse blocks.
+#[test]
+fn eob_from_iscan_matches_reverse_walk_for_every_scan() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let mut cases: Vec<(&'static [u16], Vec<i32>)> = Vec::new();
+    let mut st = 0x2545_F491_4F6C_DD1D_u64;
+    for ts in 0..19 {
+        for class in 0..3 {
+            let scan = crate::entropy::scan_tables::scan(ts, class);
+            let n = scan.len();
+            assert!(crate::entropy::scan_tables::iscan_for(scan).is_some());
+            cases.push((scan, vec![0; n]));
+            for &pos in &[0, 1, n / 2, n - 1] {
+                let mut q = vec![0; n];
+                q[pos] = -3;
+                cases.push((scan, q));
+            }
+            for density in [1u64, 8, 64] {
+                let q = (0..n)
+                    .map(|_| {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        if st % 256 < density { (st >> 20) as i32 % 9 - 4 } else { 0 }
+                    })
+                    .collect();
+                cases.push((scan, q));
+            }
+        }
+    }
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+        for (scan, q) in &cases {
+            assert_eq!(eob_from_qcoeff(scan, q), eob_by_walk(scan, q), "n={}", scan.len());
+        }
+    });
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(report.permutations_run >= 2, "{}", report.permutations_run);
+}
+
+/// C's scan-prefix cul level equals the raster sum on every generated scan,
+/// including saturating and negative-DC blocks.
+#[test]
+fn cul_level_scan_form_matches_raster_form() {
+    use crate::leaf_funnel::{compute_cul_level, compute_cul_level_scan};
+    let mut st = 0x9E37_79B9_7F4A_7C15_u64;
+    for ts in 0..19 {
+        for class in 0..3 {
+            let scan = crate::entropy::scan_tables::scan(ts, class);
+            let n = scan.len();
+            for density in [0u64, 2, 16, 128] {
+                for big in [false, true] {
+                    let q: Vec<i32> = (0..n)
+                        .map(|_| {
+                            st ^= st << 13;
+                            st ^= st >> 7;
+                            st ^= st << 17;
+                            if st % 256 < density {
+                                let m = if big { 200 } else { 3 };
+                                (st >> 20) as i32 % (2 * m + 1) - m
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
+                    let eob = eob_by_walk(scan, &q);
+                    assert_eq!(
+                        compute_cul_level_scan(&q, scan, eob),
+                        compute_cul_level(&q),
+                        "ts={ts} class={class} density={density} big={big}"
+                    );
+                }
+            }
+        }
+    }
+}

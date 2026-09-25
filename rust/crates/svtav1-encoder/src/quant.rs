@@ -316,6 +316,17 @@ pub fn quantize_fp(
 /// `qcoeff` with a reverse scan walk (load + compare, no arithmetic).
 #[inline]
 pub(crate) fn eob_from_qcoeff(scan: &[u16], qcoeff: &[i32]) -> u16 {
+    // Every scan the encoder hands out has a generated inverse, which turns
+    // the scattered reverse walk into a contiguous SIMD max.
+    match crate::entropy::scan_tables::iscan_for(scan) {
+        Some(iscan) => svtav1_dsp::quant_coding::eob_from_iscan(&qcoeff[..iscan.len()], iscan),
+        None => eob_by_walk(scan, qcoeff),
+    }
+}
+
+/// [`eob_from_qcoeff`] by a reverse scan walk, for a scan without a
+/// generated inverse.
+pub(crate) fn eob_by_walk(scan: &[u16], qcoeff: &[i32]) -> u16 {
     for i in (0..scan.len()).rev() {
         if qcoeff[scan[i] as usize] != 0 {
             return (i + 1) as u16;

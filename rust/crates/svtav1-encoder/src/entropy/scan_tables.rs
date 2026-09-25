@@ -5,7 +5,7 @@
 //!
 //! GENERATED FILE — DO NOT EDIT. Regenerate with:
 //!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \
-//!     > crates/svtav1-entropy/src/scan_tables.rs
+//!     > crates/svtav1-encoder/src/entropy/scan_tables.rs
 //! The c_scan_tables_match test asserts these stay in sync with C.
 
 /// C `tx_type_to_scan_index[TX_TYPES]`.
@@ -1660,4 +1660,183 @@ pub fn scan(tx_size: usize, scan_class: usize) -> &'static [u16] {
         [&SCAN_TS18_C0, &SCAN_TS18_C1, &SCAN_TS18_C2],
     ];
     TABLE[tx_size][scan_class]
+}
+
+/// `invert(scan)[pos]` is the index of raster position `pos` in `scan`.
+const fn invert<const N: usize>(scan: &[u16; N]) -> [u16; N] {
+    let mut out = [0u16; N];
+    let mut i = 0;
+    while i < N {
+        out[scan[i] as usize] = i as u16;
+        i += 1;
+    }
+    out
+}
+
+static ISCAN_TS0_C0: [u16; 16] = invert(&SCAN_TS0_C0);
+static ISCAN_TS0_C1: [u16; 16] = invert(&SCAN_TS0_C1);
+static ISCAN_TS0_C2: [u16; 16] = invert(&SCAN_TS0_C2);
+static ISCAN_TS1_C0: [u16; 64] = invert(&SCAN_TS1_C0);
+static ISCAN_TS1_C1: [u16; 64] = invert(&SCAN_TS1_C1);
+static ISCAN_TS1_C2: [u16; 64] = invert(&SCAN_TS1_C2);
+static ISCAN_TS2_C0: [u16; 256] = invert(&SCAN_TS2_C0);
+static ISCAN_TS2_C1: [u16; 256] = invert(&SCAN_TS2_C1);
+static ISCAN_TS2_C2: [u16; 256] = invert(&SCAN_TS2_C2);
+static ISCAN_TS3_C0: [u16; 1024] = invert(&SCAN_TS3_C0);
+static ISCAN_TS3_C1: [u16; 1024] = invert(&SCAN_TS3_C1);
+static ISCAN_TS3_C2: [u16; 1024] = invert(&SCAN_TS3_C2);
+static ISCAN_TS4_C0: [u16; 1024] = invert(&SCAN_TS4_C0);
+static ISCAN_TS4_C1: [u16; 1024] = invert(&SCAN_TS4_C1);
+static ISCAN_TS4_C2: [u16; 1024] = invert(&SCAN_TS4_C2);
+static ISCAN_TS5_C0: [u16; 32] = invert(&SCAN_TS5_C0);
+static ISCAN_TS5_C1: [u16; 32] = invert(&SCAN_TS5_C1);
+static ISCAN_TS5_C2: [u16; 32] = invert(&SCAN_TS5_C2);
+static ISCAN_TS6_C0: [u16; 32] = invert(&SCAN_TS6_C0);
+static ISCAN_TS6_C1: [u16; 32] = invert(&SCAN_TS6_C1);
+static ISCAN_TS6_C2: [u16; 32] = invert(&SCAN_TS6_C2);
+static ISCAN_TS7_C0: [u16; 128] = invert(&SCAN_TS7_C0);
+static ISCAN_TS7_C1: [u16; 128] = invert(&SCAN_TS7_C1);
+static ISCAN_TS7_C2: [u16; 128] = invert(&SCAN_TS7_C2);
+static ISCAN_TS8_C0: [u16; 128] = invert(&SCAN_TS8_C0);
+static ISCAN_TS8_C1: [u16; 128] = invert(&SCAN_TS8_C1);
+static ISCAN_TS8_C2: [u16; 128] = invert(&SCAN_TS8_C2);
+static ISCAN_TS9_C0: [u16; 512] = invert(&SCAN_TS9_C0);
+static ISCAN_TS9_C1: [u16; 512] = invert(&SCAN_TS9_C1);
+static ISCAN_TS9_C2: [u16; 512] = invert(&SCAN_TS9_C2);
+static ISCAN_TS10_C0: [u16; 512] = invert(&SCAN_TS10_C0);
+static ISCAN_TS10_C1: [u16; 512] = invert(&SCAN_TS10_C1);
+static ISCAN_TS10_C2: [u16; 512] = invert(&SCAN_TS10_C2);
+static ISCAN_TS11_C0: [u16; 1024] = invert(&SCAN_TS11_C0);
+static ISCAN_TS11_C1: [u16; 1024] = invert(&SCAN_TS11_C1);
+static ISCAN_TS11_C2: [u16; 1024] = invert(&SCAN_TS11_C2);
+static ISCAN_TS12_C0: [u16; 1024] = invert(&SCAN_TS12_C0);
+static ISCAN_TS12_C1: [u16; 1024] = invert(&SCAN_TS12_C1);
+static ISCAN_TS12_C2: [u16; 1024] = invert(&SCAN_TS12_C2);
+static ISCAN_TS13_C0: [u16; 64] = invert(&SCAN_TS13_C0);
+static ISCAN_TS13_C1: [u16; 64] = invert(&SCAN_TS13_C1);
+static ISCAN_TS13_C2: [u16; 64] = invert(&SCAN_TS13_C2);
+static ISCAN_TS14_C0: [u16; 64] = invert(&SCAN_TS14_C0);
+static ISCAN_TS14_C1: [u16; 64] = invert(&SCAN_TS14_C1);
+static ISCAN_TS14_C2: [u16; 64] = invert(&SCAN_TS14_C2);
+static ISCAN_TS15_C0: [u16; 256] = invert(&SCAN_TS15_C0);
+static ISCAN_TS15_C1: [u16; 256] = invert(&SCAN_TS15_C1);
+static ISCAN_TS15_C2: [u16; 256] = invert(&SCAN_TS15_C2);
+static ISCAN_TS16_C0: [u16; 256] = invert(&SCAN_TS16_C0);
+static ISCAN_TS16_C1: [u16; 256] = invert(&SCAN_TS16_C1);
+static ISCAN_TS16_C2: [u16; 256] = invert(&SCAN_TS16_C2);
+static ISCAN_TS17_C0: [u16; 512] = invert(&SCAN_TS17_C0);
+static ISCAN_TS17_C1: [u16; 512] = invert(&SCAN_TS17_C1);
+static ISCAN_TS17_C2: [u16; 512] = invert(&SCAN_TS17_C2);
+static ISCAN_TS18_C0: [u16; 512] = invert(&SCAN_TS18_C0);
+static ISCAN_TS18_C1: [u16; 512] = invert(&SCAN_TS18_C1);
+static ISCAN_TS18_C2: [u16; 512] = invert(&SCAN_TS18_C2);
+
+/// Inverse of [`scan`] (C `iscan`): the scan index of each raster position.
+pub fn iscan(tx_size: usize, scan_class: usize) -> &'static [u16] {
+    const TABLE: [[&[u16]; 3]; 19] = [
+        [&ISCAN_TS0_C0, &ISCAN_TS0_C1, &ISCAN_TS0_C2],
+        [&ISCAN_TS1_C0, &ISCAN_TS1_C1, &ISCAN_TS1_C2],
+        [&ISCAN_TS2_C0, &ISCAN_TS2_C1, &ISCAN_TS2_C2],
+        [&ISCAN_TS3_C0, &ISCAN_TS3_C1, &ISCAN_TS3_C2],
+        [&ISCAN_TS4_C0, &ISCAN_TS4_C1, &ISCAN_TS4_C2],
+        [&ISCAN_TS5_C0, &ISCAN_TS5_C1, &ISCAN_TS5_C2],
+        [&ISCAN_TS6_C0, &ISCAN_TS6_C1, &ISCAN_TS6_C2],
+        [&ISCAN_TS7_C0, &ISCAN_TS7_C1, &ISCAN_TS7_C2],
+        [&ISCAN_TS8_C0, &ISCAN_TS8_C1, &ISCAN_TS8_C2],
+        [&ISCAN_TS9_C0, &ISCAN_TS9_C1, &ISCAN_TS9_C2],
+        [&ISCAN_TS10_C0, &ISCAN_TS10_C1, &ISCAN_TS10_C2],
+        [&ISCAN_TS11_C0, &ISCAN_TS11_C1, &ISCAN_TS11_C2],
+        [&ISCAN_TS12_C0, &ISCAN_TS12_C1, &ISCAN_TS12_C2],
+        [&ISCAN_TS13_C0, &ISCAN_TS13_C1, &ISCAN_TS13_C2],
+        [&ISCAN_TS14_C0, &ISCAN_TS14_C1, &ISCAN_TS14_C2],
+        [&ISCAN_TS15_C0, &ISCAN_TS15_C1, &ISCAN_TS15_C2],
+        [&ISCAN_TS16_C0, &ISCAN_TS16_C1, &ISCAN_TS16_C2],
+        [&ISCAN_TS17_C0, &ISCAN_TS17_C1, &ISCAN_TS17_C2],
+        [&ISCAN_TS18_C0, &ISCAN_TS18_C1, &ISCAN_TS18_C2],
+    ];
+    TABLE[tx_size][scan_class]
+}
+
+/// The [`iscan`] table of a slice returned by [`scan`], found by identity;
+/// `None` for any other slice.
+pub fn iscan_for(scan: &[u16]) -> Option<&'static [u16]> {
+    let p = scan.as_ptr();
+    let tables: &[(&[u16], &'static [u16])] = match scan.len() {
+        16 => &[
+            (&SCAN_TS0_C0, &ISCAN_TS0_C0),
+            (&SCAN_TS0_C1, &ISCAN_TS0_C1),
+            (&SCAN_TS0_C2, &ISCAN_TS0_C2),
+        ],
+        32 => &[
+            (&SCAN_TS5_C0, &ISCAN_TS5_C0),
+            (&SCAN_TS5_C1, &ISCAN_TS5_C1),
+            (&SCAN_TS5_C2, &ISCAN_TS5_C2),
+            (&SCAN_TS6_C0, &ISCAN_TS6_C0),
+            (&SCAN_TS6_C1, &ISCAN_TS6_C1),
+            (&SCAN_TS6_C2, &ISCAN_TS6_C2),
+        ],
+        64 => &[
+            (&SCAN_TS1_C0, &ISCAN_TS1_C0),
+            (&SCAN_TS1_C1, &ISCAN_TS1_C1),
+            (&SCAN_TS1_C2, &ISCAN_TS1_C2),
+            (&SCAN_TS13_C0, &ISCAN_TS13_C0),
+            (&SCAN_TS13_C1, &ISCAN_TS13_C1),
+            (&SCAN_TS13_C2, &ISCAN_TS13_C2),
+            (&SCAN_TS14_C0, &ISCAN_TS14_C0),
+            (&SCAN_TS14_C1, &ISCAN_TS14_C1),
+            (&SCAN_TS14_C2, &ISCAN_TS14_C2),
+        ],
+        128 => &[
+            (&SCAN_TS7_C0, &ISCAN_TS7_C0),
+            (&SCAN_TS7_C1, &ISCAN_TS7_C1),
+            (&SCAN_TS7_C2, &ISCAN_TS7_C2),
+            (&SCAN_TS8_C0, &ISCAN_TS8_C0),
+            (&SCAN_TS8_C1, &ISCAN_TS8_C1),
+            (&SCAN_TS8_C2, &ISCAN_TS8_C2),
+        ],
+        256 => &[
+            (&SCAN_TS2_C0, &ISCAN_TS2_C0),
+            (&SCAN_TS2_C1, &ISCAN_TS2_C1),
+            (&SCAN_TS2_C2, &ISCAN_TS2_C2),
+            (&SCAN_TS15_C0, &ISCAN_TS15_C0),
+            (&SCAN_TS15_C1, &ISCAN_TS15_C1),
+            (&SCAN_TS15_C2, &ISCAN_TS15_C2),
+            (&SCAN_TS16_C0, &ISCAN_TS16_C0),
+            (&SCAN_TS16_C1, &ISCAN_TS16_C1),
+            (&SCAN_TS16_C2, &ISCAN_TS16_C2),
+        ],
+        512 => &[
+            (&SCAN_TS9_C0, &ISCAN_TS9_C0),
+            (&SCAN_TS9_C1, &ISCAN_TS9_C1),
+            (&SCAN_TS9_C2, &ISCAN_TS9_C2),
+            (&SCAN_TS10_C0, &ISCAN_TS10_C0),
+            (&SCAN_TS10_C1, &ISCAN_TS10_C1),
+            (&SCAN_TS10_C2, &ISCAN_TS10_C2),
+            (&SCAN_TS17_C0, &ISCAN_TS17_C0),
+            (&SCAN_TS17_C1, &ISCAN_TS17_C1),
+            (&SCAN_TS17_C2, &ISCAN_TS17_C2),
+            (&SCAN_TS18_C0, &ISCAN_TS18_C0),
+            (&SCAN_TS18_C1, &ISCAN_TS18_C1),
+            (&SCAN_TS18_C2, &ISCAN_TS18_C2),
+        ],
+        1024 => &[
+            (&SCAN_TS3_C0, &ISCAN_TS3_C0),
+            (&SCAN_TS3_C1, &ISCAN_TS3_C1),
+            (&SCAN_TS3_C2, &ISCAN_TS3_C2),
+            (&SCAN_TS4_C0, &ISCAN_TS4_C0),
+            (&SCAN_TS4_C1, &ISCAN_TS4_C1),
+            (&SCAN_TS4_C2, &ISCAN_TS4_C2),
+            (&SCAN_TS11_C0, &ISCAN_TS11_C0),
+            (&SCAN_TS11_C1, &ISCAN_TS11_C1),
+            (&SCAN_TS11_C2, &ISCAN_TS11_C2),
+            (&SCAN_TS12_C0, &ISCAN_TS12_C0),
+            (&SCAN_TS12_C1, &ISCAN_TS12_C1),
+            (&SCAN_TS12_C2, &ISCAN_TS12_C2),
+        ],
+        _ => return None,
+    };
+    tables
+        .iter()
+        .find(|(s, _)| core::ptr::eq(s.as_ptr(), p))
+        .map(|&(_, i)| i)
 }

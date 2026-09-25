@@ -1,0 +1,30 @@
+Snapshot 2026-09-25 (i265): eob from the inverse scan, and C's cul-level form.
+
+Cell: 1024x1024 gradient qp40 p10 still (the perf_2026-09-25-gap cell).
+A line-level profile put 8M Ir of tx_unit_inner's 18.3M self cost in
+`quant::eob_from_qcoeff`: a reverse scan-order walk, one scattered load per
+position, the whole block for an all-zero one. C's AVX2 quantizers get eob
+as a raster max over `iscan`.
+
+- gen_scan_tables now also emits the inverse scans (computed at compile time
+  by a const fn from the scan statics) with `iscan()` and `iscan_for(scan)`
+  (identity lookup among the tables of that length); scan_tables.rs is
+  regenerated (the scan data is unchanged).
+- `svtav1_dsp::quant_coding::eob_from_iscan`: a `#[magetypes]` i32x8 kernel
+  (v3, neon, scalar). `eob_from_qcoeff` uses it for every generated scan and
+  keeps the walk (`eob_by_walk`) for any other slice.
+- tx_unit_inner computes cul_level in C's form (scan[0..eob], early exit)
+  when eob <= n/8, the raster sum otherwise.
+- Tests: iscan eob == reverse walk for all 57 scans on zero, single and
+  random blocks under every dispatch tier; both cul-level forms agree.
+
+output: byte-identical (.obu cmp; perf_ab ident=Y; nextest 2769/2769 with
+        pins unchanged; spotcheck 147/147)
+
+callgrind Ir, 1024 p10: 329,726,815 -> 319,646,721 (-3.06%)
+  eob: 5.57M (walk, outlined) -> 3.16M kernel + 1.16M iscan_for
+  tx_unit_inner self: 18.29M -> 7.44M
+
+wall clock, tools/perf_ab.sh (interleaved, 9 rounds) vs afbcf7f6:
+  perf_eob_iscan_2026-09-25.tsv
+  256 p6 1.015   256 p10 1.024   1024 p6 1.022   1024 p10 1.030
