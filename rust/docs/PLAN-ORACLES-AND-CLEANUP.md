@@ -100,8 +100,14 @@ commits, plus 73 fork-only commits (analysis in the review). Port by the
 review's table. Each item lands behind `SvtReference::GhostRobot`, with a
 C-parity witness under `SVT_ORACLE=ghost-robot`.
 
-- [ ] 3.1 Stand up the gates under `ghost-robot` and record the baseline
-  divergence per cell: 8-bit stills, 10-bit photo, non-flat, video.
+- [x] 3.1 (`2d96724a`) Still-grid baseline under `ghost-robot`:
+  `tools/oracle_still_grid.sh` over {gradient, photo} x {64,128,256} x
+  {8,10}-bit x qp {20,32,45,55} x presets {2,4,6,8,10,13} = 288 cells.
+  32/288 identical (bd8 28/144, bd10 4/144); control under
+  `mainline-4.2.0` is 288/288. Recorded in
+  `benchmarks/ghost_robot_baseline_2026-09-25.meta` with the per-axis and
+  stage histogram. The non-flat/video legs of the wider baseline remain
+  open.
 - [ ] 3.2 Output-changing mainline-master commits:
   - `1e3da1d7` HBD Hadamard in all-intra MDS0
   - `8b1f9a0d` restoration-enable derivation
