@@ -29,7 +29,7 @@ pub fn predict_dc(
         predict_dc_impl(
             dst, dst_stride, above, left, width, height, has_above, has_left
         ),
-        [neon, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -147,6 +147,94 @@ fn predict_dc_impl_neon(
         }
         (false, true) => {
             let sum = dc_edge_sum_neon(token, left, height);
+            ((sum + height as u32 / 2) / height as u32) as u8
+        }
+        (false, false) => 128,
+    };
+
+    if width == 0 || height == 0 {
+        return;
+    }
+    if dst_stride == width {
+        dst[..width * height].fill(dc);
+    } else {
+        for row in 0..height {
+            dst[row * dst_stride..row * dst_stride + width].fill(dc);
+        }
+    }
+}
+
+/// Sum the first `n` bytes of `e` with `psadbw`-against-zero —
+/// `_mm256_sad_epu8`/`_mm_sad_epu8` return the exact u64 lane totals.
+/// 32-, 16-, 8- and 4-byte chunks cover every AV1 edge length (4..64)
+/// completely; a scalar tail keeps the function total for any `n`. x86-64
+/// twin of [`dc_edge_sum_neon`].
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn dc_edge_sum_v3(_token: Desktop64, e: &[u8], n: usize) -> u32 {
+    let zero256 = _mm256_setzero_si256();
+    let zero128 = _mm_setzero_si128();
+    let mut acc = zero256;
+    let mut c = 0usize;
+    while c + 32 <= n {
+        let v: &[u8; 32] = e[c..c + 32].try_into().unwrap();
+        acc = _mm256_add_epi64(acc, _mm256_sad_epu8(_mm256_loadu_si256(v), zero256));
+        c += 32;
+    }
+    let mut acc128 = zero128;
+    if c + 16 <= n {
+        let v: &[u8; 16] = e[c..c + 16].try_into().unwrap();
+        acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si128(v), zero128));
+        c += 16;
+    }
+    if c + 8 <= n {
+        let v: &[u8; 8] = e[c..c + 8].try_into().unwrap();
+        acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si64(v), zero128));
+        c += 8;
+    }
+    if c + 4 <= n {
+        let v: &[u8; 4] = e[c..c + 4].try_into().unwrap();
+        acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si32(v), zero128));
+        c += 4;
+    }
+    let s256 = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+    let acc128 = _mm_add_epi64(acc128, s256);
+    let mut sum = (_mm_cvtsi128_si64(acc128)
+        + _mm_cvtsi128_si64(_mm_srli_si128::<8>(acc128))) as u32;
+    for k in c..n {
+        sum += e[k] as u32;
+    }
+    sum
+}
+
+/// x86-64 v3 arm of [`predict_dc`]: the edge sums go through
+/// `dc_edge_sum_v3`; the destination fill stays `.fill` (memset — already
+/// optimal). Same division and rounding as the scalar core, exact.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn predict_dc_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+) {
+    let dc = match (has_above, has_left) {
+        (true, true) => {
+            let sum = dc_edge_sum_v3(token, above, width) + dc_edge_sum_v3(token, left, height);
+            let count = (width + height) as u32;
+            ((sum + count / 2) / count) as u8
+        }
+        (true, false) => {
+            let sum = dc_edge_sum_v3(token, above, width);
+            ((sum + width as u32 / 2) / width as u32) as u8
+        }
+        (false, true) => {
+            let sum = dc_edge_sum_v3(token, left, height);
             ((sum + height as u32 / 2) / height as u32) as u8
         }
         (false, false) => 128,
@@ -461,7 +549,7 @@ pub fn predict_smooth_v(
 ) {
     incant!(
         predict_smooth_v_impl(dst, dst_stride, above, left, height, width),
-        [neon, scalar]
+        [v3, neon, scalar]
     );
 }
 
@@ -538,6 +626,67 @@ fn predict_smooth_v_impl_neon(
     }
 }
 
+/// x86-64 v3 arm of [`predict_smooth_v`]. [`predict_smooth_impl_v3`]'s
+/// structure with the horizontal term removed: per row only `w` varies, so
+///   pred[c] = (w * top[c] + K) >> 8,  K = (256 - w)*below + 128
+/// — the numerator is nonneg and <= 130,433, so i32 lanes are exact, `>> 8`
+/// is the scalar floor-div, and the u8 saturating narrow is `.min(255)`.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn predict_smooth_v_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    height: usize,
+    width: usize,
+) {
+    use magetypes::simd::generic::{i32x8, u8x32};
+    // Same gate as the NEON arm: one i32x8 covers 8 columns, so widths that
+    // are not a multiple of 8 stay scalar.
+    if width < 8 || width % 8 != 0 || width > 64 {
+        predict_smooth_v_core(dst, dst_stride, above, left, height, width);
+        return;
+    }
+    let below = i32::from(left[height - 1]);
+    let sm_weights = smooth_weights(height);
+    // Hoist `above` widened to i32 lanes: one i32x8 per 8 columns.
+    let mut tops = [i32x8::splat(token, 0); 8];
+    let mut j = 0usize;
+    while j * 8 < width {
+        let take = (width - j * 8).min(16);
+        let mut ta = [0u8; 32];
+        ta[..take].copy_from_slice(&above[j * 8..j * 8 + take]);
+        let t16 = u8x32::load(token, &ta).widen_low().bitcast_i16x16();
+        tops[j] = t16.widen_low();
+        tops[j + 1] = t16.widen_high();
+        j += 2;
+    }
+    for row in 0..height {
+        let w = i32::from(sm_weights[row]);
+        let k = (256 - w) * below + 128;
+        let base = row * dst_stride;
+        let mut c = 0usize;
+        while c + 16 <= width {
+            let a0 = (tops[c / 8] * w + k).shr_logical_const::<8>();
+            let a1 = (tops[c / 8 + 1] * w + k).shr_logical_const::<8>();
+            let a16 = a0.narrow_saturating_i16(a1);
+            let mut tmp = [0u8; 32];
+            a16.narrow_saturating_u8(a16).store(&mut tmp);
+            dst[base + c..base + c + 16].copy_from_slice(&tmp[..16]);
+            c += 16;
+        }
+        if c + 8 <= width {
+            let a = (tops[c / 8] * w + k).shr_logical_const::<8>();
+            let a16 = a.narrow_saturating_i16(a);
+            let mut tmp = [0u8; 32];
+            a16.narrow_saturating_u8(a16).store(&mut tmp);
+            dst[base + c..base + c + 8].copy_from_slice(&tmp[..8]);
+        }
+    }
+}
+
 /// Predict a block using smooth horizontal (only horizontal interpolation).
 pub fn predict_smooth_h(
     dst: &mut [u8],
@@ -549,7 +698,7 @@ pub fn predict_smooth_h(
 ) {
     incant!(
         predict_smooth_h_impl(dst, dst_stride, above, left, width, height),
-        [neon, scalar]
+        [v3, neon, scalar]
     );
 }
 
@@ -621,6 +770,67 @@ fn predict_smooth_h_impl_neon(
                 .try_into()
                 .unwrap();
             vst1_u8(d8, vqmovun_s16(lo));
+        }
+    }
+}
+
+/// x86-64 v3 arm of [`predict_smooth_h`]. Mirror of
+/// [`predict_smooth_v_impl_v3`]: per row only `d` varies, so
+///   pred[c] = (ww[c] * d + K) >> 8,  d = left[row] - right,
+///   K = 256*right + 128
+/// — `ww*d` can be negative in an i32 lane but the total equals the all-
+/// nonneg scalar numerator (<= 130,433), so `>> 8` is the scalar floor-div
+/// and the saturating narrow is `.min(255)`.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn predict_smooth_h_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+) {
+    use magetypes::simd::generic::{i32x8, u8x32};
+    if width < 8 || width % 8 != 0 || width > 64 {
+        predict_smooth_h_core(dst, dst_stride, above, left, width, height);
+        return;
+    }
+    let right = i32::from(above[width - 1]);
+    let sm_w = smooth_weights(width);
+    // Hoist the per-column weights widened to i32 lanes.
+    let mut wws = [i32x8::splat(token, 0); 8];
+    let mut j = 0usize;
+    while j * 8 < width {
+        let take = (width - j * 8).min(16);
+        let mut wa = [0u8; 32];
+        wa[..take].copy_from_slice(&sm_w[j * 8..j * 8 + take]);
+        let w16 = u8x32::load(token, &wa).widen_low().bitcast_i16x16();
+        wws[j] = w16.widen_low();
+        wws[j + 1] = w16.widen_high();
+        j += 2;
+    }
+    let k = 256 * right + 128;
+    for row in 0..height {
+        let d = i32::from(left[row]) - right;
+        let base = row * dst_stride;
+        let mut c = 0usize;
+        while c + 16 <= width {
+            let a0 = (wws[c / 8] * d + k).shr_logical_const::<8>();
+            let a1 = (wws[c / 8 + 1] * d + k).shr_logical_const::<8>();
+            let a16 = a0.narrow_saturating_i16(a1);
+            let mut tmp = [0u8; 32];
+            a16.narrow_saturating_u8(a16).store(&mut tmp);
+            dst[base + c..base + c + 16].copy_from_slice(&tmp[..16]);
+            c += 16;
+        }
+        if c + 8 <= width {
+            let a = (wws[c / 8] * d + k).shr_logical_const::<8>();
+            let a16 = a.narrow_saturating_i16(a);
+            let mut tmp = [0u8; 32];
+            a16.narrow_saturating_u8(a16).store(&mut tmp);
+            dst[base + c..base + c + 8].copy_from_slice(&tmp[..8]);
         }
     }
 }
@@ -3422,36 +3632,45 @@ mod tests {
         assert!(dst.iter().all(|&v| v == 100));
     }
 
-    /// The dispatched `predict_dc` (neon/scalar via `incant!`) must equal
+    /// The dispatched `predict_dc` (v3/neon/scalar via `incant!`) must equal
     /// `predict_dc_core` on every size, flag combination, and stride — the
     /// edge-sum is the only vectorized part, and a wrong sum flips the whole
-    /// block's dc value.
+    /// block's dc value. Runs under every token permutation so the SIMD arm
+    /// and the scalar arm are BOTH pinned against the core.
     #[test]
     fn predict_dc_dispatch_matches_core_all_sizes_flags() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
         let mut seed = 0x54321u32;
         let mut next = || {
             seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
             (seed >> 16) as u8
         };
-        for &width in &[4usize, 8, 16, 32, 64] {
-            for &height in &[4usize, 8, 16, 32, 64] {
-                let above: Vec<u8> = (0..width).map(|_| next()).collect();
-                let left: Vec<u8> = (0..height).map(|_| next()).collect();
-                for &(ha, hl) in &[(true, true), (true, false), (false, true), (false, false)] {
-                    for pad in [0usize, 5] {
-                        let stride = width + pad;
-                        let mut want = vec![0u8; stride * height];
-                        let mut got = vec![0u8; stride * height];
-                        predict_dc_core(&mut want, stride, &above, &left, width, height, ha, hl);
-                        predict_dc(&mut got, stride, &above, &left, width, height, ha, hl);
-                        assert_eq!(
-                            want, got,
-                            "predict_dc {width}x{height} stride {stride} flags ({ha},{hl})"
-                        );
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+            for &width in &[4usize, 8, 16, 32, 64] {
+                for &height in &[4usize, 8, 16, 32, 64] {
+                    let above: Vec<u8> = (0..width).map(|_| next()).collect();
+                    let left: Vec<u8> = (0..height).map(|_| next()).collect();
+                    for &(ha, hl) in &[(true, true), (true, false), (false, true), (false, false)] {
+                        for pad in [0usize, 5] {
+                            let stride = width + pad;
+                            let mut want = vec![0u8; stride * height];
+                            let mut got = vec![0u8; stride * height];
+                            predict_dc_core(
+                                &mut want, stride, &above, &left, width, height, ha, hl,
+                            );
+                            predict_dc(&mut got, stride, &above, &left, width, height, ha, hl);
+                            assert_eq!(
+                                want, got,
+                                "predict_dc {width}x{height} stride {stride} flags ({ha},{hl}) \
+                                 tier {perm}"
+                            );
+                        }
                     }
                 }
             }
-        }
+        });
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.permutations_run >= 2, "{report:?}");
     }
 
     /// The dispatched `predict_smooth` (v3/neon/scalar via `incant!`) must
@@ -3631,27 +3850,35 @@ mod tests {
         }
     }
 
+    /// Same sweep under every token permutation — the v3 arm and the scalar
+    /// arm both run, and a `width % 8 != 0` shape (e.g. width 4) confirms the
+    /// arms' gate still hands off to the core.
     #[test]
     fn predict_smooth_vh_dispatch_matches_core_all_sizes() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
         let mut seed = 0x6789au32;
         let mut next = || {
             seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
             (seed >> 16) as u8
         };
-        for &width in &[4usize, 8, 16, 32, 64] {
-            for &height in &[4usize, 8, 16, 32, 64] {
-                let above: Vec<u8> = (0..width).map(|_| next()).collect();
-                let left: Vec<u8> = (0..height).map(|_| next()).collect();
-                let mut want = vec![0u8; width * height];
-                let mut got = vec![0u8; width * height];
-                predict_smooth_v_core(&mut want, width, &above, &left, height, width);
-                predict_smooth_v(&mut got, width, &above, &left, 0, height, width);
-                assert_eq!(want, got, "predict_smooth_v {width}x{height}");
-                predict_smooth_h_core(&mut want, width, &above, &left, width, height);
-                predict_smooth_h(&mut got, width, &above, &left, width, height);
-                assert_eq!(want, got, "predict_smooth_h {width}x{height}");
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+            for &width in &[4usize, 8, 16, 32, 64] {
+                for &height in &[4usize, 8, 16, 32, 64] {
+                    let above: Vec<u8> = (0..width).map(|_| next()).collect();
+                    let left: Vec<u8> = (0..height).map(|_| next()).collect();
+                    let mut want = vec![0u8; width * height];
+                    let mut got = vec![0u8; width * height];
+                    predict_smooth_v_core(&mut want, width, &above, &left, height, width);
+                    predict_smooth_v(&mut got, width, &above, &left, 0, height, width);
+                    assert_eq!(want, got, "predict_smooth_v {width}x{height} tier {perm}");
+                    predict_smooth_h_core(&mut want, width, &above, &left, width, height);
+                    predict_smooth_h(&mut got, width, &above, &left, width, height);
+                    assert_eq!(want, got, "predict_smooth_h {width}x{height} tier {perm}");
+                }
             }
-        }
+        });
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.permutations_run >= 2, "{report:?}");
     }
 
     #[test]

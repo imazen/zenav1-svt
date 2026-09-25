@@ -180,6 +180,36 @@ fn bench_dsp(suite: &mut Suite) {
                     });
                 }
             });
+            suite.compare(format!("dc_{label}"), |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut dst = vec![0u8; STRIDE * h];
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
+                            intra_pred::predict_dc(&mut dst, STRIDE, above, left, w, h, true, true);
+                        })
+                    });
+                }
+            });
+            suite.compare(format!("smooth_v_{label}"), |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut dst = vec![0u8; STRIDE * h];
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
+                            intra_pred::predict_smooth_v(&mut dst, STRIDE, above, left, 0, h, w);
+                        })
+                    });
+                }
+            });
+            suite.compare(format!("smooth_h_{label}"), |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut dst = vec![0u8; STRIDE * h];
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
+                            intra_pred::predict_smooth_h(&mut dst, STRIDE, above, left, w, h);
+                        })
+                    });
+                }
+            });
         }
     }
 
