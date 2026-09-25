@@ -2600,6 +2600,12 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Monochrome inter at sizes that are not 8-aligned** decoded differently
+  from the encoder's recon (since 561267534; e.g. 65x64, 64x67, 66x66 all
+  diverge on the first inter frame). Those inter frames now refuse, and a
+  monochrome animation that hits that refusal or the coded-lossless-inter one
+  (quality >= 97) is coded all-intra instead of failing. Found by the
+  animation CI job, red since 2026-09-21.
 - **no_std build of `zenav1-svt-encoder`** (9d610a64): it did not compile
   (121 errors), and nothing noticed, because `test-minimal` runs at workspace
   level where dev-dependencies re-enable `std`. The encoder's `std` feature

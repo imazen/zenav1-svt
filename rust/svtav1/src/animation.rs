@@ -36,6 +36,16 @@ pub enum Keyframes {
     Every(u32),
 }
 
+/// Whether `why` is one of the pipeline's refusals of a monochrome inter
+/// frame it cannot reconstruct as the decoder does: coded-lossless inter
+/// (`lossless_config_error`), or a size that is not 8-aligned. A monochrome
+/// animation that hits one is coded all-intra instead. The monochrome
+/// animation test fails if the pipeline's wording drifts from these.
+fn is_mono_inter_refusal(why: &str) -> bool {
+    why.starts_with("QP 0 (coded-lossless) inter frames are not implemented")
+        || why.starts_with("monochrome inter frames are not implemented at a width or height")
+}
+
 impl Keyframes {
     /// C's `GopStructure::intra_period`.
     fn intra_period(self) -> u32 {
@@ -147,6 +157,7 @@ pub struct MonochromeAnimationFrame<'a, T = u8> {
 }
 
 /// Timing of an animated AVIF stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnimationTiming {
     /// Ticks per second, strictly positive.
     pub timescale: u32,
@@ -331,7 +342,25 @@ impl AvifEncoder {
                 duration: frame.duration,
             })
             .collect();
-        self.encode_animation_samples(&planes, width, height, timing, options, false)
+        match self.encode_animation_samples(&planes, width, height, timing, options, false) {
+            // The pipeline refuses two kinds of monochrome inter frame
+            // (`is_mono_inter_refusal`): coded-lossless ones, which a
+            // near-lossless setting produces because the video-mode QP scaling
+            // lowers inter frames below the key frame by a content-dependent
+            // amount (measured 2026-09-25: cli qp <= 2, quality >= 97), and
+            // ones at a size that is not 8-aligned. Monochrome is a Rust
+            // extension with no C reference; such an animation is coded
+            // all-intra, which is what every monochrome animation was before
+            // inter frames were enabled for it (561267534).
+            Err(EncodeError::UnsupportedConfig(why))
+                if is_mono_inter_refusal(why) && options.keyframes != Keyframes::EveryFrame =>
+            {
+                let mut all_key = options.clone();
+                all_key.keyframes = Keyframes::EveryFrame;
+                self.encode_animation_samples(&planes, width, height, timing, &all_key, false)
+            }
+            other => other,
+        }
     }
 
     fn encode_animation_samples<T: AnimationSample>(
@@ -1277,17 +1306,30 @@ mod tests {
                                     .arg(dir.join("input.avif")).arg(dir.join(format!("frame.{extension}"))).output().unwrap();
                                 assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
                             }
-                            let mut color_pipe = enc.build_pipeline(w as u32, h as u32).with_image_sequence().with_recon_output(true);
+                            // The colour references follow the product's own GOP
+                            // choice: 8-bit mono animations inter-code (561267534),
+                            // and fall back to all-key when an inter frame would be
+                            // coded-lossless (`encode_monochrome_animation_samples`).
+                            let reference_run = |gop: u32| {
+                                let mut pipe = enc.build_pipeline_gop(w as u32, h as u32, gop).with_chroma_420(false).with_image_sequence().with_recon_output(true);
+                                pipe.rc_config.framerate = 1000.0 / 17.0;
+                                (0..2).map(|i| {
+                                    pipe.$raw(&colors[i], stride)?;
+                                    Ok(if $depth == 8 {
+                                        pipe.last_recon.take().unwrap().0.into_iter().map(u16::from).collect::<Vec<u16>>()
+                                    } else { pipe.last_recon10_final.take().unwrap().0 })
+                                }).collect::<svtav1_encoder::EncodeResult<Vec<_>>>().map(|refs| (refs, pipe.width as usize))
+                            };
+                            let (color_refs, color_width) = match reference_run(enc.animation_keyframes(&AnimationOptions::default()).intra_period()) {
+                                Err(e) if matches!(e.error(), svtav1_encoder::EncodeError::UnsupportedConfig(why) if is_mono_inter_refusal(why)) => reference_run(1).unwrap(),
+                                r => r.unwrap(),
+                            };
                             let mut alpha_settings = enc.clone();
                             alpha_settings.full_range = true;
                             let mut alpha_pipe = alpha_settings.build_pipeline(w as u32, h as u32).with_image_sequence().with_recon_output(true);
-                            color_pipe.rc_config.framerate = 1000.0 / 17.0;
                             alpha_pipe.rc_config.framerate = 1000.0 / 17.0;
                             for i in 0..2 {
-                                color_pipe.$raw(&colors[i], stride).unwrap();
-                                let reference: Vec<u16> = if $depth == 8 {
-                                    color_pipe.last_recon.take().unwrap().0.into_iter().map(u16::from).collect()
-                                } else { color_pipe.last_recon10_final.take().unwrap().0 };
+                                let reference = &color_refs[i];
                                 let y4m = fs::read(dir.join(format!("frame-{i:010}.y4m"))).unwrap();
                                 let header_end = y4m.iter().position(|&b| b == b'\n').unwrap();
                                 let header = std::str::from_utf8(&y4m[..header_end]).unwrap();
@@ -1300,7 +1342,7 @@ mod tests {
                                     let actual = if $depth == 8 { u16::from(pixels[offset]) }
                                         else { u16::from_le_bytes([pixels[2*offset], pixels[2*offset+1]]) };
                                     if quality == 100.0 { assert_eq!(actual, colors[i][y*stride+x] as u16, "lossless luma must equal source"); }
-                                    assert_eq!(actual, reference[y*color_pipe.width as usize+x], "luma depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
+                                    assert_eq!(actual, reference[y*color_width+x], "luma depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
                                 }}
                                 if has_alpha {
                                     alpha_pipe.$raw(&alphas[i], w).unwrap();

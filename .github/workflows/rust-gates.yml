@@ -114,10 +114,15 @@ jobs:
             rm -rf "$dest"; sleep 5
           done
           [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
-          git -C "$dest" sparse-checkout set gb82-sc
+          # Plus the one CID22 photo `global_motion_gate.sh` (shard 3) reads;
+          # without it that gate exits FATAL on this runner.
+          git -C "$dest" sparse-checkout set --no-cone '/gb82-sc/' \
+            '/CID22/CID22-512/training/3571065.png'
           n=$(ls "$dest"/gb82-sc/*.png 2>/dev/null | wc -l | tr -d ' ')
           echo "gb82-sc PNGs fetched: $n -> $dest/gb82-sc"
           [ "$n" -eq 10 ] || { echo "FATAL: expected 10 gb82-sc PNGs, got $n" >&2; exit 1; }
+          [ -r "$dest/CID22/CID22-512/training/3571065.png" ] \
+            || { echo "FATAL: CID22 3571065.png not fetched" >&2; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1016,10 +1021,15 @@ jobs:
             rm -rf "$dest"; sleep 5
           done
           [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
-          git -C "$dest" sparse-checkout set gb82-sc
+          # Plus the one CID22 photo `global_motion_gate.sh` (shard 3) reads;
+          # without it that gate exits FATAL on this runner.
+          git -C "$dest" sparse-checkout set --no-cone '/gb82-sc/' \
+            '/CID22/CID22-512/training/3571065.png'
           n=$(ls "$dest"/gb82-sc/*.png 2>/dev/null | wc -l | tr -d ' ')
           echo "gb82-sc PNGs fetched: $n -> $dest/gb82-sc"
           [ "$n" -eq 10 ] || { echo "FATAL: expected 10 gb82-sc PNGs, got $n" >&2; exit 1; }
+          [ -r "$dest/CID22/CID22-512/training/3571065.png" ] \
+            || { echo "FATAL: CID22 3571065.png not fetched" >&2; exit 1; }
 
       - name: Install toolchain deps (C oracle for zenav1-svt-cref)
         run: sudo apt-get update && sudo apt-get install -y cmake nasm ninja-build
@@ -1211,8 +1221,11 @@ jobs:
         run: cargo build --workspace --exclude zenav1-svt-cref
       - name: Facade tests (e2e, golden parity, SIMD tier invariance, issue repros)
         working-directory: rust
+        # `config_surface` parses Ghost Robot's C header from the
+        # reference/svt-av1-hdr submodule, which this job does not check out;
+        # the x86-64 shards (submodules: recursive) run it.
         run: |
-          cargo test -p zenav1-svt --no-fail-fast
+          cargo test -p zenav1-svt --no-fail-fast -- --skip config_surface::
           cargo test -p zenav1-svt --doc
 
   pure-rust-i686:
@@ -1238,4 +1251,7 @@ jobs:
         run: cross build --workspace --exclude zenav1-svt-cref --target i686-unknown-linux-gnu
       - name: Facade tests on i686
         working-directory: rust
-        run: cross test -p zenav1-svt --target i686-unknown-linux-gnu --no-fail-fast
+        # `config_surface` needs the reference/svt-av1-hdr submodule, which
+        # this job does not check out; the x86-64 shards run it.
+        run: |
+          cross test -p zenav1-svt --target i686-unknown-linux-gnu --no-fail-fast -- --skip config_surface::

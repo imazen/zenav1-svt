@@ -114,8 +114,10 @@ monochrome.** 8-bit covers presets -1..13; 10-bit covers -1..13 at 256x256
 and -1..5 at 128x128 (the measured grid — wider cells are untested, not
 refused). `EncodePipeline`'s 4:2:0 entry points encode video for every
 caller inside it. Monochrome inter is decoder-verified on its own gate
-(`tools/mono_inter_gate.sh`); monochrome qp0 inter still refuses — no
-inter WHT residual path exists for it yet.
+(`tools/mono_inter_gate.sh`) at 8-aligned sizes; at other sizes the
+encoder's recon differs from the decoder's, so those inter frames refuse
+(measured 2026-09-25). Monochrome qp0 inter also refuses — no inter WHT
+residual path exists for it yet.
 
 **The guarantee is different from the still one, and the difference is the
 point.** Still images are byte-identical to C. Video is verified against a
@@ -146,7 +148,7 @@ content. Both claims are measured below; neither is inferred from the other.
 | `aq_mode != 0`, TPL r0 | **Not supported** | TPL is structurally off; `use_ref_frame_mvs` at `mfmv_level >= 2` refuses |
 | QP 0 (coded-lossless) on inter | **Validated, 8-bit 4:2:0** | Real inter-coded blocks + WHT residuals; `tools/qp0_inter_gate.sh` 7/7 — every frame byte-identical to source in `aomdec`, presets {0,6,13}, sb64+sb128, with an inter-usage anti-vacuity leg. 10-bit and 4:4:4 qp0 inter still refuse |
 | 10-bit OBMC | **Not supported** | `bd10_tree_supported` drops such a frame back to the 8-bit output rather than miscoding it |
-| Monochrome inter | **Validated** | `tools/mono_inter_gate.sh` 12/12 — encoder recon == `aomdec` == `dav1d`, all frames byte-identical across {diag,screen,gradient} content x {64x64..256x128} x presets {0,6,8,13} under a 13-px-per-frame shift, sb64+sb128, a 6-frame inter chain, a bd10 leg and a real-clip leg (fourpeople), with anti-vacuity legs requiring real inter blocks and nonzero MVs. The earlier mono streams both decoders rejected were produced before the format-agnostic inter correctness landings (write-time `overlappable_neighbors`/`num_proj_ref`, recon-only eob preservation, OBMC on `SimpleTranslation`). Mono qp0 inter refuses (no inter WHT residual arm); mono animation inter-codes since the same gate |
+| Monochrome inter | **Validated at 8-aligned sizes** | `tools/mono_inter_gate.sh` 12/12 — encoder recon == `aomdec` == `dav1d`, all frames byte-identical across {diag,screen,gradient} content x {64x64..256x128} x presets {0,6,8,13} under a 13-px-per-frame shift, sb64+sb128, a 6-frame inter chain, a bd10 leg and a real-clip leg (fourpeople), with anti-vacuity legs requiring real inter blocks and nonzero MVs. The earlier mono streams both decoders rejected were produced before the format-agnostic inter correctness landings (write-time `overlappable_neighbors`/`num_proj_ref`, recon-only eob preservation, OBMC on `SimpleTranslation`). Mono qp0 inter refuses (no inter WHT residual arm), and so does mono inter at a width or height that is not a multiple of 8 (recon != decoder, measured 2026-09-25 against avifdec; the gate only covers 8-aligned sizes); a mono animation that hits either refusal is coded all-intra |
 | **4:4:4 chroma, 8-bit key/inter** | **Validated** | Zen extension — C refuses non-4:2:0 (`enc_settings.c:470`), so there is no byte oracle. Envelope: 8-bit, `sb_size 64`, no superres; 10-bit/SB128/superres/IntraBC/film-grain refuse. Stills: byte-identical to `aomdec` AND `dav1d` on 10/10 cells (36..200 px, qp 0/20/30/35/45, incl. coded-lossless). Inter (non-funnel arm: luma-ME MV + motion-compensated chroma prediction, no `uv_mode`): byte-identical to `aomdec` on 45/45 matrix cells (dup/rand/shift × 64x64..256x128 × p{0,6,13}) + 4/4 moving-content + 6/6 inter-chain frames, all planes — `tools/chroma_444_inter_gate.sh` over `examples/probe_444*.rs`. Chroma loop filters signal off until ported. RD quality measured, not assumed: `tools/rd_ext_sweep.sh` (SSIMULACRA2 + per-plane PSNR vs `aomenc --i444 --profile=1`) — 396 cells, 0 failures, monotonic RD everywhere; chroma earns its bits (U/V PSNR +1.3..+15.3 dB vs own 4:2:0 at matched qp); frontier x1.74 vs libaom vs the 4:2:0 baseline's x1.46 |
 
 ### Outside the envelope by design
