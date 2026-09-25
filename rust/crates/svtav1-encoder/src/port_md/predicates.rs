@@ -94,14 +94,8 @@ pub const MAX_NUM_OF_REF_PIC_LIST: usize = 2;
 /// C `REF_LIST_MAX_DEPTH` (EbSvtAv1Enc.h:35).
 pub const REF_LIST_MAX_DEPTH: usize = 4;
 
-/// C `MotionMode` (definitions.h:1250-1255).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MotionMode {
-    SimpleTranslation = 0,
-    ObmcCausal = 1,
-    WarpedCausal = 2,
-}
+/// C `MotionMode` — unified: the single definition lives in `svtav1_types::prediction`.
+pub use svtav1_types::prediction::MotionMode;
 
 /// C `MD_COMP_TYPE` (definitions.h:1285-1291).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

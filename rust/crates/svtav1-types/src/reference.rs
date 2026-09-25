@@ -110,6 +110,9 @@ pub enum ReferenceMode {
     Single = 0,
     Compound = 1,
     Select = 2,
+    /// Port-local sentinel: an intra-only frame whose `frm_hdr.reference_mode`
+    /// C would never read (`port_picstruct` spelled it `IntraSentinel`).
+    IntraSentinel = 0xFF,
 }
 
 impl ReferenceMode {

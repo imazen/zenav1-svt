@@ -164,13 +164,8 @@ impl RefLists<'_> {
     }
 }
 
-/// C's `RefList` enum, so a call site cannot pass the wrong integer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub enum RefList {
-    L0 = 0,
-    L1 = 1,
-}
+/// C `RefList` — unified: the single definition lives in `svtav1_types::reference`.
+pub use svtav1_types::reference::RefList;
 
 // ---------------------------------------------------------------------------
 // Two-pass and TPL state this file reads
@@ -374,7 +369,7 @@ pub fn calc_active_best_quality_no_stats_cbr(
     }
 
     // Inherit qp from the reference qps.
-    let first = refs.get(RefList::L0 as usize, 0)?;
+    let first = refs.get(RefList::List0 as usize, 0)?;
     let mut ref_base_q_idx = first.base_q_idx;
     let mut max_tmp_layer = first.tmp_layer_idx;
     // C: `int dist = abs((int)pcs->picture_number - (int)ref_obj_l0->ref_poc);`
@@ -407,12 +402,12 @@ pub fn calc_active_best_quality_no_stats_cbr(
         }
     };
     for i in 1..refs.l0_count_try {
-        if let Some(r) = refs.get(RefList::L0 as usize, i) {
+        if let Some(r) = refs.get(RefList::List0 as usize, i) {
             consider(r);
         }
     }
     for i in 0..refs.l1_count_try {
-        if let Some(r) = refs.get(RefList::L1 as usize, i) {
+        if let Some(r) = refs.get(RefList::List1 as usize, i) {
             consider(r);
         }
     }
@@ -471,7 +466,7 @@ pub fn get_active_best_quality(
     let min_boost = leaves::get_gf_high_motion_quality(q as usize, bit_depth);
     let boost = min_boost - active_best_quality;
 
-    let l0_first = refs.get(RefList::L0 as usize, 0);
+    let l0_first = refs.get(RefList::List0 as usize, 0);
     let arf_boost_factor = match l0_first {
         Some(r) if r.pcs_slice_type == SliceType::I && r.pcs_r0 - frame.r0 >= 0.08 => 1.3,
         _ => 1.0,
@@ -861,7 +856,7 @@ pub fn rc_pick_q_and_bounds_no_stats_cbr(
             }
         }
     }
-    if frame.update_type == FrameUpdateType::ArfUpdate {
+    if frame.update_type == FrameUpdateType::Arf {
         rc.arf_q = q;
     }
     let ip = scs.intra_period_length;
@@ -990,7 +985,7 @@ pub fn rc_pick_q_and_bounds(
     frame.top_index = active_worst_quality;
     frame.bottom_index = active_best_quality;
 
-    if frame.update_type == FrameUpdateType::ArfUpdate {
+    if frame.update_type == FrameUpdateType::Arf {
         rc.arf_q = q;
     }
     q
@@ -1009,8 +1004,8 @@ pub fn find_min_ref_base_q_idx(
     temporal_layer_index: u8,
 ) -> Option<i32> {
     let cnt = match list {
-        RefList::L0 => refs.l0_count_try,
-        RefList::L1 => refs.l1_count_try,
+        RefList::List0 => refs.l0_count_try,
+        RefList::List1 => refs.l1_count_try,
     };
     let mut best: Option<i32> = None;
     for i in 0..cnt {
@@ -1096,14 +1091,14 @@ pub fn rc_calc_qindex_rate_control(
     // Limit the qindex based on the qindex of the reference frames.
     let tli = frame.temporal_layer_index;
     if tli != 0 {
-        let l0 = min_ref_base_q_idx_or_minus_one(refs, RefList::L0, tli);
-        let l1 = min_ref_base_q_idx_or_minus_one(refs, RefList::L1, tli);
+        let l0 = min_ref_base_q_idx_or_minus_one(refs, RefList::List0, tli);
+        let l1 = min_ref_base_q_idx_or_minus_one(refs, RefList::List1, tli);
         let ref_base_q_idx = l0.max(l1);
         let limit = if scs.gop_constraint_rc { 2 } else { 0 };
         new_qindex = new_qindex.max(ref_base_q_idx - limit * 4);
     } else if cfg.mode == AomRcMode::Cbr {
-        let l0 = min_ref_base_q_idx_or_minus_one(refs, RefList::L0, tli);
-        let l1 = min_ref_base_q_idx_or_minus_one(refs, RefList::L1, tli);
+        let l0 = min_ref_base_q_idx_or_minus_one(refs, RefList::List0, tli);
+        let l1 = min_ref_base_q_idx_or_minus_one(refs, RefList::List1, tli);
         let ref_base_q_idx = l0.max(l1);
         let limit = 4;
         new_qindex = new_qindex.max(ref_base_q_idx - limit * 4);
@@ -1115,7 +1110,7 @@ pub fn rc_calc_qindex_rate_control(
         // here and indexes two `uint32_t*` arrays; `None` for either is the
         // port refusing rather than reproducing a null deref, and it leaves
         // `new_qindex` at its clamped value.
-        if let (Some(d), Some(l0)) = (me_dist, refs.get(RefList::L0 as usize, 0)) {
+        if let (Some(d), Some(l0)) = (me_dist, refs.get(RefList::List0 as usize, 0)) {
             let n = usize::from(frame.b64_total_count);
             for i in 0..n {
                 ref_dist += u64::from(d.ref_l0[i]);
@@ -1139,7 +1134,7 @@ pub fn rc_calc_qindex_rate_control(
             // slot to exist.
             if slice_type == SliceType::B
                 && refs.l1_count_try != 0
-                && let Some(l1) = refs.get(RefList::L1 as usize, 0)
+                && let Some(l1) = refs.get(RefList::List1 as usize, 0)
                 && l1.pcs_slice_type != SliceType::I
             {
                 ref_base_q_idx = ref_base_q_idx.max(i32::from(l1.base_q_idx));

@@ -292,23 +292,12 @@ pub fn apply_rc_init(
     rc.max_frame_bandwidth = bw.max_frame_bandwidth;
 }
 
-/// C `ppcs->update_type` ([`port_picstruct::FrameUpdateType`]) →
-/// [`port_rc_process::FrameUpdateType`]. Same discriminant space; the two
-/// enums exist because the picture-struct port and the RC port each keep
-/// their own spelling.
+/// C `ppcs->update_type` — one [`FrameUpdateType`] now (the picture-struct
+/// and RC spellings were unified); kept as a named pass-through for the
+/// call sites that document this crossing.
 #[must_use]
 pub fn map_update_type(u: crate::port_picstruct::FrameUpdateType) -> port_rc_process::FrameUpdateType {
-    use crate::port_picstruct::FrameUpdateType as P;
-    use port_rc_process::FrameUpdateType as R;
-    match u {
-        P::Kf => R::KfUpdate,
-        P::Lf => R::LfUpdate,
-        P::Gf => R::GfUpdate,
-        P::Arf => R::ArfUpdate,
-        P::Overlay => R::OverlayUpdate,
-        P::IntnlOverlay => R::IntnlOverlayUpdate,
-        P::IntnlArf => R::IntnlArfUpdate,
-    }
+    u
 }
 
 /// The [`FrameRc`] the ported RC functions see for one picture — the PPCS
@@ -338,7 +327,7 @@ pub fn frame_rc(
         // pictures.
         showable_frame: pic.map_or(true, |p| p.show_frame && !p.is_overlay),
         base_q_idx: 0,
-        update_type: pic.map_or(port_rc_process::FrameUpdateType::KfUpdate, |p| {
+        update_type: pic.map_or(port_rc_process::FrameUpdateType::Kf, |p| {
             map_update_type(p.update_type)
         }),
         is_overlay: pic.is_some_and(|p| p.is_overlay),

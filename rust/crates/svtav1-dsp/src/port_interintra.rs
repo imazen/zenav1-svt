@@ -32,25 +32,9 @@ pub const MAX_INTERINTRA_SB_SQUARE: usize = 32 * 32;
 /// `BLOCK_32X32` in the `BlockSize` ordering.
 pub const BLOCK_32X32: usize = 9;
 
-/// `InterIntraMode` (definitions.h).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum InterIntraMode {
-    /// `II_DC_PRED`
-    DcPred = 0,
-    /// `II_V_PRED`
-    VPred = 1,
-    /// `II_H_PRED`
-    HPred = 2,
-    /// `II_SMOOTH_PRED`
-    SmoothPred = 3,
-}
+/// C `InterIntraMode` — unified: the single definition lives in `svtav1_types::prediction`.
+pub use svtav1_types::prediction::InterIntraMode;
 
-impl InterIntraMode {
-    /// The four modes in C's enum order.
-    pub const ALL: [Self; INTERINTRA_MODES] =
-        [Self::DcPred, Self::VPred, Self::HPred, Self::SmoothPred];
-}
 
 /// `ii_weights1d` (inter_prediction.c:2217) — `MAX_SB_SIZE` = 128 entries.
 pub const II_WEIGHTS_1D: [u8; 128] = [
@@ -104,27 +88,27 @@ pub fn build_smooth_interintra_mask(
     let bh = BLOCK_H[plane_bsize];
     let size_scale = II_SIZE_SCALES[plane_bsize];
     match mode {
-        InterIntraMode::VPred => {
+        InterIntraMode::IiVPred => {
             for i in 0..bh {
                 let v = II_WEIGHTS_1D[i * size_scale];
                 mask[i * stride..i * stride + bw].fill(v);
             }
         }
-        InterIntraMode::HPred => {
+        InterIntraMode::IiHPred => {
             for i in 0..bh {
                 for j in 0..bw {
                     mask[i * stride + j] = II_WEIGHTS_1D[j * size_scale];
                 }
             }
         }
-        InterIntraMode::SmoothPred => {
+        InterIntraMode::IiSmoothPred => {
             for i in 0..bh {
                 for j in 0..bw {
                     mask[i * stride + j] = II_WEIGHTS_1D[i.min(j) * size_scale];
                 }
             }
         }
-        InterIntraMode::DcPred => {
+        InterIntraMode::IiDcPred => {
             for i in 0..bh {
                 mask[i * stride..i * stride + bw].fill(32);
             }
@@ -431,9 +415,9 @@ mod tests {
     fn smooth_mask_shapes() {
         let m = IiMasks::new();
         // BLOCK_8X8 = 3, bw = bh = 8, size_scale = 16.
-        let dc = m.get(3, InterIntraMode::DcPred).unwrap();
+        let dc = m.get(3, InterIntraMode::IiDcPred).unwrap();
         assert!(dc[..64].iter().all(|&v| v == 32));
-        let v = m.get(3, InterIntraMode::VPred).unwrap();
+        let v = m.get(3, InterIntraMode::IiVPred).unwrap();
         for i in 0..8 {
             assert!(
                 v[i * 8..i * 8 + 8]
@@ -441,7 +425,7 @@ mod tests {
                     .all(|&x| x == II_WEIGHTS_1D[i * 16])
             );
         }
-        let s = m.get(3, InterIntraMode::SmoothPred).unwrap();
+        let s = m.get(3, InterIntraMode::IiSmoothPred).unwrap();
         for i in 0..8 {
             for j in 0..8 {
                 assert_eq!(s[i * 8 + j], II_WEIGHTS_1D[i.min(j) * 16]);

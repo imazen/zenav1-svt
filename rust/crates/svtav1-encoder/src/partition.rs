@@ -631,22 +631,8 @@ impl Default for BlockDecision {
     }
 }
 
-/// AV1 partition type for bitstream encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum PartitionType {
-    #[default]
-    None = 0,
-    Horz = 1,
-    Vert = 2,
-    Split = 3,
-    HorzA = 4,
-    HorzB = 5,
-    VertA = 6,
-    VertB = 7,
-    Horz4 = 8,
-    Vert4 = 9,
-}
+/// C `PartitionType` — unified: the single definition lives in `svtav1_types::partition`.
+pub use svtav1_types::partition::PartitionType;
 
 /// Result of encoding a single partition block.
 #[derive(Debug, Clone)]

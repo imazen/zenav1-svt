@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(plain.motion_mode_allowed, Some(MotionMode::WarpedCausal));
 
         blk.interintra = Some(InterIntraInfo {
-            mode: InterIntraMode::DcPred,
+            mode: InterIntraMode::IiDcPred,
             use_wedge: false,
             wedge_index: 0,
         });

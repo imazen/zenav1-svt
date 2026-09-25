@@ -48,45 +48,9 @@
 
 use svtav1_types::prediction::PredictionMode;
 
-/// C `Part` (definitions.h:950-961). The NSQ shape under test.
-///
-/// The discriminants are C's, and the ORDER is not the reading order: `H4`
-/// and `V4` come before the AB shapes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Part {
-    /// `PART_N` — the square itself.
-    N = 0,
-    H = 1,
-    V = 2,
-    H4 = 3,
-    V4 = 4,
-    /// `PART_HA` — horizontal-A (top half split).
-    Ha = 5,
-    /// `PART_HB` — horizontal-B (bottom half split).
-    Hb = 6,
-    Va = 7,
-    Vb = 8,
-    /// `PART_S` — the split sentinel.
-    S = 9,
-}
+/// C `Part` — unified: the single definition lives in `svtav1_types::partition`.
+pub use svtav1_types::partition::Part;
 
-impl Part {
-    /// The `H || HA || HB || H4` shape test C spells out at `:9897`,
-    /// `:10085` and `:9999`.
-    #[must_use]
-    #[inline]
-    pub fn is_horizontal(self) -> bool {
-        matches!(self, Part::H | Part::Ha | Part::Hb | Part::H4)
-    }
-
-    /// The `V || VA || VB || V4` twin.
-    #[must_use]
-    #[inline]
-    pub fn is_vertical(self) -> bool {
-        matches!(self, Part::V | Part::Va | Part::Vb | Part::V4)
-    }
-}
 
 /// C `NsqSearchCtrls` (md_process.h), the fields these gates read.
 ///

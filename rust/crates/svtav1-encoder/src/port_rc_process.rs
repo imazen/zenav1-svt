@@ -69,19 +69,8 @@ pub enum RateFactorLevel {
     KfStd = 5,
 }
 
-/// C `SvtAv1FrameUpdateType` (EbSvtAv1Enc.h:183).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(i32)]
-pub enum FrameUpdateType {
-    #[default]
-    KfUpdate = 0,
-    LfUpdate = 1,
-    GfUpdate = 2,
-    ArfUpdate = 3,
-    OverlayUpdate = 4,
-    IntnlOverlayUpdate = 5,
-    IntnlArfUpdate = 6,
-}
+/// C `FrameUpdateType` — unified: the single definition lives in `crate::port_frame_update`.
+pub use crate::port_frame_update::FrameUpdateType;
 
 // ---------------------------------------------------------------------------
 // The const tables (rc_process.c:38-48)
@@ -342,8 +331,8 @@ pub fn compute_rd_mult_based_on_qindex(
 ) -> i32 {
     let q = f64::from(dc_quant_qtx_int(qindex, bit_depth));
     let rdmult: i64 = match update_type {
-        FrameUpdateType::KfUpdate => (def_kf_rd_multiplier(q) * q * q) as i64,
-        FrameUpdateType::GfUpdate | FrameUpdateType::ArfUpdate => {
+        FrameUpdateType::Kf => (def_kf_rd_multiplier(q) * q * q) as i64,
+        FrameUpdateType::Gf | FrameUpdateType::Arf => {
             (def_arf_rd_multiplier(q) * q * q) as i64
         }
         _ => (def_inter_rd_multiplier(q) * q * q) as i64,
@@ -855,13 +844,13 @@ pub fn update_lambda(
 
     // Update rdmult based on the frame's position in the miniGOP.
     let gf_update_type = if ctx.frame_type == KEY_FRAME {
-        FrameUpdateType::KfUpdate
+        FrameUpdateType::Kf
     } else if temporal_layer_index == 0 {
-        FrameUpdateType::ArfUpdate
+        FrameUpdateType::Arf
     } else if temporal_layer_index < max_temporal_layer {
-        FrameUpdateType::IntnlArfUpdate
+        FrameUpdateType::IntnlArf
     } else {
-        FrameUpdateType::LfUpdate
+        FrameUpdateType::Lf
     };
 
     if ctx.alt_lambda_factors {
@@ -1025,15 +1014,8 @@ pub fn lambda_assign(
 // decides `allow_high_precision_mv` — a frame-header bit AND an MV-coding
 // change.
 
-/// C `SliceType` (definitions.h:1890). **`B_SLICE` is 0 and `I_SLICE` is 1** —
-/// the opposite of the ordering most people assume, and every helper below
-/// branches on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SliceType {
-    B = 0,
-    I = 1,
-}
+/// C `SliceType` — unified: the single definition lives in `svtav1_types::frame`.
+pub use svtav1_types::frame::SliceType;
 
 /// The `EbReferenceObject` fields the three percentage helpers read
 /// (reference_object.h:31-33). All three coded-area fields are **`uint8_t`**
@@ -1310,8 +1292,8 @@ pub fn rc_init_frame_stats(input: &FrameStatsInput<'_>) -> FrameStatsOutput {
 #[must_use]
 pub fn frame_is_kf_gf_arf(is_intra_only: bool, update_type: FrameUpdateType) -> bool {
     is_intra_only
-        || update_type == FrameUpdateType::ArfUpdate
-        || update_type == FrameUpdateType::GfUpdate
+        || update_type == FrameUpdateType::Arf
+        || update_type == FrameUpdateType::Gf
 }
 
 /// C `svt_aom_update_rc_counts` (rc_process.c:564), EXPORTED but taking a
@@ -1585,13 +1567,13 @@ pub fn lambda_gf_update_type(
     temporal_layer_index: u8,
 ) -> FrameUpdateType {
     if is_key {
-        FrameUpdateType::KfUpdate
+        FrameUpdateType::Kf
     } else if temporal_layer_index == 0 {
-        FrameUpdateType::ArfUpdate
+        FrameUpdateType::Arf
     } else if temporal_layer_index < hierarchical_levels {
-        FrameUpdateType::IntnlArfUpdate
+        FrameUpdateType::IntnlArf
     } else {
-        FrameUpdateType::LfUpdate
+        FrameUpdateType::Lf
     }
 }
 
@@ -1693,10 +1675,10 @@ mod frame_update_type_tests {
     /// `pd0::inter_full_lambda_8bit`.
     #[test]
     fn low_delay_p_frame_1_is_arf_for_the_factor_while_the_picture_is_lf() {
-        assert_eq!(lambda_gf_update_type(true, 0, 0), FrameUpdateType::KfUpdate);
+        assert_eq!(lambda_gf_update_type(true, 0, 0), FrameUpdateType::Kf);
         assert_eq!(
             lambda_gf_update_type(false, 0, 0),
-            FrameUpdateType::ArfUpdate
+            FrameUpdateType::Arf
         );
 
         // The picture's own type, from the already-ported `set_frame_update_type`.
@@ -1717,15 +1699,15 @@ mod frame_update_type_tests {
     fn the_hierarchical_ladder_matches_update_lambdas_own_comparisons() {
         assert_eq!(
             lambda_gf_update_type(false, 3, 0),
-            FrameUpdateType::ArfUpdate
+            FrameUpdateType::Arf
         );
         assert_eq!(
             lambda_gf_update_type(false, 3, 2),
-            FrameUpdateType::IntnlArfUpdate
+            FrameUpdateType::IntnlArf
         );
         assert_eq!(
             lambda_gf_update_type(false, 3, 3),
-            FrameUpdateType::LfUpdate
+            FrameUpdateType::Lf
         );
     }
 
@@ -1762,7 +1744,7 @@ mod frame_update_type_tests {
             frame_type: 1, // not KEY_FRAME
             temporal_layer_index: 0,
             hierarchical_levels: 0,
-            update_type: FrameUpdateType::LfUpdate,
+            update_type: FrameUpdateType::Lf,
             alt_lambda_factors: false,
             rtc: false,
             stats_based_sb_lambda_modulation: true,
@@ -1813,7 +1795,7 @@ mod frame_update_type_tests {
             frame_type: 0, // KEY_FRAME
             temporal_layer_index: 0,
             hierarchical_levels: 0,
-            update_type: FrameUpdateType::KfUpdate,
+            update_type: FrameUpdateType::Kf,
             alt_lambda_factors: false,
             rtc: false,
             stats_based_sb_lambda_modulation: true,
@@ -1844,7 +1826,7 @@ mod frame_update_type_tests {
             frame_type: 1,
             temporal_layer_index: 0,
             hierarchical_levels: 0,
-            update_type: FrameUpdateType::LfUpdate,
+            update_type: FrameUpdateType::Lf,
             alt_lambda_factors: false,
             rtc: false,
             stats_based_sb_lambda_modulation: true,

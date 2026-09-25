@@ -300,11 +300,11 @@ fn cells() -> Vec<Cell> {
     for &mode in &[rcs::AomRcMode::Cbr, rcs::AomRcMode::Vbr] {
         for &bd in &[8u8, 10u8] {
             for &(ft, ut) in &[
-                (rcs::FrameType::Inter, FrameUpdateType::LfUpdate),
-                (rcs::FrameType::Inter, FrameUpdateType::GfUpdate),
-                (rcs::FrameType::Inter, FrameUpdateType::ArfUpdate),
-                (rcs::FrameType::Inter, FrameUpdateType::IntnlArfUpdate),
-                (rcs::FrameType::Key, FrameUpdateType::KfUpdate),
+                (rcs::FrameType::Inter, FrameUpdateType::Lf),
+                (rcs::FrameType::Inter, FrameUpdateType::Gf),
+                (rcs::FrameType::Inter, FrameUpdateType::Arf),
+                (rcs::FrameType::Inter, FrameUpdateType::IntnlArf),
+                (rcs::FrameType::Key, FrameUpdateType::Kf),
             ] {
                 for &showable in &[true, false] {
                     for &overlay in &[false, true] {
@@ -321,7 +321,7 @@ fn cells() -> Vec<Cell> {
                                                 showable,
                                                 overlay,
                                                 sc,
-                                                if ut == FrameUpdateType::LfUpdate {
+                                                if ut == FrameUpdateType::Lf {
                                                     2
                                                 } else {
                                                     0
@@ -653,7 +653,7 @@ fn dynamic_resize_decision_matches_c() {
                                         rcs::AomRcMode::Cbr,
                                         8,
                                         rcs::FrameType::Inter,
-                                        FrameUpdateType::LfUpdate,
+                                        FrameUpdateType::Lf,
                                         true,
                                         false,
                                         false,

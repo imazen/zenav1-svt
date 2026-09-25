@@ -128,14 +128,8 @@ pub fn is_subpelmv_in_range(limits: &SubpelMvLimits, mv: Mv) -> bool {
         && i32::from(mv.y) <= limits.row_max
 }
 
-/// C `SubpelMvLimits` (mv.h:33-38).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SubpelMvLimits {
-    pub col_min: i32,
-    pub col_max: i32,
-    pub row_min: i32,
-    pub row_max: i32,
-}
+/// C `SubpelMvLimits` — unified: the single definition lives in `svtav1_types::motion`.
+pub use svtav1_types::motion::SubpelMvLimits;
 
 /// C `svt_av1_set_subpel_mv_search_range` (mcomp.h:112-125). `full` is the
 /// FULL-PEL limit set; `ref_mv` is eighth-pel.

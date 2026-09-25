@@ -64,15 +64,8 @@ use super::predicates::get_max_drl_index;
 use svtav1_types::motion::Mv;
 use svtav1_types::prediction::PredictionMode;
 
-/// C `DistortionType` (definitions.h): the metric
-/// [`md_full_pel_search`] scores a position with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum DistortionType {
-    Sad = 0,
-    Var = 1,
-    Ssd = 2,
-}
+/// C `DistortionType` — unified: the single definition lives in `svtav1_types::quantization`.
+pub use svtav1_types::quantization::DistortionType;
 
 /// The reference picture's geometry as the searches read it.
 #[derive(Debug, Clone, Copy)]

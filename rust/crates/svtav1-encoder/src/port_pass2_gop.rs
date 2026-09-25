@@ -432,7 +432,7 @@ pub fn allocate_gf_group_bits(
     for f in gf_group.iter().take(end).skip(frame_index) {
         if matches!(
             f.update_type,
-            FrameUpdateType::ArfUpdate | FrameUpdateType::IntnlArfUpdate
+            FrameUpdateType::Arf | FrameUpdateType::IntnlArf
         ) {
             layer_frames[(f.layer_depth as usize).min(MAX_ARF_LAYERS)] += 1;
         }
@@ -440,10 +440,10 @@ pub fn allocate_gf_group_bits(
     if rc.baseline_gf_interval < (gf_interval >> 1) {
         for f in gf_group.iter().take(end).skip(frame_index) {
             let d = (f.layer_depth as usize).min(MAX_ARF_LAYERS);
-            if f.update_type == FrameUpdateType::ArfUpdate {
+            if f.update_type == FrameUpdateType::Arf {
                 layer_frames[d] += 1;
             }
-            if f.update_type == FrameUpdateType::IntnlArfUpdate {
+            if f.update_type == FrameUpdateType::IntnlArf {
                 layer_frames[d] += 2;
             }
         }
@@ -467,10 +467,10 @@ pub fn allocate_gf_group_bits(
     // Combine the ARF-layer and baseline bits into each frame's target.
     for f in gf_group.iter_mut().take(end).skip(frame_index) {
         f.base_frame_target = match f.update_type {
-            FrameUpdateType::ArfUpdate | FrameUpdateType::IntnlArfUpdate => {
+            FrameUpdateType::Arf | FrameUpdateType::IntnlArf => {
                 base_frame_bits + layer_extra_bits[(f.layer_depth as usize).min(MAX_ARF_LAYERS)]
             }
-            FrameUpdateType::IntnlOverlayUpdate | FrameUpdateType::OverlayUpdate => 0,
+            FrameUpdateType::IntnlOverlay | FrameUpdateType::Overlay => 0,
             _ => base_frame_bits,
         };
     }

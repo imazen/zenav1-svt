@@ -293,18 +293,8 @@ pub fn set_dist_based_ref_pruning_controls(level: u8) -> Option<RefPruningContro
 // Predictive-ME search in MD
 // ---------------------------------------------------------------------------
 
-/// C `DistortionType` (`definitions.h:892`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum DistortionType {
-    /// `SAD`
-    #[default]
-    Sad = 0,
-    /// `VAR`
-    Var = 1,
-    /// `SSD`
-    Ssd = 2,
-}
+/// C `DistortionType` — unified: the single definition lives in `svtav1_types::quantization`.
+pub use svtav1_types::quantization::DistortionType;
 
 /// C `MdPmeCtrls` (`md_process.h:354`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

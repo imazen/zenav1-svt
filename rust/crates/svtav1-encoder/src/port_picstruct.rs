@@ -107,25 +107,11 @@ pub fn circ_dec(val: u8, start: u8, end: u8) -> u8 {
     }
 }
 
-/// C `SliceType` (`definitions.h:1890-1894`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SliceType {
-    /// C `B_SLICE = 0` — any inter frame (P frames are B frames with an empty list 1).
-    B = 0,
-    /// C `I_SLICE = 1`.
-    I = 1,
-}
+/// C `SliceType` — unified: the single definition lives in `svtav1_types::frame`.
+pub use svtav1_types::frame::SliceType;
 
-/// C `PredStructure` (`API/EbSvtAv1Enc.h:136`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PredStructure {
-    /// C `ALL_INTRA = 0`.
-    AllIntra = 0,
-    /// C `LOW_DELAY = 1`.
-    LowDelay = 1,
-    /// C `RANDOM_ACCESS = 2`.
-    RandomAccess = 2,
-}
+/// C `PredStructure` — unified: the single definition lives in `svtav1_types::frame`.
+pub use svtav1_types::frame::PredStructure;
 
 /// C `SVT_AV1_RC_MODE_*` (`API/EbSvtAv1Enc.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,38 +137,11 @@ impl From<crate::rate_control::RcMode> for RcMode {
     }
 }
 
-/// C `SvtAv1FrameUpdateType` (`API/EbSvtAv1Enc.h:183-191`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameUpdateType {
-    /// C `SVT_AV1_KF_UPDATE = 0`.
-    Kf = 0,
-    /// C `SVT_AV1_LF_UPDATE = 1`.
-    Lf = 1,
-    /// C `SVT_AV1_GF_UPDATE = 2`.
-    Gf = 2,
-    /// C `SVT_AV1_ARF_UPDATE = 3`.
-    Arf = 3,
-    /// C `SVT_AV1_OVERLAY_UPDATE = 4`.
-    Overlay = 4,
-    /// C `SVT_AV1_INTNL_OVERLAY_UPDATE = 5`.
-    IntnlOverlay = 5,
-    /// C `SVT_AV1_INTNL_ARF_UPDATE = 6`.
-    IntnlArf = 6,
-}
+/// C `FrameUpdateType` — unified: the single definition lives in `crate::port_frame_update`.
+pub use crate::port_frame_update::FrameUpdateType;
 
-/// C `ReferenceMode` (`definitions.h:1490-1495`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReferenceMode {
-    /// C `SINGLE_REFERENCE = 0`.
-    Single = 0,
-    /// C `COMPOUND_REFERENCE = 1`.
-    Compound = 1,
-    /// C `REFERENCE_MODE_SELECT = 2`.
-    Select = 2,
-    /// C writes `(ReferenceMode)0xFF` on I slices — not a real mode, and the
-    /// header writer never emits it.
-    IntraSentinel = 0xFF,
-}
+/// C `ReferenceMode` — unified: the single definition lives in `svtav1_types::reference`.
+pub use svtav1_types::reference::ReferenceMode;
 
 /// C `Av1RpsNode` (`Codec/pred_structure.h:65-69`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -156,9 +156,9 @@ fn postencode_update_common(
     if qindex < rc.last_boosted_qindex
         || frame.frame_type.is_key()
         || (rc.constrained_gf_group == 0
-            && (frame.update_type == crate::port_rc_process::FrameUpdateType::ArfUpdate
+            && (frame.update_type == crate::port_rc_process::FrameUpdateType::Arf
                 || is_intrnl_arf
-                || (frame.update_type == crate::port_rc_process::FrameUpdateType::GfUpdate
+                || (frame.update_type == crate::port_rc_process::FrameUpdateType::Gf
                     && !frame.is_overlay)))
     {
         rc.last_boosted_qindex = qindex;
@@ -897,7 +897,7 @@ pub fn process_rate_allocation(
     use crate::port_rc_process::FrameUpdateType as U;
     if tpl.enable
         && frame.r0 != 0.0
-        && matches!(update_type, U::KfUpdate | U::GfUpdate | U::ArfUpdate)
+        && matches!(update_type, U::Kf | U::Gf | U::Arf)
     {
         crate::port_rc_vbr_cbr_qpick::process_tpl_stats_frame_kf_gfu_boost(rc, scs, frame, tpl);
     }

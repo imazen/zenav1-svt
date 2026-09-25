@@ -38,25 +38,11 @@ pub fn is_comp_ref_allowed(bsize: BlockSize) -> bool {
     BLOCK_SIZE_WIDE[i].min(BLOCK_SIZE_HIGH[i]) >= 8
 }
 
-/// C `CompReferenceType` (definitions.h).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompReferenceType {
-    /// `UNIDIR_COMP_REFERENCE` — both refs on the same side.
-    Unidir = 0,
-    /// `BIDIR_COMP_REFERENCE`.
-    Bidir = 1,
-}
+/// C `CompReferenceType` — unified: the single definition lives in `svtav1_types::reference`.
+pub use svtav1_types::reference::CompReferenceType;
 
-/// C `frm_hdr->reference_mode` (definitions.h `ReferenceMode`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReferenceMode {
-    /// `SINGLE_REFERENCE` — no block may be compound.
-    Single = 0,
-    /// `COMPOUND_REFERENCE` — every block is compound.
-    Compound = 1,
-    /// `REFERENCE_MODE_SELECT` — the `comp_inter` flag is coded per block.
-    Select = 2,
-}
+/// C `ReferenceMode` — unified: the single definition lives in `svtav1_types::reference`.
+pub use svtav1_types::reference::ReferenceMode;
 
 // ---- 1. neighbour reference counts ----
 

@@ -122,48 +122,12 @@ pub fn is_motion_variation_allowed_bsize(bsize: BlockSize) -> bool {
     is_motion_variation_allowed_bsize_idx(bsize.as_index())
 }
 
-/// C `TransformationType` (definitions.h:1755).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum TransformationType {
-    /// 0-parameter.
-    Identity = 0,
-    /// 2-parameter.
-    Translation = 1,
-    /// 4-parameter.
-    RotZoom = 2,
-    /// 6-parameter.
-    Affine = 3,
-}
+/// C `TransformationType` — unified: the single definition lives in `svtav1_types::motion`.
+pub use svtav1_types::motion::TransformationType;
 
-impl TransformationType {
-    /// The same C enum as spelled by `svtav1_types::motion` (identical
-    /// discriminants) — this enum is a second transcription of it, kept for
-    /// the entropy writers' signatures; the predicate bodies take the
-    /// `svtav1_types` one.
-    #[inline]
-    pub(crate) fn as_motion(self) -> svtav1_types::motion::TransformationType {
-        use svtav1_types::motion::TransformationType as M;
-        match self {
-            Self::Identity => M::Identity,
-            Self::Translation => M::Translation,
-            Self::RotZoom => M::RotZoom,
-            Self::Affine => M::Affine,
-        }
-    }
-}
 
-/// C `MotionMode` (definitions.h:1251).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MotionMode {
-    /// No extra symbol.
-    SimpleTranslation = 0,
-    /// 2-sided OBMC.
-    ObmcCausal = 1,
-    /// 2-sided warped.
-    WarpedCausal = 2,
-}
+/// C `MotionMode` — unified: the single definition lives in `svtav1_types::prediction`.
+pub use svtav1_types::prediction::MotionMode;
 
 /// C `is_global_mv_block` (inter_prediction.h:411-414) over the raw
 /// `BlockSize` index — THE body (see [`is_motion_variation_allowed_bsize_idx`]
@@ -187,7 +151,7 @@ pub fn is_global_mv_block_idx(
 /// C `is_global_mv_block` (inter_prediction.h:411).
 #[inline]
 pub fn is_global_mv_block(mode: u8, bsize: BlockSize, ty: TransformationType) -> bool {
-    is_global_mv_block_idx(mode, bsize.as_index(), ty.as_motion())
+    is_global_mv_block_idx(mode, bsize.as_index(), ty)
 }
 
 /// C `is_global_mv_block` for a caller that holds the block's DIMENSIONS

@@ -67,62 +67,21 @@ pub const MAX_DIFFWTD_MASK_BITS: u32 = 1;
 /// C `MAX_WEDGE_TYPES` (definitions.h:1279) — the `wedge_index` alphabet.
 pub const MAX_WEDGE_TYPES: usize = 16;
 
-/// C `InterIntraMode` (definitions.h:1257).
-///
-/// An enum rather than C's bare `int`: the value indexes
-/// `interintra_mode_cdf`, whose width is exactly these four.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum InterIntraMode {
-    /// C `II_DC_PRED`.
-    #[default]
-    DcPred = 0,
-    /// C `II_V_PRED`.
-    VPred = 1,
-    /// C `II_H_PRED`.
-    HPred = 2,
-    /// C `II_SMOOTH_PRED`.
-    SmoothPred = 3,
-}
+/// C `InterIntraMode` — unified: the single definition lives in `svtav1_types::prediction`.
+pub use svtav1_types::prediction::InterIntraMode;
 
-/// C `CompoundType` (definitions.h:1259-1266).
-///
-/// C's enum also carries the sentinel `COMPOUND_TYPES = 4`; that is a count,
-/// not a value a block can hold, so it is [`COMPOUND_TYPES`] here instead of a
-/// variant nothing may construct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum CompoundType {
-    /// C `COMPOUND_AVERAGE`.
-    #[default]
-    Average = 0,
-    /// C `COMPOUND_DISTWTD`.
-    Distwtd = 1,
-    /// C `COMPOUND_WEDGE`.
-    Wedge = 2,
-    /// C `COMPOUND_DIFFWTD`.
-    Diffwtd = 3,
-}
+/// C `CompoundType` — unified: the single definition lives in `svtav1_types::prediction`.
+pub use svtav1_types::prediction::CompoundType;
 
 /// C `COMPOUND_TYPES` (definitions.h:1264) — the sentinel C's
 /// `is_any_masked_compound_used` loop bounds itself by.
 pub const COMPOUND_TYPES: usize = 4;
 
-impl CompoundType {
-    /// Every value the C loop in `is_any_masked_compound_used` visits, in C's
-    /// order.
-    const ALL: [CompoundType; COMPOUND_TYPES] = [
-        CompoundType::Average,
-        CompoundType::Distwtd,
-        CompoundType::Wedge,
-        CompoundType::Diffwtd,
-    ];
-}
 
 /// C `svt_aom_is_masked_compound_type` (inter_prediction.c:34, EXPORTED).
 #[inline]
 pub const fn is_masked_compound_type(t: CompoundType) -> bool {
-    matches!(t, CompoundType::Wedge | CompoundType::Diffwtd)
+    matches!(t, CompoundType::Wedge | CompoundType::DiffWtd)
 }
 
 /// C `is_interinter_compound_used` (inter_prediction.h:288).
@@ -133,7 +92,7 @@ pub const fn is_masked_compound_type(t: CompoundType) -> bool {
 pub fn is_interinter_compound_used(t: CompoundType, bsize: BlockSize) -> bool {
     let comp_allowed = is_comp_ref_allowed(bsize);
     match t {
-        CompoundType::Average | CompoundType::Distwtd | CompoundType::Diffwtd => comp_allowed,
+        CompoundType::Average | CompoundType::DistWtd | CompoundType::DiffWtd => comp_allowed,
         CompoundType::Wedge => comp_allowed && get_wedge_params_bits(bsize.as_index()) > 0,
     }
 }
@@ -141,7 +100,7 @@ pub fn is_interinter_compound_used(t: CompoundType, bsize: BlockSize) -> bool {
 /// C `is_any_masked_compound_used` (inter_prediction.h:303).
 ///
 /// C walks all four `CompoundType`s and filters with
-/// [`is_masked_compound_type`]; the filter admits exactly `{Wedge, Diffwtd}`,
+/// [`is_masked_compound_type`]; the filter admits exactly `{Wedge, DiffWtd}`,
 /// so the iterator below visits the same set in the same order with the same
 /// short-circuit. The leading `is_comp_ref_allowed` early-out is kept because
 /// it is C's, even though every arm of [`is_interinter_compound_used`] would
@@ -367,8 +326,8 @@ mod tests {
             );
             for t in [
                 CompoundType::Average,
-                CompoundType::Distwtd,
-                CompoundType::Diffwtd,
+                CompoundType::DistWtd,
+                CompoundType::DiffWtd,
             ] {
                 assert_eq!(
                     is_interinter_compound_used(t, b),
@@ -385,9 +344,9 @@ mod tests {
     #[test]
     fn masked_types_are_wedge_and_diffwtd_only() {
         assert!(!is_masked_compound_type(CompoundType::Average));
-        assert!(!is_masked_compound_type(CompoundType::Distwtd));
+        assert!(!is_masked_compound_type(CompoundType::DistWtd));
         assert!(is_masked_compound_type(CompoundType::Wedge));
-        assert!(is_masked_compound_type(CompoundType::Diffwtd));
+        assert!(is_masked_compound_type(CompoundType::DiffWtd));
     }
 
     /// Step 7's gate is a hard early-out: neither the symbol NOR the
@@ -407,7 +366,7 @@ mod tests {
             false,
             true,
             Some(InterIntraInfo {
-                mode: InterIntraMode::VPred,
+                mode: InterIntraMode::IiVPred,
                 use_wedge: false,
                 wedge_index: 0,
             }),
@@ -432,7 +391,7 @@ mod tests {
             true,
             true,
             Some(InterIntraInfo {
-                mode: InterIntraMode::SmoothPred,
+                mode: InterIntraMode::IiSmoothPred,
                 use_wedge: true,
                 wedge_index: 9,
             }),
@@ -460,7 +419,7 @@ mod tests {
                 true,
                 true,
                 Some(InterIntraInfo {
-                    mode: InterIntraMode::HPred,
+                    mode: InterIntraMode::IiHPred,
                     use_wedge,
                     wedge_index: 3,
                 }),
@@ -544,7 +503,7 @@ mod tests {
                 BlockSize::Block64x64,
                 true,
                 CompGroup::B(InterInterComp {
-                    comp_type: CompoundType::Diffwtd,
+                    comp_type: CompoundType::DiffWtd,
                     wedge_index: 0,
                     wedge_sign: false,
                     mask_type: 1,

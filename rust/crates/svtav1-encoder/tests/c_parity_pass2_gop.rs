@@ -187,11 +187,11 @@ fn build(
 fn cells() -> Vec<Cell> {
     let mut out = Vec::new();
     for &ut in &[
-        FrameUpdateType::LfUpdate,
-        FrameUpdateType::GfUpdate,
-        FrameUpdateType::ArfUpdate,
-        FrameUpdateType::IntnlArfUpdate,
-        FrameUpdateType::KfUpdate,
+        FrameUpdateType::Lf,
+        FrameUpdateType::Gf,
+        FrameUpdateType::Arf,
+        FrameUpdateType::IntnlArf,
+        FrameUpdateType::Kf,
     ] {
         for &overlay in &[false, true] {
             for &short_clip in &[false, true] {

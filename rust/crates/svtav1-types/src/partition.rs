@@ -53,6 +53,22 @@ pub enum Part {
     S = 9,
 }
 
+impl Part {
+    /// The `H || HA || HB || H4` horizontal shape test.
+    #[must_use]
+    #[inline]
+    pub fn is_horizontal(self) -> bool {
+        matches!(self, Part::H | Part::Ha | Part::Hb | Part::H4)
+    }
+
+    /// The `V || VA || VB || V4` twin.
+    #[must_use]
+    #[inline]
+    pub fn is_vertical(self) -> bool {
+        matches!(self, Part::V | Part::Va | Part::Vb | Part::V4)
+    }
+}
+
 /// Partition context offsets.
 pub const PARTITION_PLOFFSET: usize = 4;
 pub const PARTITION_BLOCK_SIZES: usize = 5;

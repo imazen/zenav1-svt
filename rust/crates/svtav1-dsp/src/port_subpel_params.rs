@@ -41,14 +41,8 @@ pub const SCALE_SUBPEL_MASK: i32 = SCALE_SUBPEL_SHIFTS - 1;
 /// `SCALE_EXTRA_OFF` (definitions.h:466) — `(1 << SCALE_EXTRA_BITS) / 2`.
 pub const SCALE_EXTRA_OFF: i32 = (1 << SCALE_EXTRA_BITS) / 2;
 
-/// `Mv` — an eighth-pel motion vector, `int16_t` per component as in C.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Mv {
-    /// Horizontal component.
-    pub x: i16,
-    /// Vertical component.
-    pub y: i16,
-}
+/// C `Mv` — unified: the single definition lives in `svtav1_types::motion`.
+pub use svtav1_types::motion::Mv;
 
 /// The `MacroBlockD` edge distances `clamp_mv_to_umv_border_sb` reads. C keeps
 /// these in eighth-pel units relative to the block.

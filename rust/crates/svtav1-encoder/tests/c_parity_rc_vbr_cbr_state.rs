@@ -140,7 +140,7 @@ fn base_scenario() -> Scenario {
         scs: rcs::SeqRc::default(),
         frame: rcs::FrameRc {
             frame_type: rcs::FrameType::Inter,
-            update_type: FrameUpdateType::LfUpdate,
+            update_type: FrameUpdateType::Lf,
             frame_width: 1920,
             frame_height: 1080,
             superres_upscaled_width: 1920,
@@ -174,9 +174,9 @@ fn scenarios() -> Vec<Scenario> {
                             (-40_000, -40_000),
                         ] {
                             for &ut in &[
-                                FrameUpdateType::LfUpdate,
-                                FrameUpdateType::GfUpdate,
-                                FrameUpdateType::ArfUpdate,
+                                FrameUpdateType::Lf,
+                                FrameUpdateType::Gf,
+                                FrameUpdateType::Arf,
                             ] {
                                 let mut s = base_scenario();
                                 s.cfg.mode = mode;

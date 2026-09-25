@@ -360,18 +360,18 @@ fn frame_stats_i_slice_leaves_the_me_distortion_alone() {
 fn frame_is_kf_gf_arf_matches_the_c_disjunction() {
     // C: `frame_is_intra_only(ppcs) || update_type == ARF_UPDATE ||
     //     update_type == GF_UPDATE` — note INTNL_ARF_UPDATE is NOT included.
-    assert!(frame_is_kf_gf_arf(true, FrameUpdateType::LfUpdate));
-    assert!(frame_is_kf_gf_arf(false, FrameUpdateType::ArfUpdate));
-    assert!(frame_is_kf_gf_arf(false, FrameUpdateType::GfUpdate));
-    assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::LfUpdate));
+    assert!(frame_is_kf_gf_arf(true, FrameUpdateType::Lf));
+    assert!(frame_is_kf_gf_arf(false, FrameUpdateType::Arf));
+    assert!(frame_is_kf_gf_arf(false, FrameUpdateType::Gf));
+    assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::Lf));
     assert!(
-        !frame_is_kf_gf_arf(false, FrameUpdateType::IntnlArfUpdate),
+        !frame_is_kf_gf_arf(false, FrameUpdateType::IntnlArf),
         "INTNL_ARF_UPDATE is not in C's disjunction"
     );
-    assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::OverlayUpdate));
+    assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::Overlay));
     assert!(!frame_is_kf_gf_arf(
         false,
-        FrameUpdateType::IntnlOverlayUpdate
+        FrameUpdateType::IntnlOverlay
     ));
 }
 

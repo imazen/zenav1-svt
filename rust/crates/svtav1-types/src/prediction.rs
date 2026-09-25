@@ -129,12 +129,21 @@ pub enum InterIntraMode {
 
 impl InterIntraMode {
     pub const COUNT: usize = 4;
+
+    /// The four modes in C's enum order.
+    pub const ALL: [Self; 4] = [
+        Self::IiDcPred,
+        Self::IiVPred,
+        Self::IiHPred,
+        Self::IiSmoothPred,
+    ];
 }
 
 /// Compound prediction blend types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum CompoundType {
+    #[default]
     Average = 0,
     DistWtd = 1,
     Wedge = 2,
@@ -143,6 +152,10 @@ pub enum CompoundType {
 
 impl CompoundType {
     pub const COUNT: usize = 4;
+
+    /// The four types in C's enum order — the set `is_any_masked_compound_used`
+    /// walks.
+    pub const ALL: [Self; 4] = [Self::Average, Self::DistWtd, Self::Wedge, Self::DiffWtd];
     /// Number of masked compound types (wedge + diffwtd).
     pub const MASKED_TYPES: usize = 2;
 }

@@ -177,13 +177,13 @@ fn frame_type_qdelta_matches_c_through_exported_pair() {
 fn compute_rd_mult_based_on_qindex_matches_c_all_update_types() {
     use rc::FrameUpdateType::*;
     let update_types = [
-        KfUpdate,
-        LfUpdate,
-        GfUpdate,
-        ArfUpdate,
-        OverlayUpdate,
-        IntnlOverlayUpdate,
-        IntnlArfUpdate,
+        Kf,
+        Lf,
+        Gf,
+        Arf,
+        Overlay,
+        IntnlOverlay,
+        IntnlArf,
     ];
     for &bd in &BIT_DEPTHS {
         for &ut in &update_types {
@@ -209,9 +209,9 @@ fn rd_mult_arms_are_distinguishable_from_the_kf_arm() {
     let mut arf_differs = 0usize;
     let mut inter_differs = 0usize;
     for qindex in 0..=255i32 {
-        let kf = svtav1_cref::compute_rd_mult_based_on_qindex(8, KfUpdate as i32, qindex as u8);
-        let arf = svtav1_cref::compute_rd_mult_based_on_qindex(8, ArfUpdate as i32, qindex as u8);
-        let lf = svtav1_cref::compute_rd_mult_based_on_qindex(8, LfUpdate as i32, qindex as u8);
+        let kf = svtav1_cref::compute_rd_mult_based_on_qindex(8, Kf as i32, qindex as u8);
+        let arf = svtav1_cref::compute_rd_mult_based_on_qindex(8, Arf as i32, qindex as u8);
+        let lf = svtav1_cref::compute_rd_mult_based_on_qindex(8, Lf as i32, qindex as u8);
         if arf != kf {
             arf_differs += 1;
         }
@@ -745,13 +745,13 @@ fn lambda_ctx(
 }
 
 const UPDATE_TYPES: [rc::FrameUpdateType; 7] = [
-    rc::FrameUpdateType::KfUpdate,
-    rc::FrameUpdateType::LfUpdate,
-    rc::FrameUpdateType::GfUpdate,
-    rc::FrameUpdateType::ArfUpdate,
-    rc::FrameUpdateType::OverlayUpdate,
-    rc::FrameUpdateType::IntnlOverlayUpdate,
-    rc::FrameUpdateType::IntnlArfUpdate,
+    rc::FrameUpdateType::Kf,
+    rc::FrameUpdateType::Lf,
+    rc::FrameUpdateType::Gf,
+    rc::FrameUpdateType::Arf,
+    rc::FrameUpdateType::Overlay,
+    rc::FrameUpdateType::IntnlOverlay,
+    rc::FrameUpdateType::IntnlArf,
 ];
 
 /// `svt_aom_compute_rd_mult` + `svt_aom_compute_fast_lambda`, swept over
@@ -907,7 +907,7 @@ fn update_lambda_gf_type_is_derived_not_the_ppcs_update_type() {
             rc::INTER_FRAME,
             tl,
             /* hierarchical_levels */ 4,
-            rc::FrameUpdateType::LfUpdate,
+            rc::FrameUpdateType::Lf,
             false,
             false,
             false,

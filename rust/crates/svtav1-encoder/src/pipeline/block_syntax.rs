@@ -953,10 +953,10 @@ pub(super) fn encode_block_syntax(
             interintra: blk.is_interintra_used.then_some(
                 crate::port_entropy_inter::compound::InterIntraInfo {
                     mode: match blk.interintra_mode {
-                        1 => crate::port_entropy_inter::compound::InterIntraMode::VPred,
-                        2 => crate::port_entropy_inter::compound::InterIntraMode::HPred,
-                        3 => crate::port_entropy_inter::compound::InterIntraMode::SmoothPred,
-                        _ => crate::port_entropy_inter::compound::InterIntraMode::DcPred,
+                        1 => crate::port_entropy_inter::compound::InterIntraMode::IiVPred,
+                        2 => crate::port_entropy_inter::compound::InterIntraMode::IiHPred,
+                        3 => crate::port_entropy_inter::compound::InterIntraMode::IiSmoothPred,
+                        _ => crate::port_entropy_inter::compound::InterIntraMode::IiDcPred,
                     },
                     use_wedge: blk.use_wedge_interintra,
                     wedge_index: blk.interintra_wedge_index.max(0) as u8,
@@ -977,7 +977,7 @@ pub(super) fn encode_block_syntax(
                     crate::port_entropy_inter::compound::CompGroup::B(
                         crate::port_entropy_inter::compound::InterInterComp {
                             comp_type: match blk.interinter_comp_type {
-                                3 => crate::port_entropy_inter::compound::CompoundType::Diffwtd,
+                                3 => crate::port_entropy_inter::compound::CompoundType::DiffWtd,
                                 _ => crate::port_entropy_inter::compound::CompoundType::Wedge,
                             },
                             wedge_index: blk.interinter_wedge_index.max(0) as u8,

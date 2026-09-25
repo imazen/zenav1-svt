@@ -96,7 +96,7 @@ pub struct FullMvLimits {
 }
 
 /// Sub-pel MV search limits.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SubpelMvLimits {
     pub col_min: i32,
     pub col_max: i32,
@@ -105,7 +105,7 @@ pub struct SubpelMvLimits {
 }
 
 /// Global motion transformation type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TransformationType {
     Identity = 0,

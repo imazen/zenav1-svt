@@ -19,7 +19,7 @@ fn the_low_delay_p_inter_lambda_matches_cs_measured_value() {
     // GOP's frame 1 is `temporal_layer_index == 0`, so the
     // LAMBDA_MOD_INTRA arm does not fire — the 128 identity.
     assert_eq!(
-        inter_full_lambda_8bit(160, U::LfUpdate, U::ArfUpdate, false, 0, 128, 150),
+        inter_full_lambda_8bit(160, U::Lf, U::Arf, false, 0, 128, 150),
         241_378
     );
     // The KEY frame, for the same cell, from the same dump.
@@ -38,13 +38,13 @@ fn the_low_delay_p_inter_lambda_matches_cs_measured_value() {
 #[test]
 fn the_lambda_mod_intra_arm_matches_cs_measured_value() {
     assert_eq!(
-        inter_full_lambda_8bit(106, U::LfUpdate, U::IntnlArfUpdate, false, 0, 138, 150),
+        inter_full_lambda_8bit(106, U::Lf, U::IntnlArf, false, 0, 138, 150),
         51_646
     );
     // Same frame with the arm NOT taken — the value the port computed
     // before the arm was wired.
     assert_eq!(
-        inter_full_lambda_8bit(106, U::LfUpdate, U::IntnlArfUpdate, false, 0, 128, 150),
+        inter_full_lambda_8bit(106, U::Lf, U::IntnlArf, false, 0, 128, 150),
         47_905
     );
 }
@@ -64,11 +64,11 @@ fn it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep() {
     use crate::port_rc_process::{LambdaContext, compute_rd_mult};
     for &qindex in &[0u8, 1, 20, 67, 100, 160, 200, 255] {
         for &(base, factor_tl) in &[
-            (U::LfUpdate, 0u8),
-            (U::ArfUpdate, 0),
-            (U::GfUpdate, 0),
-            (U::IntnlArfUpdate, 0),
-            (U::LfUpdate, 3),
+            (U::Lf, 0u8),
+            (U::Arf, 0),
+            (U::Gf, 0),
+            (U::IntnlArf, 0),
+            (U::Lf, 3),
         ] {
             for &lw in &[0u32, 128, 150, 175] {
                 // Every qdiff that selects a DIFFERENT factor, plus both
@@ -122,12 +122,12 @@ fn it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep() {
 fn one_update_type_for_both_halves_does_not_reproduce_c() {
     // ARF for both: the value `docs/INTER-ENCODE-PLAN.md` §1y recorded.
     assert_eq!(
-        inter_full_lambda_8bit(160, U::ArfUpdate, U::ArfUpdate, false, 0, 128, 150),
+        inter_full_lambda_8bit(160, U::Arf, U::Arf, false, 0, 128, 150),
         244_792
     );
     // LF for both: factor 180 instead of 150.
     assert_eq!(
-        inter_full_lambda_8bit(160, U::LfUpdate, U::LfUpdate, false, 0, 128, 150),
+        inter_full_lambda_8bit(160, U::Lf, U::Lf, false, 0, 128, 150),
         289_654
     );
     // And the KF chain at the same qindex, which is what a caller that

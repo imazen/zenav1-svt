@@ -351,7 +351,7 @@ fn gop_bit_allocation_with_no_boost_is_a_flat_split() {
     };
     let mut group = vec![
         GfGroupFrame {
-            update_type: FrameUpdateType::LfUpdate,
+            update_type: FrameUpdateType::Lf,
             ..Default::default()
         };
         4

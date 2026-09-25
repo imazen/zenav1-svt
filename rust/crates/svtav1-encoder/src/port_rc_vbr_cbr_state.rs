@@ -93,47 +93,9 @@ pub enum AomRcMode {
     Q = 2,
 }
 
-/// C `FrameType` (definitions.h:1605). Only [`FrameType::Key`] is ever tested
-/// for by name in `rc_vbr_cbr.c`; the other three exist so a caller cannot
-/// smuggle an out-of-range `int` in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub enum FrameType {
-    #[default]
-    Key = 0,
-    Inter = 1,
-    IntraOnly = 2,
-    Switch = 3,
-}
+/// C `FrameType` — unified: the single definition lives in `svtav1_types::frame`.
+pub use svtav1_types::frame::FrameType;
 
-impl FrameType {
-    /// C `frm_hdr.frame_type == KEY_FRAME`.
-    #[must_use]
-    pub fn is_key(self) -> bool {
-        matches!(self, FrameType::Key)
-    }
-
-    /// C `frame_is_intra_only` (entropy_coding.h:60) — KEY **or** INTRA_ONLY.
-    /// Reading this as "is a key frame" is the easy mistake; `INTRA_ONLY_FRAME`
-    /// also selects the intra arm of every branch in this file.
-    #[must_use]
-    pub fn is_intra_only(self) -> bool {
-        matches!(self, FrameType::Key | FrameType::IntraOnly)
-    }
-
-    /// The `FrameType` argument the rate model
-    /// ([`crate::port_rc_process::rc_bits_per_mb`]) takes. C passes
-    /// `frm_hdr.frame_type` straight through and the model only compares it
-    /// against `KEY_FRAME`, so INTRA_ONLY / SWITCH take the inter arm there.
-    #[must_use]
-    pub fn as_rate_model_arg(self) -> i32 {
-        if self.is_key() {
-            KEY_FRAME
-        } else {
-            INTER_FRAME
-        }
-    }
-}
 
 /// C `RESIZE_STATE` (definitions.h) — the dynamic-resize ladder position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -510,8 +472,8 @@ impl FrameRc {
     #[must_use]
     pub fn is_kf_gf_arf(&self) -> bool {
         self.is_intra_only()
-            || self.update_type == FrameUpdateType::ArfUpdate
-            || self.update_type == FrameUpdateType::GfUpdate
+            || self.update_type == FrameUpdateType::Arf
+            || self.update_type == FrameUpdateType::Gf
     }
 
     /// C's repeated `update_type == GF_UPDATE || update_type == ARF_UPDATE`.
@@ -519,14 +481,14 @@ impl FrameRc {
     pub fn is_gf_or_arf(&self) -> bool {
         matches!(
             self.update_type,
-            FrameUpdateType::GfUpdate | FrameUpdateType::ArfUpdate
+            FrameUpdateType::Gf | FrameUpdateType::Arf
         )
     }
 
     /// C's `is_intrnl_arf` / `is_intrl_arf_boost`.
     #[must_use]
     pub fn is_internal_arf(&self) -> bool {
-        self.update_type == FrameUpdateType::IntnlArfUpdate
+        self.update_type == FrameUpdateType::IntnlArf
     }
 }
 

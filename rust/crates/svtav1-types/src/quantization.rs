@@ -41,9 +41,10 @@ pub struct QuantizationParams {
 }
 
 /// Distortion type for mode decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum DistortionType {
+    #[default]
     Sad = 0,
     Var = 1,
     Ssd = 2,

@@ -222,8 +222,8 @@ pub(crate) fn inter_full_lambda_8bit(
     use crate::port_rc_process::FrameUpdateType as U;
     let q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as f64;
     let base = match base_update_type {
-        U::KfUpdate => 3.3,
-        U::GfUpdate | U::ArfUpdate => 3.25,
+        U::Kf => 3.3,
+        U::Gf | U::Arf => 3.25,
         _ => 3.2,
     };
     let mut rdmult = ((base + 0.0015 * q) * q * q) as i64;
@@ -324,8 +324,8 @@ pub(crate) fn inter_full_lambda_bd10(
     use crate::port_rc_process::FrameUpdateType as U;
     let q = crate::bd10::dc_qlookup_10(qindex) as f64;
     let base = match base_update_type {
-        U::KfUpdate => 3.3,
-        U::GfUpdate | U::ArfUpdate => 3.25,
+        U::Kf => 3.3,
+        U::Gf | U::Arf => 3.25,
         _ => 3.2,
     };
     let mut rdmult = ((base + 0.0015 * q) * q * q) as i64;

@@ -156,7 +156,7 @@ fn combine_interintra_wedge_matches_c() {
                 combine_interintra(
                     &ii,
                     &wedge,
-                    InterIntraMode::DcPred,
+                    InterIntraMode::IiDcPred,
                     true,
                     idx,
                     sign,

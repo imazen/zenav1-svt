@@ -325,19 +325,8 @@ impl SuperresParams {
     }
 }
 
-/// OBU types as defined in the AV1 spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ObuType {
-    SequenceHeader = 1,
-    TemporalDelimiter = 2,
-    FrameHeader = 3,
-    TileGroup = 4,
-    Metadata = 5,
-    Frame = 6,
-    RedundantFrameHeader = 7,
-    Padding = 15,
-}
+/// C `ObuType` — unified: the single definition lives in `svtav1_types::bitstream`.
+pub use svtav1_types::bitstream::ObuType;
 
 /// Bit-level writer for OBU headers and uncompressed data.
 pub struct BitWriter {

@@ -152,7 +152,7 @@ fn read_stat_from_file_carries_forward_per_layer() {
 
 fn arf(layer_depth: i32) -> GfGroupFrame {
     GfGroupFrame {
-        update_type: FrameUpdateType::IntnlArfUpdate,
+        update_type: FrameUpdateType::IntnlArf,
         layer_depth,
         ..Default::default()
     }
@@ -170,13 +170,13 @@ fn allocate_gf_group_bits_consumes_the_arf_pool() {
     };
     let mut group = vec![
         GfGroupFrame {
-            update_type: FrameUpdateType::LfUpdate,
+            update_type: FrameUpdateType::Lf,
             ..Default::default()
         },
         arf(1),
         arf(2),
         GfGroupFrame {
-            update_type: FrameUpdateType::OverlayUpdate,
+            update_type: FrameUpdateType::Overlay,
             ..Default::default()
         },
     ];

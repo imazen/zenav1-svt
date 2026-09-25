@@ -3,9 +3,10 @@
 //! Ported from `definitions.h` and `av1_structs.h`.
 
 /// AV1 frame types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum FrameType {
+    #[default]
     Key = 0,
     Inter = 1,
     IntraOnly = 2,
@@ -15,9 +16,25 @@ pub enum FrameType {
 impl FrameType {
     pub const COUNT: usize = 4;
 
+    /// C `frm_hdr.frame_type == KEY_FRAME`.
     #[inline]
-    pub const fn is_intra(self) -> bool {
+    pub const fn is_key(self) -> bool {
+        matches!(self, Self::Key)
+    }
+
+    /// C `frame_is_intra_only` (entropy_coding.h:60) — KEY **or** INTRA_ONLY.
+    /// `INTRA_ONLY_FRAME` selects the intra arm of every branch.
+    #[inline]
+    pub const fn is_intra_only(self) -> bool {
         matches!(self, Self::Key | Self::IntraOnly)
+    }
+
+    /// The `FrameType` argument the rate model takes. C passes
+    /// `frm_hdr.frame_type` straight through and the model only compares it
+    /// against `KEY_FRAME`, so INTRA_ONLY / SWITCH take the inter arm there.
+    #[inline]
+    pub const fn as_rate_model_arg(self) -> i32 {
+        if self.is_key() { 0 } else { 1 }
     }
 }
 
@@ -53,6 +70,10 @@ impl BitstreamProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum PredStructure {
+    /// C `SVT_AV1_PRED_ALL_INTRA`-style 0 arm: the non-LD structure the
+    /// single-pass all-intra path uses (`port_picstruct::PredStructure`
+    /// spelled it `AllIntra`; unified here).
+    AllIntra = 0,
     LowDelay = 1,
     RandomAccess = 2,
 }
@@ -180,10 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn frame_type_is_intra() {
-        assert!(FrameType::Key.is_intra());
-        assert!(FrameType::IntraOnly.is_intra());
-        assert!(!FrameType::Inter.is_intra());
-        assert!(!FrameType::Switch.is_intra());
+    fn frame_type_is_intra_only() {
+        assert!(FrameType::Key.is_intra_only());
+        assert!(FrameType::IntraOnly.is_intra_only());
+        assert!(!FrameType::Inter.is_intra_only());
+        assert!(!FrameType::Switch.is_intra_only());
     }
 }

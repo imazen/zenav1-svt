@@ -277,7 +277,7 @@ impl EncodePipeline {
                     temporal_layer_index: temporal_layer,
                     hierarchical_levels: frame_hier,
                     update_type: md_lambda_base_update_type
-                        .unwrap_or(crate::port_rc_process::FrameUpdateType::KfUpdate),
+                        .unwrap_or(crate::port_rc_process::FrameUpdateType::Kf),
                     alt_lambda_factors: md_alt_lambda_factors,
                     rtc: false,
                     stats_based_sb_lambda_modulation:

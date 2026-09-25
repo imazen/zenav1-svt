@@ -33,10 +33,11 @@ use svtav1_types::frame::FrameType;
 /// (see its own comment: `gf_group->update_type` is valid only in the 2nd pass
 /// of a 2-pass encode or with `lap_rc`, and is set in the RC process, so it
 /// cannot be used by processes that run before RC).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(i32)]
 pub enum FrameUpdateType {
     /// `SVT_AV1_KF_UPDATE`
+    #[default]
     Kf = 0,
     /// `SVT_AV1_LF_UPDATE`
     Lf = 1,

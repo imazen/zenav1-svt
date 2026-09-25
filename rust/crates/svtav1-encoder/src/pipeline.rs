@@ -400,25 +400,25 @@ impl EncodePipeline {
         // `full_sb_lambda_md` must be the same number.
         let md_lambda_base_update_type = pic_decision.as_ref().map(|pic| match pic.update_type {
             crate::port_picstruct::FrameUpdateType::Kf => {
-                crate::port_rc_process::FrameUpdateType::KfUpdate
+                crate::port_rc_process::FrameUpdateType::Kf
             }
             crate::port_picstruct::FrameUpdateType::Lf => {
-                crate::port_rc_process::FrameUpdateType::LfUpdate
+                crate::port_rc_process::FrameUpdateType::Lf
             }
             crate::port_picstruct::FrameUpdateType::Gf => {
-                crate::port_rc_process::FrameUpdateType::GfUpdate
+                crate::port_rc_process::FrameUpdateType::Gf
             }
             crate::port_picstruct::FrameUpdateType::Arf => {
-                crate::port_rc_process::FrameUpdateType::ArfUpdate
+                crate::port_rc_process::FrameUpdateType::Arf
             }
             crate::port_picstruct::FrameUpdateType::Overlay => {
-                crate::port_rc_process::FrameUpdateType::OverlayUpdate
+                crate::port_rc_process::FrameUpdateType::Overlay
             }
             crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
-                crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+                crate::port_rc_process::FrameUpdateType::IntnlOverlay
             }
             crate::port_picstruct::FrameUpdateType::IntnlArf => {
-                crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+                crate::port_rc_process::FrameUpdateType::IntnlArf
             }
         });
         let md_lambda_factor_update_type =
@@ -995,7 +995,7 @@ impl EncodePipeline {
                     temporal_layer_index: temporal_layer,
                     hierarchical_levels: frame_hier,
                     update_type: md_lambda_base_update_type
-                        .unwrap_or(crate::port_rc_process::FrameUpdateType::KfUpdate),
+                        .unwrap_or(crate::port_rc_process::FrameUpdateType::Kf),
                     alt_lambda_factors: md_alt_lambda_factors,
                     rtc: false,
                     stats_based_sb_lambda_modulation:

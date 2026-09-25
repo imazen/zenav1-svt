@@ -345,10 +345,10 @@ fn cells() -> Vec<Cell> {
                 (rcs::FrameType::Key, SliceType::I),
             ] {
                 for &ut in &[
-                    FrameUpdateType::LfUpdate,
-                    FrameUpdateType::GfUpdate,
-                    FrameUpdateType::ArfUpdate,
-                    FrameUpdateType::IntnlArfUpdate,
+                    FrameUpdateType::Lf,
+                    FrameUpdateType::Gf,
+                    FrameUpdateType::Arf,
+                    FrameUpdateType::IntnlArf,
                 ] {
                     for &(tl, layer_depth) in &[(0u8, 1i32), (1, 2), (2, 3), (3, 5)] {
                         for &sc in &[false, true] {

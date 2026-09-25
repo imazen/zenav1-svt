@@ -40,9 +40,9 @@ fn all_block_sizes() -> Vec<(BlockSize, i32)> {
 fn all_compound_types() -> [(p::CompoundType, i32); p::COMPOUND_TYPES] {
     [
         (p::CompoundType::Average, 0),
-        (p::CompoundType::Distwtd, 1),
+        (p::CompoundType::DistWtd, 1),
         (p::CompoundType::Wedge, 2),
-        (p::CompoundType::Diffwtd, 3),
+        (p::CompoundType::DiffWtd, 3),
     ]
 }
 

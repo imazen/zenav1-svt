@@ -293,25 +293,25 @@ pub fn tpl_subpel_search(
     let qindex = qindex.min(crate::port_rc_vbr_cbr_qpick::MAXQ);
     let rc_update_type = match update_type {
         crate::port_picstruct::FrameUpdateType::Kf => {
-            crate::port_rc_process::FrameUpdateType::KfUpdate
+            crate::port_rc_process::FrameUpdateType::Kf
         }
         crate::port_picstruct::FrameUpdateType::Lf => {
-            crate::port_rc_process::FrameUpdateType::LfUpdate
+            crate::port_rc_process::FrameUpdateType::Lf
         }
         crate::port_picstruct::FrameUpdateType::Gf => {
-            crate::port_rc_process::FrameUpdateType::GfUpdate
+            crate::port_rc_process::FrameUpdateType::Gf
         }
         crate::port_picstruct::FrameUpdateType::Arf => {
-            crate::port_rc_process::FrameUpdateType::ArfUpdate
+            crate::port_rc_process::FrameUpdateType::Arf
         }
         crate::port_picstruct::FrameUpdateType::Overlay => {
-            crate::port_rc_process::FrameUpdateType::OverlayUpdate
+            crate::port_rc_process::FrameUpdateType::Overlay
         }
         crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
-            crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+            crate::port_rc_process::FrameUpdateType::IntnlOverlay
         }
         crate::port_picstruct::FrameUpdateType::IntnlArf => {
-            crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+            crate::port_rc_process::FrameUpdateType::IntnlArf
         }
     };
     let rdmult = crate::port_rc_process::compute_rd_mult_based_on_qindex(8, rc_update_type, qindex)
