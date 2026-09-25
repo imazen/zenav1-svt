@@ -51,7 +51,7 @@ use svtav1_dsp::restoration::{
 #[cfg(feature = "std")]
 fn lr_dbg_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("SVTAV1_LR_DBG").is_some())
+    *ON.get_or_init(|| crate::dbgenv::raw_var_os("SVTAV1_LR_DBG").is_some())
 }
 #[cfg(not(feature = "std"))]
 fn lr_dbg_on() -> bool {

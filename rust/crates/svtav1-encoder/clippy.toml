@@ -1,0 +1,8 @@
+# Debug environment variables are read through `dbgenv`, which caches each
+# one per process. An uncached `getenv` on a per-block path cost 0.3-2.1% of
+# encode instructions until 2026-09-25 (callgrind), so direct reads are
+# disallowed; `dbgenv::raw_var{,_os}` is the audited escape hatch.
+disallowed-methods = [
+    { path = "std::env::var", reason = "use crate::dbgenv (cached) or dbgenv::raw_var" },
+    { path = "std::env::var_os", reason = "use crate::dbgenv (cached) or dbgenv::raw_var_os" },
+]

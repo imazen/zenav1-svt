@@ -391,7 +391,7 @@ impl HdrForkConfig {
     ///   prevent.
     #[cfg(feature = "std")]
     pub fn from_env() -> Self {
-        let fork = std::env::var("SVT_HDR_MODE")
+        let fork = crate::dbgenv::raw_var("SVT_HDR_MODE")
             .map(|v| v == "1")
             .unwrap_or(false);
         Self::from_env_with_mode(if fork {
@@ -434,7 +434,7 @@ impl HdrForkConfig {
     fn apply_env_overrides(&mut self) {
         let c = self;
         fn get<T: std::str::FromStr>(name: &str, slot: &mut T) {
-            if let Ok(v) = std::env::var(name) {
+            if let Ok(v) = crate::dbgenv::raw_var(name) {
                 *slot = v.parse().unwrap_or_else(|_| {
                     panic!(
                         "{name}: cannot parse {v:?} as {}",

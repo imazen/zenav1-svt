@@ -733,7 +733,7 @@ pub(super) fn encode_block_syntax(
     if !skip_mode {
         let skip_ctx = ectx.skip_ctx(block_x, block_y);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_SKDBG").is_some() {
+        if crate::dbgenv::skdbg() {
             std::eprintln!(
                 "SKDBG org=({},{}) {}x{} skip={}",
                 block_x,

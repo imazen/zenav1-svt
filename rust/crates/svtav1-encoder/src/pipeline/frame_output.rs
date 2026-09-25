@@ -369,7 +369,7 @@ impl EncodePipeline {
             // stream's frame OBU is exact FH byte identity). Consumed by
             // tools/screen_ibc_fh_gate.sh (IBC chunk 1).
             #[cfg(feature = "std")]
-            if let Some(path) = std::env::var_os("SVTAV1_FHDUMP") {
+            if let Some(path) = crate::dbgenv::raw_var_os("SVTAV1_FHDUMP") {
                 let _ = std::fs::write(path, &fh_bytes);
             }
             // tile_data is already a complete tile_group (with TG header)
@@ -628,7 +628,7 @@ impl EncodePipeline {
             frame_cdfs: walk_end_cdfs.borrow_mut().take().map(|mut c| {
                 c.reset_symbol_counters();
                 #[cfg(feature = "std")]
-                if let Some(path) = std::env::var_os("SVTAV1_FCTX_OUT") {
+                if let Some(path) = crate::dbgenv::raw_var_os("SVTAV1_FCTX_OUT") {
                     // Same format and field order as the C oracle's
                     // `__wrap_svt_av1_reset_cdf_symbol_counters`
                     // (tools/capture_c_trace/wrap_recon.c), so

@@ -1,0 +1,22 @@
+Snapshot 2026-09-25 (i265): caching the per-block debug environment reads.
+
+A callgrind profile of a 256x256 p10 still showed `getenv` called once per
+coded block (1,176 calls / 5 frames) from the entropy walk: uncached
+`std::env::var_os("SVTAV1_*")` checks for debug dumps (SKDBG, BLKLAMBDA, Q194,
+UVLOOP_COEFF, RCDBG, TPLQP, R0DBG, TPLDBG, DLFDBG, QLEV_CO). They now go
+through `dbgenv` (read once per process), and `crates/svtav1-encoder/clippy.toml`
+disallows direct `std::env::var{,_os}` so it cannot recur.
+
+output: byte-identical (perf_ab ident=Y in every cell; nextest 2767/2767 with
+        output pins unchanged; regression_spotcheck 147/147)
+
+callgrind instructions, 20 frames, gradient qp40 (before = d27d77bf-era build):
+  64  p6   -0.515%     64  p10  -0.282%
+  256 p6   -2.140%     256 p10  -1.391%
+  getenv in the 256 p10 profile: 0 calls after (was 1,176).
+
+wall clock, tools/perf_ab.sh (interleaved, 7 rounds): perf_ab_dbgenv_cache_2026-09-25.tsv
+  256 p6  speedup 1.027   256 p10 1.028   512 p6 1.048   512 p10 1.029
+
+This more than recovers the S2 stage-extraction residue
+(perf_s2_split_2026-09-25.meta: +0.10..+0.39%).

@@ -668,7 +668,7 @@ pub fn crf_qindex_calc(qindex: i32, i: &CrfQindexInputs) -> CrfQindexOutput {
         }
         let qindex_from_qstep_ratio = q_index_from_qstep_ratio(qindex, qstep_ratio, bit_depth);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_TPLDBG").is_some() {
+        if crate::dbgenv::tpldbg() {
             std::eprintln!(
                 "TPLDBG intra={} tl={} r0={} weight={} qstep_ratio={} qstep_q={} qindex={}",
                 i.is_intra_only,

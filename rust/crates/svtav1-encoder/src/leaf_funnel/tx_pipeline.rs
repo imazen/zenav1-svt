@@ -1196,7 +1196,7 @@ pub(super) fn tx_unit_inner(
         let q194_fp = qcoeff.get(194).copied().unwrap_or(0);
         crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut eob, scan, qt, &o);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_Q194").is_some()
+        if crate::dbgenv::q194()
             && plane_type == 0
             && w == 16
             && h == 16

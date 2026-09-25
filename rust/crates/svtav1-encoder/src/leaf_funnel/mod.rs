@@ -333,7 +333,7 @@ pub(crate) fn evaluate_leaf(
                 }
             }
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_BLKLAMBDA").is_some() {
+            if crate::dbgenv::blklambda() {
                 std::eprintln!(
                     "BLKL mi=({},{}) wh={}x{} picfl8={} picfa8={} -> fl8={} fa8={} fl10={}",
                     abs_y >> 2,

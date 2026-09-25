@@ -235,7 +235,7 @@ impl EncodePipeline {
                             &refs,
                         );
                         #[cfg(feature = "std")]
-                        if let Some(path) = std::env::var_os("SVTAV1_TPL_OUT") {
+                        if let Some(path) = crate::dbgenv::raw_var_os("SVTAV1_TPL_OUT") {
                             // Diagnostic twin of the vendored-libaom `TPL`
                             // dump (AOM_TPL_OUT): the projected temporal-MV
                             // field this frame's ref-MV scan consumes,

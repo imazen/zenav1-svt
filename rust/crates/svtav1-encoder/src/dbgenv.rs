@@ -35,6 +35,7 @@ use std::sync::OnceLock;
 /// Resolve `var`'s presence once, then answer from the cache.
 #[cfg(feature = "std")]
 #[inline]
+#[allow(clippy::disallowed_methods)]
 fn once(cell: &'static OnceLock<bool>, var: &str) -> bool {
     *cell.get_or_init(|| std::env::var_os(var).is_some())
 }
@@ -258,6 +259,22 @@ presence_flags! {
     /// `SVTAV1_PSYM`: partition-symbol stream trace, joinable against the C
     /// interposer's PSYM lines (`SVT_PARTSYM_OUT`).
     psym => "SVTAV1_PSYM",
+    /// `SVTAV1_SKDBG`: skip-flag context per coded block (entropy walk).
+    skdbg => "SVTAV1_SKDBG",
+    /// `SVTAV1_BLKLAMBDA`: per-leaf lambda line (leaf funnel).
+    blklambda => "SVTAV1_BLKLAMBDA",
+    /// `SVTAV1_Q194`: coefficient-194 trellis trace (per luma 16-wide txb).
+    q194 => "SVTAV1_Q194",
+    /// `SVTAV1_UVLOOP_COEFF`: chroma loop coefficient dump (intra chroma).
+    uvloop_coeff => "SVTAV1_UVLOOP_COEFF",
+    /// `SVTAV1_RCDBG`: CBR rate-control per-frame trace.
+    rcdbg => "SVTAV1_RCDBG",
+    /// `SVTAV1_TPLQP`: TPL per-SB qp/beta dump.
+    tplqp => "SVTAV1_TPLQP",
+    /// `SVTAV1_R0DBG`: TPL r0 derivation trace.
+    r0dbg => "SVTAV1_R0DBG",
+    /// `SVTAV1_TPLDBG`: TPL qindex-from-qstep-ratio trace.
+    tpldbg => "SVTAV1_TPLDBG",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same
@@ -269,6 +286,7 @@ macro_rules! value_vars {
             $(#[$m])*
             #[cfg(feature = "std")]
             #[inline]
+            #[allow(clippy::disallowed_methods)]
             pub(crate) fn $fn_name() -> Option<&'static str> {
                 static CELL: OnceLock<Option<String>> = OnceLock::new();
                 CELL.get_or_init(|| std::env::var($var).ok()).as_deref()
@@ -299,4 +317,23 @@ value_vars! {
     /// frame-header bit (`pipeline`). Unlike every other entry here it changes
     /// coding decisions; it is a debugging aid, not a configuration surface.
     sc_tools => "SVTAV1_SC_TOOLS",
+}
+
+/// Uncached environment reads, for the few once-per-frame or once-per-call
+/// sites that need a value (dump paths, the `SVT_*`/`SVTAV1_*` config
+/// parsers). Every other debug variable goes through a cached accessor
+/// above. `std::env::var`/`var_os` are disallowed elsewhere in this crate
+/// (`clippy.toml`): an uncached read on a per-block path cost 0.3-2.1% of
+/// encode instructions until 2026-09-25.
+#[cfg(feature = "std")]
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn raw_var(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
+}
+
+/// See [`raw_var`].
+#[cfg(feature = "std")]
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn raw_var_os(key: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(key)
 }

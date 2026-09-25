@@ -568,7 +568,7 @@ pub fn generate_r0beta(
 
     let mc_dep_cost_base = (recrf_dist_base_sum << RDDIV_BITS) + mc_dep_delta_base_sum;
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_R0DBG").is_some() {
+    if crate::dbgenv::r0dbg() {
         std::eprintln!(
             "R0DBG recrf={} mcdep={} count={} rdmult={}",
             recrf_dist_base_sum,

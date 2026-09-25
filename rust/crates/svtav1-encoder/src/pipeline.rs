@@ -1053,7 +1053,7 @@ impl EncodePipeline {
                     }
                 }
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_TPLQP").is_some() {
+                if crate::dbgenv::tplqp() {
                     let poc = pic_decision
                         .as_ref()
                         .map_or(u32::MAX, |p| p.picture_number as u32);
@@ -1443,7 +1443,7 @@ impl EncodePipeline {
         // stderr as its symbol trace). Answers "did the boost fire, and by how
         // much" without perturbing a byte-comparison run.
         #[cfg(feature = "std")]
-        if let Ok(path) = std::env::var("SVTAV1_VB_DUMP") {
+        if let Ok(path) = crate::dbgenv::raw_var("SVTAV1_VB_DUMP") {
             let txt = match delta_q_plan {
                 Some(p) => std::format!(
                     "base={base_qindex} res={} plan={:?}\n",

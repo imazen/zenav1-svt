@@ -56,7 +56,7 @@ use svtav1_cref::picstruct as cref;
 // constant one — it IS, per build. That is the point: the build script decides
 // whether the stronger oracle exists and the caller decides whether to demand
 // it.
-#[allow(clippy::assertions_on_constants)]
+#[allow(clippy::assertions_on_constants, clippy::disallowed_methods)] // a caller-set test knob
 #[test]
 fn picstruct_statics_oracle_is_available() {
     let required = std::env::var("SVT_CREF_REQUIRE_PICSTRUCT_STATICS")

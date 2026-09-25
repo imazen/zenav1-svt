@@ -205,7 +205,7 @@ impl EncodePipeline {
             )));
         };
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_RCDBG").is_some() {
+        if crate::dbgenv::rcdbg() {
             std::eprintln!(
                 "RCDBG pic={} ft={} this_tgt={} base_tgt={} qidx={} cr={} \
                  buf={} bot={} avg_bw={} lastq=[{},{}] active_worst={} \
@@ -293,7 +293,7 @@ impl EncodePipeline {
         rcs.rc.frames_to_key = frames_to_key;
         rcs.rc.frames_since_cdf_update = frames_since_cdf_update;
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_RCDBG").is_some() {
+        if crate::dbgenv::rcdbg() {
             std::eprintln!(
                 "RCDBG-POST pic={} bits={} proj={} zeromv={} buf={} bot={} \
                  since_key={} to_key={} low_motion={}",

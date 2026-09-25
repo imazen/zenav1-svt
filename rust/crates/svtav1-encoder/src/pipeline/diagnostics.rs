@@ -102,7 +102,7 @@ pub(super) fn dump_refstats(
 #[inline(always)]
 pub(super) fn dump_mvs(ref_frame: &ReferenceFrame) {
     #[cfg(feature = "std")]
-    if let Some(path) = std::env::var_os("SVTAV1_MVS_OUT") {
+    if let Some(path) = crate::dbgenv::raw_var_os("SVTAV1_MVS_OUT") {
         // Diagnostic twin of the vendored-libaom `MVS` dump: the stored
         // per-8x8 motion field plus the saved ref_order_hint array, so a
         // field-by-field diff can separate "stored state diverged" from
@@ -143,7 +143,7 @@ impl EncodePipeline {
     #[inline(always)]
     pub(super) fn dump_recon10_bin(&self) {
         #[cfg(feature = "std")]
-        if let Ok(prefix) = std::env::var("SVTAV1_RECON10_BIN") {
+        if let Ok(prefix) = crate::dbgenv::raw_var("SVTAV1_RECON10_BIN") {
             if let (Some(y), Some((u, v))) =
                 (self.last_recon10_y.as_ref(), self.last_recon10_uv.as_ref())
             {

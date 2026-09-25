@@ -1517,7 +1517,7 @@ pub fn setup_ref_mv_list_seeded(
     // TEMP parity trace (SVTAV1_MVPDBG): stage-boundary refmv dump.
     #[cfg(feature = "std")]
     let mvpdbg = crate::dbgenv::canddbg()
-        && std::env::var("SVTAV1_MVPDBG").is_ok()
+        && crate::dbgenv::raw_var("SVTAV1_MVPDBG").is_ok()
         && crate::depth_refine::nsqdbg_here(ctx.mi_col as usize * 4, ctx.mi_row as usize * 4);
     #[cfg(feature = "std")]
     if mvpdbg {

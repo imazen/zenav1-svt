@@ -757,7 +757,7 @@ fn bd10_reencode_node(
                 static XY: std::sync::OnceLock<Option<Option<(usize, usize)>>> =
                     std::sync::OnceLock::new();
                 let pin = *XY.get_or_init(|| {
-                    let s = std::env::var("SVTAV1_QLEV_XY").ok()?;
+                    let s = crate::dbgenv::raw_var("SVTAV1_QLEV_XY").ok()?;
                     if s.trim() == "all" {
                         return Some(None);
                     }
@@ -770,7 +770,7 @@ fn bd10_reencode_node(
                     None => false,
                 };
                 if fire {
-                    let co = if std::env::var("SVTAV1_QLEV_CO").is_ok() {
+                    let co = if crate::dbgenv::qlev_co() {
                         let n = bw * bh;
                         let mut res = alloc::vec::Vec::with_capacity(n);
                         for r in 0..bh {
@@ -2250,7 +2250,7 @@ fn bd10_reencode_leaf_txs(
                 static XY: std::sync::OnceLock<Option<Option<(usize, usize)>>> =
                     std::sync::OnceLock::new();
                 let pin = *XY.get_or_init(|| {
-                    let s = std::env::var("SVTAV1_QLEV_XY").ok()?;
+                    let s = crate::dbgenv::raw_var("SVTAV1_QLEV_XY").ok()?;
                     if s.trim() == "all" {
                         return Some(None);
                     }

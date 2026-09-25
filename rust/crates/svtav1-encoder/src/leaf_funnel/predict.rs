@@ -355,7 +355,7 @@ fn hadamard_satd_hbd_into(
 /// regression. One relaxed atomic load when off.
 #[cfg(feature = "std")]
 pub(super) fn dbg_on(cell: &'static std::sync::OnceLock<bool>, var: &str) -> bool {
-    *cell.get_or_init(|| std::env::var_os(var).is_some())
+    *cell.get_or_init(|| crate::dbgenv::raw_var_os(var).is_some())
 }
 
 /// The `"x,y"` block-pin debug vars (`SVTAV1_CEDGE_XY`, `SVTAV1_QLEV_XY`),
@@ -367,7 +367,7 @@ pub(super) fn dbg_xy(
     var: &str,
 ) -> Option<(usize, usize)> {
     *cell.get_or_init(|| {
-        let s = std::env::var(var).ok()?;
+        let s = crate::dbgenv::raw_var(var).ok()?;
         let (a, b) = s.split_once(',')?;
         Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
     })

@@ -483,7 +483,7 @@ pub fn recondbg_dump(
         return;
     }
     let (cw, ch) = (width / 2, height / 2);
-    let bin = std::env::var("SVTAV1_RECON_BIN").ok();
+    let bin = crate::dbgenv::raw_var("SVTAV1_RECON_BIN").ok();
     #[allow(clippy::type_complexity)]
     // inline tuple documents the shape; a `type` alias would hide it
     let mut planes: alloc::vec::Vec<(usize, &[u8], &[u8], usize, usize)> =

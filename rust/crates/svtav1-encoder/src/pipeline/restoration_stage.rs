@@ -175,7 +175,7 @@ impl EncodePipeline {
                     // dump (post-deblock == post-CDEF whenever every coded CDEF
                     // strength is 0).
                     #[cfg(feature = "std")]
-                    if let Ok(prefix) = std::env::var("SVTAV1_LRREC_BIN") {
+                    if let Ok(prefix) = crate::dbgenv::raw_var("SVTAV1_LRREC_BIN") {
                         static CALL: core::sync::atomic::AtomicUsize =
                             core::sync::atomic::AtomicUsize::new(0);
                         let call = CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

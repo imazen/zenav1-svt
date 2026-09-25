@@ -188,7 +188,7 @@ pub(super) fn nsqdbg_on() -> bool {
 pub(super) fn nsqdbg_sb() -> Option<(usize, usize)> {
     static SB: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
     *SB.get_or_init(|| {
-        let v = std::env::var("SVTAV1_DBG_MI").ok()?;
+        let v = crate::dbgenv::raw_var("SVTAV1_DBG_MI").ok()?;
         let (r, c) = v.split_once(',')?;
         Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
     })

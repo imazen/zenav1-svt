@@ -277,7 +277,7 @@ pub fn pick_filter_level_by_q(i: &DlfPickInputs<'_>) -> LfLevels {
 
     let (do_y, do_uv) = me_based_dlf_skip(i);
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_DLFDBG").is_some() {
+    if crate::dbgenv::dlfdbg() {
         std::eprintln!(
             "DLFDBG qidx={} guess={} min_ref={:?} avg_sad={} do=({},{}) res={} tl={} hier={} zfs={} refs={}",
             i.base_qindex,

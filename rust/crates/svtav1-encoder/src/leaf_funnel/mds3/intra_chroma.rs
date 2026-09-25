@@ -676,7 +676,7 @@ pub(super) fn eval_intra_chroma(
                     qt_u.dequant[0],
                     qt_v.dequant[0],
                 );
-                if std::env::var_os("SVTAV1_UVLOOP_COEFF").is_some() {
+                if crate::dbgenv::uvloop_coeff() {
                     let dump = |c: &TxUnitOut| -> String {
                         c.qcoeff
                             .iter()

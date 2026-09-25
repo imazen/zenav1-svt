@@ -33,7 +33,7 @@ pub(super) fn ccost_log(
     // Cache the env lookup — this fn is on the per-txb hot path, so a getenv
     // per call would be a real regression. OnceLock => one atomic load when off.
     static ON: OnceLock<bool> = OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("SVTAV1_CCOSTDBG").is_some()) {
+    if !*ON.get_or_init(|| crate::dbgenv::raw_var_os("SVTAV1_CCOSTDBG").is_some()) {
         return;
     }
     static N: AtomicUsize = AtomicUsize::new(0);

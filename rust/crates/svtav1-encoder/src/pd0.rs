@@ -888,7 +888,7 @@ fn skip0_bits() -> u64 {
 fn etxf_pin() -> Option<(usize, usize)> {
     static PIN: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
     *PIN.get_or_init(|| {
-        std::env::var("SVTAV1_ETXF").ok().and_then(|xy| {
+        crate::dbgenv::raw_var("SVTAV1_ETXF").ok().and_then(|xy| {
             let mut it = xy.split(',');
             let px = it.next()?.parse().ok()?;
             let py = it.next()?.parse().ok()?;

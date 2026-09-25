@@ -1299,7 +1299,7 @@ pub fn write_coeffs_txb_1d(
 #[cfg(feature = "std")]
 fn txbsim_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("SVTAV1_TXBSIM").is_some())
+    *ON.get_or_init(|| crate::dbgenv::raw_var_os("SVTAV1_TXBSIM").is_some())
 }
 
 /// [`write_coeffs_txb_1d`]'s body, with the level map supplied by the caller.
