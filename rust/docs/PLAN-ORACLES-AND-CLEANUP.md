@@ -34,27 +34,29 @@ phase.
 
 ## Phase 0 — foundation
 
-- [ ] 0.1 Oracle registry `rust/oracles/oracles.tsv` + `tools/oracle`
+- [x] 0.1 (`5d949d34`) Oracle registry `rust/oracles/oracles.tsv` + `tools/oracle`
   (`list` / `build` / `libdir` / `srcdir`).
-- [ ] 0.2 `SVT_ORACLE` honoured by `capture_c_trace` (build and run);
+- [x] 0.2 (`5d949d34`) `SVT_ORACLE` honoured by `capture_c_trace` (build and run);
   `SVT_HDR_MODE` kept as an alias.
-- [ ] 0.3 `SVT_ORACLE` honoured by `identity_run`: it selects
+- [x] 0.3 (`50c683a4`) `SVT_ORACLE` honoured by `identity_run`: it selects
   `SvtReference` and the HDR mode from the registry row.
-- [ ] 0.4 Ghost Robot submodule `reference/svt-av1-hdr` pinned at `9dabe3ca`.
-- [ ] 0.5 Output-pin test (`output_pins`) and its committed manifest, in CI.
-- [ ] 0.6 Tune numbering follows C: `TUNE_VMAF = 5`,
+- [x] 0.4 (`c48488ae`) Ghost Robot submodule `reference/svt-av1-hdr` pinned at `9dabe3ca`.
+- [x] 0.5 (`1267af21`; 227 cells, 2.6 s) Output-pin test (`output_pins`) and its committed manifest, in CI.
+- [x] 0.6 (`50c683a4`) Tune numbering follows C: `TUNE_VMAF = 5`,
   `TUNE_FILM_GRAIN = 6`. Today film grain is 5 in Rust.
-- [ ] 0.7 Each test file in exactly one test target (T1), plus a check
+- [x] 0.7 (`ba07b218`; 188 targets -> 27, 4029 runs -> 2780) Each test file in exactly one test target (T1), plus a check
   that keeps it so.
 
-Done when:
+Phase 0 done 2026-09-25 on `i265`: all four oracles build and encode,
+`regression_spotcheck` 147/147, and the workspace suite passes (2780).
+It was done when:
 - `tools/oracle build` succeeds for all four oracles on `i265`;
 - a still cell encodes through `capture_c_trace` under each of them;
 - `output_pins` is green in CI.
 
 ## Phase 1 — API for both targets
 
-- [ ] 1.1 `SvtReference::GhostRobot` (and `#[non_exhaustive]`), with its
+- [x] 1.1 (`50c683a4`) `SvtReference::GhostRobot` (and `#[non_exhaustive]`), with its
   own `validate_hdr_config` envelope.
 - [ ] 1.2 Ghost Robot's configuration surface in `HdrForkConfig`:
   `enable_qmpsnr`, `luminance_qp_bias`, `hbd_mds`. Plus a typed facade
@@ -146,6 +148,13 @@ Order, by expected size:
 5. the discarded per-frame work in `pipeline.rs` (the review lists four
    items);
 6. per-call allocations (S6).
+
+## Maintenance backlog
+
+- [ ] CHANGELOG `[Unreleased]` is 3,800 lines of repeated
+  Added/Changed/Fixed blocks appended per campaign, with QUEUED BREAKING
+  CHANGES buried at line ~280. Fold it into one set of categories, and cut a
+  dated section per released version.
 
 ## Phase 6 — test structure
 

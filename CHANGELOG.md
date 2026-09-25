@@ -13,6 +13,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Named C oracles with one switch** (`5d949d34`, `c48488ae`).
+  `rust/oracles/oracles.tsv` registers `mainline-4.2.0` (pristine v4.2.0),
+  `ghost-robot` (svt-av1-hdr 4.2, `9dabe3ca`, new submodule
+  `reference/svt-av1-hdr`) and the two legacy hybrid builds; `SVT_ORACLE=<name>`
+  selects the oracle for both `capture_c_trace` and `identity_run`
+  (`SVT_HDR_MODE` stays as an alias). A fork knob under a mainline-API oracle
+  is refused, never ignored. Measured on `i265`: `mainline-4.2.0` is
+  byte-identical to the port on `gradient 128x128 p6` q20/q45;
+  `regression_spotcheck` 147/147 unchanged. See `rust/docs/ORACLES.md`.
+- **`SvtReference::GhostRobot`** (`50c683a4`): the Ghost Robot target, with its
+  own validation (fork mode required). Until the parity work in
+  `rust/docs/PLAN-ORACLES-AND-CLEANUP.md` phase 3 lands it runs the hybrid's
+  fork behaviour, so it names the target rather than claiming parity.
+- **Output pins** (`1267af21`): `svtav1/tests/output_pins.rs` fingerprints
+  the port's own output over 227 cells (stills, 10-bit, mono, every
+  reference, tunes, fork knobs, Zen enhancements, video, tiles/threads) in
+  2.6 s. Any refactor must leave them unchanged; `just pins-update` for
+  deliberate changes.
+
 - **`__expert` per-plane chroma delta-q override** (`1611ca68`). New
   double-underscore feature on `zenav1-svt-encoder` and `zenav1-svt` (not a
   stable surface): `EncodePipeline::chroma_q_override` /
@@ -57,6 +76,15 @@ Crates are not published to crates.io yet — depend by git.
   `identity_full_8bit.sh` 1100/1100.
 
 ### Fixed
+
+- **Film-grain tune numbering** (`50c683a4`): the port numbered film grain 5
+  while every C oracle uses 6 (5 is VMAF), so one raw `SVT_FORK_TUNE` value
+  meant different tunes on the two sides of a comparison.
+- **162 integration-test files ran twice** (`ba07b218`): they were both
+  aggregated modules and standalone targets. 188 test targets are now 27; the
+  workspace suite went from 4029 test runs to 2780, all passing.
+  `tools/test_targets_check.py` (CI shard 3) keeps every file in exactly one
+  target.
 
 - **Frame-header chroma-q form under a separate-UV sequence header**
   (`1611ca68`). With SH `separate_uv_delta_q = 1`, an all-zero chroma delta
@@ -242,6 +270,12 @@ Crates are not published to crates.io yet — depend by git.
 - Animated AVIF metadata and repetition options, poster alpha, and an independent libavif metadata gate; serializer pinned to canonical `7b058bb8` (`b04f372a`).
 
 ### QUEUED BREAKING CHANGES
+
+- `SvtReference` is `#[non_exhaustive]` and gains `GhostRobot`; exhaustive
+  matches outside the crate need a wildcard arm (`50c683a4`).
+- Raw tune value 5 now means VMAF, as in every C oracle, and is refused
+  (not ported); film grain moved from 5 to 6 (`50c683a4`). Callers passing a
+  raw `hdr.tune = 5` for film grain must pass `tune::TUNE_FILM_GRAIN`.
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
 - **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
