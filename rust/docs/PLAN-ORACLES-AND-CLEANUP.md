@@ -159,8 +159,16 @@ Order, by expected size:
    `port_convolve`;
 3. multi-offset SAD for full-pel ME;
 4. 10-bit mode decision without the 8-bit twin work;
-5. the discarded per-frame work in `pipeline.rs` (the review lists four
-   items);
+5. the discarded per-frame work in `pipeline.rs`.
+   - Done: the post-encode per-SB full-pel `mv_map` fill (its only reader
+     had already run) and the `tpl_sb_qp_offsets` full-frame pass (consumed
+     by `let _`) are removed; the dead homegrown temporal-filter branch is
+     gone from the pipeline (this change).
+   - Open: the third symbol-writing walk (`recon_only`), and the per-leaf
+     `FunnelFrame` deep clones under TPL/SSIM lambdas.
+   - Delete `temporal_filter::temporal_filter` and the f64 `estimate_noise`
+     with S1, after retargeting the `fallible-alloc` test that uses the
+     former as its allocation vehicle;
 6. per-call allocations (S6).
 
 ## Maintenance backlog
