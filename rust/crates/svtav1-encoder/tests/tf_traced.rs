@@ -438,8 +438,14 @@ fn tier4_apply_filtering_block_plane_wise_offsets() {
 #[test]
 fn tier4_set_hme_search_params_mctf() {
     let default_tf = port::SearchAreaMinMax {
-        sa_min: port::SearchArea { width: 8, height: 6 },
-        sa_max: port::SearchArea { width: 64, height: 32 },
+        sa_min: port::SearchArea {
+            width: 8,
+            height: 6,
+        },
+        sa_max: port::SearchArea {
+            width: 64,
+            height: 32,
+        },
     };
     assert_eq!(
         port::set_hme_search_params_mctf(default_tf, 0),
@@ -449,8 +455,14 @@ fn tier4_set_hme_search_params_mctf() {
     assert_eq!(
         port::set_hme_search_params_mctf(default_tf, 1),
         Some(port::SearchAreaMinMax {
-            sa_min: port::SearchArea { width: 16, height: 12 },
-            sa_max: port::SearchArea { width: 256, height: 128 },
+            sa_min: port::SearchArea {
+                width: 16,
+                height: 12
+            },
+            sa_max: port::SearchArea {
+                width: 256,
+                height: 128
+            },
         })
     );
     // C asserts on anything else; the port refuses instead of guessing.

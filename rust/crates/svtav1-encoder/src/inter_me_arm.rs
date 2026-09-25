@@ -1240,8 +1240,8 @@ mod tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
-                similar_brightness_refs: false,
-                frame_is_leaf: false,
+            similar_brightness_refs: false,
+            frame_is_leaf: false,
         };
         for (qp, sa_min, sa_max, l0sa) in [
             (
@@ -1555,8 +1555,8 @@ mod recycle_tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
-                similar_brightness_refs: false,
-                frame_is_leaf: false,
+            similar_brightness_refs: false,
+            frame_is_leaf: false,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
@@ -1668,8 +1668,8 @@ mod recycle_tests {
             only_l_bwd: true,
             safe_limit_nref: 2,
             safe_limit_zz_th: 60_000,
-                similar_brightness_refs: false,
-                frame_is_leaf: false,
+            similar_brightness_refs: false,
+            frame_is_leaf: false,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);

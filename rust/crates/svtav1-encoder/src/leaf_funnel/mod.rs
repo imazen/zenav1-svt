@@ -319,12 +319,10 @@ pub(crate) fn evaluate_leaf(
                     // no per-SB modulation) into `full_lambda_md`/
                     // `fast_lambda_md`, replacing the per-SB
                     // `av1_lambda_assign_md` values outright.
-                    f.lambda =
-                        u64::from(crate::port_md_lambda::scale_lambda(t.pic_full8, scale));
+                    f.lambda = u64::from(crate::port_md_lambda::scale_lambda(t.pic_full8, scale));
                     f.lambda10 =
                         u64::from(crate::port_md_lambda::scale_lambda(t.pic_full10, scale));
-                    f.inter_fast_lambda =
-                        crate::port_md_lambda::scale_lambda(t.pic_fast8, scale);
+                    f.inter_fast_lambda = crate::port_md_lambda::scale_lambda(t.pic_fast8, scale);
                 }
                 None => {
                     f.lambda = u64::from(crate::port_md_lambda::SUPERRES_INVALID_STATE);
@@ -386,15 +384,12 @@ pub(crate) fn evaluate_leaf(
     // `quantize_inv_quantize`'s qindex (full_loop.c:1668-1676): the blk
     // `ctx->qp_index` ONLY when delta-q is signalled, else the frame
     // `base_q_idx` (+chroma deltas) — see `FunnelFrame::quant_qindex`.
-    let mut qt =
-        crate::quant::build_quant_table_sharp(frame.quant_qindex(0), frame.sharpness);
+    let mut qt = crate::quant::build_quant_table_sharp(frame.quant_qindex(0), frame.sharpness);
     qt.qm_level = frame.qm_levels[0];
     // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
-    let mut qt_u =
-        crate::quant::build_quant_table_sharp(frame.quant_qindex(1), frame.sharpness);
+    let mut qt_u = crate::quant::build_quant_table_sharp(frame.quant_qindex(1), frame.sharpness);
     qt_u.qm_level = frame.qm_levels[1];
-    let mut qt_v =
-        crate::quant::build_quant_table_sharp(frame.quant_qindex(2), frame.sharpness);
+    let mut qt_v = crate::quant::build_quant_table_sharp(frame.quant_qindex(2), frame.sharpness);
     qt_v.qm_level = frame.qm_levels[2];
 
     // bd10 LUMA mode funnel (task #94): when the bd10 recon canvas is present

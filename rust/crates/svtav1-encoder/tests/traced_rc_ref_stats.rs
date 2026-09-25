@@ -369,10 +369,7 @@ fn frame_is_kf_gf_arf_matches_the_c_disjunction() {
         "INTNL_ARF_UPDATE is not in C's disjunction"
     );
     assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::Overlay));
-    assert!(!frame_is_kf_gf_arf(
-        false,
-        FrameUpdateType::IntnlOverlay
-    ));
+    assert!(!frame_is_kf_gf_arf(false, FrameUpdateType::IntnlOverlay));
 }
 
 #[test]

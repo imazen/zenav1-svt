@@ -71,8 +71,8 @@ fn inter_frame(poc: u64, last_idr: u64) -> pp::PicParams {
     }
 }
 
-mod refs;
 mod mini_gop;
+mod refs;
 mod tpl_primary;
 
 mod scene_tf;

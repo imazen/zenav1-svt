@@ -312,9 +312,9 @@ const FILES: [&str; 3] = ["coeff", "coeff_base", "mode"];
 fn main() {
     // Writes `<dir>/default_cdfs.rs` and `<dir>/default_cdfs/{coeff,
     // coeff_base, mode}.rs`; `<dir>` is `crates/svtav1-encoder/src/entropy`.
-    let dir = std::env::args().nth(1).expect(
-        "usage: gen_default_cdfs <crates/svtav1-encoder/src/entropy>",
-    );
+    let dir = std::env::args()
+        .nth(1)
+        .expect("usage: gen_default_cdfs <crates/svtav1-encoder/src/entropy>");
     let mut out = String::new();
     out.push_str(
         "//! Default CDF tables extracted from the C reference (libSvtAv1Enc.a,\n\

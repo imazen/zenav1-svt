@@ -96,7 +96,6 @@ pub enum AomRcMode {
 /// C `FrameType` — unified: the single definition lives in `svtav1_types::frame`.
 pub use svtav1_types::frame::FrameType;
 
-
 /// C `RESIZE_STATE` (definitions.h) — the dynamic-resize ladder position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -479,10 +478,7 @@ impl FrameRc {
     /// C's repeated `update_type == GF_UPDATE || update_type == ARF_UPDATE`.
     #[must_use]
     pub fn is_gf_or_arf(&self) -> bool {
-        matches!(
-            self.update_type,
-            FrameUpdateType::Gf | FrameUpdateType::Arf
-        )
+        matches!(self.update_type, FrameUpdateType::Gf | FrameUpdateType::Arf)
     }
 
     /// C's `is_intrnl_arf` / `is_intrl_arf_boost`.

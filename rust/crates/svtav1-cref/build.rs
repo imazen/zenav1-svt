@@ -136,53 +136,53 @@ fn main() {
     let lib_dir = match (pinned.as_ref(), env::var_os("SVT_CREF_LIB_DIR")) {
         (Some(o), _) => o.lib.clone(),
         (None, dir) => match dir {
-        Some(dir) => {
-            // The caller's own artifact: link it, never build into it.
-            let dir = PathBuf::from(dir);
-            let archive = dir.join("libSvtAv1Enc.a");
-            if !archive.exists() {
-                panic!(
-                    "SVT_CREF_LIB_DIR is set but {} does not exist. Unset it to let this \
+            Some(dir) => {
+                // The caller's own artifact: link it, never build into it.
+                let dir = PathBuf::from(dir);
+                let archive = dir.join("libSvtAv1Enc.a");
+                if !archive.exists() {
+                    panic!(
+                        "SVT_CREF_LIB_DIR is set but {} does not exist. Unset it to let this \
                      build script build the C reference, or point it at a directory that \
                      holds libSvtAv1Enc.a.",
-                    archive.display()
-                );
+                        archive.display()
+                    );
+                }
+                dir
             }
-            dir
-        }
-        None => {
-            let sha = submodule_sha(&c_root);
-            let mainline = Variant {
-                name: "mainline (SVT_HDR_MODE=OFF)",
-                hdr_mode: false,
-                // The shell gates (`sb128_gate.sh`, `unaligned_identity_scan.sh`)
-                // run SvtAv1EncApp from this dir, so build it with the lib —
-                // the same config CI and the hand-typed line have always used.
-                build_apps: true,
-                build_dir: repo_root.join("cbuild-static"),
-                lib_dir: repo_root.join("Bin/Release"),
-            };
-            ensure_variant(&c_root, &mainline, sha.as_deref());
-            if env::var("SVT_CREF_SKIP_HDR")
-                .map(|v| v == "1")
-                .unwrap_or(false)
-            {
-                println!(
-                    "cargo:warning=SVT_CREF_SKIP_HDR=1: the fork oracle (Bin/ReleaseHdr) was not \
-                     built; tools/hdr_bd10_gate.sh will need it"
-                );
-            } else {
-                let fork = Variant {
-                    name: "fork (SVT_HDR_MODE=ON)",
-                    hdr_mode: true,
-                    build_apps: false,
-                    build_dir: repo_root.join("cbuild-static-hdr"),
-                    lib_dir: repo_root.join("Bin/ReleaseHdr"),
+            None => {
+                let sha = submodule_sha(&c_root);
+                let mainline = Variant {
+                    name: "mainline (SVT_HDR_MODE=OFF)",
+                    hdr_mode: false,
+                    // The shell gates (`sb128_gate.sh`, `unaligned_identity_scan.sh`)
+                    // run SvtAv1EncApp from this dir, so build it with the lib —
+                    // the same config CI and the hand-typed line have always used.
+                    build_apps: true,
+                    build_dir: repo_root.join("cbuild-static"),
+                    lib_dir: repo_root.join("Bin/Release"),
                 };
-                ensure_variant(&c_root, &fork, sha.as_deref());
+                ensure_variant(&c_root, &mainline, sha.as_deref());
+                if env::var("SVT_CREF_SKIP_HDR")
+                    .map(|v| v == "1")
+                    .unwrap_or(false)
+                {
+                    println!(
+                        "cargo:warning=SVT_CREF_SKIP_HDR=1: the fork oracle (Bin/ReleaseHdr) was not \
+                     built; tools/hdr_bd10_gate.sh will need it"
+                    );
+                } else {
+                    let fork = Variant {
+                        name: "fork (SVT_HDR_MODE=ON)",
+                        hdr_mode: true,
+                        build_apps: false,
+                        build_dir: repo_root.join("cbuild-static-hdr"),
+                        lib_dir: repo_root.join("Bin/ReleaseHdr"),
+                    };
+                    ensure_variant(&c_root, &fork, sha.as_deref());
+                }
+                mainline.lib_dir
             }
-            mainline.lib_dir
-        }
         },
     };
 
@@ -651,8 +651,7 @@ fn link_globalized_enc_dec_statics(build_dir: &Path, out_dir: &Path) -> bool {
 
     const SYMS: [&str; 1] = ["aom_ssim2"];
 
-    let src =
-        build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o");
+    let src = build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o");
     println!("cargo:rerun-if-changed={}", src.display());
     if !src.exists() {
         println!(

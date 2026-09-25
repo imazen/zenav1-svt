@@ -4,7 +4,10 @@
 // Without `std`, the diagnostics are dead: `dbgenv` flags read `false`, and
 // the dumps gated on `feature = "std"` leave their inputs and helpers unused.
 // The std build — the one CI lints with `-D warnings` — keeps these lints.
-#![cfg_attr(not(feature = "std"), allow(dead_code, unused_variables, unused_assignments))]
+#![cfg_attr(
+    not(feature = "std"),
+    allow(dead_code, unused_variables, unused_assignments)
+)]
 
 extern crate alloc;
 
@@ -47,9 +50,9 @@ pub mod film_grain_denoise;
 pub mod film_grain_fft;
 pub mod film_grain_model;
 pub mod film_grain_synthesis;
+pub mod fork_config;
 pub mod frame_geom;
 pub(crate) mod funnel_arm;
-pub mod fork_config;
 pub mod hdr_mode;
 pub mod inter_hdr_arm;
 pub mod inter_md_arm;

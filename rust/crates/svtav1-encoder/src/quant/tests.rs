@@ -239,7 +239,11 @@ fn eob_from_iscan_matches_reverse_walk_for_every_scan() {
                         st ^= st << 13;
                         st ^= st >> 7;
                         st ^= st << 17;
-                        if st % 256 < density { (st >> 20) as i32 % 9 - 4 } else { 0 }
+                        if st % 256 < density {
+                            (st >> 20) as i32 % 9 - 4
+                        } else {
+                            0
+                        }
                     })
                     .collect();
                 cases.push((scan, q));
@@ -248,7 +252,12 @@ fn eob_from_iscan_matches_reverse_walk_for_every_scan() {
     }
     let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
         for (scan, q) in &cases {
-            assert_eq!(eob_from_qcoeff(scan, q), eob_by_walk(scan, q), "n={}", scan.len());
+            assert_eq!(
+                eob_from_qcoeff(scan, q),
+                eob_by_walk(scan, q),
+                "n={}",
+                scan.len()
+            );
         }
     });
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);

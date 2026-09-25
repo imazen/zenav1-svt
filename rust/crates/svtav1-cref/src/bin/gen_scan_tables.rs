@@ -112,7 +112,10 @@ fn main() {
     let mut by_len: std::collections::BTreeMap<usize, Vec<(usize, usize)>> = Default::default();
     for ts in 0..TX_SIZES_ALL {
         for class in 0..SCAN_CLASSES {
-            by_len.entry(cref::scan_len(ts)).or_default().push((ts, class));
+            by_len
+                .entry(cref::scan_len(ts))
+                .or_default()
+                .push((ts, class));
         }
     }
     out.push_str(

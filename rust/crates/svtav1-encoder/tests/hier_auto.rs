@@ -11,7 +11,7 @@
 //! cannot drift back.
 
 use svtav1_encoder::pipeline::EncodePipeline;
-use svtav1_encoder::port_picstruct::{PredStructure, HIERARCHICAL_LEVELS_AUTO};
+use svtav1_encoder::port_picstruct::{HIERARCHICAL_LEVELS_AUTO, PredStructure};
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 fn pipe(w: u32, h: u32, preset: u8, mode: RcMode, intra_period: u32) -> EncodePipeline {

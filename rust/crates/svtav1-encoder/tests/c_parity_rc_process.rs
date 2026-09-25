@@ -176,15 +176,7 @@ fn frame_type_qdelta_matches_c_through_exported_pair() {
 #[test]
 fn compute_rd_mult_based_on_qindex_matches_c_all_update_types() {
     use rc::FrameUpdateType::*;
-    let update_types = [
-        Kf,
-        Lf,
-        Gf,
-        Arf,
-        Overlay,
-        IntnlOverlay,
-        IntnlArf,
-    ];
+    let update_types = [Kf, Lf, Gf, Arf, Overlay, IntnlOverlay, IntnlArf];
     for &bd in &BIT_DEPTHS {
         for &ut in &update_types {
             for qindex in 0..=255i32 {

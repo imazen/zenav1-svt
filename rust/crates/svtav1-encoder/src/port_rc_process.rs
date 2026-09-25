@@ -332,9 +332,7 @@ pub fn compute_rd_mult_based_on_qindex(
     let q = f64::from(dc_quant_qtx_int(qindex, bit_depth));
     let rdmult: i64 = match update_type {
         FrameUpdateType::Kf => (def_kf_rd_multiplier(q) * q * q) as i64,
-        FrameUpdateType::Gf | FrameUpdateType::Arf => {
-            (def_arf_rd_multiplier(q) * q * q) as i64
-        }
+        FrameUpdateType::Gf | FrameUpdateType::Arf => (def_arf_rd_multiplier(q) * q * q) as i64,
         _ => (def_inter_rd_multiplier(q) * q * q) as i64,
     };
     let rdmult = match bit_depth {
@@ -1286,9 +1284,7 @@ pub fn rc_init_frame_stats(input: &FrameStatsInput<'_>) -> FrameStatsOutput {
 /// not be for anything with arithmetic in it.
 #[must_use]
 pub fn frame_is_kf_gf_arf(is_intra_only: bool, update_type: FrameUpdateType) -> bool {
-    is_intra_only
-        || update_type == FrameUpdateType::Arf
-        || update_type == FrameUpdateType::Gf
+    is_intra_only || update_type == FrameUpdateType::Arf || update_type == FrameUpdateType::Gf
 }
 
 /// C `svt_aom_update_rc_counts` (rc_process.c:564), EXPORTED but taking a
@@ -1671,10 +1667,7 @@ mod frame_update_type_tests {
     #[test]
     fn low_delay_p_frame_1_is_arf_for_the_factor_while_the_picture_is_lf() {
         assert_eq!(lambda_gf_update_type(true, 0, 0), FrameUpdateType::Kf);
-        assert_eq!(
-            lambda_gf_update_type(false, 0, 0),
-            FrameUpdateType::Arf
-        );
+        assert_eq!(lambda_gf_update_type(false, 0, 0), FrameUpdateType::Arf);
 
         // The picture's own type, from the already-ported `set_frame_update_type`.
         let mut pic = crate::port_picstruct::PicParams {
@@ -1692,18 +1685,12 @@ mod frame_update_type_tests {
     /// `<=`, so `temporal_layer_index == hierarchical_levels` is `Lf`.
     #[test]
     fn the_hierarchical_ladder_matches_update_lambdas_own_comparisons() {
-        assert_eq!(
-            lambda_gf_update_type(false, 3, 0),
-            FrameUpdateType::Arf
-        );
+        assert_eq!(lambda_gf_update_type(false, 3, 0), FrameUpdateType::Arf);
         assert_eq!(
             lambda_gf_update_type(false, 3, 2),
             FrameUpdateType::IntnlArf
         );
-        assert_eq!(
-            lambda_gf_update_type(false, 3, 3),
-            FrameUpdateType::Lf
-        );
+        assert_eq!(lambda_gf_update_type(false, 3, 3), FrameUpdateType::Lf);
     }
 
     /// **C's OWN per-superblock lambdas, read off `SVT_PD0CFG_OUT`'s

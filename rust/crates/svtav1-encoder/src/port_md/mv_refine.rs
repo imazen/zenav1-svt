@@ -42,9 +42,9 @@
 //! `osvf` one. [`single_motion_search_plan`] carries that as a named
 //! field so the caller cannot pick the other by default.
 
-use alloc::vec::Vec;
 use super::drl::{ChooseDrlCtx, choose_best_av1_mv_pred};
 use super::predicates::is_valid_mv_diff;
+use alloc::vec::Vec;
 use svtav1_types::motion::Mv;
 use svtav1_types::prediction::PredictionMode;
 

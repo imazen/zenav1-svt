@@ -320,7 +320,6 @@ impl InjectHooks for NoRefinement {
 /// `crate::port_enc_mode_config::ctrls`.
 pub use crate::port_enc_mode_config::ctrls::InterCompCtrls;
 
-
 /// C `InterIntraCompCtrls`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterIntraCompCtrls {

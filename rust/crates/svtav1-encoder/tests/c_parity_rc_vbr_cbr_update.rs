@@ -321,11 +321,7 @@ fn cells() -> Vec<Cell> {
                                                 showable,
                                                 overlay,
                                                 sc,
-                                                if ut == FrameUpdateType::Lf {
-                                                    2
-                                                } else {
-                                                    0
-                                                },
+                                                if ut == FrameUpdateType::Lf { 2 } else { 0 },
                                                 if bits > 400_000 { 100_000 } else { 625_000 },
                                                 qi,
                                                 bits,

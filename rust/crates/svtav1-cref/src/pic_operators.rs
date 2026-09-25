@@ -888,8 +888,16 @@ pub fn update_neighbor_samples_open_loop_recon(
     width: u32,
     height: u32,
 ) {
-    let n_w = if use_trbl { 2 * bwidth as usize } else { bwidth as usize };
-    let n_h = if use_trbl { 2 * bheight as usize } else { bheight as usize };
+    let n_w = if use_trbl {
+        2 * bwidth as usize
+    } else {
+        bwidth as usize
+    };
+    let n_h = if use_trbl {
+        2 * bheight as usize
+    } else {
+        bheight as usize
+    };
     assert!(above.len() >= n_w + 1 && left.len() >= n_h + 1);
     unsafe {
         ref_update_neighbor_samples_open_loop_recon(

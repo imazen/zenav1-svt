@@ -1,4 +1,3 @@
-
 /// The streamed `wiener_convolve_add_src` must equal the materialised form
 /// C writes at every processing-unit shape the restoration filter can ask
 /// for, and at both loop orders. This is the pin for BOTH changes in that

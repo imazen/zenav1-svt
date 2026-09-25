@@ -906,7 +906,10 @@ pub(super) fn inject_candidates(
         .is_some()
         .then(|| {
             inter_pre.as_ref().map(|(prelude, ..)| {
-                let m = prelude.search.md_me_dist().min(prelude.search.md_pme_dist());
+                let m = prelude
+                    .search
+                    .md_me_dist()
+                    .min(prelude.search.md_pme_dist());
                 u64::from(m) / (w as u64) / (h as u64)
             })
         })

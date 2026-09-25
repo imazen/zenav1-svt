@@ -330,9 +330,9 @@ pub const CODED_UNIT_STATS: [CodedBlockStats; 85] = {
 // =============================================================================
 
 pub use svtav1_types::math::rd::rdcost_i64 as rdcost_tpl;
+mod search;
 #[cfg(test)]
 mod tests;
-mod search;
 pub use search::*;
 mod dispenser;
 pub use dispenser::*;

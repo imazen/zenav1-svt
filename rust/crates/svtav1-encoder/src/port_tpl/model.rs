@@ -146,18 +146,10 @@ pub fn tpl_mc_flow_dispenser<'a>(
         ctx0.tpl_data.tpl_temporal_layer_index,
     );
     let rc_update_type = match ctx0.update_type {
-        crate::port_picstruct::FrameUpdateType::Kf => {
-            crate::port_rc_process::FrameUpdateType::Kf
-        }
-        crate::port_picstruct::FrameUpdateType::Lf => {
-            crate::port_rc_process::FrameUpdateType::Lf
-        }
-        crate::port_picstruct::FrameUpdateType::Gf => {
-            crate::port_rc_process::FrameUpdateType::Gf
-        }
-        crate::port_picstruct::FrameUpdateType::Arf => {
-            crate::port_rc_process::FrameUpdateType::Arf
-        }
+        crate::port_picstruct::FrameUpdateType::Kf => crate::port_rc_process::FrameUpdateType::Kf,
+        crate::port_picstruct::FrameUpdateType::Lf => crate::port_rc_process::FrameUpdateType::Lf,
+        crate::port_picstruct::FrameUpdateType::Gf => crate::port_rc_process::FrameUpdateType::Gf,
+        crate::port_picstruct::FrameUpdateType::Arf => crate::port_rc_process::FrameUpdateType::Arf,
         crate::port_picstruct::FrameUpdateType::Overlay => {
             crate::port_rc_process::FrameUpdateType::Overlay
         }

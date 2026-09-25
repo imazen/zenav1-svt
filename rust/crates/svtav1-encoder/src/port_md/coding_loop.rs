@@ -33,11 +33,11 @@
 //! components SIGNED against positive thresholds so a large negative MV
 //! never raises the category.
 
-use alloc::vec::Vec;
 use super::predicates::{
     MAX_NUM_OF_REF_PIC_LIST, MeCandidateRef, REF_LIST_MAX_DEPTH, RefPruningState, TOT_INTER_GROUP,
     get_me_block_offset, get_ref_frame_type,
 };
+use alloc::vec::Vec;
 use svtav1_types::motion::Mv;
 
 // ---------------------------------------------------------------------------

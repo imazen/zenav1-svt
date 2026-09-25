@@ -123,7 +123,11 @@ pub fn highbd_hadamard_8x8_c(src_diff: &[i16], src_stride: usize, coeff: &mut [i
 pub fn highbd_hadamard_8x8_avx2(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     assert!(coeff.len() >= 64);
     unsafe {
-        svt_aom_highbd_hadamard_8x8_avx2(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr());
+        svt_aom_highbd_hadamard_8x8_avx2(
+            src_diff.as_ptr(),
+            src_stride as isize,
+            coeff.as_mut_ptr(),
+        );
     }
 }
 

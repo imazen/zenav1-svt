@@ -787,13 +787,13 @@ fn predict_smooth_h_hbd_impl_neon(
 // wired (see module doc verification plan).
 // =============================================================================
 
-use crate::loop_filter::LfThresh;
 use crate::cdef::{BLOCK_4X8, BLOCK_8X4, BLOCK_8X8, CDEF_BSTRIDE, CDEF_VERY_LARGE};
-use archmage::prelude::*;
+use crate::loop_filter::LfThresh;
 use crate::quant_tables::{AC_QLOOKUP_8, DC_QLOOKUP_8};
+use archmage::prelude::*;
+mod directional;
 #[cfg(test)]
 mod dispatch_tests;
-mod directional;
 pub use directional::*;
 mod filter_intra;
 pub use filter_intra::*;

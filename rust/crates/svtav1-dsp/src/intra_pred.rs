@@ -197,10 +197,13 @@ fn dc_edge_sum_v3(_token: Desktop64, e: &[u8], n: usize) -> u32 {
         acc128 = _mm_add_epi64(acc128, _mm_sad_epu8(_mm_loadu_si32(v), zero128));
         c += 4;
     }
-    let s256 = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+    let s256 = _mm_add_epi64(
+        _mm256_castsi256_si128(acc),
+        _mm256_extracti128_si256::<1>(acc),
+    );
     let acc128 = _mm_add_epi64(acc128, s256);
-    let mut sum = (_mm_cvtsi128_si64(acc128)
-        + _mm_cvtsi128_si64(_mm_srli_si128::<8>(acc128))) as u32;
+    let mut sum =
+        (_mm_cvtsi128_si64(acc128) + _mm_cvtsi128_si64(_mm_srli_si128::<8>(acc128))) as u32;
     for k in c..n {
         sum += e[k] as u32;
     }
@@ -1002,11 +1005,11 @@ fn predict_paeth_core(
 // Ported from svt_av1_dr_prediction_z1/z2/z3_c in intra_prediction.c
 // =============================================================================
 
-#[cfg(test)]
-mod tests;
+mod directional;
 #[cfg(test)]
 mod dispatch_tests;
-mod directional;
+#[cfg(test)]
+mod tests;
 pub use directional::*;
 
 mod filter_intra;

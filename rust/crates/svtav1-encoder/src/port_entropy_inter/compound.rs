@@ -77,7 +77,6 @@ pub use svtav1_types::prediction::CompoundType;
 /// `is_any_masked_compound_used` loop bounds itself by.
 pub const COMPOUND_TYPES: usize = 4;
 
-
 /// C `svt_aom_is_masked_compound_type` (inter_prediction.c:34, EXPORTED).
 #[inline]
 pub const fn is_masked_compound_type(t: CompoundType) -> bool {

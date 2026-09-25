@@ -51,7 +51,6 @@ use svtav1_types::prediction::PredictionMode;
 /// C `Part` — unified: the single definition lives in `svtav1_types::partition`.
 pub use svtav1_types::partition::Part;
 
-
 /// C `NsqSearchCtrls` (md_process.h), the fields these gates read.
 ///
 /// `sq_weight` uses `(uint32_t)~0` as its disabled sentinel, so it is an

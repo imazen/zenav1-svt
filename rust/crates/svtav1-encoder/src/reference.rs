@@ -68,7 +68,9 @@ impl SvtReference {
         // C options the port runs only at their defaults. A different value
         // would be silently ignored, so it is refused instead.
         if hdr.luminance_qp_bias != 0 {
-            return Err("luminance_qp_bias is not ported: only 0 (off) is accepted [C: accepts 1..=100]");
+            return Err(
+                "luminance_qp_bias is not ported: only 0 (off) is accepted [C: accepts 1..=100]",
+            );
         }
         if hdr.hbd_mds != -1 {
             return Err(
@@ -196,7 +198,10 @@ mod tests {
             } else {
                 HdrForkConfig::hdr_fork_c_mode1()
             };
-            assert!(reference.validate_hdr_config(&base).is_ok(), "{reference:?} defaults");
+            assert!(
+                reference.validate_hdr_config(&base).is_ok(),
+                "{reference:?} defaults"
+            );
             let mut h = base.clone();
             h.luminance_qp_bias = 10;
             assert!(reference.validate_hdr_config(&h).is_err());

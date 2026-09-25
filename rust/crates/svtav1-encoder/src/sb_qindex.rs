@@ -607,9 +607,8 @@ pub fn cyclic_refresh_setup(
         }
     }
 
-    let actual_num_seg0_sbs = b64_total_count
-        - cr.actual_num_seg1_sbs as u32
-        - cr.actual_num_seg2_sbs as u32;
+    let actual_num_seg0_sbs =
+        b64_total_count - cr.actual_num_seg1_sbs as u32 - cr.actual_num_seg2_sbs as u32;
     cr.me_distortion[0] = if actual_num_seg0_sbs != 0 {
         cr.me_distortion[0] / u64::from(actual_num_seg0_sbs)
     } else {
@@ -665,8 +664,11 @@ pub fn cyclic_sb_qp_assignment(
         let b64 = &per_b64[b64_idx];
         let mut offset = 0;
         if is_in_cr_band(b64_idx as u32, cr.sb_start, cr.sb_end) {
-            if !is_cr_motion_static(b64.me_8x8_distortion, b64.me_mv_array[0], dist_reject_thresh)
-            {
+            if !is_cr_motion_static(
+                b64.me_8x8_distortion,
+                b64.me_mv_array[0],
+                dist_reject_thresh,
+            ) {
                 // Non-static SB (any non-zero MV or high distortion): no boost.
                 offset = 0;
             } else if u64::from(b64.me_8x8_distortion) < norm_me_dist {

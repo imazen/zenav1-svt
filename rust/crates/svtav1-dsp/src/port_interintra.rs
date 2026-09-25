@@ -35,7 +35,6 @@ pub const BLOCK_32X32: usize = 9;
 /// C `InterIntraMode` — unified: the single definition lives in `svtav1_types::prediction`.
 pub use svtav1_types::prediction::InterIntraMode;
 
-
 /// `ii_weights1d` (inter_prediction.c:2217) — `MAX_SB_SIZE` = 128 entries.
 pub const II_WEIGHTS_1D: [u8; 128] = [
     60, 58, 56, 54, 52, 50, 48, 47, 45, 44, 42, 41, 39, 38, 37, 35, 34, 33, 32, 31, 30, 29, 28, 27,

@@ -895,10 +895,7 @@ pub fn process_rate_allocation(
 
     let update_type = frame.update_type;
     use crate::port_rc_process::FrameUpdateType as U;
-    if tpl.enable
-        && frame.r0 != 0.0
-        && matches!(update_type, U::Kf | U::Gf | U::Arf)
-    {
+    if tpl.enable && frame.r0 != 0.0 && matches!(update_type, U::Kf | U::Gf | U::Arf) {
         crate::port_rc_vbr_cbr_qpick::process_tpl_stats_frame_kf_gfu_boost(rc, scs, frame, tpl);
     }
 

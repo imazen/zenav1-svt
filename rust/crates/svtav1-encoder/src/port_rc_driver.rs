@@ -296,7 +296,9 @@ pub fn apply_rc_init(
 /// and RC spellings were unified); kept as a named pass-through for the
 /// call sites that document this crossing.
 #[must_use]
-pub fn map_update_type(u: crate::port_picstruct::FrameUpdateType) -> port_rc_process::FrameUpdateType {
+pub fn map_update_type(
+    u: crate::port_picstruct::FrameUpdateType,
+) -> port_rc_process::FrameUpdateType {
     u
 }
 

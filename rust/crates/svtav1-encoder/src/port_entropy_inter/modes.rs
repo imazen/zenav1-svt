@@ -125,7 +125,6 @@ pub fn is_motion_variation_allowed_bsize(bsize: BlockSize) -> bool {
 /// C `TransformationType` — unified: the single definition lives in `svtav1_types::motion`.
 pub use svtav1_types::motion::TransformationType;
 
-
 /// C `MotionMode` — unified: the single definition lives in `svtav1_types::prediction`.
 pub use svtav1_types::prediction::MotionMode;
 
