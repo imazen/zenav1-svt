@@ -308,6 +308,12 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
   `Hybrid3115` (a queued break), the hybrid gates, and `3115c0c1b` as the
   submodule pin.
+  - Measured 2026-09-25 (i265): the still ledger gates hold under the
+    mainline pairing (`SVT_ORACLE=mainline-4.2.0` drives both encoders):
+    `identity_full_8bit` 1100/1100, `bd10_photo_gate` 191/191,
+    `bd10_nonflat_gate` 309/309. Next: the video byte gates and `just pins`
+    with `Mainline420` as the default reference, then flip the legacy
+    constructors, `AvifEncoder::new` and the registry's default row.
 
 Done when each gate reports a pinned count under both `mainline-4.2.0`
 and `ghost-robot`, and README states both.

@@ -57,7 +57,7 @@ the change that moves it.
 
 | oracle | still grid, 288 cells (`tools/oracle_still_grid.sh`) | function-level C parity (`just cparity-oracle`) |
 |---|---|---|
-| `mainline-4.2.0` | 288/288 | 867/867, 8 fork-only tests excluded by the caller |
+| `mainline-4.2.0` | 288/288; also `identity_full_8bit` 1100/1100, `bd10_photo_gate` 191/191, `bd10_nonflat_gate` 309/309 under `SVT_ORACLE=mainline-4.2.0` | 867/867, 8 fork-only tests excluded by the caller |
 | `ghost-robot` | 41/288 (`28c3693a`) | 830/875; the 45 are the plan phase 3 work list |
 | `hybrid-3115` | not run | 875/875 |
 
