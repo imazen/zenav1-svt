@@ -194,6 +194,30 @@ const TABLES: &[Tbl] = &[
         q_dependent: false,
     },
     Tbl {
+        rust_name: "PALETTE_Y_MODE_CDF",
+        table: FcTable::PaletteYMode,
+        dims: &[7, 3, 3],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "PALETTE_UV_MODE_CDF",
+        table: FcTable::PaletteUvMode,
+        dims: &[2, 3],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "PALETTE_Y_SIZE_CDF",
+        table: FcTable::PaletteYSize,
+        dims: &[7, 8],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "PALETTE_Y_COLOR_INDEX_CDF",
+        table: FcTable::PaletteYColorIndex,
+        dims: &[7, 5, 9],
+        q_dependent: false,
+    },
+    Tbl {
         rust_name: "Y_MODE_CDF",
         table: FcTable::YMode,
         dims: &[4, 14],
@@ -224,6 +248,32 @@ fn emit(out: &mut String, data: &[u16], dims: &[usize], indent: usize) {
     out.push_str(&format!("{pad}],\n"));
 }
 
+/// Doc comments carried into the generated tables (cited C source).
+fn doc_for(name: &str) -> &'static str {
+    match name {
+        "PALETTE_Y_MODE_CDF" => {
+            "/// C `default_palette_y_mode_cdf` (cabac_context_model.c:497):\n\
+             /// \\[palette bsize ctx 0..6\\]\\[neighbor-palette-count ctx 0..2\\], 2 symbols.\n"
+        }
+        "PALETTE_UV_MODE_CDF" => {
+            "/// C `default_palette_uv_mode_cdf` (cabac_context_model.c:507):\n\
+             /// \\[y-palette-used ctx 0..1\\], 2 symbols.\n"
+        }
+        "PALETTE_Y_SIZE_CDF" => {
+            "/// C `default_palette_y_size_cdf` (cabac_context_model.c:477):\n\
+             /// \\[palette bsize ctx 0..6\\], 7 symbols (palette size 2..8).\n"
+        }
+        "PALETTE_Y_COLOR_INDEX_CDF" => {
+            "/// C `default_palette_y_color_index_cdf` (cabac_context_model.c:511):\n\
+             /// \\[palette_size - 2\\]\\[color ctx 0..4\\], n = size symbols per row\n\
+             /// (count slot sits at index n — full-row averaging in the per-SB\n\
+             /// chain is equivalent to C AVG_CDF_STRIDE because the tails are\n\
+             /// structurally zero on both sides).\n"
+        }
+        _ => "",
+    }
+}
+
 fn emit_table(out: &mut String, name: &str, data: &[u16], dims: &[usize]) {
     let total: usize = dims.iter().product();
     assert_eq!(
@@ -233,6 +283,7 @@ fn emit_table(out: &mut String, name: &str, data: &[u16], dims: &[usize]) {
         data.len(),
         total
     );
+    out.push_str(doc_for(name));
     out.push_str(&format!(
         "#[rustfmt::skip]\npub static {name}: {} = ",
         type_str(dims)
@@ -245,7 +296,25 @@ fn emit_table(out: &mut String, name: &str, data: &[u16], dims: &[usize]) {
     out.push_str(";\n\n");
 }
 
+/// Which file under `default_cdfs/` a table goes to. The coefficient tables
+/// are per-q (4x) and large, so `COEFF_BASE_CDF` gets a file of its own; one
+/// file for everything was 4,600 lines.
+fn file_for(t: &Tbl) -> &'static str {
+    match (t.q_dependent, t.rust_name) {
+        (true, "COEFF_BASE_CDF") => "coeff_base",
+        (true, _) => "coeff",
+        (false, _) => "mode",
+    }
+}
+
+const FILES: [&str; 3] = ["coeff", "coeff_base", "mode"];
+
 fn main() {
+    // Writes `<dir>/default_cdfs.rs` and `<dir>/default_cdfs/{coeff,
+    // coeff_base, mode}.rs`; `<dir>` is `crates/svtav1-encoder/src/entropy`.
+    let dir = std::env::args().nth(1).expect(
+        "usage: gen_default_cdfs <crates/svtav1-encoder/src/entropy>",
+    );
     let mut out = String::new();
     out.push_str(
         "//! Default CDF tables extracted from the C reference (libSvtAv1Enc.a,\n\
@@ -254,12 +323,19 @@ fn main() {
          //! values, structural 0 at `[nsymbs-1]`, adaptation counter slot at\n\
          //! `[nsymbs]`.\n\
          //!\n\
-         //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
-         //!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \\\n\
-         //!     > crates/svtav1-encoder/src/entropy/default_cdfs.rs\n\
+         //! GENERATED FILES — DO NOT EDIT. Regenerate with:\n\
+         //!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs -- \\\n\
+         //!     crates/svtav1-encoder/src/entropy\n\
          //! The c_default_cdfs_match test asserts these stay in sync with C.\n\
          \n\
-         use crate::cdf::AomCdfProb;\n\
+         use crate::entropy::cdf::AomCdfProb;\n\
+         \n\
+         mod coeff;\n\
+         mod coeff_base;\n\
+         mod mode;\n\
+         pub use coeff::*;\n\
+         pub use coeff_base::*;\n\
+         pub use mode::*;\n\
          \n\
          /// Number of coefficient-CDF quality buckets (C `TOKEN_CDF_Q_CTXS`).\n\
          pub const TOKEN_CDF_Q_CTXS: usize = 4;\n\
@@ -273,10 +349,22 @@ fn main() {
                  61..=120 => 2,\n\
                  _ => 3,\n\
              }\n\
-         }\n\n",
+         }\n",
     );
+    let mut parts: std::collections::BTreeMap<&str, String> = FILES
+        .iter()
+        .map(|f| {
+            (
+                *f,
+                "//! Generated by `gen_default_cdfs`; see `super`.\n\n\
+                 use super::AomCdfProb;\n\n"
+                    .to_string(),
+            )
+        })
+        .collect();
 
     for t in TABLES {
+        let part = parts.get_mut(file_for(t)).expect("known file");
         if t.q_dependent {
             let mut all = Vec::new();
             let mut per_q_len = 0usize;
@@ -294,13 +382,22 @@ fn main() {
                 "{}",
                 t.rust_name
             );
-            emit_table(&mut out, t.rust_name, &all, &dims);
+            emit_table(part, t.rust_name, &all, &dims);
         } else {
             fc_init(60);
             let data = fc_table(t.table);
-            emit_table(&mut out, t.rust_name, &data, t.dims);
+            emit_table(part, t.rust_name, &data, t.dims);
         }
     }
 
-    print!("{out}");
+    let write = |path: String, text: &str| {
+        std::fs::write(&path, text.trim_end().to_string() + "\n")
+            .unwrap_or_else(|e| panic!("write {path}: {e}"));
+        eprintln!("wrote {path}");
+    };
+    write(format!("{dir}/default_cdfs.rs"), &out);
+    std::fs::create_dir_all(format!("{dir}/default_cdfs")).expect("mkdir default_cdfs");
+    for (name, text) in &parts {
+        write(format!("{dir}/default_cdfs/{name}.rs"), text);
+    }
 }
