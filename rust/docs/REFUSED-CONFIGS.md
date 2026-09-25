@@ -60,11 +60,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |
 | `crates/svtav1-encoder/src/pipeline.rs` | ChromaFormat::Yuv444 is decoder-verified only for 8-bit frames at sb_size 64 without superres: the sb128 multi-cell chroma walk, 10-bit 444 planes, IntraBC chroma prediction and chroma superres are not yet ported (C itself refuses 444 at verify_settings, enc_settings.c:470 — no byte oracle) |
 | `crates/svtav1-encoder/src/pipeline.rs` | cand_reduction_level is outside C's set_cand_reduction_ctrls switch (crate::inter_hdr_arm::enc_dec_cand_reduction) |
-| `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
-| `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override changed U/V separation after the key frame; the sequence header fixes separate_uv_delta_q until the next key frame |
-| `crates/svtav1-encoder/src/pipeline.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
-| `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `crates/svtav1-encoder/src/pipeline.rs` | alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no inter skip arm) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_q_override is set but this frame is monochrome: there is no U/V quantizer to override; clear the override for mono frames |
@@ -108,6 +104,10 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline/inter_md_stage.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
 | `crates/svtav1-encoder/src/pipeline/inter_md_stage.rs` | subjective-tune sharpness arms (tune vq / film-grain, or alt-ssim tuning) on an inter frame are supported only where they are inert: is_noise_level == 0 (always true on low delay) and no delta-q plan — this frame sets one, where C's unipred_bias/cdef/restoration or `use_sharpness` rdoq arms fire and this port does not model them |
 | `crates/svtav1-encoder/src/pipeline/md_setup.rs` | the frame header names a primary_ref_frame, but the DPB slot it resolves to carries no saved CDF state — the referenced frame's entropy walk never ran (crate::port_frame_cdf) |
+| `crates/svtav1-encoder/src/pipeline/pack_phase.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
+| `crates/svtav1-encoder/src/pipeline/pack_phase.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
+| `crates/svtav1-encoder/src/pipeline/pack_phase.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
+| `crates/svtav1-encoder/src/pipeline/pack_phase.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline/ra.rs` | pred_structure RandomAccess is wired on try_encode_frame_420 only; this entry takes the sequential path, which cannot buffer a mini-GOP |
 | `crates/svtav1-encoder/src/pipeline/ra.rs` | pred_structure RandomAccess with film grain is untested: C's show_existing headers would have to re-signal grain state |
 | `crates/svtav1-encoder/src/pipeline/ra.rs` | pred_structure RandomAccess with superres is untested: references at a different coded width inside the window need decoder verification first |

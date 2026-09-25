@@ -190,13 +190,19 @@ In dependency order:
     that they share (`DLF_FAST_DECODE`, `SEQ_CDEF_LEVEL`, `CDEF_FAST_DECODE`)
     are now module-level. `pipeline.rs` is 4,509 lines; `encode_frame_impl`
     is 3,595.
-  - Done (this change): the state types (`EncodePipeline` and its private
+  - Done (`438878ba`): the state types (`EncodePipeline` and its private
     helper structs), the plane helpers and the three constants move to
     `pipeline/state.rs`; `palette_cache` moves to its own file.
     `pipeline.rs` is 3,792 lines, nearly all of it `encode_frame_impl`.
-    Next: split `encode_frame_impl` into phase functions
-    (setup -> mode decision and tiles -> filters and bitstream), which needs
-    a plan struct for the values that cross the phases.
+  - Done (this change): `encode_frame_impl` is three phases: setup stays in
+    `pipeline.rs`; `tile_phase::decide_and_encode_tiles` (mode decision,
+    tiles, bd10 post-pass); `pack_phase::filter_and_pack_frame` (entropy
+    walk, deblock/CDEF/LR, bitstream, recon outputs, reference). `pipeline.rs`
+    is 2,286 lines; `encode_frame_impl` is 2,085.
+  - Next: the phase calls pass 67 and 69 parameters (rust-analyzer's
+    explicit data flow). Bundle them into a `FramePlan` struct that setup
+    returns, so each phase reads named fields. Then `tile_walk.rs` (3,501,
+    one function) and the other files over 3 kloc.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting
