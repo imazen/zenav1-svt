@@ -19,14 +19,26 @@
 # COVERAGE mirrors the measured landing: synthetic diag/screen/gradient
 # generators with a 13-px-per-frame shift (nonzero integer MVs), a real
 # clip (fourpeople, natural motion), presets {0,6,8,13}, sizes
-# 64x64..256x128, sb64 and sb128, a 6-frame inter-on-inter chain, a qp0
-# lossless leg and a 10-bit leg.
+# 64x64..256x128 ALIGNED plus the unaligned defect table below, sb64 and
+# sb128, a 6-frame inter-on-inter chain, a qp0 lossless leg and 10-bit
+# legs.
 #
 # MEASURED 2026-09-21: all legs byte-identical across the three
 # reconstructions. The historical corrupt-stream defect predated the
 # format-agnostic inter correctness landings (write-time
 # overlappable_neighbors/num_proj_ref derivation, recon-only eob
 # preservation); the mono arm inherited those fixes.
+#
+# 2026-09-25 — the unaligned legs cover a REAL defect, not hypothetical
+# coverage: the DPB reference kept the coded pad columns where every
+# conforming decoder edge-extends the SIGNALLED frame edge
+# (`pad_input_picture` inside C's `pad_ref_and_set_flags`,
+# enc_dec_process.c:1088 — "Non visible Reference samples should be
+# overwritten by the last visible line of pixels" — was not run on the
+# recon-as-reference path). Measured pre-fix against avifdec at q40/s7:
+# 65x64 +2, 64x67 +1, 65x67 +97, 66x66 +9, 70x64 +49, 64x70 +83,
+# 96x100 +73, 100x96 +24 mismatched luma pixels on the first inter frame;
+# 64x64 / 72x72 / 80x72 / 64x65 matched and key frames always matched.
 #
 # Usage: tools/mono_inter_gate.sh
 # Env:   AOMDEC DAV1D
@@ -130,6 +142,28 @@ WANT_NONZERO_MV=1 check "grad-128x64-p13"  gradient 128  64 30 13 3 SVTAV1_FRAME
 WANT_NONZERO_MV=1 check "diag-sb128"    diag     128 128 30 6  3 SVTAV1_FRAME_SHIFT=13 SVTAV1_SB=128
 # inter-on-inter chain, screen content at a mid preset
 WANT_NONZERO_MV=1 check "chain6-screen-p8" screen 128 128 30 8 6 SVTAV1_FRAME_SHIFT=13
+# Non-8-aligned legs — every size in the 2026-09-25 divergence table (see
+# the header): width-only, height-only and both, spread over presets and
+# content types, plus the control sizes that already matched (64x65).
+WANT_NONZERO_MV=1 check "unal-diag-65x64-p6"    diag     65  64 40 6  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-diag-64x67-p13"   diag     64  67 40 13 3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-diag-65x67-p0"    diag     65  67 40 0  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-screen-66x66-p8"  screen   66  66 40 8  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-grad-70x64-p6"    gradient 70  64 40 6  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-grad-64x70-p0"    gradient 64  70 40 0  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-diag-96x100-p13"  diag     96 100 40 13 3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-diag-100x96-p0"   diag    100  96 40 0  3 SVTAV1_FRAME_SHIFT=13
+WANT_NONZERO_MV=1 check "unal-diag-64x65-p6"    diag     64  65 40 6  3 SVTAV1_FRAME_SHIFT=13
+# inter-on-inter chain at an unaligned size: a reference that was itself
+# an inter frame must carry the same edge replication.
+WANT_NONZERO_MV=1 check "unal-chain6-65x67-p8"  diag     65  67 40 8  6 SVTAV1_FRAME_SHIFT=13
+# sb128 at unaligned sizes
+WANT_NONZERO_MV=1 check "unal-sb128-65x67-p6"   diag     65  67 40 6  3 SVTAV1_FRAME_SHIFT=13 SVTAV1_SB=128
+WANT_NONZERO_MV=1 check "unal-sb128-96x100-p0"  diag     96 100 40 0  3 SVTAV1_FRAME_SHIFT=13 SVTAV1_SB=128
+# 10-bit at unaligned sizes — the HBD reference canvas has its own
+# pad-overwrite arm (`pad_ref_visible_edge` on `recon10`).
+BDEPTH=10 WANT_NONZERO_MV=1 check "unal-bd10-65x67-p6"   diag  65  67 40 6  3 SVTAV1_FRAME_SHIFT=13 SVTAV1_BD=10
+BDEPTH=10 WANT_NONZERO_MV=1 check "unal-bd10-100x96-p13" diag 100  96 40 13 3 SVTAV1_FRAME_SHIFT=13 SVTAV1_BD=10
 # qp0 mono inter must REFUSE — the mono lossless arm has no inter WHT path,
 # so a qp0 mono "inter" frame is legal but silently all-intra (measured:
 # zero inter block decisions). The refusal is the honest answer.

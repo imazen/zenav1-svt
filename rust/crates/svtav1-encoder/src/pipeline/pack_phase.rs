@@ -1124,6 +1124,23 @@ impl EncodePipeline {
             &mut out10,
         )?;
 
+        // C `pad_ref_and_set_flags` (enc_dec_process.c:1088) opens with
+        // `pad_input_picture` on the recon itself: "Non visible Reference
+        // samples should be overwritten by the last visible line of
+        // pixels". A later frame's motion-compensated read past the
+        // signalled edge lands in exactly this region, and must find the
+        // edge pixel every conforming decoder's edge extension produces —
+        // not the coded pad columns' recon. Missing it is what made
+        // monochrome inter frames diverge from aomdec/dav1d at sizes that
+        // are not 8-aligned (measured 2026-09-25: 65x64, 65x67, 70x64,
+        // 100x96 ...). The u8 planes below get the same treatment.
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        if let Some((y10, u10, v10)) = recon10.as_mut() {
+            recon_output::pad_ref_visible_edge(y10, w, tw, th, h);
+            let (tcw, tch) = (fmt.chroma_width(tw), fmt.chroma_height(th));
+            recon_output::pad_ref_visible_edge(u10, acw, tcw, tch, ach);
+            recon_output::pad_ref_visible_edge(v10, acw, tcw, tch, ach);
+        }
         let padded_ref_hbd = self.build_padded_ref_hbd(chroma, w, h, ss_x, acw, ach, &recon10);
 
         // The 8-bit reference canvas at `bit_depth > 8`. C does not keep a
@@ -1176,6 +1193,16 @@ impl EncodePipeline {
         // is padded with a replicated margin BEFORE it becomes a reference,
         // because inter prediction indexes negative offsets from pixel
         // (0,0). Built here, once, from the same buffers stored below.
+        // The `pad_input_picture` half of that call — the non-visible
+        // columns/rows overwritten with the visible edge — runs in place
+        // on the stored recon so `padded_ref`, `y_plane` and every other
+        // reference-plane reader share the decoder's edge extension.
+        recon_output::pad_ref_visible_edge(&mut recon, w, tw, th, h);
+        if chroma.is_some() {
+            let (tcw, tch) = (fmt.chroma_width(tw), fmt.chroma_height(th));
+            recon_output::pad_ref_visible_edge(&mut u_recon, acw, tcw, tch, ach);
+            recon_output::pad_ref_visible_edge(&mut v_recon, acw, tcw, tch, ach);
+        }
         let padded_ref = self.build_padded_ref(
             chroma,
             w,

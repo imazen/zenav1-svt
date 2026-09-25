@@ -1,0 +1,37 @@
+MONOCHROME INTER AT NON-8-ALIGNED SIZES — defect fix measurement.
+The DPB reference kept the coded pad columns where every conforming
+decoder edge-extends the SIGNALLED frame edge (C pad_input_picture inside
+pad_ref_and_set_flags, enc_dec_process.c:1088). pad_ref_visible_edge now
+replicates the visible edge across the non-visible columns/rows on the u8
+recon and the 10-bit canvas before the reference margin is generated.
+
+date:   2026-09-25
+host:   i265 (x86_64 Linux 7.0.0-34-generic)
+cmd:    SVTAV1_MONO=1 SVTAV1_FRAMES=3 SVTAV1_INTRA_PERIOD=64 \
+        SVTAV1_HIER_LEVELS=0 SVTAV1_INTERDBG=1 SVTAV1_FINAL_RECON=rec \
+        SVTAV1_FRAME_SHIFT=13 \
+        target/release/examples/identity_run <content> w h 40 7 p
+        then aomdec --rawvideo + dav1d on p.obu, byte-compare each frame
+        (under run-heavy --mem 8G --jobs 6)
+
+==================== RESULTS (pre-fix, mismatched luma px on f1) ====
+
+  size      mismatches        size      mismatches
+  65x64     2                 70x64     49
+  64x67     1                 64x70     83
+  65x67     97                96x100    73
+  66x66     9                 100x96    24
+  controls: 64x64, 72x72, 80x72, 64x65 = 0; key frames always matched.
+
+post-fix: all sizes byte-identical (encoder recon == aomdec == dav1d on
+every frame), including sb128 and bd10 arms.
+
+==================== GATE ====================
+
+  tools/mono_inter_gate.sh  pre-fix: 14 pass / 12 fail (unaligned legs
+                            all catch "recon/decode mismatch")
+  tools/mono_inter_gate.sh  post-fix: 26 / 26
+  cargo nextest run --workspace --locked --test-threads 4 : 2771/2771
+  tools/regression_spotcheck.sh                          : 147/147
+  cargo nextest -p zenav1-svt -E 'test(/output_pins/)'    : 6/6 (unchanged)
+  cargo test -p zenav1-svt --features avif-container animation::tests : 9/9

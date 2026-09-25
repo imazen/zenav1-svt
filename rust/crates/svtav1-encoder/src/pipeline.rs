@@ -183,21 +183,7 @@ impl EncodePipeline {
         if let Some(why) = self.gop_config_error(self.gop.is_key_frame(display_order)) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
-        // Monochrome inter frames at a size that is not 8-aligned reconstruct
-        // differently from the decoder (561267534 enabled mono inter, and its
-        // gate only covered 8-aligned sizes). Refused until fixed.
-        if chroma.is_none()
-            && !self.gop.is_key_frame(display_order)
-            && (!self.true_width.is_multiple_of(8) || !self.true_height.is_multiple_of(8))
-        {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "monochrome inter frames are not implemented at a width or height that is not a \
-                 multiple of 8: the encoder's reconstruction differs from the decoder's there \
-                 (measured 2026-09-25 against avifdec: 65x64, 64x67, 66x66, 70x64, 96x100 and \
-                 100x96 diverge on the first inter frame; every 8-aligned size matches) — use \
-                 8-aligned dimensions or an all-intra GOP"
-            )));
-        }
+
         if let Some(why) = self.rate_control_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }

@@ -2,10 +2,10 @@
 
 # Configs this encoder refuses
 
-**13 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
-only ones a byte-parity gate could ever close — and **3** carry no
+only ones a byte-parity gate could ever close — and **2** carry no
 `[C: ...]` marker at all.
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -41,7 +41,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | where | C? | refusal |
 |---|---|---|
 | `crates/svtav1-encoder/src/enhancements.rs` | ? | deep-search-v1 is measured for all-intra 4:2:0 8-bit only |
-| `crates/svtav1-encoder/src/pipeline.rs` | ? | monochrome inter frames are not implemented at a width or height that is not a multiple of 8: the encoder's reconstruction differs from the decoder's there (measured 2026-09-25 against avifdec: 65x64, 64x67, 66x66, 70x64, 96x100 and 100x96 diverge on the first inter frame; every 8-aligned size matches) — use 8-aligned dimensions or an all-intra GOP |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | ? | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts | QP 0 (coded-lossless) inter frames are not implemented outside 8-bit 4:2:0: the 10-bit path mis-predicts intra per-block vs the decoder's per-TXB rule and the monochrome / 4:4:4 arms have no inter WHT residual path — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |

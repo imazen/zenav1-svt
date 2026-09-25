@@ -135,6 +135,54 @@ impl EncodePipeline {
     }
 }
 
+/// C `pad_input_picture` (pic_operators.c:561) run on the recon before it
+/// becomes a reference — `pad_ref_and_set_flags` calls it inside
+/// `pad_ref_and_set_flags` itself (enc_dec_process.c:1088, the 16-bit arm
+/// comments it: "Non visible Reference samples should be overwritten by
+/// the last visible line of pixels"), then `svt_aom_generate_padding`
+/// extends the margin.
+///
+/// `plane` is the recon packed at `stride` = the ALIGNED width/height
+/// (`w`/`acw`); the visible window is `vis_w x vis_h` (true dims). Columns
+/// `[vis_w, stride)` replicate the last visible column per row, rows
+/// `[vis_h, height)` then replicate the whole last visible row including
+/// its right pad — exactly C's memset-then-memcpy order.
+///
+/// Without it a motion-compensated read into `[vis_w, stride)` sees the
+/// coded-but-invisible pad columns' recon where every conforming decoder
+/// edge-extends from the signalled edge — a recon-vs-decode divergence on
+/// inter frames at sizes that are not 8-aligned (measured 2026-09-25 on
+/// the monochrome arm: 65x64, 65x67, 70x64, 100x96 ...).
+pub(super) fn pad_ref_visible_edge<T: Copy>(
+    plane: &mut [T],
+    stride: usize,
+    vis_w: usize,
+    vis_h: usize,
+    height: usize,
+) {
+    if plane.is_empty() || (vis_w == stride && vis_h == height) {
+        return;
+    }
+    debug_assert!(
+        vis_w <= stride && vis_h <= height && plane.len() >= stride * height,
+        "pad_ref_visible_edge: plane {} < {}x{} visible {}x{}",
+        plane.len(),
+        stride,
+        height,
+        vis_w,
+        vis_h
+    );
+    for r in 0..vis_h {
+        let edge = plane[r * stride + vis_w - 1];
+        for c in vis_w..stride {
+            plane[r * stride + c] = edge;
+        }
+    }
+    for r in vis_h..height {
+        plane.copy_within((vis_h - 1) * stride..vis_h * stride, r * stride);
+    }
+}
+
 impl EncodePipeline {
     #[inline(always)]
     pub(super) fn take_recon10(

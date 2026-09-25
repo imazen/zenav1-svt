@@ -36,14 +36,14 @@ pub enum Keyframes {
     Every(u32),
 }
 
-/// Whether `why` is one of the pipeline's refusals of a monochrome inter
-/// frame it cannot reconstruct as the decoder does: coded-lossless inter
-/// (`lossless_config_error`), or a size that is not 8-aligned. A monochrome
-/// animation that hits one is coded all-intra instead. The monochrome
-/// animation test fails if the pipeline's wording drifts from these.
+/// Whether `why` is the pipeline's refusal of a monochrome inter frame it
+/// cannot reconstruct as the decoder does: coded-lossless inter
+/// (`lossless_config_error` — the mono lossless arm has no inter WHT
+/// residual path). A monochrome animation that hits it is coded all-intra
+/// instead. The monochrome animation test fails if the pipeline's wording
+/// drifts from this.
 fn is_mono_inter_refusal(why: &str) -> bool {
     why.starts_with("QP 0 (coded-lossless) inter frames are not implemented")
-        || why.starts_with("monochrome inter frames are not implemented at a width or height")
 }
 
 impl Keyframes {
@@ -343,15 +343,15 @@ impl AvifEncoder {
             })
             .collect();
         match self.encode_animation_samples(&planes, width, height, timing, options, false) {
-            // The pipeline refuses two kinds of monochrome inter frame
+            // The pipeline refuses one kind of monochrome inter frame
             // (`is_mono_inter_refusal`): coded-lossless ones, which a
             // near-lossless setting produces because the video-mode QP scaling
             // lowers inter frames below the key frame by a content-dependent
-            // amount (measured 2026-09-25: cli qp <= 2, quality >= 97), and
-            // ones at a size that is not 8-aligned. Monochrome is a Rust
-            // extension with no C reference; such an animation is coded
-            // all-intra, which is what every monochrome animation was before
-            // inter frames were enabled for it (561267534).
+            // amount (measured 2026-09-25: cli qp <= 2, quality >= 97).
+            // Monochrome is a Rust extension with no C reference; such an
+            // animation is coded all-intra, which is what every monochrome
+            // animation was before inter frames were enabled for it
+            // (561267534).
             Err(EncodeError::UnsupportedConfig(why))
                 if is_mono_inter_refusal(why) && options.keyframes != Keyframes::EveryFrame =>
             {

@@ -2602,9 +2602,18 @@ Crates are not published to crates.io yet — depend by git.
 
 - **Monochrome inter at sizes that are not 8-aligned** decoded differently
   from the encoder's recon (since 561267534; e.g. 65x64, 64x67, 66x66 all
-  diverge on the first inter frame). Those inter frames now refuse, and a
-  monochrome animation that hits that refusal or the coded-lossless-inter one
-  (quality >= 97) is coded all-intra instead of failing. Found by the
+  diverged on the first inter frame). The DPB reference carried the coded
+  pad columns where a conforming decoder edge-extends the signalled frame
+  edge — C's `pad_ref_and_set_flags` opens with `pad_input_picture` on the
+  recon ("Non visible Reference samples should be overwritten by the last
+  visible line of pixels", enc_dec_process.c:1088) and the port skipped
+  that half of the call. The recon's non-visible columns/rows are now
+  edge-overwritten before the reference margin is generated, on the u8
+  and 10-bit canvases alike. `tools/mono_inter_gate.sh` grew the whole
+  defect table into legs (65x64, 64x67, 65x67, 66x66, 70x64, 64x70,
+  96x100, 100x96, a 64x65 control, an unaligned 6-frame chain, and
+  sb128/bd10 legs); encoder recon == aomdec == dav1d on every frame, and
+  monochrome animations at arbitrary sizes now inter-code. Found by the
   animation CI job, red since 2026-09-21.
 - **no_std build of `zenav1-svt-encoder`** (9d610a64): it did not compile
   (121 errors), and nothing noticed, because `test-minimal` runs at workspace

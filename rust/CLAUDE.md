@@ -46,11 +46,10 @@ detail, and they are regenerated or gated rather than narrated.
   bits**, verified against a DECODER rather than against C's bytes
   (`tools/video_selfcheck_gate.sh`, 270/270 cells at bd8;
   `tools/bd10_video_selfcheck_gate.sh`, 396/396 cells at bd10 — 2026-09-18).
-  Monochrome inter ships at 8-aligned sizes (`tools/mono_inter_gate.sh`,
-  12/12 recon == aomdec == dav1d, 2026-09-21, 8-aligned sizes only); at other
-  sizes its recon differs from the decoder, so those inter frames refuse
-  (2026-09-25). Mono qp0 inter refuses too — no inter WHT arm. A mono
-  animation that hits either refusal is coded all-intra. qp0 coded-lossless
+  Monochrome inter ships at arbitrary sizes (`tools/mono_inter_gate.sh`,
+  recon == aomdec == dav1d, including the non-8-aligned legs added
+  2026-09-25). Mono qp0 inter refuses — no inter WHT arm. A mono
+  animation that hits that refusal is coded all-intra. qp0 coded-lossless
   inter ships at 8-bit 4:2:0 only (`tools/qp0_inter_gate.sh`, 7/7). Do not
   report video as either "working" or "missing".
 - **10-bit inter video is supported** (the `hbd_md` question is resolved).
