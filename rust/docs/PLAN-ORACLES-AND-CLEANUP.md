@@ -457,6 +457,15 @@ Order, by expected size:
 
 ## Maintenance backlog
 
+- [ ] CI green. Restored 2026-09-25 except one gate: shard 3's
+  `global_motion_gate.sh` (running in CI for the first time, now that the
+  sparse corpus fetches its photo) counts 14 and 2054 GLOBALMV blocks where
+  it pins at least 22 and 2738. Bisected to `606c4accd` (wm_level-1 warp
+  injection), which made the port commit WARPED_CAUSAL where C does and moved
+  four frame-1 cells to byte-identical; these p2 cells sit on the same
+  wm_level-1 ladder. Lowering the floor is a threshold change, so it waits
+  for the owner's decision.
+
 - [ ] CHANGELOG `[Unreleased]` is 3,800 lines of repeated
   Added/Changed/Fixed blocks appended per campaign, with QUEUED BREAKING
   CHANGES buried at line ~280. Fold it into one set of categories, and cut a
@@ -474,7 +483,20 @@ Order, by expected size:
   3 s. Measured 2026-09-25: 453 Ok, 83 explicit refusals, 0 panics; it
   asserts an Ok floor of 440 against vacuity.
 - [ ] T2 in-crate differentials, shrinking the public API.
-- [ ] T3 one cell harness instead of 39 bash copies.
+- [ ] T3 one cell harness instead of 39 bash copies. 46 of the 100 shell
+  tools drive the C side directly (survey 2026-09-25). Chunks, each landing
+  with its gate's verdicts unchanged:
+  1. Done (this change): `tools/cellrun.py` runs a cell list (TSV: name,
+     content, w, h, qp, preset, bd, env, expect) through the three steps of
+     `identity_diff.sh`, with `--jobs` and pinned verdicts.
+     `oracle_still_grid.sh` now writes its cross product as a cell list and
+     calls it; on a 16-cell ghost-robot subset its output is identical to the
+     old loop's, serial and at `--jobs 4`. Next: the 44 other scripts.
+  2. `identity_run`'s 41 environment variables become `CellSpec` fields
+     parsed in one place, so a cell cannot differ in how it is invoked.
+  3. Convert the ledger gates CI does not run (`bd10_photo_gate.sh`,
+     `bd10_nonflat_gate.sh`, `identity_full_8bit.sh`) and add them to CI.
+     Re-verified by hand 2026-09-25: 191/191 and 309/309.
 - [ ] T4 stage-boundary differentials.
 - [ ] T6 no_std, tier and dead-code gates.
   - Done: no_std. `just nostd-check` (and a CI step in shard 3) checks

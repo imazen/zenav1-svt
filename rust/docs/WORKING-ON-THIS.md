@@ -73,6 +73,14 @@ null arm through `tools/perf_ab.sh` is what tells you whether a wall-clock
 delta is real (measured null spread on that host: ratio 0.9996, p25/p75
 0.9970/1.0017).
 
+## Byte-identity cells
+
+`tools/cellrun.py CELLS.tsv` encodes each cell with the port and the C oracle
+`SVT_ORACLE` names, and classifies the pair (verdict, first divergent stage).
+A cell list is data: one row per cell, with an optional pinned verdict. New
+byte-identity gates should be a cell list plus this runner, not another copy
+of the port / C / diff loop in bash (plan T3).
+
 ## Code-review tooling
 
 `tools/review/run.sh [OUT_DIR]` (default `~/tmp/zenav1-review`) builds the
