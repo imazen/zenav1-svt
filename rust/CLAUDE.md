@@ -64,8 +64,8 @@ detail, and they are regenerated or gated rather than narrated.
   classes or the byte-budgeted depth away — both were measured and the meta
   records what each was worth. `intrabc_hash`'s bucket growth is AT PARITY with
   C and must not be "fixed".
-- Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
-  scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
+- The facade's raw-OBU API is `svtav1::pipeline`; the internal crates are
+  re-exported only with `__expert`.
 - Random-access (hierarchical) GOPs encode end to end — decoder-verified
   (`ra_selfcheck_gate.sh`, 11/11), not byte-claimed vs C. Temporal filtering
   is live under RA, including the delayed-intra key path. Open work:

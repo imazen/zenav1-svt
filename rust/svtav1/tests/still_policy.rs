@@ -81,7 +81,7 @@ fn effort_resolution_reaches_the_actual_encoder_and_legacy_setters_replace_it() 
 #[test]
 fn support_query_matches_real_grain_mono_and_reference_refusals() {
     use svtav1::avif::StillInputFormat;
-    use svtav1::encoder::film_grain_config::FilmGrainConfig;
+    use svtav1::pipeline::FilmGrainConfig;
     let y: Vec<u8> = (0..17 * 19)
         .map(|i| ((i * 29 + i / 17) % 256) as u8)
         .collect();

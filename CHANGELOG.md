@@ -13,6 +13,18 @@ Crates are not published to crates.io yet — depend by git.
 
 ### QUEUED BREAKING CHANGES
 
+- The facade's root no longer re-exports the internal crates: `svtav1::{encoder,
+  dsp, types, entropy, tables}` need the `__expert` feature. The raw-OBU API is
+  `svtav1::pipeline` (`EncodePipeline`, `RcConfig`, `RcMode`, `HdrForkConfig`,
+  `SvtHdrMode`, `ForkConfig`, `FilmGrainConfig`, `SvtReference`, `ChromaFormat`,
+  `ColorDescription`, `FilmGrainParams`, `compute_seq_level_idx`,
+  `EncodeError`, `EncodeResult`). The root re-exports of `BlockSize`,
+  `FrameType`, `PredictionMode`, `TxSize` and `TxType` are gone.
+- The unimplemented streaming scaffold is removed: `svtav1::{Encoder,
+  EncoderConfig, Frame, Packet, EncoderError}` (its `send_frame` and
+  `receive_packet` only ever returned an error).
+- `AvifEncoder::with_quality` and `with_speed` no longer clamp: quality outside
+  1.0-100.0 is `InvalidQuality`, speed outside 1-10 is `UnsupportedConfig`.
 - `AvifEncoder::with_variance_boost` no longer clamps `strength` into 1-4:
   an out-of-range value is refused by `validate_configuration` (and the
   encode), as C refuses it. Every fork knob in `HdrForkConfig` is range-checked

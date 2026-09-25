@@ -599,7 +599,7 @@ fn research_wrapper_partial_frame_matches_decoder() {
         .with_bit_depth(depth)
         .with_chroma_420(true)
         .with_recon_output(true);
-        direct.color_description = svtav1::encoder::entropy::obu::ColorDescription {
+        direct.color_description = svtav1::pipeline::ColorDescription {
             color_primaries: 1,
             transfer_characteristics: 13,
             matrix_coefficients: 1,

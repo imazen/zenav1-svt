@@ -1,46 +1,20 @@
 //! Safe Rust AV1 encoder — algorithm-for-algorithm port of SVT-AV1.
 //!
-//! # Overview
+//! Still pictures are byte-identical to the named C oracle across a broad
+//! tested envelope; video encodes in a measured envelope verified against a
+//! decoder rather than against C's bytes. The README's support table has the
+//! gate behind every claim, and configurations outside the envelope are
+//! refused with the measurement in the refusal text, never approximated.
 //!
-//! `svtav1` is an AV1 encoder — an algorithm-for-algorithm port of SVT-AV1
-//! v4.2.0. Still pictures (AVIF / all-intra) are verified BYTE-IDENTICAL to
-//! the C encoder across a broad tested envelope.
+//! # Two ways in
 //!
-//! INTER (video) frames also encode, in a measured envelope: **8-bit 4:2:0,
-//! presets -1..13**, in a flat low-delay-P GOP. That path carries a different
-//! guarantee and the difference matters: it is verified against a DECODER
-//! rather than against C's bytes — `tools/video_selfcheck_gate.sh` requires the
-//! encoder's own reconstruction to be byte-identical to `aomdec`'s on every
-//! frame of an 8-frame encode, 270 of 270 clip x qp x preset cells.
-//! Byte-identity to C holds on most of the synthetic frontier grid but not all
-//! of it; the README's video table has the measured numbers.
-//!
-//! Outside that envelope an inter frame is REFUSED, with the measurement in
-//! the refusal text: bit depth above 8 and monochrome. So are hierarchical
-//! (random-access) GOPs, masked-compound/inter-intra search and VBR/CBR rate
-//! control. Nothing there is approximated.
-//!
-//! There is no GPU acceleration and no built-in H.264/H.265 input; see
-//! `examples/mp4_to_avif.rs` for a pure-Rust decode front end.
-//!
-//! # Architecture
-//!
-//! The encoder is split into focused crates:
-//! - [`types`] — Core AV1 data structures, enums, and constants
-//! - [`tables`] — Static lookup tables (quantization, filters, scan orders)
-//! - [`dsp`] — SIMD-accelerated DSP primitives (transforms, prediction, filtering)
-//! - [`entropy`] — Arithmetic coder and CDF-based entropy coding
-//! - [`encoder`] — Encoding pipeline (ME, mode decision, rate control)
-//!
-//! # Usage
-//!
-//! The encoder is [`svtav1_encoder::pipeline::EncodePipeline`] (raw AV1 OBUs)
-//! or [`avif::AvifEncoder`] (still-image AV1 OBUs). With `avif-container`,
-//! `AvifEncoder::encode_animation_yuv420` writes animated AVIF files:
+//! - [`avif::AvifEncoder`]: stills and (with `avif-container`) animated AVIF,
+//!   configured by quality, speed, reference and fork knobs.
+//! - [`pipeline::EncodePipeline`]: raw AV1 OBUs, one frame per call, for
+//!   callers that own the container and the GOP.
 //!
 //! ```no_run
-//! use svtav1::encoder::pipeline::EncodePipeline;
-//! use svtav1::encoder::rate_control::{RcConfig, RcMode};
+//! use svtav1::pipeline::{EncodePipeline, RcConfig, RcMode};
 //!
 //! let (w, h) = (64u32, 64u32);
 //! let rc = RcConfig { mode: RcMode::Cqp, qp: 32, ..RcConfig::default() };
@@ -50,10 +24,9 @@
 //! assert!(!obu.is_empty());
 //! ```
 //!
-//! NOTE: the `Encoder` / `EncoderConfig` / `Frame` / `Packet` types below are
-//! an UNIMPLEMENTED scaffold from an early sketch — `Encoder::send_frame`
-//! and `Encoder::receive_packet` return an explicit unimplemented error.
-//! They never report a frame as accepted. Use the two working APIs above.
+//! The internal crates (`encoder`, `dsp`, `types`, `entropy`, `tables`) are
+//! re-exported only with the `__expert` feature: their surface is the port's
+//! working structure, not an interface.
 //!
 //! # Safety
 //!
@@ -68,314 +41,28 @@ pub mod policy;
 #[cfg(feature = "avif-container")]
 pub mod rgba;
 
+/// The raw-OBU encode API: the pipeline and the types its signatures take.
+pub mod pipeline {
+    pub use svtav1_encoder::entropy::obu::{
+        ColorDescription, FilmGrainParams, compute_seq_level_idx,
+    };
+    pub use svtav1_encoder::film_grain_config::FilmGrainConfig;
+    pub use svtav1_encoder::fork_config::ForkConfig;
+    pub use svtav1_encoder::hdr_mode::{HdrForkConfig, SvtHdrMode};
+    pub use svtav1_encoder::pipeline::EncodePipeline;
+    pub use svtav1_encoder::rate_control::{RcConfig, RcMode};
+    pub use svtav1_encoder::reference::SvtReference;
+    pub use svtav1_types::chroma::ChromaFormat;
+    pub use svtav1_types::{EncodeError, EncodeResult};
+}
+
+#[cfg(feature = "__expert")]
 pub use svtav1_dsp as dsp;
+#[cfg(feature = "__expert")]
 pub use svtav1_encoder as encoder;
+#[cfg(feature = "__expert")]
 pub use svtav1_encoder::entropy;
+#[cfg(feature = "__expert")]
 pub use svtav1_types as types;
+#[cfg(feature = "__expert")]
 pub use svtav1_types::tables;
-
-// Re-export key types at the crate root for convenience
-pub use svtav1_types::block::BlockSize;
-pub use svtav1_types::frame::FrameType;
-pub use svtav1_types::prediction::PredictionMode;
-pub use svtav1_types::transform::{TxSize, TxType};
-
-use svtav1_encoder::rate_control::{RcConfig, RcMode, RcState};
-
-/// Encoder configuration.
-#[derive(Debug, Clone)]
-pub struct EncoderConfig {
-    /// Encoder preset (0-13). Lower = slower/better quality, higher = faster.
-    pub preset: u8,
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Bit depth (8, 10, or 12).
-    pub bit_depth: u8,
-    /// Chroma subsampling (420, 422, or 444).
-    pub chroma_format: ChromaFormat,
-    /// Rate control configuration.
-    pub rc: RcConfig,
-    /// Number of encoding threads (0 = auto).
-    pub threads: u32,
-    /// Hierarchical levels for GOP structure (0-5).
-    pub hierarchical_levels: u8,
-    /// Whether to use 128x128 superblocks (vs 64x64).
-    pub use_128x128_sb: bool,
-}
-
-/// Chroma subsampling format — the canonical enum lives in
-/// `svtav1_types::chroma` (C `EbColorFormat` numbering + the
-/// `subsampling_x/y` derivation). Re-exported here so `EncoderConfig`
-/// and the pipeline share ONE type.
-pub use svtav1_types::chroma::ChromaFormat;
-
-impl EncoderConfig {
-    /// Create a new encoder configuration with the given preset.
-    ///
-    /// Preset controls the speed/quality tradeoff:
-    /// - 0-3: Research/high-quality (slowest)
-    /// - 4-6: Good quality (moderate speed)
-    /// - 7-9: Fast encoding
-    /// - 10-13: Real-time encoding (fastest)
-    pub fn new(preset: u8) -> Self {
-        Self {
-            preset: preset.min(13),
-            width: 1920,
-            height: 1080,
-            bit_depth: 8,
-            chroma_format: ChromaFormat::Yuv420,
-            rc: RcConfig {
-                mode: RcMode::Crf,
-                qp: 30,
-                ..RcConfig::default()
-            },
-            threads: 0,
-            hierarchical_levels: 4,
-            use_128x128_sb: false,
-        }
-    }
-
-    /// Set resolution.
-    pub fn with_resolution(mut self, width: u32, height: u32) -> Self {
-        self.width = width;
-        self.height = height;
-        self
-    }
-
-    /// Set bit depth.
-    pub fn with_bit_depth(mut self, bd: u8) -> Self {
-        self.bit_depth = bd;
-        self
-    }
-
-    /// Set CRF quality target (0-63).
-    pub fn with_crf(mut self, crf: u8) -> Self {
-        self.rc.mode = RcMode::Crf;
-        self.rc.qp = crf.min(63);
-        self
-    }
-
-    /// Set VBR target bitrate in kbps.
-    pub fn with_vbr(mut self, bitrate_kbps: u32) -> Self {
-        self.rc.mode = RcMode::Vbr;
-        self.rc.target_bitrate = bitrate_kbps;
-        self
-    }
-
-    /// Set CBR target bitrate in kbps.
-    pub fn with_cbr(mut self, bitrate_kbps: u32) -> Self {
-        self.rc.mode = RcMode::Cbr;
-        self.rc.target_bitrate = bitrate_kbps;
-        self
-    }
-}
-
-/// A YUV video frame to be encoded.
-#[derive(Debug)]
-pub struct Frame {
-    /// Y (luma) plane data.
-    pub y: Vec<u8>,
-    /// U (chroma) plane data.
-    pub u: Vec<u8>,
-    /// V (chroma) plane data.
-    pub v: Vec<u8>,
-    /// Y plane stride.
-    pub y_stride: usize,
-    /// U plane stride.
-    pub u_stride: usize,
-    /// V plane stride.
-    pub v_stride: usize,
-    /// Presentation timestamp.
-    pub pts: u64,
-}
-
-/// An encoded AV1 packet.
-#[derive(Debug)]
-pub struct Packet {
-    /// Encoded AV1 data (OBU sequence).
-    pub data: Vec<u8>,
-    /// Frame type.
-    pub frame_type: FrameType,
-    /// Presentation timestamp.
-    pub pts: u64,
-    /// Size in bytes.
-    pub size: usize,
-}
-
-/// The AV1 encoder.
-pub struct Encoder {
-    config: EncoderConfig,
-    /// Rate control state — updated after each encoded picture.
-    pub rc_state: RcState,
-    frame_count: u64,
-}
-
-/// Encoder error types.
-#[derive(Debug, Clone)]
-pub enum EncoderError {
-    /// Invalid configuration parameter.
-    InvalidConfig(String),
-    /// Encoder not ready to accept frames.
-    NotReady,
-    /// Encoding failed.
-    EncodeFailed(String),
-    /// End of stream.
-    Eof,
-}
-
-impl core::fmt::Display for EncoderError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InvalidConfig(msg) => write!(f, "Invalid config: {msg}"),
-            Self::NotReady => write!(f, "Encoder not ready"),
-            Self::EncodeFailed(msg) => write!(f, "Encode failed: {msg}"),
-            Self::Eof => write!(f, "End of stream"),
-        }
-    }
-}
-
-impl Encoder {
-    /// Create a new encoder with the given configuration.
-    pub fn new(config: EncoderConfig) -> Result<Self, EncoderError> {
-        if config.width == 0 || config.height == 0 {
-            return Err(EncoderError::InvalidConfig(
-                "Width and height must be > 0".into(),
-            ));
-        }
-        if !config.width.is_multiple_of(2) || !config.height.is_multiple_of(2) {
-            return Err(EncoderError::InvalidConfig(
-                "Width and height must be even".into(),
-            ));
-        }
-        if !matches!(config.bit_depth, 8 | 10 | 12) {
-            return Err(EncoderError::InvalidConfig(
-                "Bit depth must be 8, 10, or 12".into(),
-            ));
-        }
-
-        Ok(Self {
-            config,
-            rc_state: RcState::default(),
-            frame_count: 0,
-        })
-    }
-
-    /// The public streaming video API is not implemented. Returns an explicit
-    /// error for both frames and flush requests, without advancing counters.
-    /// Use `avif::AvifEncoder` or the supported `EncodePipeline` entry points.
-    pub fn send_frame(&mut self, _frame: Option<Frame>) -> Result<(), EncoderError> {
-        Err(EncoderError::EncodeFailed(
-            "public streaming video API is not implemented; use AvifEncoder or EncodePipeline"
-                .into(),
-        ))
-    }
-
-    /// The public streaming video API is not implemented. This is a permanent
-    /// refusal, not `NotReady` (which would invite callers to poll forever).
-    pub fn receive_packet(&mut self) -> Result<Packet, EncoderError> {
-        Err(EncoderError::EncodeFailed(
-            "public streaming video API is not implemented; use AvifEncoder or EncodePipeline"
-                .into(),
-        ))
-    }
-
-    /// Get the current encoder configuration.
-    pub fn config(&self) -> &EncoderConfig {
-        &self.config
-    }
-
-    /// Get the number of frames sent to the encoder.
-    pub fn frame_count(&self) -> u64 {
-        self.frame_count
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_encoder_default() {
-        let config = EncoderConfig::new(8);
-        let encoder = Encoder::new(config).unwrap();
-        assert_eq!(encoder.frame_count(), 0);
-    }
-
-    #[test]
-    fn create_encoder_with_resolution() {
-        let config = EncoderConfig::new(4)
-            .with_resolution(1280, 720)
-            .with_crf(28);
-        let encoder = Encoder::new(config).unwrap();
-        assert_eq!(encoder.config().width, 1280);
-        assert_eq!(encoder.config().height, 720);
-    }
-
-    #[test]
-    fn reject_zero_dimensions() {
-        let mut config = EncoderConfig::new(8);
-        config.width = 0;
-        assert!(Encoder::new(config).is_err());
-    }
-
-    #[test]
-    fn reject_odd_dimensions() {
-        let config = EncoderConfig::new(8).with_resolution(1921, 1080);
-        assert!(Encoder::new(config).is_err());
-    }
-
-    #[test]
-    fn reject_invalid_bit_depth() {
-        let mut config = EncoderConfig::new(8);
-        config.bit_depth = 9;
-        assert!(Encoder::new(config).is_err());
-    }
-
-    #[test]
-    fn preset_clamping() {
-        let config = EncoderConfig::new(99);
-        assert_eq!(config.preset, 13);
-    }
-
-    #[test]
-    fn builder_pattern() {
-        let config = EncoderConfig::new(6)
-            .with_resolution(3840, 2160)
-            .with_bit_depth(10)
-            .with_vbr(10000);
-        assert_eq!(config.width, 3840);
-        assert_eq!(config.bit_depth, 10);
-        assert_eq!(config.rc.mode, RcMode::Vbr);
-        assert_eq!(config.rc.target_bitrate, 10000);
-    }
-
-    #[test]
-    fn unsupported_streaming_api_never_accepts_or_counts_frames() {
-        let config = EncoderConfig::new(8);
-        let mut encoder = Encoder::new(config).unwrap();
-        let frame = Frame {
-            y: vec![128; 1920 * 1080],
-            u: vec![128; 960 * 540],
-            v: vec![128; 960 * 540],
-            y_stride: 1920,
-            u_stride: 960,
-            v_stride: 960,
-            pts: 0,
-        };
-        assert!(matches!(
-            encoder.send_frame(Some(frame)),
-            Err(EncoderError::EncodeFailed(_))
-        ));
-        assert_eq!(encoder.frame_count(), 0);
-        assert!(matches!(
-            encoder.send_frame(None),
-            Err(EncoderError::EncodeFailed(_))
-        ));
-        assert!(matches!(
-            encoder.receive_packet(),
-            Err(EncoderError::EncodeFailed(_))
-        ));
-    }
-}

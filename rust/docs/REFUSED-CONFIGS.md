@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **122
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -175,6 +175,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `svtav1/src/avif.rs` | parity policy conflicts with selected reference |
 | `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |
 | `svtav1/src/avif.rs` | pristine C SVT supports 4:2:0 only; monochrome is a Rust extension |
+| `svtav1/src/avif.rs` | speed must be between 1 and 10 (use with_native_preset for C's preset scale) |
 | `svtav1/src/avif.rs` | stride is smaller than the width (rows would overlap) |
 | `svtav1/src/avif.rs` | strided pixel buffer size overflows usize |
 | `svtav1/src/avif.rs` | width and height must both be non-zero |

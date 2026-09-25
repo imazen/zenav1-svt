@@ -291,18 +291,20 @@ impl AvifEncoder {
     /// Set the quality level (1.0-100.0).
     ///
     /// Higher values produce better quality at the cost of larger files.
-    /// Maps internally to AV1 QP 63 (worst) to 0 (best).
+    /// Maps internally to AV1 QP 63 (worst) to 0 (best). A value outside
+    /// 1.0-100.0 (or NaN) is refused by validation, not clamped.
     pub fn with_quality(mut self, quality: f32) -> Self {
-        self.quality = quality.clamp(1.0, 100.0);
+        self.quality = quality;
         self
     }
 
     /// Set the speed preset (1-10).
     ///
-    /// Maps to still-image presets: 1 -> preset 0, 10 -> preset 9.
+    /// Maps to still-image presets: 1 -> preset 0, 10 -> preset 9. A value
+    /// outside 1-10 is refused by validation, not clamped.
     /// Replaces an earlier [`Self::with_native_preset`] selection.
     pub fn with_speed(mut self, speed: u8) -> Self {
-        self.speed = speed.clamp(1, 10);
+        self.speed = speed;
         self.native_preset = None;
         self.effort = None;
         self
@@ -982,11 +984,18 @@ impl AvifEncoder {
     }
 
     /// Validate quality range.
+    /// Quality and speed are range-checked here, not clamped by their
+    /// setters, so an out-of-range value is an error the caller sees.
     fn validate_quality(&self) -> Result<(), EncodeError> {
         if !(1.0..=100.0).contains(&self.quality) {
             return Err(EncodeError::InvalidQuality {
                 quality: self.quality,
             });
+        }
+        if !(1..=10).contains(&self.speed) {
+            return Err(EncodeError::UnsupportedConfig(
+                "speed must be between 1 and 10 (use with_native_preset for C's preset scale)",
+            ));
         }
         Ok(())
     }
@@ -1410,22 +1419,28 @@ mod tests {
         );
     }
 
+    /// Out-of-range quality and speed are refused, not clamped.
     #[test]
-    fn quality_clamping() {
-        let enc = AvifEncoder::new().with_quality(200.0);
-        assert!((enc.quality - 100.0).abs() < f32::EPSILON);
-
-        let enc = AvifEncoder::new().with_quality(-5.0);
-        assert!((enc.quality - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn speed_clamping() {
-        let enc = AvifEncoder::new().with_speed(0);
-        assert_eq!(enc.speed, 1);
-
-        let enc = AvifEncoder::new().with_speed(20);
-        assert_eq!(enc.speed, 10);
+    fn out_of_range_quality_and_speed_are_refused() {
+        for q in [-5.0f32, 0.5, 100.5, 200.0] {
+            assert!(matches!(
+                AvifEncoder::new().with_quality(q).validate_configuration(),
+                Err(EncodeError::InvalidQuality { .. })
+            ));
+        }
+        for s in [0u8, 11, 20] {
+            assert!(matches!(
+                AvifEncoder::new().with_speed(s).validate_configuration(),
+                Err(EncodeError::UnsupportedConfig(_))
+            ));
+        }
+        for (q, s) in [(1.0f32, 1u8), (100.0, 10)] {
+            AvifEncoder::new()
+                .with_quality(q)
+                .with_speed(s)
+                .validate_configuration()
+                .unwrap();
+        }
     }
 
     #[test]
@@ -1868,39 +1883,22 @@ mod tests {
         );
     }
 
-    /// `EncodeError::InvalidQuality` has exactly ONE reachable trigger, and it
-    /// is not the obvious one.
-    ///
-    /// `with_quality` CLAMPS into 1.0..=100.0 and `quality` is a private field,
-    /// so no finite out-of-range value survives to `validate_quality`. NaN does:
-    /// `f32::clamp` propagates NaN, and `RangeInclusive::contains` is false for
-    /// it. Both halves are pinned here — the clamp (so a future change that
-    /// stops clamping is caught) and the NaN path (so the variant is not
-    /// quietly unreachable dead code) — plus the message naming the value.
+    /// `EncodeError::InvalidQuality` fires for any quality outside 1.0..=100.0,
+    /// NaN included, and names the value and the range.
     #[test]
-    fn quality_rejection_is_reachable_only_through_nan() {
+    fn quality_rejection_names_the_value() {
         let img = vec![0u8; 16 * 16];
-
-        // Finite out-of-range values are clamped, not rejected.
         for q in [-10.0f32, 0.5, 100.5, 1e9] {
-            let enc = AvifEncoder::new().with_quality(q);
-            assert!(
-                (1.0..=100.0).contains(&enc.quality),
-                "with_quality({q}) must clamp into 1.0..=100.0, got {}",
-                enc.quality
-            );
-            assert!(
-                !matches!(
-                    enc.encode_y8(&img, 16, 16, 16),
-                    Err(EncodeError::InvalidQuality { .. })
-                ),
-                "a clamped quality must not be rejected ({q})"
-            );
+            assert!(matches!(
+                AvifEncoder::new()
+                    .with_quality(q)
+                    .encode_y8(&img, 16, 16, 16),
+                Err(EncodeError::InvalidQuality { .. })
+            ));
         }
 
-        // NaN survives the clamp and is the one thing that trips the check.
         let enc = AvifEncoder::new().with_quality(f32::NAN);
-        assert!(enc.quality.is_nan(), "f32::clamp must propagate NaN");
+        assert!(enc.quality.is_nan());
         let err = enc.encode_y8(&img, 16, 16, 16).unwrap_err();
         let EncodeError::InvalidQuality { quality } = err else {
             panic!("expected InvalidQuality, got {err:?}");

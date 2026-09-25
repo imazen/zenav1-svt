@@ -95,6 +95,13 @@ It was done when:
   - put the rest behind the existing `__expert` feature;
   - setters stop clamping silently;
   - record each break in CHANGELOG's QUEUED BREAKING CHANGES.
+  - Done (this change): `svtav1::pipeline` is the raw-OBU API, holding the
+    pipeline types zenavif uses (surveyed read-only 2026-09-25); the
+    whole-crate re-exports need `__expert`; the unimplemented
+    `Encoder`/`EncoderConfig` scaffold is removed; `with_quality`,
+    `with_speed` and `with_variance_boost` refuse instead of clamping.
+  - Open: `svtav1_encoder`'s own public surface (its modules are `pub` for
+    the integration tests; T2 moves those tests in-crate first).
 
 Done when every Ghost Robot `EbSvtAv1EncConfiguration` field has either a
 typed facade setter or an explicit refusal that names it.
