@@ -147,6 +147,9 @@ Use coherent commits on main, relevant local validation, frequent verified
 pushes, and no CI wait unless requested. Docs-only edits need documentation
 checks, not repeated codec sweeps.
 
+Keep every `.rs` file at most 3,000 lines (`tools/file_size_check.py`, a CI
+gate); split with the tools in WORKING-ON-THIS.md "Keeping files small".
+
 Profile before optimizing. Use the repository's interleaved paired benchmark
 harnesses; preserve bytes/quality/time and source/hardware identities. Historical
 M4 or two-origin results do not establish current general speed/RD conclusions.

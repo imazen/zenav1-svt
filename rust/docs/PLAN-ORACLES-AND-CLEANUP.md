@@ -154,7 +154,8 @@ In dependency order:
 - S4 a `Pixel` sample trait plus a `BitDepth` enum;
 - S3 derive signals once through the ported orchestrators;
 - S2 split `pipeline.rs` into stages. Target: every `.rs` file at 2-3 kloc
-  (user, 2026-09-25).
+  (user, 2026-09-25). MET for the whole workspace on 2026-09-25 (largest file:
+  2,958 lines), and kept by the `file_size_check.py` CI gate.
   - Done (`64e86276`): pure moves of the tests and the entropy walk into
     `pipeline/{tests, inter_tile_byte_gate, inter_decision_probe,
     entropy_ctx, lpd1, block_syntax, partition_walk, tile_walk}.rs`, which
@@ -205,7 +206,7 @@ In dependency order:
     tiles, bd10 post-pass); `pack_phase::filter_and_pack_frame` (entropy
     walk, deblock/CDEF/LR, bitstream, recon outputs, reference). `pipeline.rs`
     is 2,286 lines; `encode_frame_impl` is 2,085.
-  - Done (this change): `tile_walk::encode_tile_rows` (the per-tile closure,
+  - Done (`cd33b8b5`): `tile_walk::encode_tile_rows` (the per-tile closure,
     then the per-coding-unit body) and `mds3::eval_candidate` (intra chroma,
     inter chroma, chroma detector, tx-depth search) are split too; neither file
     is over 1.8 kloc now. The 56 extracted single-call-site stages are

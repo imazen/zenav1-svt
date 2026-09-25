@@ -74,6 +74,46 @@ inputs for a whole-codebase review: test- and comment-stripped reading bundles
 script's header says how to install it. The last review built from these is
 [CODE-REVIEW-2026-09-25.md](CODE-REVIEW-2026-09-25.md).
 
+## Keeping files small
+
+Every `.rs` file stays at most 3,000 lines, and 2,000 is the aim. The
+`file_size_check.py` gate enforces the limit (`just file-size`, CI shard 3).
+Split along real seams, as pure moves whose output pins stay unchanged:
+
+- `tools/split_inline_mod.py FILE MOD`: moves an inline `mod x { .. }` block
+  (usually tests) into `FILE-stem/x.rs`.
+- `tools/move_items.py FILE CHILD FIRST END`: moves a run of top-level items
+  into a child module.
+  - `FIRST` and `END` are signature regexes; `@N` gives a line number,
+    which is safe when applied bottom-up.
+  - It raises private items to `pub(super)` and leaves `use` and `mod`
+    lines in the parent.
+  - It formats the child before editing the parent, so a failed move
+    changes nothing.
+- `tools/move_methods.py FILE IMPL-REGEX CHILD NAMES...`: moves methods of a
+  big `impl` into a child's own `impl` block, appending if the child exists.
+- `tools/ra_extract.py FILE FIRST LAST NAME ...`: drives rust-analyzer's
+  "Extract into function" to cut a long function into stages. It works out
+  every stage's inputs and outputs. Fix-ups the S2 series needed:
+  - rust-analyzer gives every stage `&mut self`; a stage that only reads
+    should take `&self`.
+  - A stage that holds a borrow across other `self` writes should become an
+    associated fn over just the fields it touches.
+  - Non-`Copy` captures passed by value should be borrowed, or a closure
+    turns `FnOnce`.
+  - `std::` paths and bare `Box` must become `alloc`/`core` for no_std.
+  - Mark single-call-site stages `#[inline(always)]` so the codegen stays
+    as it was. The measured residue is in
+    `benchmarks/perf_s2_split_2026-09-25.meta`.
+- `tools/drop_unused_super_glob.py < check.log`: removes the `use super::*;`
+  lines that rustc reports unused.
+
+Moving code between files changes the `PORT-NOTE` index and the refusal
+ledger, which are keyed by file. Regenerate both
+(`tools/portnote_index.sh`, `tools/refusal_inventory.sh`) in the same
+commit. Generated tables are split by their generators, never by hand:
+`xtask/transcribe_qm.py` and cref's `gen_default_cdfs`.
+
 ## Build and corpus prerequisites
 
 Product dependencies need Rust, not C. Test oracles require the

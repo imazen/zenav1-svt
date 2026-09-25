@@ -303,6 +303,13 @@ jobs:
         # files ran twice after d2abc282b. rust/docs/PLAN-ORACLES-AND-CLEANUP.md 0.7.
         run: python3 tools/test_targets_check.py
 
+      - name: every .rs file is at most 3,000 lines
+        if: matrix.shard == 3
+        working-directory: rust
+        # The 2-3 kloc target (2026-09-25). pipeline.rs had reached 23,560
+        # lines; the check keeps a split from growing back.
+        run: python3 tools/file_size_check.py
+
       - name: no_std builds (each library crate, --no-default-features)
         if: matrix.shard == 3
         working-directory: rust

@@ -59,6 +59,10 @@ symtrace-check:
 test-minimal:
     cargo nextest run --workspace --no-default-features
 
+# Every .rs file stays at most 3,000 lines (the split tools are named in the script).
+file-size:
+    python3 tools/file_size_check.py
+
 # The library crates build without `std`. Per crate: a workspace-level
 # --no-default-features unifies `std` back on through dev-dependencies, so it
 # cannot catch a no_std break (the encoder carried 121 errors past it).
