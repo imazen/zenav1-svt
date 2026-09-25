@@ -89,20 +89,13 @@ const MAX_OFFSET_HEIGHT: i32 = 0;
 const MFMV_STACK_SIZE: i32 = 3;
 
 // Reference-frame enum (definitions.h:1378-1404).
-pub const NONE_FRAME: i8 = -1;
-pub const INTRA_FRAME: i8 = 0;
-pub const LAST_FRAME: i8 = 1;
-pub const LAST2_FRAME: i8 = 2;
-pub const LAST3_FRAME: i8 = 3;
-pub const GOLDEN_FRAME: i8 = 4;
-pub const BWDREF_FRAME: i8 = 5;
-pub const ALTREF2_FRAME: i8 = 6;
-pub const ALTREF_FRAME: i8 = 7;
-/// C `REF_FRAMES` (== 8) and `TOTAL_REFS_PER_FRAME` (== 8).
-pub const REF_FRAMES: usize = 8;
-pub const TOTAL_REFS_PER_FRAME: usize = 8;
-/// C `INTER_REFS_PER_FRAME` (== 7).
-pub const INTER_REFS_PER_FRAME: usize = 7;
+pub use svtav1_types::reference::INTER_REFS_PER_FRAME;
+pub use svtav1_types::reference::REF_FRAMES;
+pub use svtav1_types::reference::TOTAL_REFS_PER_FRAME;
+pub use svtav1_types::reference::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST_FRAME, LAST2_FRAME,
+    LAST3_FRAME, NONE_FRAME,
+};
 /// C `LAST_BWD_FRAME` (definitions.h:1412).
 pub const LAST_BWD_FRAME: i8 = 8;
 /// C `FWD_REFS` / `BWD_REFS`.
@@ -1530,7 +1523,10 @@ pub fn setup_ref_mv_list_seeded(
     if mvpdbg {
         eprintln!(
             "MVPDBG mi=({},{}) ref={} stage=spatial cnt={} stack={:?}",
-            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count,
+            ctx.mi_row,
+            ctx.mi_col,
+            ref_frame,
+            refmv_count,
             &stack[..usize::from(refmv_count).min(8)],
         );
     }
@@ -1652,7 +1648,10 @@ pub fn setup_ref_mv_list_seeded(
     if mvpdbg {
         eprintln!(
             "MVPDBG mi=({},{}) ref={} stage=temporal cnt={} stack={:?}",
-            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count,
+            ctx.mi_row,
+            ctx.mi_col,
+            ref_frame,
+            refmv_count,
             &stack[..usize::from(refmv_count).min(8)],
         );
     }
@@ -1773,7 +1772,11 @@ pub fn setup_ref_mv_list_seeded(
     if mvpdbg {
         eprintln!(
             "MVPDBG mi=({},{}) ref={} stage=final cnt={} mc={} stack={:?}",
-            ctx.mi_row, ctx.mi_col, ref_frame, refmv_count, mode_context,
+            ctx.mi_row,
+            ctx.mi_col,
+            ref_frame,
+            refmv_count,
+            mode_context,
             &stack[..usize::from(refmv_count).min(8)],
         );
     }

@@ -62,7 +62,6 @@
 //! substituted. [`NoRefinement`] is the explicit "no pixels available"
 //! implementation and is what the tier-4 tests drive.
 
-use alloc::{vec, vec::Vec};
 use super::drl::{ChooseDrlCtx, choose_best_av1_mv_pred};
 use super::pme::MvCostTable;
 use super::predicates::{
@@ -76,15 +75,11 @@ use crate::inter_mvp::{
     DrlMvPred, InterMvpStack, av1_ref_frame_type, av1_set_ref_frame, get_av1_mv_pred_drl,
     get_list_idx, get_ref_frame_idx,
 };
+use alloc::{vec, vec::Vec};
 use svtav1_types::motion::{Mv, TransformationType, WarpedMotionParams};
 use svtav1_types::prediction::PredictionMode;
 
-/// C `NONE_FRAME` (definitions.h): the "no second reference" sentinel.
-pub const NONE_FRAME: i8 = -1;
-/// C `INTRA_FRAME`.
-pub const INTRA_FRAME: i8 = 0;
-/// C `LAST_FRAME`.
-pub const LAST_FRAME: i8 = 1;
+pub use svtav1_types::reference::{INTRA_FRAME, LAST_FRAME, NONE_FRAME};
 /// C `BI_PRED` — the `MeCandidate::direction` value for bi-prediction.
 pub const BI_PRED: u8 = 2;
 /// C `BIPRED_3x3_REFINMENT_POSITIONS` (mode_decision.c:807).

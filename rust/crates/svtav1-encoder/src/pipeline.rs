@@ -22998,8 +22998,7 @@ mod inter_decision_probe {
     /// C `BLOCK_64X64` (definitions.h block order) — the bsize
     /// `SVT_CINTER_OUT` printed (`bsize=12`).
     const BLOCK_64X64: usize = 12;
-    /// C `LAST_FRAME`.
-    const LAST_FRAME: i8 = 1;
+    use svtav1_types::reference::LAST_FRAME;
 
     /// The reference cell's frame-1 MVP inputs, exactly as the frame header
     /// the port already writes byte-identically describes them

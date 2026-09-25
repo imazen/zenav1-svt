@@ -41,16 +41,11 @@ use svtav1_types::motion::Mv;
 /// C `REFMVS_LIMIT` (coding_loop.c:1036) = `(1 << 12) - 1`.
 pub const REFMVS_LIMIT: i32 = (1 << 12) - 1;
 
-/// C `NONE_FRAME` (definitions.h:1379).
-pub const NONE_FRAME: i8 = -1;
+pub use svtav1_types::reference::NONE_FRAME;
 
-/// C `INTRA_FRAME` (definitions.h:1380) = 0. `ref_frame > INTRA_FRAME` is the
-/// "this slot names a real reference" test.
-pub const INTRA_FRAME: i8 = 0;
+pub use svtav1_types::reference::INTRA_FRAME;
 
-/// C `REF_FRAMES` = `1 << REF_FRAMES_LOG2` = 8 — the length of
-/// `pcs->ref_frame_side`.
-pub const REF_FRAMES: usize = 8;
+pub use svtav1_types::reference::REF_FRAMES;
 
 /// C `ROUND_POWER_OF_TWO(value, 1)`.
 #[inline]

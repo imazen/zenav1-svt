@@ -8,15 +8,15 @@
 
 use crate::inv_txfm::inv_txfm_ranges;
 
-/// Per-thread transform staging buffer. Every 2D driver below fully
-/// overwrites its intermediate `buf` in the first pass before the second
-/// pass reads it, so `let mut buf = [0i32; N * N]` on the stack pays a
-/// memset of up to 16 KB per transform call for bytes that are never read —
-/// callgrind attributes ~1.8M instructions per 512² encode to those dead
-/// memsets. Under `std` a thread-local stage avoids them; `no_std` keeps the
-/// stack array.
 #[cfg(feature = "std")]
 std::thread_local! {
+    /// Per-thread transform staging buffer. Every 2D driver below fully
+    /// overwrites its intermediate `buf` in the first pass before the second
+    /// pass reads it, so `let mut buf = [0i32; N * N]` on the stack pays a
+    /// memset of up to 16 KB per transform call for bytes that are never read —
+    /// callgrind attributes ~1.8M instructions per 512² encode to those dead
+    /// memsets. Under `std` a thread-local stage avoids them; `no_std` keeps the
+    /// stack array.
     static TXFM_STAGE: core::cell::RefCell<[i32; 4096]> =
         const { core::cell::RefCell::new([0; 4096]) };
 }

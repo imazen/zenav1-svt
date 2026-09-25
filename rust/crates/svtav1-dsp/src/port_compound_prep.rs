@@ -83,8 +83,7 @@ pub struct UnipredOverride {
     pub interp_filters: u32,
 }
 
-/// `NONE_FRAME`.
-pub const NONE_FRAME: i8 = -1;
+pub use svtav1_types::reference::NONE_FRAME;
 
 /// The list-0 override (:3573).
 pub fn unipred_override_l0(mv0: u32, ref0: i8, was_global_global: bool) -> UnipredOverride {

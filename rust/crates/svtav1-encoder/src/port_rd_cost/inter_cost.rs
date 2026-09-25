@@ -75,8 +75,7 @@ const REFMV_CTX_MASK: i16 = (1 << (8 - REFMV_OFFSET)) - 1;
 /// used 3, which silently zeroed every interpolation-filter rate on a real
 /// switchable frame; the tier-1 differential caught it on the first cell.
 pub const SWITCHABLE: u8 = SWITCHABLE_FILTERS as u8 + 1;
-/// C `INTRA_FRAME` (definitions.h:1390).
-const INTRA_FRAME: i8 = 0;
+use svtav1_types::reference::INTRA_FRAME;
 /// C `eb_size_group_lookup` (common_utils.c:36).
 pub const SIZE_GROUP_LOOKUP: [u8; BLOCK_SIZES_ALL] = [
     0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2,

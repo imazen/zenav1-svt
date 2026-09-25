@@ -49,8 +49,7 @@ use svtav1_types::segmentation::{SEG_LVL_LF_LUT, SegmentationParams};
 
 /// C `MAX_LOOP_FILTER` (definitions.h:1666).
 pub const MAX_LOOP_FILTER: i32 = 63;
-/// C `REF_FRAMES`.
-pub const REF_FRAMES: usize = 8;
+pub use svtav1_types::reference::REF_FRAMES;
 /// C `MAX_MODE_LF_DELTAS` — the two mode classes (ZERO_MV, MV).
 pub const MAX_MODE_LF_DELTAS: usize = 2;
 /// C `MAX_PLANES`.

@@ -63,24 +63,11 @@ pub const ALT2: usize = 5;
 /// See [`LAST`].
 pub const ALT: usize = 6;
 
-/// C `REF_FRAMES` — DPB slot count.
-pub const REF_FRAMES: usize = 8;
-/// C `INTER_REFS_PER_FRAME`.
-pub const INTER_REFS_PER_FRAME: usize = 7;
-/// C `LAST_FRAME` (`MvReferenceFrame` numbering: `INTRA_FRAME` is 0).
-pub const LAST_FRAME: i8 = 1;
-/// C `LAST2_FRAME`.
-pub const LAST2_FRAME: i8 = 2;
-/// C `LAST3_FRAME`.
-pub const LAST3_FRAME: i8 = 3;
-/// C `GOLDEN_FRAME`.
-pub const GOLDEN_FRAME: i8 = 4;
-/// C `BWDREF_FRAME`.
-pub const BWDREF_FRAME: i8 = 5;
-/// C `ALTREF2_FRAME`.
-pub const ALTREF2_FRAME: i8 = 6;
-/// C `ALTREF_FRAME`.
-pub const ALTREF_FRAME: i8 = 7;
+pub use svtav1_types::reference::INTER_REFS_PER_FRAME;
+pub use svtav1_types::reference::REF_FRAMES;
+pub use svtav1_types::reference::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GOLDEN_FRAME, LAST_FRAME, LAST2_FRAME, LAST3_FRAME,
+};
 /// C `INVALID_IDX` used by the skip-mode params.
 pub const INVALID_IDX: i32 = -1;
 

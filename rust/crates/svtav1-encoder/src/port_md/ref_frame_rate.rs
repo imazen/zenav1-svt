@@ -40,8 +40,7 @@
 use alloc::vec::Vec;
 use svtav1_types::prediction::PredictionMode;
 
-/// C `TOTAL_REFS_PER_FRAME` (definitions.h:1398).
-pub const TOTAL_REFS_PER_FRAME: usize = 8;
+pub use svtav1_types::reference::TOTAL_REFS_PER_FRAME;
 /// C `REF_CONTEXTS` / `UNI_COMP_REF_CONTEXTS`.
 pub const REF_CONTEXTS: usize = 3;
 /// C `COMP_REF_TYPE_CONTEXTS`.
@@ -49,17 +48,10 @@ pub const COMP_REF_TYPE_CONTEXTS: usize = 5;
 /// C `COMP_INTER_CONTEXTS`.
 pub const COMP_INTER_CONTEXTS: usize = 5;
 
-/// C reference-frame ids (definitions.h:1390-1398).
-pub const INTRA_FRAME: i8 = 0;
-pub const LAST_FRAME: i8 = 1;
-pub const LAST2_FRAME: i8 = 2;
-pub const LAST3_FRAME: i8 = 3;
-pub const GOLDEN_FRAME: i8 = 4;
-pub const BWDREF_FRAME: i8 = 5;
-pub const ALTREF2_FRAME: i8 = 6;
-pub const ALTREF_FRAME: i8 = 7;
-/// C `NONE_FRAME`.
-pub const NONE_FRAME: i8 = -1;
+pub use svtav1_types::reference::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST_FRAME, LAST2_FRAME,
+    LAST3_FRAME, NONE_FRAME,
+};
 
 /// C `BlockModeInfo` as the context functions read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

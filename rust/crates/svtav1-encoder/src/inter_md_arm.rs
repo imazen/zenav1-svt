@@ -115,8 +115,7 @@ use alloc::vec::Vec;
 use svtav1_types::motion::Mv;
 use svtav1_types::prediction::PredictionMode;
 
-/// C `LAST_FRAME`.
-pub const LAST_FRAME: i8 = 1;
+pub use svtav1_types::reference::LAST_FRAME;
 
 /// The frame-level tables and pictures the inter branch of MD reads.
 ///

@@ -27,6 +27,28 @@ impl ReferenceFrame {
     }
 }
 
+// C `MvReferenceFrame` ids (definitions.h `NONE_FRAME`..`ALTREF_FRAME`), as the
+// `int8_t` C stores them. The one copy: port modules re-export these rather
+// than redefine them.
+/// C `NONE_FRAME`: no reference (the second slot of a single-reference block).
+pub const NONE_FRAME: i8 = ReferenceFrame::None.as_i8();
+/// C `INTRA_FRAME`.
+pub const INTRA_FRAME: i8 = ReferenceFrame::Intra.as_i8();
+/// C `LAST_FRAME`.
+pub const LAST_FRAME: i8 = ReferenceFrame::Last.as_i8();
+/// C `LAST2_FRAME`.
+pub const LAST2_FRAME: i8 = ReferenceFrame::Last2.as_i8();
+/// C `LAST3_FRAME`.
+pub const LAST3_FRAME: i8 = ReferenceFrame::Last3.as_i8();
+/// C `GOLDEN_FRAME`.
+pub const GOLDEN_FRAME: i8 = ReferenceFrame::Golden.as_i8();
+/// C `BWDREF_FRAME`.
+pub const BWDREF_FRAME: i8 = ReferenceFrame::BwdRef.as_i8();
+/// C `ALTREF2_FRAME`.
+pub const ALTREF2_FRAME: i8 = ReferenceFrame::AltRef2.as_i8();
+/// C `ALTREF_FRAME`.
+pub const ALTREF_FRAME: i8 = ReferenceFrame::AltRef.as_i8();
+
 /// Number of reference frame slots (REF_FRAMES).
 pub const REF_FRAMES: usize = 8;
 

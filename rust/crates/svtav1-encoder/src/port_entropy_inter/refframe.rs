@@ -18,24 +18,11 @@ use crate::port_entropy_inter::{InterCdfs, NeighborMi, Neighbors};
 use svtav1_types::block::BlockSize;
 use svtav1_types::tables::block::{BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE};
 
-/// C `INTRA_FRAME` (definitions.h) — reference id 0.
-pub const INTRA_FRAME: i8 = 0;
-/// C `LAST_FRAME`.
-pub const LAST_FRAME: i8 = 1;
-/// C `LAST2_FRAME`.
-pub const LAST2_FRAME: i8 = 2;
-/// C `LAST3_FRAME`.
-pub const LAST3_FRAME: i8 = 3;
-/// C `GOLDEN_FRAME`.
-pub const GOLDEN_FRAME: i8 = 4;
-/// C `BWDREF_FRAME`.
-pub const BWDREF_FRAME: i8 = 5;
-/// C `ALTREF2_FRAME`.
-pub const ALTREF2_FRAME: i8 = 6;
-/// C `ALTREF_FRAME`.
-pub const ALTREF_FRAME: i8 = 7;
-/// C `TOTAL_REFS_PER_FRAME` — the width of `xd->neighbors_ref_counts`.
-pub const TOTAL_REFS_PER_FRAME: usize = 8;
+pub use svtav1_types::reference::TOTAL_REFS_PER_FRAME;
+pub use svtav1_types::reference::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST_FRAME, LAST2_FRAME,
+    LAST3_FRAME,
+};
 
 /// C `CHECK_BACKWARD_REFS` (inter_prediction.h:279) — note it is a RANGE
 /// check, `>= BWDREF && <= ALTREF`, not just `>= BWDREF`.

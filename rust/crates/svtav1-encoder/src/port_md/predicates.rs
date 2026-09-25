@@ -62,17 +62,12 @@ pub const MV_IN_USE_BITS: u32 = 14;
 const MV_UPP: i32 = 1 << MV_IN_USE_BITS;
 const MV_LOW: i32 = -(1 << MV_IN_USE_BITS);
 
-/// C `INTRA_FRAME` (definitions.h): reference-frame id 0.
-pub const INTRA_FRAME: i8 = 0;
-/// C `LAST_FRAME` .. `ALTREF_FRAME` (definitions.h:1390-1398).
-pub const LAST_FRAME: i8 = 1;
-pub const ALTREF_FRAME: i8 = 7;
+pub use svtav1_types::reference::{ALTREF_FRAME, INTRA_FRAME, LAST_FRAME};
 /// C `INVALID_REF` (mode_decision.h:203) — the hole in `to_ref_frame[1][3]`.
 /// It is **0xF, not 0xFF**; the tier-1 differential caught a first draft
 /// that assumed the byte-wide sentinel.
 pub const INVALID_REF: i32 = 0xF;
-/// C `TOTAL_REFS_PER_FRAME` (definitions.h:1398) = `ALTREF - INTRA + 1`.
-pub const TOTAL_REFS_PER_FRAME: usize = 8;
+pub use svtav1_types::reference::TOTAL_REFS_PER_FRAME;
 
 /// C `InterCandGroup` (md_process.h:64-78). The index into
 /// `ctx->ref_filtering_res` and `ref_pruning_ctrls.closest_refs`.
