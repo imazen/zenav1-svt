@@ -1,0 +1,12 @@
+# Tests excluded from `just cparity-oracle mainline-4.2.0`: each drives a
+# fork-only C symbol that does not exist in mainline v4.2.0 — the shim's
+# zen_oracle_missing() stub aborts rather than fabricate a result. The test
+# bodies never skip; the caller (this file) selects them out.
+c_parity_dist_facade::spatial_facade_matches_c_over_every_mode_pair
+c_parity_dist_facade::full_distortion32_facade_matches_c_over_every_mode_pair
+c_parity_noise_gen::noise_table_matches_c
+c_parity_noise_norm::noise_norm_matches_c
+c_parity_rc_process::compute_rd_mult_and_fast_lambda_match_c
+c_parity_src_ops::get_perceptual_perpixel_variance_matches_c
+c_parity_src_ops::get_mean_and_perpixel_variance_matches_c
+c_parity_tx_bias::facade_matches_c_for_intra_modes

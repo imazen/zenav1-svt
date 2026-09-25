@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "me_context.h"
 #include "pic_buffer_desc.h"
@@ -64,12 +65,16 @@ void     svt_sad_loop_kernel_c(uint8_t* src, uint32_t src_stride, uint8_t* ref, 
                                uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
 uint16_t svt_aom_get_scaled_picture_distance(uint16_t dist);
 
+#ifdef SVTAV1_CREF_ME_STATICS
+/* Exported in hybrid and mainline v4.2.0; Ghost Robot made them `static`,
+   so there they resolve through build.rs's globalized object. */
 void hme_level_2(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_t block_width, uint32_t block_height,
                  EbPictureBufferDesc* ref_pic_ptr, int16_t sa_width, int16_t sa_height, int16_t hme_l1_sc_x,
                  int16_t hme_l1_sc_y, uint64_t* best_sad, int16_t* hme_l2_sc_x, int16_t* hme_l2_sc_y);
 uint32_t check_00_center(EbPictureBufferDesc* ref_pic_ptr, MeContext* me_ctx, uint32_t sb_origin_x,
                          uint32_t sb_origin_y, uint32_t sb_width, uint32_t sb_height, int16_t* x_search_center,
                          int16_t* y_search_center, uint32_t zz_sad);
+#endif
 
 uint32_t ref_me_compute8x4_sad(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride) {
     return svt_aom_compute8x4_sad_kernel_c((uint8_t*)src, src_stride, (uint8_t*)ref, ref_stride);
@@ -184,6 +189,7 @@ uint16_t ref_me_get_scaled_picture_distance(uint16_t dist) { return svt_aom_get_
  * `ref_alloc` is the whole padded allocation; `ref_org` is the index of pixel
  * (0,0) inside it, i.e. C's `y_buffer - buffer_y`. */
 
+#ifdef SVTAV1_CREF_ME_STATICS
 static EbPictureBufferDesc* me_make_pic(const uint8_t* ref_alloc, uint32_t ref_org, uint16_t stride, uint16_t w,
                                         uint16_t h, uint16_t border) {
     EbPictureBufferDesc* p = (EbPictureBufferDesc*)calloc(1, sizeof(*p));
@@ -226,6 +232,7 @@ uint32_t ref_me_check_00_center(const uint8_t* b64_src, uint32_t b64_src_stride,
     free(ctx);
     return r;
 }
+#endif /* SVTAV1_CREF_ME_STATICS */
 
 /* ==========================================================================
  * av1me.c — the OBMC search, and the four C_DEFAULT kernels it drives.
@@ -268,15 +275,22 @@ DECL_OBMC(32, 16)
 DECL_OBMC(32, 32)
 #undef DECL_OBMC
 
-void svt_aom_upsampled_pred_c(MacroBlockD* xd, const struct AV1Common* const cm, int mi_row, int mi_col,
-                              const Mv* const mv, uint8_t* comp_pred, int width, int height, int subpel_x_q3,
-                              int subpel_y_q3, const uint8_t* ref, int ref_stride, int subpel_search);
 void svt_aom_convolve8_horiz_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
                                const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4, int w,
                                int h);
 void svt_aom_convolve8_vert_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
                               const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4, int w,
                               int h);
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+int svt_av1_obmc_full_pixel_search(ModeDecisionContext* ctx, IntraBcContext* x, const Mv mvp_full, int sadpb,
+                                   const AomVarianceFnPtr* fn_ptr, const Mv ref_mv, Mv* dst_mv, int is_second);
+int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcContext* x,
+                                             const struct Av1Common* const cm, int mi_row, int mi_col, Mv* bestmv,
+                                             const Mv ref_mv, int allow_hp, int error_per_bit,
+                                             const AomVarianceFnPtr* vfp, int forced_stop, int iters_per_step,
+                                             int* mvjcost, const int* mvcost[2], int* distortion, unsigned int* sse1,
+                                             int is_second, int use_accurate_subpel_search);
+#else
 int svt_av1_obmc_full_pixel_search(ModeDecisionContext* ctx, IntraBcContext* x, const Mv* mvp_full, int sadpb,
                                    const AomVarianceFnPtr* fn_ptr, const Mv* ref_mv, Mv* dst_mv, int is_second);
 int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcContext* x,
@@ -285,6 +299,7 @@ int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcCo
                                              const AomVarianceFnPtr* vfp, int forced_stop, int iters_per_step,
                                              int* mvjcost, const int* mvcost[2], int* distortion, unsigned int* sse1,
                                              int is_second, int use_accurate_subpel_search);
+#endif
 void init_fn_ptr(void);
 extern AomVarianceFnPtr svt_aom_mefn_ptr[BLOCK_SIZES_ALL];
 
@@ -341,9 +356,15 @@ unsigned int ref_obmc_kernel(int which, int width, int height, const uint8_t* pr
 void ref_upsampled_pred(uint8_t* comp_pred, int width, int height, int subpel_x_q3, int subpel_y_q3,
                         const uint8_t* ref_alloc, int ref_base, int ref_stride, int subpel_search) {
     obmc_ensure_init();
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+    /* Ghost Robot dropped the unused `mv` argument. */
+    svt_aom_upsampled_pred_c(NULL, NULL, 0, 0, comp_pred, width, height, subpel_x_q3, subpel_y_q3,
+                             ref_alloc + ref_base, ref_stride, subpel_search);
+#else
     Mv mv = {{0, 0}};
     svt_aom_upsampled_pred_c(NULL, NULL, 0, 0, &mv, comp_pred, width, height, subpel_x_q3, subpel_y_q3,
                              ref_alloc + ref_base, ref_stride, subpel_search);
+#endif
 }
 
 /* `svt_aom_convolve8_{horiz,vert}_c` do NOT take a phase index: they recover
@@ -436,7 +457,7 @@ int ref_obmc_full_pixel_search(const uint8_t* pre_alloc, int pre_base, int pre_s
     Mv mvp = {{(int16_t)mvp_x, (int16_t)mvp_y}};
     Mv rmv = {{(int16_t)ref_mv_x, (int16_t)ref_mv_y}};
     Mv dst = {{0, 0}};
-    int r  = svt_av1_obmc_full_pixel_search(mdc, &x, &mvp, sadpb, &svt_aom_mefn_ptr[bsize], &rmv, &dst, 0);
+    int r  = svt_av1_obmc_full_pixel_search(mdc, &x, ZEN_MV_ARG(mvp), sadpb, &svt_aom_mefn_ptr[bsize], ZEN_MV_ARG(rmv), &dst, 0);
     *out_x = dst.x;
     *out_y = dst.y;
     free(mdc);
@@ -469,7 +490,7 @@ unsigned int ref_obmc_sub_pixel_tree_up(const uint8_t* pre_alloc, int pre_base, 
                                                                        0,
                                                                        0,
                                                                        &best,
-                                                                       &rmv,
+                                                                       ZEN_MV_ARG(rmv),
                                                                        allow_hp,
                                                                        errorperbit,
                                                                        &svt_aom_mefn_ptr[bsize],

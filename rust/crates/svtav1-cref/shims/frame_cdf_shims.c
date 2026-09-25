@@ -26,6 +26,7 @@
  * runs a test binary's tests on several threads.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <string.h>
 

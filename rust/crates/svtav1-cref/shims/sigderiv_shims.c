@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "enc_mode_config.h"
 
 /* ---- svt_aom_get_nsq_search_level_default (enc_mode_config.c:8254) ----
@@ -978,10 +979,10 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     EbReferenceObject* ref1  = (EbReferenceObject*)calloc(1, sizeof(*ref1));
     uint8_t* minsq0 = (uint8_t*)calloc(1, sizeof(uint8_t));
     uint8_t* minsq1 = (uint8_t*)calloc(1, sizeof(uint8_t));
-    /* ppcs->variance is SvtVarType** indexed [sb_index][ME_TIER_ZERO_PU_*];
+    /* ppcs->variance is ZEN_VAR_TYPE** indexed [sb_index][ME_TIER_ZERO_PU_*];
        get_max_block_size_allintra reads [sb_index][ME_TIER_ZERO_PU_64x64]. */
-    SvtVarType*  var_row  = (SvtVarType*)calloc(MAX_ME_PU_COUNT, sizeof(SvtVarType));
-    SvtVarType** var_rows = (SvtVarType**)calloc(1, sizeof(SvtVarType*));
+    ZEN_VAR_TYPE*  var_row  = (ZEN_VAR_TYPE*)calloc(MAX_ME_PU_COUNT, sizeof(ZEN_VAR_TYPE));
+    ZEN_VAR_TYPE** var_rows = (ZEN_VAR_TYPE**)calloc(1, sizeof(ZEN_VAR_TYPE*));
 
     scs->static_config.rtc         = (bool)in[CM_I_RTC];
     scs->allintra                  = (bool)in[CM_I_ALLINTRA];
@@ -1012,7 +1013,7 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     ppcs->picture_qp           = (uint8_t)in[CM_I_PICTURE_QP];
     ppcs->r0_delta_qp_md       = (bool)in[CM_I_R0_DELTA_QP];
     ppcs->is_not_scaled        = 1;
-    var_row[ME_TIER_ZERO_PU_64x64] = (SvtVarType)in[CM_I_SB_VARIANCE];
+    var_row[ME_TIER_ZERO_PU_64x64] = (ZEN_VAR_TYPE)in[CM_I_SB_VARIANCE];
     var_rows[0]                = var_row;
     ppcs->variance             = var_rows;
     ppcs->ref_list1_count_try  = 1;

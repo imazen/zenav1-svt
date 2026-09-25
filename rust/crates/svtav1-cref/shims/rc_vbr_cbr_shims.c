@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "pcs.h"
 #include "sequence_control_set.h"
 #include "encode_context.h"
@@ -474,7 +475,10 @@ int32_t ref_rc_calc_qindex_rate_control(RefRcQpickState* st) {
     scs->passes                            = st->passes;
     scs->static_config.hierarchical_levels = (uint32_t)st->seq_hierarchical_levels;
     scs->input_resolution                  = (ResolutionRange)st->input_resolution;
-#if !SVT_HDR_MODE
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* Mainline never renamed the field; the table-index knob is live there. */
+    scs->static_config.qp_scale_compress_strength = (uint8_t)st->qp_scale_compress_strength;
+#elif !SVT_HDR_MODE
     scs->static_config.qp_scale_compress_strength_unused = (uint8_t)st->qp_scale_compress_strength;
 #endif
     scs->twopass.extend_minq       = st->extend_minq;

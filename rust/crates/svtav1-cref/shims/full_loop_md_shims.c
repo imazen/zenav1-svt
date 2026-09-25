@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "EbSvtAv1.h"
 #include "md_process.h"
@@ -48,7 +49,14 @@ int32_t ref_fl_do_md_recon(const int32_t* i) {
     scs->static_config.recon_enabled      = (bool)i[5];
     pcs->dlf_ctrls.enabled                = (uint8_t)i[6];
     pcs->cdef_search_ctrls.enabled        = (uint8_t)i[7];
+#ifdef ZEN_ORACLE_CDEF_QP_LEVEL
+    /* Ghost Robot turned use_qp_strength (bool) into qp_strength_level (enum);
+       YUV is the full-strength arm the bool's `1` meant. */
+    pcs->cdef_search_ctrls.qp_strength_level =
+        i[8] ? CDEF_QP_STRENGTH_YUV : CDEF_QP_STRENGTH_OFF;
+#else
     pcs->cdef_search_ctrls.use_qp_strength      = (uint8_t)i[8];
+#endif
     pcs->cdef_search_ctrls.use_reference_cdef_fs = (uint8_t)i[9];
     pcs->enable_restoration               = (uint8_t)i[10];
     pcs->compute_psnr                     = (bool)i[11];

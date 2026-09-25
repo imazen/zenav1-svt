@@ -32,6 +32,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "av1_structs.h"
 #include "segmentation_params.h"
@@ -128,6 +129,12 @@ uint64_t ref_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t inpu
     mi.uv_mode              = (UvPredictionMode)uv_mode;
     mi.is_interintra_used   = is_interintra_used;
     mi.interinter_comp.type = (CompoundType)compound_type;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* The mode-enum facade is a fork feature; mainline has only the raw
+       svt_spatial_full_distortion_kernel RTCD pointer. */
+    zen_oracle_missing("ref_spatial_full_distortion_kernel_facade");
+    return 0;
+#else
     return svt_spatial_full_distortion_kernel_facade(input,
                                                      input_offset,
                                                      input_stride,
@@ -142,6 +149,7 @@ uint64_t ref_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t inpu
                                                      temporal_layer_index,
                                                      ac_bias,
                                                      tx_bias);
+#endif
 }
 
 /* The 32-bit twin of the facade above: same bias layer, applied to both
@@ -161,6 +169,12 @@ void ref_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_t* r
     mi.uv_mode              = (UvPredictionMode)uv_mode;
     mi.is_interintra_used   = is_interintra_used;
     mi.interinter_comp.type = (CompoundType)compound_type;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* The mode-enum facade is a fork feature; mainline has only
+       svt_aom_picture_full_distortion32_bits_single. */
+    zen_oracle_missing("ref_picture_full_distortion32_bits_single_facade");
+    (void)out2;
+#else
     svt_aom_picture_full_distortion32_bits_single_facade(coeff,
                                                         recon_coeff,
                                                         stride,
@@ -174,7 +188,15 @@ void ref_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_t* r
                                                         is_chroma != 0,
                                                         temporal_layer_index,
                                                         ac_bias,
-                                                        tx_bias);
+                                                        tx_bias
+#ifdef ZEN_ORACLE_FACADE_QM_SCAN
+                                                        /* Ghost Robot added the qmpsnr matrix + scan args;
+                                                           NULL keeps the plain 32-bit kernel arm, identical
+                                                           to the hybrid facade. */
+                                                        , NULL, NULL
+#endif
+                                                        );
+#endif
 }
 
 /* ------------- pic_operators.c: padding / plane copy / widen ------------- */

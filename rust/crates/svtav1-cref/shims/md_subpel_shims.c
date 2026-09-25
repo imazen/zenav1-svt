@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "mv.h"
 #include "av1me.h"
@@ -130,7 +131,7 @@ int ref_fp_mv_err_cost(int mv_x, int mv_y, int ref_mv_x, int ref_mv_y, int mv_co
     ref_mv.x            = (int16_t)ref_mv_x;
     ref_mv.y            = (int16_t)ref_mv_y;
     svt_mv_cost_param p = {0};
-    p.ref_mv            = &ref_mv;
+    p.ref_mv            = ZEN_MV_ARG(ref_mv);
     p.mv_cost_type      = (MV_COST_TYPE)mv_cost_type;
     p.mvjcost           = mvjcost;
     if (mvcost_row) {
@@ -141,7 +142,13 @@ int ref_fp_mv_err_cost(int mv_x, int mv_y, int ref_mv_x, int ref_mv_y, int mv_co
         p.mvcost[1] = NULL;
     }
     p.error_per_bit = error_per_bit;
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+    /* Ghost Robot folds fp_mv_err_cost into a static INLINE in mcomp.h —
+       the exported symbol is gone, but the source path is identical. */
+    return svt_aom_fp_mv_err_cost(mv, &p);
+#else
     return svt_aom_fp_mv_err_cost(&mv, &p);
+#endif
 }
 
 /* ---- mcomp.c:599 / :683, the two EXPORTED sub-pel tree entry points ----
@@ -253,7 +260,7 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
     Mv ref_mv;
     ref_mv.x                     = (int16_t)a->ref_mv_x;
     ref_mv.y                     = (int16_t)a->ref_mv_y;
-    ms.mv_cost_params.ref_mv     = &ref_mv;
+    ms.mv_cost_params.ref_mv     = ZEN_MV_ARG(ref_mv);
     ms.mv_cost_params.mv_cost_type = (MV_COST_TYPE)a->mv_cost_type;
     ms.mv_cost_params.mvjcost      = a->mvjcost;
     if (a->mvcost_row) {
@@ -293,6 +300,21 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
     int          distortion = 0;
     unsigned int sse1       = 0;
     unsigned int r;
+#ifdef ZEN_ORACLE_SUBPEL_NO_DIST_SSE
+    /* Ghost Robot's fractional_mv_step_fp dropped the distortion/sse1 out
+       params; the oracle cannot answer them, so the shim reports a sentinel
+       and the caller's per-oracle exclude list keeps the distortion/sse
+       comparisons out of the suite. */
+    if (a->pruned) {
+        r = (unsigned int)svt_av1_find_best_sub_pixel_tree_pruned(
+            ctx, &xd, NULL, &ms, start_mv, &best_mv, (BlockSize)a->bsize);
+    } else {
+        r = (unsigned int)svt_av1_find_best_sub_pixel_tree(
+            ctx, &xd, NULL, &ms, start_mv, &best_mv, (BlockSize)a->bsize);
+    }
+    distortion = -1;
+    sse1       = 0xFFFFFFFFu;
+#else
     if (a->pruned) {
         r = (unsigned int)svt_av1_find_best_sub_pixel_tree_pruned(
             ctx, &xd, NULL, &ms, start_mv, &best_mv, &distortion, &sse1, (BlockSize)a->bsize);
@@ -300,6 +322,7 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
         r = (unsigned int)svt_av1_find_best_sub_pixel_tree(
             ctx, &xd, NULL, &ms, start_mv, &best_mv, &distortion, &sse1, (BlockSize)a->bsize);
     }
+#endif
     *a->best_mv_x  = best_mv.x;
     *a->best_mv_y  = best_mv.y;
     *a->distortion = distortion;

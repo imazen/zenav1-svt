@@ -10,6 +10,7 @@
  * `static`. Every scratch below is a local or caller-owned.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <pthread.h>
 #include <string.h>

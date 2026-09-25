@@ -12,6 +12,7 @@
  * is either on the stack or calloc/free per call.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

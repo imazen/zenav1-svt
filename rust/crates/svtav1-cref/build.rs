@@ -93,6 +93,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SVT_CREF_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SVT_CREF_SKIP_HDR");
     println!("cargo:rerun-if-env-changed=SVT_CREF_JOBS");
+    println!("cargo:rerun-if-changed=shims/zen_oracle.h");
     println!("cargo:rerun-if-changed=shims/film_grain_shims.c");
     println!("cargo:rerun-if-changed=shims/ref_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_mvp_shims.c");
@@ -196,6 +197,9 @@ fn main() {
     let rc_vbr_statics = link_globalized_rc_vbr_statics(&build_dir, &out_dir_path());
     // Same mechanism again for `enc_dec_process.c`'s two SSIM walkers.
     let enc_dec_statics = link_globalized_enc_dec_statics(&build_dir, &out_dir_path());
+    // Same mechanism for `motion_estimation.c`'s hme_level_2 / check_00_center,
+    // which ghost-robot's build inlines away entirely.
+    let me_statics = link_globalized_me_statics(&build_dir, &out_dir_path());
 
     let mut shims = cc::Build::new();
     if let Some(o) = &pinned {
@@ -214,6 +218,9 @@ fn main() {
     }
     if enc_dec_statics {
         shims.define("SVTAV1_CREF_ENC_DEC_STATICS", "1");
+    }
+    if me_statics {
+        shims.define("SVTAV1_CREF_ME_STATICS", "1");
     }
     shims
         .file(manifest.join("shims/film_grain_shims.c"))
@@ -722,6 +729,91 @@ fn link_globalized_enc_dec_statics(build_dir: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=enc_dec_statics");
     println!("cargo:rustc-cfg=enc_dec_statics");
+    true
+}
+
+/// Make `motion_estimation.c`'s `hme_level_2` and `check_00_center` linkable.
+///
+/// Same mechanism as [`link_globalized_pd_statics`]; read its doc comment for
+/// the rationale, the archive-ordering argument and the failure modes. These
+/// two are EXPORTED in the hybrid and in mainline v4.2.0 (where the verify
+/// step is a no-op), but Ghost Robot made them `static` and its Release build
+/// inlined them away completely — the object then carries no symbol to
+/// promote at all, the [`globalized_symbols_present`] check reports exactly
+/// that, `me_statics` stays off and the tier-1 `ref_me_hme_level_2` /
+/// `ref_me_check_00_center` shims do not compile. Per the no-silent-skip rule
+/// the decision is the caller's: `SVT_CREF_REQUIRE_ME_STATICS=1` makes
+/// `me_statics_oracle_is_available` fail loudly instead.
+#[must_use]
+fn link_globalized_me_statics(build_dir: &Path, out_dir: &Path) -> bool {
+    println!("cargo:rustc-check-cfg=cfg(me_statics)");
+    println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_ME_STATICS");
+
+    const SYMS: [&str; 2] = ["hme_level_2", "check_00_center"];
+
+    let src = build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/motion_estimation.c.o");
+    println!("cargo:rerun-if-changed={}", src.display());
+    if !src.exists() {
+        println!(
+            "cargo:warning=me tier-1 statics unavailable: {} not found. \
+             hme_level_2 / check_00_center stay at evidence tier 4.",
+            src.display()
+        );
+        return false;
+    }
+
+    let Some(objcopy) = find_objcopy() else {
+        println!(
+            "cargo:warning=me tier-1 statics unavailable: no llvm-objcopy found. \
+             hme_level_2 / check_00_center stay at evidence tier 4."
+        );
+        return false;
+    };
+
+    let dst = out_dir.join("motion_estimation_globalized.o");
+    if fs::copy(&src, &dst).is_err() {
+        println!("cargo:warning=me tier-1 statics unavailable: could not copy the object");
+        return false;
+    }
+    let mut cmd = Command::new(&objcopy);
+    for s in SYMS {
+        cmd.arg(format!("--globalize-symbol={s}"));
+        cmd.arg(format!("--globalize-symbol=_{s}"));
+    }
+    cmd.arg(&dst);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=me tier-1 statics unavailable: {} failed ({other:?})",
+                objcopy.display()
+            );
+            return false;
+        }
+    }
+    // objcopy exits 0 when it matches NOTHING — verify, do not infer.
+    if let Err(why) = globalized_symbols_present(&objcopy, &dst, &SYMS) {
+        println!("cargo:warning=me tier-1 statics unavailable: {why}");
+        return false;
+    }
+
+    let archive = out_dir.join("libme_statics.a");
+    let _ = fs::remove_file(&archive);
+    match Command::new("ar")
+        .arg("crs")
+        .arg(&archive)
+        .arg(&dst)
+        .status()
+    {
+        Ok(st) if st.success() => {}
+        other => {
+            println!("cargo:warning=me tier-1 statics unavailable: `ar crs` failed ({other:?})");
+            return false;
+        }
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=me_statics");
+    println!("cargo:rustc-cfg=me_statics");
     true
 }
 

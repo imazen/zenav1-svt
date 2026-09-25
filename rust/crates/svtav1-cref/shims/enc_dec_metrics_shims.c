@@ -14,6 +14,7 @@
  * functions over caller buffers, so there is none to have.
  */
 #include <stdint.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 
 #if defined(SVTAV1_CREF_ENC_DEC_STATICS)
 

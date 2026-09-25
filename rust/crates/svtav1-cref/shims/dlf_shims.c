@@ -32,6 +32,7 @@
  * halves of C's `if (enable_dlf_flag && allow_intrabc == 0)` guard.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

@@ -17,6 +17,7 @@
  */
 
 #include <stdint.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdlib.h>
 #include <string.h>
 

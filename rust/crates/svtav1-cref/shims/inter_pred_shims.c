@@ -17,6 +17,7 @@
  * (`av1_get_interp_filter_params_with_block_size`, `get_conv_params_no_round`).
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <pthread.h>
 #include <string.h>

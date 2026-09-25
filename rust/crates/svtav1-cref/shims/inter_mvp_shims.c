@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "adaptive_mv_pred.h"
 #include "EbSvtAv1.h"
@@ -46,16 +47,19 @@ static void inter_mvp_ensure_init(void) {
     }
 }
 
+#ifdef ZEN_ORACLE_REFS_IN_CTX
+void setup_ref_mv_list(PictureControlSet* pcs, const Av1Common* cm, MacroBlockD* xd,
+                       MvReferenceFrame* ref_frames, uint32_t tot_refs, BlockSize bsize,
+                       const WarpedMotionParams* gm_params, int32_t mi_row, int32_t mi_col,
+                       ModeDecisionContext* ctx, uint8_t symteric_refs, Mv* mv_ref0_base);
+#else
 void setup_ref_mv_list(PictureControlSet* pcs, const Av1Common* cm, const MacroBlockD* xd,
                        MvReferenceFrame ref_frame, uint8_t* refmv_count,
                        CandidateMv ref_mv_stack[MAX_REF_MV_STACK_SIZE], Mv* gm_mv_candidates,
                        const WarpedMotionParams* gm_params, int32_t mi_row, int32_t mi_col,
                        ModeDecisionContext* ctx, uint8_t symteric_refs, Mv* mv_ref0,
                        int16_t* mode_context);
-void svt_av1_find_best_ref_mvs_from_stack(int allow_hp,
-                                          CandidateMv ref_mv_stack[][MAX_REF_MV_STACK_SIZE],
-                                          MacroBlockD* xd, MvReferenceFrame ref_frame,
-                                          Mv* nearest_mv, Mv* near_mv, int is_integer);
+#endif
 
 /* ---- INTER MVP stack (inter campaign chunk C2, INTER-ENCODE-PLAN.md §2) ----
  *
@@ -228,6 +232,26 @@ int32_t ref_setup_ref_mv_list_inter(
     for (int i = 0; i < 64; i++) { mv_ref0[i].as_int = mv_ref0_out[i]; }
     int16_t mode_ctx = 0;
     uint8_t count    = 0;
+#ifdef ZEN_ORACLE_REFS_IN_CTX
+    MvReferenceFrame rf_list[1] = {(MvReferenceFrame)ref_frame};
+    setup_ref_mv_list(pcs,
+                      cm,
+                      &xd,
+                      rf_list,
+                      1,
+                      (BlockSize)bsize_cur,
+                      gm_params,
+                      mi_row,
+                      mi_col,
+                      ctx,
+                      (uint8_t)symmetric_refs,
+                      mv_ref0);
+    count    = xd.ref_mv_count[ref_frame];
+    memcpy(stack2d[ref_frame],
+           ctx->ref_mv_stack[ref_frame],
+           sizeof(CandidateMv) * MAX_REF_MV_STACK_SIZE);
+    mode_ctx = ctx->inter_mode_ctx[ref_frame];
+#else
     setup_ref_mv_list(pcs,
                       cm,
                       &xd,
@@ -242,6 +266,7 @@ int32_t ref_setup_ref_mv_list_inter(
                       (uint8_t)symmetric_refs,
                       mv_ref0,
                       &mode_ctx);
+#endif
     xd.ref_mv_count[ref_frame] = count;
 
     for (int i = 0; i < MAX_REF_MV_STACK_SIZE; i++) {
@@ -253,9 +278,17 @@ int32_t ref_setup_ref_mv_list_inter(
     for (int i = 0; i < 64; i++) { mv_ref0_out[i] = mv_ref0[i].as_int; }
 
     Mv nearest, near_mv;
+#ifdef ZEN_ORACLE_REFMVS_NO_HP
+    /* Ghost Robot dropped allow_hp/is_integer (always HP, never integer). */
+    (void)allow_high_precision_mv;
+    (void)force_integer_mv;
+    svt_av1_find_best_ref_mvs_from_stack(
+        stack2d, &xd, (MvReferenceFrame)ref_frame, &nearest, &near_mv);
+#else
     svt_av1_find_best_ref_mvs_from_stack(
         allow_high_precision_mv, stack2d, &xd, (MvReferenceFrame)ref_frame, &nearest, &near_mv,
         force_integer_mv);
+#endif
     *nearest_out = nearest.as_int;
     *near_out    = near_mv.as_int;
 

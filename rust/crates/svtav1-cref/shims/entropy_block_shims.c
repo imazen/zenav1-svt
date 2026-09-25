@@ -29,6 +29,7 @@
  * `static` buffer): cargo runs a test binary's tests on several threads.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -322,13 +323,22 @@ int ref_eb_get_txb_ctx(int plane, int tx_size, int plane_bsize, int aligned_widt
     PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
     PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
     NeighborArrayUnit*       na   = (NeighborArrayUnit*)calloc(1, sizeof(*na));
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    /* GR's get_txb_ctx reads pcs->scs->subsampling_x for the chroma plane. */
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(*scs));
+#endif
     /* The arrays are indexed at `blk_org >> 2`, so they must be that much
        longer than the span C reads. */
     const int top_cap  = (blk_org_x >> 2) + top_len + 64;
     const int left_cap = (blk_org_y >> 2) + left_len + 64;
     uint8_t*  top_arr  = (uint8_t*)calloc((size_t)top_cap, 1);
     uint8_t*  left_arr = (uint8_t*)calloc((size_t)left_cap, 1);
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    if (!pcs || !ppcs || !na || !top_arr || !left_arr || !scs) {
+        free(scs);
+#else
     if (!pcs || !ppcs || !na || !top_arr || !left_arr) {
+#endif
         free(pcs);
         free(ppcs);
         free(na);
@@ -342,6 +352,10 @@ int ref_eb_get_txb_ctx(int plane, int tx_size, int plane_bsize, int aligned_widt
     ppcs->aligned_width  = (uint16_t)aligned_width;
     ppcs->aligned_height = (uint16_t)aligned_height;
     pcs->ppcs            = ppcs;
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    pcs->scs             = scs;
+    scs->subsampling_x   = 1;
+#endif
     na->top_array        = top_arr;
     na->left_array       = left_arr;
     na->unit_size        = 1;
@@ -373,5 +387,8 @@ int ref_eb_get_txb_ctx(int plane, int tx_size, int plane_bsize, int aligned_widt
     free(na);
     free(ppcs);
     free(pcs);
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    free(scs);
+#endif
     return 0;
 }

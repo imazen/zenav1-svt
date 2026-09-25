@@ -109,24 +109,29 @@ typed facade setter or an explicit refusal that names it.
   `c_parity` means anything for that oracle; 4,432 moved. Against
   mainline-4.2.0: 162 changed. Still open: replace shim copies that exist only
   to reach a `static` with `#include` of the owning `.c` file.
-- [ ] 2.2 `svtav1-cref` builds against any registry oracle
-  (`SVT_ORACLE`), so `c_parity_*` runs per target.
-  - Done (this change): `build.rs` honours `SVT_ORACLE=<pinned oracle>`.
-    It builds the oracle through `tools/oracle` (new `builddir` command),
-    compiles the shims against that oracle's headers with its `driver_defs`,
-    links its library, and globalizes statics from its build tree. Live
-    oracles and the default are unchanged.
-  - Open: the shims themselves do not compile yet against `ghost-robot` or
-    `mainline-4.2.0`; so far every error is in `ref_shims.c`, about 20
-    distinct ones per oracle. Ghost Robot changes: `Mv` passed by value
-    (`mv_err_cost`, `full_pixel_search`, `intrabc_hash_search`,
-    `set_mv_search_range`), `is_dv_valid` gained an argument,
-    `svt_psy_distortion` changed kind, `SvtVarType` removed and the variance
-    buffers retyped. mainline-4.2.0 lacks the fork config fields and
-    `svt_spatial_full_distortion_kernel_facade`. Bridge them with
-    `driver_defs` macros, as the capture driver does. Fork-only oracles
-    must be selected by the caller (a per-oracle test list), never skipped
-    inside a test.
+- [x] 2.2 `svtav1-cref` builds against any registry oracle
+  (`SVT_ORACLE`), so `c_parity_*` runs per target. — completed in change ruwlyskl
+  - `build.rs` honours `SVT_ORACLE=<pinned oracle>`: builds the oracle
+    through `tools/oracle` (new `builddir` command), compiles the shims
+    against its headers with its `driver_defs`, links its library, and
+    globalizes statics from its build tree. Live oracles and the default
+    are unchanged.
+  - Every shim now compiles AND LINKS under all three oracles, bridged by
+    registry `ZEN_ORACLE_*` driver_defs consumed through the shared
+    `shims/zen_oracle.h` (the same mechanism `wrap_recon.c` uses). Macros
+    added: `MV_BY_VALUE`, `DV_CHROMA_SS`, `PSY_DIST_RTCD`,
+    `REFMVS_NO_HP`, `FACADE_QM_SCAN`, `CDEF_QP_LEVEL`, `VARIANCE_T`,
+    `REFS_IN_CTX`, `EC_PARENT`, `INIT_SCAN`, `MAINLINE_API`.
+  - Features an oracle lacks abort loudly via `zen_oracle_missing()`; the
+    caller selects them out via `oracles/excludes/<name>.txt` (fed to
+    nextest `-E` by `just cparity-oracle ORACLE`). No test body skips.
+  - Ghost Robot's build inlines `hme_level_2`/`check_00_center` entirely —
+    no symbols to globalize; `me_statics` cfg covers the gap and the Rust
+    wrappers return `None` through `me_statics_oracle_is_available()`.
+  - Measured 2026-09-25 (`benchmarks/cref_oracles_2026-09-25.meta`):
+    hybrid-3115 875/875, mainline-4.2.0 867/867 (8 fork-feature tests
+    excluded), ghost-robot 830/875 with 45 genuine divergences — the port
+    targets hybrid today, so GR mismatches are expected and NOT excluded.
 - [x] 2.3 (this change) Wrap-fired check in `capture_c_trace`: report every `--wrap`
   interposer that never fired on a cell known to reach it.
   - `SVT_WRAP_REPORT=1|<file>` prints a fire count for all 47 interposers

@@ -176,3 +176,21 @@ pins-update:
 # Check the port-output pins (the refactoring safety net).
 pins:
     cargo nextest run -p zenav1-svt --locked -E 'test(/output_pins/)'
+
+# C-parity suite against a NAMED oracle (hybrid-3115, mainline-4.2.0,
+# ghost-robot — see oracles/oracles.tsv). Per-oracle tests of features the
+# oracle lacks are excluded by the CALLER via oracles/excludes/<name>.txt;
+# tests never skip themselves.
+cparity-oracle ORACLE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    filt='(binary(/c_parity/) | test(/c_parity/))'
+    excl="oracles/excludes/{{ORACLE}}.txt"
+    if [ -f "$excl" ]; then
+        while IFS= read -r t; do
+            case "$t" in ''|'#'*) continue ;; esac
+            filt="$filt & not test(/^${t}$/)"
+        done < "$excl"
+    fi
+    SVT_ORACLE={{ORACLE}} CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/tmp/target-{{ORACLE}}}" \
+        cargo nextest run --no-fail-fast -p zenav1-svt-encoder -p zenav1-svt-dsp -E "$filt"

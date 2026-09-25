@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "EbSvtAv1.h"
 #include "md_process.h"
@@ -203,7 +204,11 @@ void svt_pme_sad_loop_kernel_c(const svt_mv_cost_param* mv_cost_params, uint8_t*
                                int16_t search_position_start_x, int16_t search_position_start_y,
                                int16_t search_area_width, int16_t search_area_height, int16_t search_step,
                                int16_t mvx, int16_t mvy);
+#ifndef ZEN_ORACLE_MV_BY_VALUE
+/* Ghost Robot folds fp_mv_err_cost into a static INLINE in mcomp.h (already
+   included). */
 int  svt_aom_fp_mv_err_cost(const Mv* mv, const svt_mv_cost_param* mv_cost_params);
+#endif
 int  svt_aom_get_sad_per_bit(int qidx, EbBitDepth is_hbd);
 void svt_av1_init_me_luts(void);
 
@@ -219,7 +224,7 @@ int32_t ref_md_fp_mv_err_cost(int32_t mv_x, int32_t mv_y, int32_t ref_x, int32_t
     memset(&p, 0, sizeof(p));
     ref_mv.x        = (int16_t)ref_x;
     ref_mv.y        = (int16_t)ref_y;
-    p.ref_mv        = &ref_mv;
+    p.ref_mv        = ZEN_MV_ARG(ref_mv);
     p.mv_cost_type  = (MV_COST_TYPE)mv_cost_type;
     p.error_per_bit = error_per_bit;
     if (use_tables) {
@@ -234,7 +239,7 @@ int32_t ref_md_fp_mv_err_cost(int32_t mv_x, int32_t mv_y, int32_t ref_x, int32_t
     Mv mv;
     mv.x = (int16_t)mv_x;
     mv.y = (int16_t)mv_y;
-    return svt_aom_fp_mv_err_cost(&mv, &p);
+    return svt_aom_fp_mv_err_cost(ZEN_MV_ARG(mv), &p);
 }
 
 /* NOTE: the second parameter is DECLARED `EbBitDepth` but USED as a
@@ -260,8 +265,8 @@ void ref_md_pme_sad_loop_kernel(int32_t ref_x, int32_t ref_y, int32_t mv_cost_ty
     memset(&p, 0, sizeof(p));
     ref_mv.x        = (int16_t)ref_x;
     ref_mv.y        = (int16_t)ref_y;
-    p.ref_mv        = &ref_mv;
-    p.full_ref_mv   = get_fullmv_from_mv(&ref_mv);
+    p.ref_mv        = ZEN_MV_ARG(ref_mv);
+    p.full_ref_mv   = get_fullmv_from_mv(ZEN_MV_ARG(ref_mv));
     p.mv_cost_type  = (MV_COST_TYPE)mv_cost_type;
     p.error_per_bit = error_per_bit;
     if (use_tables) {

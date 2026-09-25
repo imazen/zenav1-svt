@@ -106,6 +106,7 @@ unsafe extern "C" {
         sa_h: i16,
     );
     fn ref_me_get_scaled_picture_distance(dist: u16) -> u16;
+    #[cfg(me_statics)]
     #[allow(clippy::too_many_arguments)]
     fn ref_me_hme_level_2(
         b64_src: *const u8,
@@ -128,6 +129,7 @@ unsafe extern "C" {
         sc_x: *mut i16,
         sc_y: *mut i16,
     );
+    #[cfg(me_statics)]
     #[allow(clippy::too_many_arguments)]
     fn ref_me_check_00_center(
         b64_src: *const u8,
@@ -386,8 +388,39 @@ pub fn get_scaled_picture_distance(dist: u16) -> u16 {
     unsafe { ref_me_get_scaled_picture_distance(dist) }
 }
 
+/// Whether `build.rs` could link `motion_estimation.c`'s `hme_level_2` /
+/// `check_00_center` on this host and oracle. They are exported in the
+/// hybrid and in mainline v4.2.0; Ghost Robot made them `static` and its
+/// Release build inlined them away entirely, so there they are evidence
+/// tier 4.
+///
+/// The SKIP DECISION BELONGS TO THE CALLER (the project's no-silent-skip
+/// rule): set `SVT_CREF_REQUIRE_ME_STATICS=1` and
+/// [`me_statics_oracle_is_available`] fails loudly instead.
+pub const ME_STATICS_AVAILABLE: bool = cfg!(me_statics);
+
+/// Fail loudly when the caller demanded the tier-1 oracle and the host
+/// cannot provide it.
+///
+/// # Panics
+/// When `SVT_CREF_REQUIRE_ME_STATICS` is set to a non-empty, non-`0` value
+/// and the symbols could not be linked.
+pub fn me_statics_oracle_is_available() -> bool {
+    if !ME_STATICS_AVAILABLE {
+        let required = std::env::var("SVT_CREF_REQUIRE_ME_STATICS")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
+        assert!(
+            !required,
+            "SVT_CREF_REQUIRE_ME_STATICS is set but build.rs could not link              motion_estimation.c's hme_level_2 / check_00_center — see its              cargo:warning."
+        );
+    }
+    ME_STATICS_AVAILABLE
+}
+
 /// C `hme_level_2` (motion_estimation.c:971). `ref_alloc` is the whole padded
 /// allocation and `ref_org` the index of pixel (0,0) inside it.
+/// `None` when the oracle cannot supply the symbol on this host.
 #[allow(clippy::too_many_arguments)]
 pub fn hme_level_2(
     b64_src: &[u8],
@@ -406,10 +439,11 @@ pub fn hme_level_2(
     sa_height: i16,
     l1x: i16,
     l1y: i16,
-) -> SadLoopOut {
+) -> Option<SadLoopOut> {
     let mut best_sad = 0u64;
     let mut x = 0i16;
     let mut y = 0i16;
+    #[cfg(me_statics)]
     unsafe {
         ref_me_hme_level_2(
             b64_src.as_ptr(),
@@ -433,11 +467,19 @@ pub fn hme_level_2(
             &mut y,
         );
     }
-    (best_sad, x, y)
+    #[cfg(me_statics)]
+    {
+        Some((best_sad, x, y))
+    }
+    #[cfg(not(me_statics))]
+    {
+        None
+    }
 }
 
 /// C `check_00_center` (motion_estimation.c:1060). Returns
-/// `(hme_mv_sad, x_search_center, y_search_center)`.
+/// `(hme_mv_sad, x_search_center, y_search_center)` or `None` when the
+/// oracle cannot supply the symbol on this host.
 #[allow(clippy::too_many_arguments)]
 pub fn check_00_center(
     b64_src: &[u8],
@@ -455,9 +497,10 @@ pub fn check_00_center(
     x_sc: i16,
     y_sc: i16,
     zz_sad: u32,
-) -> (u32, i16, i16) {
+) -> Option<(u32, i16, i16)> {
     let mut x = x_sc;
     let mut y = y_sc;
+    #[cfg(me_statics)]
     let r = unsafe {
         ref_me_check_00_center(
             b64_src.as_ptr(),
@@ -477,7 +520,14 @@ pub fn check_00_center(
             zz_sad,
         )
     };
-    (r, x, y)
+    #[cfg(me_statics)]
+    {
+        Some((r, x, y))
+    }
+    #[cfg(not(me_statics))]
+    {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

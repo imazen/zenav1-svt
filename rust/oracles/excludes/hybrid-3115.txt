@@ -1,0 +1,3 @@
+# Tests excluded from `just cparity-oracle hybrid-3115`: none. The default
+# oracle must stay byte-for-byte green; excluding a failure here hides a
+# regression.

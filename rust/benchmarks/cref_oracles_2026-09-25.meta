@@ -1,0 +1,119 @@
+PLAN 2.2 — C-PARITY SHIMS RUN AGAINST ALL THREE REGISTERED ORACLES.
+Measured after the ZEN_ORACLE_* bridging landed; every shim compiles and
+links under hybrid-3115, mainline-4.2.0 and ghost-robot.
+
+date:   2026-09-25
+host:   i265 (x86_64 Linux 7.0.0-34-generic), gcc, lld
+cmd:    SVT_ORACLE=<oracle> CARGO_TARGET_DIR=$HOME/tmp/target-<o> \
+        cargo nextest run --no-fail-fast -p zenav1-svt-encoder \
+        -p zenav1-svt-dsp -E 'binary(/c_parity/) | test(/c_parity/)'
+        (under run-heavy --mem 8G --jobs 6; 875 tests selected per oracle)
+
+==================== RESULTS ====================
+
+  oracle            pass   fail   crashes   classification
+  hybrid-3115       875    0      0         (default; green by definition)
+  mainline-4.2.0    867    8       0         8 = feature-absent (SIGABRT via
+                                            zen_oracle_missing); with the
+                                            caller exclude list applied:
+                                            867/867 PASS, 0 fail
+  ghost-robot       830    45      0         45 = genuine divergence (port
+                                            targets hybrid; Ghost Robot is
+                                            217 commits past v4.2.0).
+                                            830 includes 2 tests that
+                                            early-returned (me_statics
+                                            symbols inlined away) — the GR
+                                            exclude file removes them:
+                                            828 compared-and-passed.
+
+==================== mainline-4.2.0 — FEATURE-ABSENT (excluded by caller) ====
+
+All 8 abort through zen_oracle_missing(): the symbol does not exist in
+mainline v4.2.0. Listed in oracles/excludes/mainline-4.2.0.txt; the recipe
+`just cparity-oracle <name>` feeds them to nextest `-E`. The test bodies
+never skip.
+
+  c_parity_dist_facade::spatial_facade_matches_c_over_every_mode_pair
+  c_parity_dist_facade::full_distortion32_facade_matches_c_over_every_mode_pair
+  c_parity_noise_gen::noise_table_matches_c
+  c_parity_noise_norm::noise_norm_matches_c
+  c_parity_rc_process::compute_rd_mult_and_fast_lambda_match_c
+  c_parity_src_ops::get_perceptual_perpixel_variance_matches_c
+  c_parity_src_ops::get_mean_and_perpixel_variance_matches_c
+  c_parity_tx_bias::facade_matches_c_for_intra_modes
+
+==================== ghost-robot — GENUINE DIVERGENCE (45) ==================
+
+Fork APIs all exist under Ghost Robot; these mismatch its post-v4.2.0
+semantics. NOT excluded — they are the work plan 2.2 exists to measure.
+
+  c_parity_cdef_search_ctrls::cdef_search_level_and_controls_match_c_allintra_arm
+  c_parity_cdef_search_ctrls::cdef_search_level_and_controls_match_c_video_arm
+  c_parity_dist_facade::full_distortion32_facade_matches_c_over_every_mode_pair
+  c_parity_dlf_ctrls::dlf_ctrls_call_site_guards_match_c
+  c_parity_dlf_ctrls::dlf_ctrls_default_ladder_matches_c
+  c_parity_dlf_ctrls::dlf_ctrls_default_modulation_matches_c
+  c_parity_inter_mvp::c_parity_setup_ref_mv_list_inter
+  c_parity_intrabc_search::c_parity_diamond_search
+  c_parity_md_pme::fp_mv_err_cost_matches_c_across_every_cost_type
+  c_parity_md_pme::pme_sad_loop_kernel_matches_c
+  c_parity_md_subpel::fp_mv_err_cost_matches_c
+  c_parity_md_subpel::pruned_tree_matches_c_across_mv_cost_types
+  c_parity_md_subpel::pruned_tree_matches_c_across_the_knobs
+  c_parity_md_subpel::pruned_tree_matches_c_on_bias_fp_and_limits
+  c_parity_md_subpel::pruned_tree_matches_c_on_early_exits
+  c_parity_md_subpel::pruned_tree_writes_the_same_fp_me_dist_as_c
+  c_parity_md_subpel::randomised_sweep_matches_c
+  c_parity_md_subpel::the_search_actually_searches
+  c_parity_md_subpel::unpruned_tree_matches_c_across_the_knobs
+  c_parity_md_subpel::unpruned_tree_matches_c_across_mv_cost_types_and_bias
+  c_parity_md_subpel::unpruned_tree_matches_c_on_the_mvp_th_arm
+  c_parity_noise_gen::noise_table_matches_c
+  c_parity_port_enc_make_pred::masked_warp_derives_its_own_subsampling
+  c_parity_rc_vbr_cbr_qpick::calc_qindex_rate_control_matches_c
+  c_parity_rd_cost::intra_fast_cost_intrabc_matches_c
+  c_parity_rd_cost::intra_fast_cost_matches_c
+  c_parity_rd_cost::intra_uv_fast_rate_matches_c
+  c_parity_sig_deriv_common::common_matches_c_over_the_arm_and_flag_product
+  c_parity_sig_deriv_common::depth_removal_reference_adjustment_matches_c
+  c_parity_sig_deriv_common::lpd1_ctrls_table_matches_c_at_every_level
+  c_parity_sig_deriv_common::lpd1_ctrls_writes_only_the_rows_below_its_level
+  c_parity_sig_deriv_common::lpd1_level_derivation_matches_c
+  c_parity_sig_deriv_common::max_block_size_arms_match_c
+  c_parity_sig_deriv_leaf::is_ref_same_size_matches_c
+  c_parity_sig_deriv_leaf::is_ref_same_size_positive_control
+  c_parity_sig_deriv_leaf::nsq_geom_levels_match_c
+  c_parity_sig_deriv_leaf::nsq_levels_treat_invalid_coeff_lvl_as_normal
+  c_parity_sig_deriv_leaf::nsq_search_level_default_matches_c
+  c_parity_sig_deriv_md_config::md_config_matches_c_over_the_preset_and_layer_product
+  c_parity_sig_deriv_md_config::md_config_qp_and_flag_gates_match_c
+  c_parity_sig_deriv_md_config::md_config_r0_and_lpd1_gates_match_c
+  c_parity_sig_deriv_md_config::md_config_reference_gates_match_c
+  c_parity_sig_deriv_md_config::md_config_sequence_gates_match_c
+  c_parity_sig_deriv_me::sig_deriv_me_matches_c
+  c_parity_sig_deriv_multi_processes::multi_processes_hbd_md_matches_c
+
+==================== SHIM BUGS FIXED BY THIS MEASUREMENT ====================
+
+12 SIGSEGVs in the first ghost-robot run were shim-harness gaps, now closed
+(final run: 0 crashes):
+  * ZEN_ORACLE_INIT_SCAN — GR fills eb_av1_scan_orders at runtime via
+    svt_aom_init_iscan(); a __attribute__((constructor)) in zen_oracle.h runs
+    it at load time (hybrid/mainline tables are const).
+  * ZEN_ORACLE_REFS_IN_CTX — GR rewrote setup_ref_mv_list into an all-refs
+    form writing ctx->ref_mv_stack / xd->ref_mv_count / ctx->inter_mode_ctx.
+  * ZEN_ORACLE_EC_PARENT — GR's OdEcEnc borrows its buffer through
+    OutputBitstreamUnit (end/buffer_parent); a hand-malloc'd buffer without
+    them drops every byte and enc_done returns NULL.
+  * pcs->scs wiring — GR reads pcs->scs->subsampling_x (is_dv_valid chroma
+    guard) where hybrid reads pcs->ppcs->scs.
+  * me_statics — GR's Release build fully inlines hme_level_2 /
+    check_00_center; build.rs tries the usual statics promotion, it fails
+    (no symbols at all), the cfg stays off and the Rust wrappers return
+    None. 4 tests early-return via me_statics_oracle_is_available();
+    SVT_CREF_REQUIRE_ME_STATICS=1 makes it loud.
+
+Gates (default hybrid oracle, this commit):
+  cargo nextest run --workspace --locked --test-threads 4 : 2771/2771 PASS
+  tools/regression_spotcheck.sh                          : 147/147
+  python3 tools/file_size_check.py                       : all <= 3000 lines

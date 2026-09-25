@@ -20,6 +20,7 @@
  * threads and a file-scope buffer would race.
  */
 #include <stddef.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

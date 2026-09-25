@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "definitions.h"
 #include "rc_process.h"
 
@@ -304,7 +305,12 @@ static void ref_lambda_fill(const RefLambdaCtx* c, PictureControlSet** out_pcs, 
     ppcs->frm_hdr.quantization_params.base_q_idx        = c->base_q_idx;
     ppcs->frm_hdr.delta_q_params.delta_q_present        = (uint8_t)c->delta_q_present;
     ppcs->r0_delta_qp_md                                = (bool)c->r0_delta_qp_md;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* alt_lambda_factors is a fork knob: mainline cannot honour it. */
+    if (c->alt_lambda_factors) { zen_oracle_missing("ref_lambda alt_lambda_factors"); }
+#else
     scs->static_config.alt_lambda_factors               = (bool)c->alt_lambda_factors;
+#endif
     scs->static_config.rtc                              = (bool)c->rtc;
     scs->stats_based_sb_lambda_modulation               = (bool)c->stats_based_sb_lambda_modulation;
     for (int i = 0; i < SVT_AV1_FRAME_UPDATE_TYPES; ++i) {

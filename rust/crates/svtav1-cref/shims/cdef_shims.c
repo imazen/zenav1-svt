@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include "enc_mode_config.h"
 
 enum {
@@ -101,7 +102,12 @@ static void cds_read_out(PictureParentControlSet* pcs, int64_t* out) {
     out[CDS_O_BEST_REF_FS]     = c->search_best_ref_fs;
     out[CDS_O_SKIP_TH]         = c->skip_th;
     out[CDS_O_UV_FROM_Y]       = c->uv_from_y;
+#ifdef ZEN_ORACLE_CDEF_QP_LEVEL
+    /* Ghost Robot: qp_strength_level enum; OFF maps to the bool's 0. */
+    out[CDS_O_USE_QP_STRENGTH] = c->qp_strength_level != CDEF_QP_STRENGTH_OFF;
+#else
     out[CDS_O_USE_QP_STRENGTH] = c->use_qp_strength;
+#endif
     out[CDS_O_ALLOW_INTRABC]   = pcs->frm_hdr.allow_intrabc;
     out[CDS_O_PALETTE_LEVEL]   = pcs->palette_level;
     for (i = 0; i < CDS_ARR; i++) {

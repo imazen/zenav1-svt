@@ -51,6 +51,7 @@
  * choice instead of being ambiguous.
  */
 #include <stdint.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <string.h>
 
 #include "definitions.h"

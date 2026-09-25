@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
 #include <stdlib.h>
 #include <string.h>
 
@@ -385,9 +386,12 @@ void ref_pre_is_screen_content(uint8_t* y_buf, uint32_t y_origin, uint32_t y_str
  * ---------------------------------------------------------------------- */
 
 unsigned int svt_aom_get_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
+#ifndef ZEN_ORACLE_MAINLINE_API
+/* Fork additions to src_ops_process.c — absent from mainline v4.2.0. */
 void         svt_aom_get_mean_and_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size,
                                                     uint32_t* perpixel_var, uint32_t* mean);
 unsigned int svt_aom_get_perceptual_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
+#endif
 
 uint32_t ref_sops_get_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size) {
     sc_ensure_fn_ptr();
@@ -396,13 +400,30 @@ uint32_t ref_sops_get_perpixel_variance(const uint8_t* buf, uint32_t stride, int
 
 void ref_sops_get_mean_and_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size,
                                              uint32_t* perpixel_var, uint32_t* mean) {
+#ifdef ZEN_ORACLE_MAINLINE_API
+    (void)buf;
+    (void)stride;
+    (void)block_size;
+    (void)perpixel_var;
+    (void)mean;
+    zen_oracle_missing("svt_aom_get_mean_and_perpixel_variance");
+#else
     sc_ensure_fn_ptr();
     svt_aom_get_mean_and_perpixel_variance(buf, stride, block_size, perpixel_var, mean);
+#endif
 }
 
 uint32_t ref_sops_get_perceptual_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size) {
+#ifdef ZEN_ORACLE_MAINLINE_API
+    (void)buf;
+    (void)stride;
+    (void)block_size;
+    zen_oracle_missing("svt_aom_get_perceptual_perpixel_variance");
+    return 0;
+#else
     sc_ensure_fn_ptr();
     return svt_aom_get_perceptual_perpixel_variance(buf, stride, block_size);
+#endif
 }
 
 /* ------------------------------------------------------------------------

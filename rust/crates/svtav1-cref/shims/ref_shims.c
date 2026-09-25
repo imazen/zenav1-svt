@@ -43,6 +43,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "zen_oracle.h" /* per-oracle API bridges (oracles.tsv driver_defs) */
+
 #include "bitstream_unit.h"
 #include "cabac_context_model.h"
 
@@ -55,11 +57,32 @@ size_t ref_od_ec_enc_alignof(void) { return _Alignof(OdEcEnc); }
    owns a fixed generous buffer so the Rust API stays capacity-based. */
 #define REF_EC_BUF_CAP (1u << 20)
 
+#ifdef ZEN_ORACLE_EC_PARENT
+/* Ghost Robot's encoder borrows its buffer: `end` guards every write and
+   `buffer_parent` is required for capacity checks (a NULL parent drops every
+   byte and makes enc_done return NULL). Wrap the shim's malloc'd buffer in
+   an OutputBitstreamUnit with the same capacity. */
+static void zen_ec_wire_buf(OdEcEnc* e, unsigned char* buf, uint32_t cap, OutputBitstreamUnit* parent) {
+    memset(parent, 0, sizeof(*parent));
+    parent->buffer_begin_av1 = buf;
+    parent->buffer_av1       = buf;
+    parent->size             = cap;
+    e->buffer_parent         = parent;
+    e->end                   = buf + cap;
+}
+#endif
+
 void ref_od_ec_enc_init(void* enc, uint32_t size) {
     OdEcEnc* e = (OdEcEnc*)enc;
     (void)size;
     svt_od_ec_enc_init(e);
     e->buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+#ifdef ZEN_ORACLE_EC_PARENT
+    /* Owned until ref_od_ec_enc_clear — the Rust caller reuses the encoder
+       across done()/reset() rounds. */
+    OutputBitstreamUnit* parent = (OutputBitstreamUnit*)malloc(sizeof(*parent));
+    zen_ec_wire_buf(e, e->buf, REF_EC_BUF_CAP, parent);
+#endif
     svt_od_ec_enc_reset(e);
 }
 void ref_od_ec_enc_reset(void* enc) { svt_od_ec_enc_reset((OdEcEnc*)enc); }
@@ -67,6 +90,17 @@ void ref_od_ec_enc_clear(void* enc) {
     /* v4.2 removed the clear() declaration (buffer is borrowed); the shim
        owns the buffer, so free it and null the pointers directly. */
     OdEcEnc* e = (OdEcEnc*)enc;
+#ifdef ZEN_ORACLE_EC_PARENT
+    if (e->buffer_parent) {
+        free(e->buffer_parent->buffer_begin_av1);
+        free(e->buffer_parent);
+        e->buffer_parent = NULL;
+        e->buf           = NULL;
+        e->ptr           = NULL;
+        e->end           = NULL;
+        return;
+    }
+#endif
     free(e->buf);
     e->buf = NULL;
     e->ptr = NULL;
@@ -225,6 +259,10 @@ uint32_t ref_encode_mv_seq(const int32_t* mv_y, const int32_t* mv_x, const int32
     svt_od_ec_enc_init(&w.ec);
     w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
     svt_od_ec_enc_reset(&w.ec);
+#ifdef ZEN_ORACLE_EC_PARENT
+    OutputBitstreamUnit ec_unit;
+    zen_ec_wire_buf(&w.ec, w.ec.buf, REF_EC_BUF_CAP, &ec_unit);
+#endif
 
     for (int32_t k = 0; k < n; ++k) {
         int32_t           diff[2] = {mv_y[k] - ref_y[k], mv_x[k] - ref_x[k]};
@@ -245,7 +283,11 @@ uint32_t ref_encode_mv_seq(const int32_t* mv_y, const int32_t* mv_x, const int32
         uint32_t copyn = nbytes < cap ? nbytes : cap;
         memcpy(out, p, copyn);
     }
+#ifdef ZEN_ORACLE_EC_PARENT
+    free(ec_unit.buffer_begin_av1);
+#else
     free(w.ec.buf);
+#endif
     return nbytes;
 }
 
@@ -1066,6 +1108,10 @@ uint32_t ref_write_refsubexpfin_bytes(uint16_t n, uint16_t k, uint16_t ref, uint
     svt_od_ec_enc_init(&w.ec);
     w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
     svt_od_ec_enc_reset(&w.ec);
+#ifdef ZEN_ORACLE_EC_PARENT
+    OutputBitstreamUnit ec_unit;
+    zen_ec_wire_buf(&w.ec, w.ec.buf, REF_EC_BUF_CAP, &ec_unit);
+#endif
     svt_aom_write_primitive_refsubexpfin(&w, n, k, ref, v);
     uint32_t       nbytes;
     const uint8_t* p = svt_od_ec_enc_done(&w.ec, &nbytes);
@@ -1073,7 +1119,11 @@ uint32_t ref_write_refsubexpfin_bytes(uint16_t n, uint16_t k, uint16_t ref, uint
         nbytes = cap;
     }
     memcpy(out, p, nbytes);
+#ifdef ZEN_ORACLE_EC_PARENT
+    free(ec_unit.buffer_begin_av1);
+#else
     free(w.ec.buf);
+#endif
     return nbytes;
 }
 
@@ -1102,6 +1152,10 @@ uint32_t ref_write_sgrproj_filter_bytes(int32_t ep, const int32_t* xqd, const in
     svt_od_ec_enc_init(&w.ec);
     w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
     svt_od_ec_enc_reset(&w.ec);
+#ifdef ZEN_ORACLE_EC_PARENT
+    OutputBitstreamUnit ec_unit;
+    zen_ec_wire_buf(&w.ec, w.ec.buf, REF_EC_BUF_CAP, &ec_unit);
+#endif
 
     aom_write_literal(&w, ep, SGRPROJ_PARAMS_BITS);
     const SgrParamsType* params = &svt_aom_eb_sgr_params[ep];
@@ -1136,7 +1190,11 @@ uint32_t ref_write_sgrproj_filter_bytes(int32_t ep, const int32_t* xqd, const in
         nbytes = cap;
     }
     memcpy(out, p, nbytes);
+#ifdef ZEN_ORACLE_EC_PARENT
+    free(ec_unit.buffer_begin_av1);
+#else
     free(w.ec.buf);
+#endif
     return nbytes;
 }
 
@@ -1574,7 +1632,9 @@ uint64_t ref_spatial_full_distortion_ssim(uint8_t* input, uint32_t input_offset,
    header, so struct layout/ABI is the library's own. */
 #include "EbSvtAv1Enc.h"
 
+#ifndef ZEN_ORACLE_MAINLINE_API
 EbErrorType svt_av1_generate_noise_table(EbSvtAv1EncConfiguration* config);
+#endif
 
 /* out layout (all int32): apply_grain, num_y_points, y[14][2],
    chroma_scaling_from_luma, num_cb, cb[10][2], num_cr, cr[10][2],
@@ -1590,13 +1650,22 @@ int32_t ref_generate_noise_table(uint32_t width, uint32_t height, uint32_t noise
     memset(&cfg, 0, sizeof(cfg));
     cfg.source_width           = width;
     cfg.source_height          = height;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* Photon-noise film grain is a fork feature: no noise_* config fields,
+       no svt_av1_generate_noise_table. */
+    zen_oracle_missing("ref_generate_noise_table");
+#else
     cfg.noise_strength         = noise_strength;
     cfg.noise_strength_chroma  = noise_strength_chroma;
     cfg.noise_chroma_from_luma = (uint8_t)noise_chroma_from_luma;
     cfg.noise_size             = (int8_t)noise_size;
     cfg.color_range_provided   = color_range_provided;
+#endif
     cfg.color_range            = (EbColorRange)color_range;
     cfg.avif                   = (bool)avif;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    return -1;
+#else
     if (svt_av1_generate_noise_table(&cfg) != EB_ErrorNone || !cfg.fgs_table) {
         return -1;
     }
@@ -1627,6 +1696,7 @@ int32_t ref_generate_noise_table(uint32_t width, uint32_t height, uint32_t noise
     *o++ = fg->clip_to_restricted_range;
     free(fg);
     return (int32_t)(o - out);
+#endif /* ZEN_ORACLE_MAINLINE_API */
 }
 
 /* ---- QM quantize kernels (full_loop.c QM branches) ----
@@ -1677,8 +1747,13 @@ uint16_t ref_quantize_fp_qm(const int32_t* coeff, intptr_t n_coeffs, const int16
    svt_psy_distortion calls svt_aom_hadamard_{4x4,8x8}/svt_aom_satd through
    the aom_dsp RTCD dispatch table, which is NULL until setup — wrap with
    the init-once guard. */
+#ifdef ZEN_ORACLE_PSY_DIST_RTCD
+/* Ghost Robot: svt_psy_distortion is an RTCD pointer, already declared by
+   common_dsp_rtcd.h — a prototype here would be a conflicting redecl. */
+#else
 uint64_t svt_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
                             uint32_t width, uint32_t height);
+#endif
 
 uint64_t ref_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
                             uint32_t width, uint32_t height) {
@@ -1708,6 +1783,12 @@ uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const u
     }
     BlockModeInfo bmi;
     memset(&bmi, 0, sizeof(bmi));
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* The mode-enum facade is a fork feature; mainline has only the raw
+       svt_spatial_full_distortion_kernel RTCD pointer. */
+    zen_oracle_missing("ref_spatial_facade");
+    return 0;
+#else
     bmi.mode                 = (PredictionMode)mode;
     bmi.uv_mode              = (UvPredictionMode)uv_mode;
     bmi.is_interintra_used   = is_interintra;
@@ -1715,6 +1796,7 @@ uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const u
     return svt_spatial_full_distortion_kernel_facade((uint8_t*)input, 0, input_stride, (uint8_t*)recon, 0,
                                                      recon_stride, width, height, false, &bmi, is_chroma != 0,
                                                      temporal_layer_index, ac_bias, tx_bias);
+#endif
 }
 
 /* ---- fork noise normalization (full_loop.c, SVT_HDR_MODE feature) ----
@@ -1724,9 +1806,11 @@ uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const u
    Build the minimal struct chain and forward. */
 #include "pcs.h"
 #include "transforms.h"
+#ifndef ZEN_ORACLE_MAINLINE_API
 void svt_av1_perform_noise_normalization(MacroblockPlane* p, QuantParam* qparam, TranLow* coeff_ptr,
                                          TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, TxSize tx_size, TxType tx_type,
                                          uint16_t* eob, PictureControlSet* pcs);
+#endif
 
 void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac, const int32_t* coeff,
                              int32_t* qcoeff, int32_t* dqcoeff, uint16_t* eob, int32_t tx_size, int32_t tx_type,
@@ -1743,9 +1827,15 @@ void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac,
     p.dequant_qtx                              = dequant;
     qp.iqmatrix                                = NULL;
     nn_pcs->scs                               = nn_scs;
+#ifdef ZEN_ORACLE_MAINLINE_API
+    /* Noise normalization is a fork feature: no noise_norm_strength field,
+       no svt_av1_perform_noise_normalization. */
+    zen_oracle_missing("ref_noise_normalization");
+#else
     nn_scs->static_config.noise_norm_strength = strength;
     svt_av1_perform_noise_normalization(
         &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, nn_pcs);
+#endif
     free(nn_pcs);
     free(nn_scs);
 }
@@ -1866,7 +1956,8 @@ int32_t ref_is_dv_valid(int16_t dv_x, int16_t dv_y, int32_t mi_row, int32_t mi_c
     Mv dv;
     dv.x = dv_x;
     dv.y = dv_y;
-    return svt_aom_is_dv_valid(dv, &xd, mi_row, mi_col, (BlockSize)bsize, mib_size_log2);
+    return svt_aom_is_dv_valid(
+        dv, &xd, mi_row, mi_col, (BlockSize)bsize, mib_size_log2 ZEN_DV_CHROMA_SS_ARG);
 }
 
 /* svt_aom_find_ref_dv (inter_prediction.c:2390, EXPORTED). Reads only
@@ -1944,13 +2035,11 @@ void ref_estimate_mv_rate(int32_t approx_inter_rate, int32_t allow_intrabc,
 }
 
 /* svt_av1_mv_bit_cost / svt_aom_mv_err_cost (+ _light) — EXPORTED; direct
- * wrappers assembling the Mv values and the mvcost[2] mid-table pointers. */
-int32_t svt_av1_mv_bit_cost(const Mv* mv, const Mv* ref, const int32_t* mvjcost,
-                            const int32_t* const mvcost[2], int32_t weight);
-int32_t svt_av1_mv_bit_cost_light(const Mv* mv, const Mv* ref);
-int     svt_aom_mv_err_cost(const Mv* mv, const Mv* ref, const int* mvjcost, const int* mvcost[2],
-                            int error_per_bit);
-int     svt_aom_mv_err_cost_light(const Mv* mv, const Mv* ref);
+ * wrappers assembling the Mv values and the mvcost[2] mid-table pointers.
+ * Declared by the oracle's own rd_cost.h / av1me.h (Mv-by-value under
+ * ZEN_ORACLE_MV_BY_VALUE). */
+#include "rd_cost.h"
+#include "av1me.h"
 
 int32_t ref_mv_bit_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y,
                         const int32_t* mvjcost, const int32_t* mvcost0_full,
@@ -1961,7 +2050,7 @@ int32_t ref_mv_bit_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y
     rf.x = ref_x;
     rf.y = ref_y;
     const int32_t* stack[2] = {mvcost0_full + MV_MAX, mvcost1_full + MV_MAX};
-    return svt_av1_mv_bit_cost(&mv, &rf, mvjcost, stack, weight);
+    return svt_av1_mv_bit_cost(ZEN_MV_ARG(mv), ZEN_MV_ARG(rf), mvjcost, stack, weight);
 }
 
 int32_t ref_mv_bit_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y) {
@@ -1970,7 +2059,7 @@ int32_t ref_mv_bit_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t
     mv.y = mv_y;
     rf.x = ref_x;
     rf.y = ref_y;
-    return svt_av1_mv_bit_cost_light(&mv, &rf);
+    return svt_av1_mv_bit_cost_light(ZEN_MV_ARG(mv), ZEN_MV_ARG(rf));
 }
 
 int32_t ref_mv_err_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y,
@@ -1982,7 +2071,7 @@ int32_t ref_mv_err_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y
     rf.x = ref_x;
     rf.y = ref_y;
     const int* stack[2] = {(const int*)(mvcost0_full + MV_MAX), (const int*)(mvcost1_full + MV_MAX)};
-    return svt_aom_mv_err_cost(&mv, &rf, (const int*)mvjcost, stack, error_per_bit);
+    return svt_aom_mv_err_cost(ZEN_MV_ARG(mv), ZEN_MV_ARG(rf), (const int*)mvjcost, stack, error_per_bit);
 }
 
 int32_t ref_mv_err_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y) {
@@ -1991,7 +2080,7 @@ int32_t ref_mv_err_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t
     mv.y = mv_y;
     rf.x = ref_x;
     rf.y = ref_y;
-    return svt_aom_mv_err_cost_light(&mv, &rf);
+    return svt_aom_mv_err_cost_light(ZEN_MV_ARG(mv), ZEN_MV_ARG(rf));
 }
 
 /* svt_aom_estimate_syntax_rate (md_rate_estimation.c:74, EXPORTED) — the
@@ -2272,7 +2361,7 @@ void ref_full_pixel_search(const uint8_t* pic, int32_t stride, int32_t x_pos, in
     mvp_full.y = ref_mv.y >> 3;
     x.best_mv.as_int = 0;
     (void)svt_av1_full_pixel_search(pcs, &x, (BlockSize)bsize, &mvp_full, 0, sad_per_bit, NULL,
-                                    &ref_mv);
+                                    ZEN_MV_ARG(ref_mv));
     *out_x = x.best_mv.x;
     *out_y = x.best_mv.y;
     free(pcs);
@@ -2300,6 +2389,12 @@ int32_t ref_intrabc_hash_search(const uint8_t* pic, int32_t stride, int32_t x_po
     pcs->ppcs                     = ppcs;
     ppcs->scs                     = scs;
     scs->seq_header.sb_size_log2  = sb_size_log2;
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    /* Ghost Robot's hash search reads pcs->scs->subsampling_x for the
+       is_dv_valid chroma guard — the 4:2.0 the port supports. */
+    pcs->scs                      = scs;
+    scs->subsampling_x            = 1;
+#endif
     ppcs->intrabc_ctrls.max_block_size_hash = (uint8_t)max_block_size_hash;
     pcs->hash_table               = *(HashTable*)hash_table;
 
@@ -2325,7 +2420,7 @@ int32_t ref_intrabc_hash_search(const uint8_t* pic, int32_t stride, int32_t x_po
     int best_hash_cost = INT_MAX;
     Mv  best_hash_mv;
     best_hash_mv.as_int = 0;
-    svt_av1_intrabc_hash_search(pcs, &x, (BlockSize)bsize, x_pos, y_pos, &ref_mv, 1,
+    svt_av1_intrabc_hash_search(pcs, &x, (BlockSize)bsize, x_pos, y_pos, ZEN_MV_ARG(ref_mv), 1,
                                 &svt_aom_mefn_ptr[bsize], &best_hash_cost, &best_hash_mv);
     *out_x = best_hash_mv.x;
     *out_y = best_hash_mv.y;
@@ -2370,6 +2465,10 @@ int32_t ref_intra_bc_search_driver(
     pcs->ppcs                     = ppcs;
     ppcs->scs                     = scs;
     scs->seq_header.sb_size_log2  = sb_size_log2;
+#ifdef ZEN_ORACLE_DV_CHROMA_SS
+    pcs->scs                      = scs; /* GR reads pcs->scs, not ppcs->scs */
+    scs->subsampling_x            = 1;    /* 4:2.0 — see ref_intrabc_hash_search */
+#endif
     scs->seq_header.sb_mi_size    = sb_mi_size;
     ppcs->intrabc_ctrls.max_block_size_hash           = (uint8_t)max_block_size_hash;
     ppcs->intrabc_ctrls.exhaustive_mesh_thresh        = exhaustive_mesh_thresh;
@@ -2454,7 +2553,7 @@ int32_t ref_intra_bc_search_driver(
             break;
         }
 
-        svt_av1_set_mv_search_range(&x->mv_limits, &dv_ref);
+        svt_av1_set_mv_search_range(&x->mv_limits, ZEN_MV_ARG(dv_ref));
 
         if (x->mv_limits.col_max < x->mv_limits.col_min ||
             x->mv_limits.row_max < x->mv_limits.row_min) {
@@ -2473,7 +2572,7 @@ int32_t ref_intra_bc_search_driver(
         best_hash_mv.as_int = 0;
 
         if (hash_table_or_null) {
-            svt_av1_intrabc_hash_search(pcs, x, (BlockSize)bsize, x_pos, y_pos, &dv_ref, 1,
+            svt_av1_intrabc_hash_search(pcs, x, (BlockSize)bsize, x_pos, y_pos, ZEN_MV_ARG(dv_ref), 1,
                                         fn_ptr, &best_hash_cost, &best_hash_mv);
         }
 
@@ -2487,12 +2586,12 @@ int32_t ref_intra_bc_search_driver(
             x->best_mv = best_hash_mv;
         } else {
             svt_av1_full_pixel_search(pcs, x, (BlockSize)bsize, &mvp_full, 0, x->sadperbit16,
-                                      NULL, &dv_ref);
+                                      NULL, ZEN_MV_ARG(dv_ref));
             Mv dv;
             dv.x = x->best_mv.x * 8;
             dv.y = x->best_mv.y * 8;
             if (!shim_mv_check_bounds(&x->mv_limits, &dv) &&
-                svt_aom_is_dv_valid(dv, &xd, mi_row, mi_col, (BlockSize)bsize, sb_size_log2)) {
+                svt_aom_is_dv_valid(dv, &xd, mi_row, mi_col, (BlockSize)bsize, sb_size_log2 ZEN_DV_CHROMA_SS_ARG)) {
                 out_dv[num_dv_cand * 2]     = dv.x;
                 out_dv[num_dv_cand * 2 + 1] = dv.y;
                 num_dv_cand++;
@@ -2532,17 +2631,19 @@ int32_t ref_intra_bc_search_driver(
 #include "av1_common.h" /* Av1Common */
 #include "md_process.h" /* ModeDecisionContext */
 
+#ifdef ZEN_ORACLE_REFS_IN_CTX
+void setup_ref_mv_list(PictureControlSet* pcs, const Av1Common* cm, MacroBlockD* xd,
+                       MvReferenceFrame* ref_frames, uint32_t tot_refs, BlockSize bsize,
+                       const WarpedMotionParams* gm_params, int32_t mi_row, int32_t mi_col,
+                       ModeDecisionContext* ctx, uint8_t symteric_refs, Mv* mv_ref0_base);
+#else
 void setup_ref_mv_list(PictureControlSet* pcs, const Av1Common* cm, const MacroBlockD* xd,
                        MvReferenceFrame ref_frame, uint8_t* refmv_count,
                        CandidateMv ref_mv_stack[MAX_REF_MV_STACK_SIZE], Mv* gm_mv_candidates,
                        const WarpedMotionParams* gm_params, int32_t mi_row, int32_t mi_col,
                        ModeDecisionContext* ctx, uint8_t symteric_refs, Mv* mv_ref0,
                        int16_t* mode_context);
-void svt_av1_find_best_ref_mvs_from_stack(int allow_hp,
-                                          CandidateMv ref_mv_stack[][MAX_REF_MV_STACK_SIZE],
-                                          MacroBlockD* xd, MvReferenceFrame ref_frame,
-                                          Mv* nearest_mv, Mv* near_mv, int is_integer);
-
+#endif
 int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int32_t grid_cols,
                                     int32_t mi_row, int32_t mi_col, int32_t bsize_cur,
                                     int32_t mi_rows, int32_t mi_cols, int32_t tile_row_start,
@@ -2633,6 +2734,17 @@ int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int
     int16_t mode_ctx = 0;
 
     uint8_t count = 0;
+#ifdef ZEN_ORACLE_REFS_IN_CTX
+    /* Ghost Robot's all-refs form writes ctx->ref_mv_stack /
+       xd->ref_mv_count / ctx->inter_mode_ctx and takes bsize explicitly;
+       gm_mv is folded into the per-ref build. */
+    MvReferenceFrame rf_list[1] = {INTRA_FRAME};
+    setup_ref_mv_list(
+        pcs, cm, &xd, rf_list, 1, (BlockSize)bsize_cur, gm_params, mi_row, mi_col, ctx, 0, mv_ref0);
+    count    = xd.ref_mv_count[INTRA_FRAME];
+    memcpy(stack2d, ctx->ref_mv_stack, sizeof(stack2d));
+    mode_ctx = ctx->inter_mode_ctx[INTRA_FRAME];
+#else
     setup_ref_mv_list(pcs,
                       cm,
                       &xd,
@@ -2647,6 +2759,7 @@ int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int
                       0,
                       mv_ref0,
                       &mode_ctx);
+#endif
     xd.ref_mv_count[INTRA_FRAME] = count;
 
     for (int i = 0; i < MAX_REF_MV_STACK_SIZE; i++) {
@@ -2656,7 +2769,11 @@ int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int
     *mode_ctx_out = mode_ctx;
 
     Mv nearest, near_mv;
+    #ifdef ZEN_ORACLE_REFMVS_NO_HP
+    svt_av1_find_best_ref_mvs_from_stack(stack2d, &xd, INTRA_FRAME, &nearest, &near_mv);
+#else
     svt_av1_find_best_ref_mvs_from_stack(0, stack2d, &xd, INTRA_FRAME, &nearest, &near_mv, 0);
+#endif
     *nearest_out = nearest.as_int;
     *near_out    = near_mv.as_int;
 
@@ -2833,7 +2950,7 @@ void ref_calculate_segmentation_data(const int16_t* feature_enabled_flat, uint8_
 /* svt_aom_setup_segmentation (segmentation.c:228), non-ROI arm. Drives
  * find_segment_qps + calculate_segmentation_data end to end.
  *
- * `variance` is b64_total_count rows of `block_count` SvtVarType samples
+ * `variance` is b64_total_count rows of `block_count` ZEN_VAR_TYPE samples
  * (the shape pcs.c:1280 allocates). Outputs the whole SegmentationParams the
  * C call produced. */
 void ref_setup_segmentation(uint8_t aq_mode, const uint16_t* variance, uint32_t b64_total_count,
@@ -2844,10 +2961,10 @@ void ref_setup_segmentation(uint8_t aq_mode, const uint16_t* variance, uint32_t 
     PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
     PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
     SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
-    SvtVarType**             var  = (SvtVarType**)calloc(b64_total_count, sizeof(SvtVarType*));
+    ZEN_VAR_TYPE**             var  = (ZEN_VAR_TYPE**)calloc(b64_total_count, sizeof(ZEN_VAR_TYPE*));
     for (uint32_t i = 0; i < b64_total_count; ++i) {
-        var[i] = (SvtVarType*)calloc(block_count, sizeof(SvtVarType));
-        for (uint32_t j = 0; j < block_count; ++j) { var[i][j] = (SvtVarType)variance[i * block_count + j]; }
+        var[i] = (ZEN_VAR_TYPE*)calloc(block_count, sizeof(ZEN_VAR_TYPE));
+        for (uint32_t j = 0; j < block_count; ++j) { var[i][j] = (ZEN_VAR_TYPE)variance[i * block_count + j]; }
     }
     pcs->ppcs                  = ppcs;
     pcs->scs                   = scs;
@@ -2898,12 +3015,12 @@ uint8_t ref_apply_segmentation_based_quantization(const int16_t* variance_bin_ed
     PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
     SuperBlock*              sb   = (SuperBlock*)calloc(1, sizeof(SuperBlock));
     BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(BlkStruct));
-    SvtVarType**             var  = (SvtVarType**)calloc(b64_total_count, sizeof(SvtVarType*));
-    SvtVarType* backing = (SvtVarType*)calloc((size_t)b64_total_count * block_count, sizeof(SvtVarType));
+    ZEN_VAR_TYPE**             var  = (ZEN_VAR_TYPE**)calloc(b64_total_count, sizeof(ZEN_VAR_TYPE*));
+    ZEN_VAR_TYPE* backing = (ZEN_VAR_TYPE*)calloc((size_t)b64_total_count * block_count, sizeof(ZEN_VAR_TYPE));
     for (uint32_t i = 0; i < b64_total_count; ++i) {
         var[i] = backing + (size_t)i * block_count;
         for (uint32_t j = 0; j < block_count; ++j) {
-            var[i][j] = (SvtVarType)variance[(size_t)i * block_count + j];
+            var[i][j] = (ZEN_VAR_TYPE)variance[(size_t)i * block_count + j];
         }
     }
 
@@ -3069,6 +3186,10 @@ uint32_t ref_write_segment_id(uint8_t* seg_map, int32_t mi_cols, int32_t mi_rows
     svt_od_ec_enc_init(&w.ec);
     w.ec.buf         = ec_buf;
     svt_od_ec_enc_reset(&w.ec);
+#ifdef ZEN_ORACLE_EC_PARENT
+    OutputBitstreamUnit ec_unit;
+    zen_ec_wire_buf(&w.ec, ec_buf, 1 << 16, &ec_unit);
+#endif
     w.allow_update_cdf = 1;
 
     write_segment_id(pcs,
@@ -3087,7 +3208,11 @@ uint32_t ref_write_segment_id(uint8_t* seg_map, int32_t mi_cols, int32_t mi_rows
     memcpy(out_cdf, g_fc.seg.spatial_pred_seg_cdf, sizeof(g_fc.seg.spatial_pred_seg_cdf));
     *out_segment_id = pcs->mip[mi_row * mi_cols + mi_col].segment_id;
 
+#ifdef ZEN_ORACLE_EC_PARENT
+    free(ec_unit.buffer_begin_av1);
+#else
     free(ec_buf);
+#endif
     free(pcs->mi_grid_base);
     free(pcs->mip);
     free(blk);
@@ -3125,15 +3250,22 @@ void   ref_fc_copy_spatial_pred_seg_cdf(uint16_t* dst) {
  * entropy_coding.c:5227/5235/5242) — so both knobs are exposed here rather
  * than a pre-derived precision int.
  */
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+void svt_av1_encode_mv(PictureParentControlSet* pcs, AomWriter* ec_writer, const Mv mv, const Mv ref,
+                       NmvContext* mvctx, int32_t usehp);
+/* rd_cost.h (included above) already declares svt_av1_get_mv_joint as a
+   static INLINE taking Mv by value. */
+#else
 void svt_av1_encode_mv(PictureParentControlSet* pcs, AomWriter* ec_writer, const Mv* mv, const Mv* ref,
                        NmvContext* mvctx, int32_t usehp);
 MvJointType svt_av1_get_mv_joint(const Mv* mv);
+#endif
 
 int32_t ref_get_mv_joint(int16_t mv_x, int16_t mv_y) {
     Mv m;
     m.x = mv_x;
     m.y = mv_y;
-    return (int32_t)svt_av1_get_mv_joint(&m);
+    return (int32_t)svt_av1_get_mv_joint(ZEN_MV_ARG(m));
 }
 
 uint32_t ref_encode_mv_real_seq(const int16_t* mv_x, const int16_t* mv_y, const int16_t* ref_x,
@@ -3159,6 +3291,10 @@ uint32_t ref_encode_mv_real_seq(const int16_t* mv_x, const int16_t* mv_y, const 
     svt_od_ec_enc_init(&w.ec);
     w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
     svt_od_ec_enc_reset(&w.ec);
+#ifdef ZEN_ORACLE_EC_PARENT
+    OutputBitstreamUnit ec_unit;
+    zen_ec_wire_buf(&w.ec, w.ec.buf, REF_EC_BUF_CAP, &ec_unit);
+#endif
 
     for (int32_t k = 0; k < n; ++k) {
         Mv mv, rf;
@@ -3166,7 +3302,7 @@ uint32_t ref_encode_mv_real_seq(const int16_t* mv_x, const int16_t* mv_y, const 
         mv.y = mv_y[k];
         rf.x = ref_x[k];
         rf.y = ref_y[k];
-        svt_av1_encode_mv(ppcs, &w, &mv, &rf, &fc->nmvc, allow_high_precision_mv);
+        svt_av1_encode_mv(ppcs, &w, ZEN_MV_ARG(mv), ZEN_MV_ARG(rf), &fc->nmvc, allow_high_precision_mv);
     }
 
     uint32_t       nbytes = 0;
@@ -3177,7 +3313,11 @@ uint32_t ref_encode_mv_real_seq(const int16_t* mv_x, const int16_t* mv_y, const 
     }
     if (nmvc_out)
         memcpy(nmvc_out, &fc->nmvc, sizeof(NmvContext));
+#ifdef ZEN_ORACLE_EC_PARENT
+    free(ec_unit.buffer_begin_av1);
+#else
     free(w.ec.buf);
+#endif
     free(fc);
     free(ppcs);
     return nbytes;
