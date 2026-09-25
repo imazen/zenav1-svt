@@ -7358,10 +7358,12 @@ impl EncodePipeline {
                         // Resolved into planes HERE rather than inside the
                         // closure because the closure also borrows `self`
                         // through `true_width`/`true_height`.
+                        let mut slot_pics = [0u64; 7];
                         let slot_planes: [Option<crate::port_global_me::GmPlane<'_>>; 7] =
                             core::array::from_fn(|i| {
                                 let slot = pic_decision.as_ref()?.rps.ref_dpb_index[i] as usize;
                                 let pa = self.pa_slots.get(slot)?.as_ref()?;
+                                slot_pics[i] = pa.picture_number;
                                 Some(crate::port_global_me::GmPlane {
                                     buf: &pa.full.buf[pa.full.org..],
                                     stride: pa.full.stride,
@@ -7369,6 +7371,14 @@ impl EncodePipeline {
                                     height: self.true_height,
                                 })
                             });
+                        if crate::dbgenv::gmdbg() {
+                            eprintln!(
+                                "GMSLOTS poc={display_order} ref_dpb={:?} pics={:?} pa_ref={:?}",
+                                pic_decision.as_ref().map(|p| p.rps.ref_dpb_index),
+                                slot_pics,
+                                self.pa_ref.as_ref().map(|p| p.picture_number)
+                            );
+                        }
                         let mut sink = |a: core::fmt::Arguments<'_>| {
                             if crate::dbgenv::gmdbg() {
                                 eprintln!("GMSEARCH poc={display_order} {a}");
@@ -7381,22 +7391,32 @@ impl EncodePipeline {
                             &geom,
                             src_plane,
                             &|l, r| {
-                                // The nearest reference is `pa_ref` itself,
-                                // which is always present and is what the
-                                // single-reference path has always used; the
-                                // rest come from the DPB-keyed slots, which
-                                // are populated only at the presets where
-                                // `gm_level` is non-zero.
+                                // Every (list, ref) resolves through the
+                                // DPB table first: `ref_pa_pic_ptr_array`
+                                // names the picture the RPS chose, which is
+                                // NOT `pa_ref` once hierarchical reference
+                                // selection puts an older frame in the
+                                // nearest list-0 slot (measured 2026-09-25:
+                                // LD+hl3 poc3's list0 ref0 is a DIFFERENT
+                                // picture than the previous frame — warping
+                                // pa_ref computed pic_sad 1072640 where C's
+                                // own dump reads 1879552, rejecting a
+                                // translation model C accepts).
                                 //
-                                // Under random access (`decided.is_some()`)
-                                // `pa_ref` is the last CODED frame, not the
-                                // last DISPLAY one — (0,0) must resolve
-                                // through the slot like every other ref.
-                                if l == 0 && r == 0 && !decided_is_some {
-                                    return Some(ref_plane);
-                                }
+                                // `pa_ref` remains the (0,0) fallback for
+                                // the flat single-reference path, whose
+                                // slots are populated only at the presets
+                                // where `gm_level` is non-zero.
                                 let idx = if l == 0 { r } else { 4 + r };
-                                slot_planes.get(idx).copied().flatten()
+                                slot_planes
+                                    .get(idx)
+                                    .copied()
+                                    .flatten()
+                                    .or(if l == 0 && r == 0 && !decided_is_some {
+                                        Some(ref_plane)
+                                    } else {
+                                        None
+                                    })
                             },
                             // C's `allow_high_precision_mv` argument is
                             // `pcs->frm_hdr.allow_high_precision_mv`

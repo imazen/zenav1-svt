@@ -1835,6 +1835,64 @@ byte "research-sb128-asym-neighbors" gradient 512 512 48 -1 8
 # C540B. After native-depth errorperbit:540B /18355 ops exact (vlsuktxv).
 byte "native10-ibc-vector-lambda" screen 256 256 48 -1 10
 
+# ---------------------------------------------------------------------------
+# 2026-09-25 — hierarchical LD + GM: the (list0, ref0) reference plane for
+# `svt_aom_global_motion_estimation`'s search was resolved to `pa_ref` (the
+# PREVIOUS frame) instead of `ref_pa_pic_ptr_array[0][0]`, which under a
+# hierarchical ref structure is a DIFFERENT picture. On the scroll cell C
+# warps a far ref (pic_sad 1879552) and accepts its translation model while
+# the port warped the near one (pic_sad 1072640) and rejected the same fit —
+# `wmtype=1` on C, `wmtype=0` on the port, plus a `identiy_exit` cascade that
+# skipped list1 entirely. Byte-parity here also guards the AUTO hierarchical
+# resolution (SVTAV1_HIER_LEVELS unset on both sides -> hl3) and the mds0
+# level-1 arm, since M4 non-base is where all three live.
+scroll_yuv() { # <w> <h> <frames> <shift> <path>: 8-bit I420, texture scrolled
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import sys
+w, h, n, sh, p = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+out = bytearray()
+for f in range(n):
+    y = bytearray(w * h)
+    for r in range(h):
+        for c in range(w):
+            src = max(0, c - f * sh)
+            y[r * w + c] = ((src * 3) ^ ((r * 5) & 0x3F)) & 0x7F
+    out += y + bytes([128]) * (w * h // 2)
+open(p, "wb").write(out)
+PY
+}
+# byteLdHier <label> <content> <w> <h> <qp> <preset> <frames>
+# UNSET hierarchical_levels on both sides — the port's AUTO sentinel and the
+# C driver's untouched config both resolve to 3 under low delay — and assert
+# the whole multi-frame stream is byte-identical to C's.
+byteLdHier() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 n=$7
+  rm -f "$W/rs.obu" "$W/c.obu"
+  local rc=0
+  env -u SVTAV1_HIER_LEVELS SVTAV1_FRAMES=$n SVTAV1_INTRA_PERIOD=64 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
+  if grep -q "panicked at" "$W/err"; then
+    fail=$((fail+1)); failed+=("$label PANICKED: $(grep -m1 'panicked at' "$W/err" | sed 's/.*panicked at //')"); return
+  fi
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); failed+=("$label [port failed to encode $n frames, rc=$rc]"); return
+  fi
+  if ! env -u SVT_HIER_LEVELS SVT_FRAMES=$n SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  if cmp -s "$W/c.obu" "$W/rs.obu"; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1))
+    failed+=("$label [stream: C=$(wc -c <"$W/c.obu"|tr -d ' ')B port=$(wc -c <"$W/rs.obu"|tr -d ' ')B]")
+  fi
+}
+scroll_yuv 256 256 5 3 "$W/scroll_256.yuv"
+byteLdHier "gm-ref-plane-hier-ld-auto-p4" "rawseq:$W/scroll_256.yuv" 256 256 40 4 5
+byteLdHier "gm-ref-plane-hier-ld-auto-p5" "rawseq:$W/scroll_256.yuv" 256 256 40 5 5
+
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

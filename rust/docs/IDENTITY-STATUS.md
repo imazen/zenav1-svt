@@ -89,14 +89,15 @@ Measured vs C, unset `SVTAV1_HIER_LEVELS` on both sides, 256² qp40:
   key, two hidden coded pictures, shown, `show_existing`, shown,
   `show_existing`. p0/p2/p3: 7/7 headers identical, 1–2-byte payload
   diffs — the non-base inter-MD envelope below, not emission.
-- **Low delay (unset → hl 3, CBR-side hl 2)**: byte-identical at p5,
-  p6 (qp 20/40/55) and p13; divergent 2–50 bytes at p0/p2/p3/p8/p10 —
-  non-base inter-MD arms that hier > 0 now exercises by default; same
-  envelope family as the carried "inter-MD ladder diverges at p0" item.
-  p4 adds a `wmtype` global-motion header diff (port detects
-  translation where C finds none) — GM-detection family, also carried.
-  Explicit `SVTAV1_HIER_LEVELS=0` still yields the old flat stream
-  (verified identical to C flat at p10).
+- **Low delay (unset → hl 3, CBR-side hl 2)**: byte-identical at p0,
+  p3, p4, p5, p6 (qp 20/40/55) and p13; divergent payloads at
+  p2/p8/p10 — non-base inter-MD arms that hier > 0 now exercises by
+  default; same envelope family as the carried "inter-MD ladder
+  diverges at p0" item. The p0/p3/p4 fixes came from resolving GM's
+  `(list, ref)` reference planes through `ref_dpb_index` rather than
+  the nearest `pa_ref` — C's `ref_pa_pic_ptr_array` names an older
+  picture under hierarchical LD. Explicit `SVTAV1_HIER_LEVELS=0` still
+  yields the old flat stream (verified identical to C flat at p10).
 
 Note the asymmetry the AUTO change intentionally removes: an
 unset-vs-unset cell comparison now means the same configuration on
