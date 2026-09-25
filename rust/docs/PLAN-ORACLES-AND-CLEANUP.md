@@ -62,7 +62,7 @@ It was done when:
   `enable_qmpsnr`, `luminance_qp_bias`, `hbd_mds`. Plus a typed facade
   builder (`AvifEncoder::with_fork(ForkConfig)`) exposing the fork knobs by
   their C names, instead of the raw `EncodePipeline.hdr` field.
-- [ ] 1.3 `EncodingPolicy::SvtParity(GhostRobot)` resolves fork defaults
+- [x] 1.3 (`893f6823`) `EncodingPolicy::SvtParity(GhostRobot)` resolves fork defaults
   exactly as Ghost Robot's `svt_av1_set_default_params` does.
 - [ ] 1.4 Narrow the facade (S9):
   - re-export only the types its own signatures use;
