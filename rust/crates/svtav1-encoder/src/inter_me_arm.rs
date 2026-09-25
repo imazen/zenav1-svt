@@ -849,7 +849,7 @@ pub fn run_frame_me_into(
                 let rpoc =
                     |li: usize, ri: usize| refs.arr[li][ri].map_or(-1, |d| d.picture_number as i64);
                 eprintln!(
-                    "MEDBG poc={} b64={bi} org=({ox},{oy}) l0sad={} l0mv=({},{}) l1sad={} l1mv=({},{}) n={n} c=[{cs}] mvarr0=({},{}) mvarrl1=({},{}) refpoc=({},{}) ns={:?} md={}",
+                    "MEDBG poc={} b64={bi} org=({ox},{oy}) l0sad={} l0mv=({},{}) l1sad={} l1mv=({},{}) n={n} c=[{cs}] mvarr0=({},{}) mvarrl1=({},{}) refpoc=({},{}) ns={:?} md={} mev={}",
                     pic.picture_number,
                     me.p_sb_best_sad[0][0][0],
                     p(l0),
@@ -865,6 +865,7 @@ pub fn run_frame_me_into(
                     rpoc(1, 0),
                     me.num_of_ref_pic_to_search,
                     out_b64.me_64x64_distortion,
+                    out_b64.me_8x8_cost_variance,
                 );
             }
         }
