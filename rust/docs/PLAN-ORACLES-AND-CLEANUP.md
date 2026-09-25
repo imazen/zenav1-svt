@@ -75,16 +75,21 @@ typed facade setter or an explicit refusal that names it.
 
 ## Phase 2 — oracle hygiene (before any parity work on a new pin)
 
-- [ ] 2.1 Shim citation check: every C body copied into
-  `svtav1-cref/shims` records a hash of its cited source range; the check
-  fails when the pinned oracle's text differs. Where a copy exists only to
-  reach a `static`, replace it with `#include` of the owning `.c` file.
+- [x] 2.1 (this change) Shim and source citation check: `tools/citations.py check
+  --to <oracle>` fingerprints every cited C span in the base oracle and
+  classifies it in the target: same, moved, ambig, changed, unresolved.
+  Measured hybrid-3115 -> ghost-robot: 7,386 citations; 903 changed (12%),
+  42 of them in `svtav1-cref/shims`, which are the copies to refresh before
+  `c_parity` means anything for that oracle; 4,432 moved. Against
+  mainline-4.2.0: 162 changed. Still open: replace shim copies that exist only
+  to reach a `static` with `#include` of the owning `.c` file.
 - [ ] 2.2 `svtav1-cref` builds against any registry oracle
   (`SVT_ORACLE`), so `c_parity_*` runs per target.
 - [ ] 2.3 Wrap-fired check in `capture_c_trace`: report every `--wrap`
   interposer that never fired on a cell known to reach it.
-- [ ] 2.4 Citation remap tool: rewrite `file.c:NNN` in Rust source
-  between two pins, using a `git diff -U0` line map.
+- [x] 2.4 (this change) Citation remap: `tools/citations.py remap --to <oracle>`
+  rewrites `moved` citations in place. Run it in the same change that bumps
+  or retires a pin, not before.
 - [ ] 2.5 Mirror the pinned Ghost Robot commit into `imazen/zenav1-svt-c`.
   This needs the repo owner, because it writes outside this repo.
 

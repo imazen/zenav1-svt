@@ -80,10 +80,11 @@ directory, so an old build can never answer for a new pin.
    not depend on the oracle, so it must not move.
 3. Re-run every gate that names that oracle. Record the new pass counts in
    the gate headers, with the date and host.
-4. Refresh the C copies in `svtav1-cref/shims` whose cited source changed.
-   The shim-citation check lists them; it is still a planned tool, see the
-   plan's phase 2.
-5. Remap `file.c:NNN` citations in Rust source (planned tool, same phase).
+4. `tools/citations.py check --base <old> --to <new> --tsv out.tsv`. Its
+   `changed` rows are the Rust functions and the shim copies whose C moved
+   on: refresh the shim copies, and review the Rust arms against the new C.
+5. `tools/citations.py remap --base <old> --to <new>` rewrites the `moved`
+   line numbers; review the diff.
 
 The fork rebases each release. Its tags reuse mainline names (`v4.2.0`
 points at the fork's own release), so pin by **commit**, never by branch or
