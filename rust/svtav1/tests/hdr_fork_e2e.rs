@@ -254,8 +254,10 @@ fn tune_policies_are_live_in_fork_mode() {
     // Fork --tune (default 1 = PSNR): every non-default tune must change
     // bytes vs PSNR through its still-reachable policy set — SSIM rdmult
     // scaling (2/3/4), chroma boosts (2/3), IQ lambda weight + still QM
-    // curve (3/4), LF sharpness ladders (0/3/4/5).
-    for tune in [0u8, 2, 3, 4, 5] {
+    // curve (3/4), LF sharpness ladders (0/3/4/6). Film grain is 6, as C
+    // numbers it (5 is VMAF, not ported and refused); until 2026-09-25 the
+    // port numbered film grain 5 and this loop said so.
+    for tune in [0u8, 2, 3, 4, svtav1_encoder::tune::TUNE_FILM_GRAIN] {
         let mut flipped = 0;
         for (preset, qp) in [(2u8, 20u8), (6, 40), (6, 55)] {
             let mut on = HdrForkConfig::hdr_fork();

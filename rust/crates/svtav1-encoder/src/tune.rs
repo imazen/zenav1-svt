@@ -19,17 +19,21 @@
 //! NOT modeled (documented): tune=SSIM/IQ `tune_ssim_level` LVL_3 is
 //! `!I_SLICE`-gated in C — never reachable on stills (alt_ssim_tuning's
 //! LVL_1 is, and is ported separately); TUNE_VQ's `vq_ctrls` sharpness
-//! machinery is video-focused (PORT-NOTE below); TUNE_VMAF is
-//! mainline-v4.2-only (the fork replaces slot 5 with FILM_GRAIN).
+//! machinery is video-focused (PORT-NOTE below); TUNE_VMAF (unsharp
+//! pre-processing) is not ported and is refused.
 
-/// Fork tune values (definitions.h:1919, fork enum — slot 5 is
-/// FILM_GRAIN in the fork; mainline v4.2's slot 5 is VMAF, not modeled).
+/// `--tune` values, numbered as every C oracle numbers them: pristine v4.2.0
+/// stops at VMAF = 5; the hybrid (`definitions.h:1883-1884`, "renumbered 5->6,
+/// mainline owns 5") and Ghost Robot (`definitions.h:1871-1872`) add
+/// FILM_GRAIN = 6. The port numbered FILM_GRAIN 5 until 2026-09-25, which made
+/// one raw `SVT_FORK_TUNE` value mean VMAF to C and film grain to Rust.
 pub const TUNE_VQ: u8 = 0;
 pub const TUNE_PSNR: u8 = 1;
 pub const TUNE_SSIM: u8 = 2;
 pub const TUNE_IQ: u8 = 3;
 pub const TUNE_MS_SSIM: u8 = 4;
-pub const TUNE_FILM_GRAIN: u8 = 5;
+pub const TUNE_VMAF: u8 = 5;
+pub const TUNE_FILM_GRAIN: u8 = 6;
 
 /// C `--tune` selector for the still/allintra path (`enc_handle.c`,
 /// `definitions.h:1919`), as a typed enum so the public builder does not

@@ -58,8 +58,10 @@ pub struct HdrForkConfig {
     pub alt_lambda_factors: bool,
     /// Alternative SSIM tuning (SB-normalized rdmult scaling).
     pub alt_ssim_tuning: bool,
-    /// Fork `--tune` (0=VQ, 1=PSNR, 2=SSIM, 3=IQ, 4=MS_SSIM,
-    /// 5=FILM_GRAIN). Default 1 matches both C defaults; the tune-policy
+    /// `--tune` (0=VQ, 1=PSNR, 2=SSIM, 3=IQ, 4=MS_SSIM, 5=VMAF — not ported,
+    /// refused — 6=FILM_GRAIN, fork only). The numbering is the C oracles'
+    /// (`definitions.h`, identical in the hybrid and Ghost Robot). Default 1
+    /// matches both C defaults; the tune-policy
     /// deltas (tune.rs) apply in fork mode only.
     pub tune: u8,
     /// TX size/type + interp-filter sharpness bias 0-3.
@@ -269,10 +271,22 @@ impl HdrForkConfig {
         let fork = std::env::var("SVT_HDR_MODE")
             .map(|v| v == "1")
             .unwrap_or(false);
-        let mut c = if fork {
-            Self::hdr_fork_c_mode1()
+        Self::from_env_with_mode(if fork {
+            SvtHdrMode::HdrFork
         } else {
-            Self::mainline()
+            SvtHdrMode::Mainline
+        })
+    }
+
+    /// [`Self::from_env`] with the base mode given by the caller instead of
+    /// read from `SVT_HDR_MODE` — the entry point for a harness that selects
+    /// its oracle by name (`SVT_ORACLE`, `rust/oracles/oracles.tsv`), where the
+    /// registry row fixes the mode. `SVT_FORK_*` overrides still apply.
+    #[cfg(feature = "std")]
+    pub fn from_env_with_mode(mode: SvtHdrMode) -> Self {
+        let mut c = match mode {
+            SvtHdrMode::HdrFork => Self::hdr_fork_c_mode1(),
+            SvtHdrMode::Mainline => Self::mainline(),
         };
 
         fn get<T: std::str::FromStr>(name: &str, slot: &mut T) {

@@ -985,7 +985,7 @@ fn main() {
         // multi-frame cell is unchanged. Without this the RA path ignored
         // the fork knobs entirely (`SVT_FORK_KF_TF_STRENGTH` swept to
         // byte-identical streams, measured 2026-09-24).
-        pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+        apply_oracle_env(&mut pipeline);
         // `SVTAV1_TUNE` — same override as the single-frame path below. This
         // block returns before that code runs, so without this line a
         // multi-frame cell silently encodes PSNR whatever the env asks for
@@ -1348,14 +1348,8 @@ fn main() {
     // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     configure_grain(&mut pipeline);
-    pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+    apply_oracle_env(&mut pipeline);
     apply_enhancement_env(&mut pipeline);
-    if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
-        pipeline.reference = reference
-            .parse()
-            .expect("SVTAV1_REFERENCE must be a pinned source id");
-        eprintln!("SVTAV1_REFERENCE={}", pipeline.reference.id());
-    }
     // SVTAV1_TUNE=<0..5>: mainline `--tune`. The C driver reads the same value
     // from SVT_TUNE, so one env vector configures both encoders. Tune 3 (IQ)
     // and 4 (MS_SSIM) pull in C's whole override block (qm, sharpness,
@@ -1594,4 +1588,87 @@ fn unwrap_or_refuse(r: svtav1_encoder::EncodeResult<Vec<u8>>) -> Vec<u8> {
             std::process::exit(3);
         }
     }
+}
+
+/// `SVT_ORACLE=<name>` — the SAME switch the C driver reads
+/// (`rust/tools/oracle`, `rust/oracles/oracles.tsv`): the registry row fixes
+/// the Rust `SvtReference` and HDR mode, so one env var targets both encoders
+/// at one pinned C build. The registry is compiled in, so this binary and the
+/// C wrapper cannot read different tables. Unset, the legacy switches apply
+/// unchanged: `SVT_HDR_MODE` selects the fork mode and `SVTAV1_REFERENCE` a
+/// pinned source id. Setting `SVT_ORACLE` together with a disagreeing legacy
+/// switch is refused, never silently resolved.
+fn apply_oracle_env(pipeline: &mut svtav1_encoder::pipeline::EncodePipeline) {
+    use svtav1_encoder::hdr_mode::{HdrForkConfig, SvtHdrMode};
+    use svtav1_encoder::reference::SvtReference;
+    const REGISTRY: &str = include_str!("../../oracles/oracles.tsv");
+    let Ok(name) = std::env::var("SVT_ORACLE") else {
+        pipeline.hdr = HdrForkConfig::from_env();
+        if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
+            pipeline.reference = reference
+                .parse()
+                .expect("SVTAV1_REFERENCE must be a pinned source id");
+            eprintln!("SVTAV1_REFERENCE={}", pipeline.reference.id());
+        }
+        return;
+    };
+    let header: Vec<&str> = REGISTRY
+        .lines()
+        .find(|l| l.starts_with("#name"))
+        .expect("oracles.tsv has a #name header")
+        .trim_start_matches('#')
+        .split('\t')
+        .collect();
+    let col = |c: &str| {
+        header
+            .iter()
+            .position(|h| *h == c)
+            .expect("registry column")
+    };
+    let row: Vec<&str> = REGISTRY
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .find(|r| r[col("name")] == name)
+        .unwrap_or_else(|| panic!("SVT_ORACLE={name} is not in rust/oracles/oracles.tsv"));
+    let mode = match row[col("rust_hdr_mode")] {
+        "HdrFork" => SvtHdrMode::HdrFork,
+        "Mainline" => SvtHdrMode::Mainline,
+        other => panic!("oracles.tsv: unknown rust_hdr_mode {other}"),
+    };
+    let reference = match row[col("rust_reference")] {
+        "Mainline420" => SvtReference::Mainline420,
+        "Hybrid3115" => SvtReference::Hybrid3115,
+        "GhostRobot" => SvtReference::GhostRobot,
+        other => panic!("oracles.tsv: unknown rust_reference {other}"),
+    };
+    if let Ok(v) = std::env::var("SVT_HDR_MODE") {
+        let legacy = if v == "1" {
+            SvtHdrMode::HdrFork
+        } else {
+            SvtHdrMode::Mainline
+        };
+        assert_eq!(
+            legacy, mode,
+            "SVT_ORACLE={name} conflicts with SVT_HDR_MODE={v}; unset one"
+        );
+    }
+    if let Ok(v) = std::env::var("SVTAV1_REFERENCE") {
+        assert_eq!(
+            v.parse::<SvtReference>().ok(),
+            Some(reference),
+            "SVT_ORACLE={name} conflicts with SVTAV1_REFERENCE={v}; unset one"
+        );
+    }
+    assert_eq!(
+        reference.oracle_name(mode),
+        name,
+        "oracles.tsv row {name} disagrees with SvtReference::oracle_name"
+    );
+    pipeline.hdr = HdrForkConfig::from_env_with_mode(mode);
+    pipeline.reference = reference;
+    eprintln!(
+        "SVT_ORACLE={name} reference={} mode={mode:?}",
+        reference.id()
+    );
 }
