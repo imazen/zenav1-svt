@@ -194,15 +194,16 @@ def resolve_child_mod(path, name):
     return None
 
 
-def bundle_lines(rel, src_text, removed_lines, tables, comments_mode, comment_spans):
-    """Yield compact lines, with `//@ rel:N` markers wherever source lines are skipped."""
+def bundle_lines(rel, src_text, removed_lines, tables, code_only_text=None):
+    """Compact lines, with `//@L<n>` markers wherever source lines are skipped.
+
+    With code_only_text (the source with comment bytes blanked), comments are
+    removed inside lines too, and a line is dropped only when no code is left
+    on it: `/*name=*/ None,` keeps its `None,`.
+    """
     lines = src_text.split("\n")
+    code_lines = code_only_text.split("\n") if code_only_text is not None else None
     table_by_start = {s: (e, n) for s, e, n in tables}
-    comment_only = set()
-    if comments_mode == "drop":
-        for s, e in comment_spans:
-            for ln in range(s, e + 1):
-                comment_only.add(ln)
     out = [f"//// FILE {rel}"]
     expect = 1
     ln = 1
@@ -213,18 +214,20 @@ def bundle_lines(rel, src_text, removed_lines, tables, comments_mode, comment_sp
             continue
         if ln in table_by_start:
             end, n = table_by_start[ln]
+            head = (code_lines or lines)[ln - 1].rstrip()
             if ln != expect:
                 out.append(f"//@L{ln}")
-            out.append(f"{lines[ln - 1].rstrip()}  /* ... {n}-entry table elided, lines {ln}-{end} */")
+            out.append(f"{head}  /* ... {n}-entry table elided, lines {ln}-{end} */")
             ln = end + 1
             expect = -1
             continue
         line = lines[ln - 1].rstrip()
-        if comments_mode == "drop":
-            stripped = line.strip()
-            if ln in comment_only and (stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*")):
-                ln += 1
+        if code_lines is not None:
+            code = code_lines[ln - 1].rstrip()
+            if line.strip() and not code.strip():
+                ln += 1  # comment-only line
                 continue
+            line = code
         if not line.strip() and (not out or not out[-1].strip()):
             ln += 1
             continue
@@ -322,10 +325,10 @@ def main():
             if la in removed or lb - la < 3:
                 continue
             tables.append((la, lb, n))
-        cspans = []
+        code_only = None
         if args.comments == "drop":
-            cspans = [(line_of(a), line_of(b)) for a, b in comment_ranges(src, tree)]
-        lines = bundle_lines(rel, src.decode("utf8", "replace"), removed, tables, args.comments, cspans)
+            code_only = blank_bytes(src, comment_ranges(src, tree)).decode("utf8", "replace")
+        lines = bundle_lines(rel, src.decode("utf8", "replace"), removed, tables, code_only)
         body = "\n".join(lines) + "\n"
         tok = len(body.encode()) // 4
         table_lines = sum(b - a + 1 for a, b, _ in tables)
