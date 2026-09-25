@@ -57,6 +57,7 @@
 //! [`super::predicates::get_max_drl_index`] (tier 1) and
 //! [`super::drl::choose_best_av1_mv_pred`] (tier 1).
 
+use alloc::{vec, vec::Vec};
 use super::coding_loop::{check_spatial_mv_size, check_temporal_mv_size, clip_mv_on_pic_boundary};
 use super::pme::{MvCostParams, PmeBest, fp_mv_err_cost, pme_sad_loop_kernel};
 use super::predicates::get_max_drl_index;

@@ -166,11 +166,29 @@ impl ObmcBuffers {
     }
 }
 
-thread_local! {
+#[cfg(feature = "std")]
+std::thread_local! {
     /// One per thread, like C's one per `ModeDecisionContext`.
     static OBMC_BUFFERS: core::cell::RefCell<ObmcBuffers> =
         core::cell::RefCell::new(ObmcBuffers::default());
 }
+
+/// Without `std` there are no thread-locals: every access starts from empty
+/// buffers, so no readiness key ever matches and the neighbour predictions
+/// are rebuilt per call. Same bytes (the buffers are a cache of a pure
+/// function of the neighbours), more work.
+#[cfg(not(feature = "std"))]
+struct FreshPerCall;
+
+#[cfg(not(feature = "std"))]
+impl FreshPerCall {
+    fn with<R>(&'static self, f: impl FnOnce(&core::cell::RefCell<ObmcBuffers>) -> R) -> R {
+        f(&core::cell::RefCell::new(ObmcBuffers::default()))
+    }
+}
+
+#[cfg(not(feature = "std"))]
+static OBMC_BUFFERS: FreshPerCall = FreshPerCall;
 
 /// C's per-leaf reset of `obmc_weighted_pred_ready` /
 /// `obmc_neighbor_{luma,chroma}_pred_ready` at the top of `md_encode_block`

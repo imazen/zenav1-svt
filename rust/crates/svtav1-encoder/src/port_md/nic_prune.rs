@@ -58,6 +58,8 @@
 //! inter-frame class prunes had to be fixed in the funnel: a correct port
 //! sitting beside the live path fixes nothing.
 
+use alloc::vec::Vec;
+
 /// C `CAND_CLASS_TOTAL` (definitions.h:792).
 pub const CAND_CLASS_TOTAL: usize = 5;
 

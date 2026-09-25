@@ -569,7 +569,7 @@ pub fn cyclic_refresh_setup(
     let mut seg2_dist: u64 = 0;
     let avg_me_dist = norm_me_dist;
     let dist_reject_thresh = avg_me_dist * 2 + 1;
-    let dbg = std::env::var_os("SVTAV1_CRDBG").is_some();
+    let dbg = crate::dbgenv::crdbg();
     for b64_idx in 0..b64_total_count as usize {
         let b64 = &per_b64[b64_idx];
         let in_cr_range = is_in_cr_band(b64_idx as u32, cr.sb_start, cr.sb_end);

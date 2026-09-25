@@ -47,6 +47,7 @@
 //! **tier 4** — hand-derived vectors traced against the C source, labelled
 //! as such in their tests.
 
+use alloc::vec::Vec;
 use svtav1_types::motion::{Mv, TransformationType};
 use svtav1_types::prediction::PredictionMode;
 use svtav1_types::tables::block::{BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE};

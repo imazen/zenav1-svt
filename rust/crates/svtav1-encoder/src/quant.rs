@@ -560,7 +560,7 @@ pub fn build_coeff_cost_tables_from_fc(
         for plane in 0..2 {
             let idx = txs_ctx * 2 + plane;
             let mut base_cost: [[i32; 8]; SIG_COEF_CONTEXTS] =
-                std::array::from_fn(|ctx| costs_from_cdf(&fc.coeff_base_cdf[idx * 42 + ctx]));
+                core::array::from_fn(|ctx| costs_from_cdf(&fc.coeff_base_cdf[idx * 42 + ctx]));
             for ctx in 0..SIG_COEF_CONTEXTS {
                 base_cost[ctx][4] = 0;
                 base_cost[ctx][5] = base_cost[ctx][1] + cost_literal(1) - base_cost[ctx][0];
@@ -569,21 +569,21 @@ pub fn build_coeff_cost_tables_from_fc(
             }
             let br_txs = txs_ctx.min(3);
             tables.txb.push(TxbCosts {
-                txb_skip_cost: std::array::from_fn(|ctx| {
+                txb_skip_cost: core::array::from_fn(|ctx| {
                     // txb_skip_cdf is [txs_ctx][ctx] (no plane dim in C).
                     costs_from_cdf(&fc.txb_skip_cdf[txs_ctx * 13 + ctx])
                 }),
-                base_eob_cost: std::array::from_fn(|ctx| {
+                base_eob_cost: core::array::from_fn(|ctx| {
                     costs_from_cdf(&fc.coeff_base_eob_cdf[idx * 4 + ctx])
                 }),
                 base_cost,
-                eob_extra_cost: std::array::from_fn(|ctx| {
+                eob_extra_cost: core::array::from_fn(|ctx| {
                     costs_from_cdf(&fc.eob_extra_cdf[idx * 9 + ctx])
                 }),
-                dc_sign_cost: std::array::from_fn(|ctx| {
+                dc_sign_cost: core::array::from_fn(|ctx| {
                     costs_from_cdf(&fc.dc_sign_cdf[plane * 3 + ctx])
                 }),
-                lps_cost: std::array::from_fn(|ctx| {
+                lps_cost: core::array::from_fn(|ctx| {
                     // coeff_br_cdf is indexed with AOMMIN(txs_ctx, TX_32X32=3).
                     let mut lps = [0i32; 2 * (COEFF_BASE_RANGE + 1)];
                     let mut br_rate = [0i32; BR_CDF_SIZE];

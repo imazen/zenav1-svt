@@ -303,6 +303,21 @@ jobs:
         # files ran twice after d2abc282b. rust/docs/PLAN-ORACLES-AND-CLEANUP.md 0.7.
         run: python3 tools/test_targets_check.py
 
+      - name: no_std builds (each library crate, --no-default-features)
+        if: matrix.shard == 3
+        working-directory: rust
+        # Per crate, not per workspace: at workspace level, feature
+        # unification through dev-dependencies re-enables `std` and hides the
+        # break. That is how the encoder's no_std build stayed broken with 121
+        # errors while `just test-minimal` passed. PLAN-ORACLES-AND-CLEANUP.md T6.
+        # Own target dir: RUSTFLAGS differs from the other steps', and sharing
+        # would force every later step to rebuild.
+        run: |
+          for c in zenav1-svt-types zenav1-svt-dsp zenav1-svt-encoder; do
+            RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/nostd \
+              cargo check -p "$c" --no-default-features --lib --locked
+          done
+
       - name: regression spot-check (one cell per bug ever fixed)
         if: matrix.shard == 5
         working-directory: rust

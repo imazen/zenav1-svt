@@ -62,6 +62,7 @@
 //! substituted. [`NoRefinement`] is the explicit "no pixels available"
 //! implementation and is what the tier-4 tests drive.
 
+use alloc::{vec, vec::Vec};
 use super::drl::{ChooseDrlCtx, choose_best_av1_mv_pred};
 use super::pme::MvCostTable;
 use super::predicates::{

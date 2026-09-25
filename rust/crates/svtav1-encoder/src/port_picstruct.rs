@@ -1617,6 +1617,7 @@ impl core::fmt::Display for RpsError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for RpsError {}
 
 /// C `av1_generate_rps_info` (`pd_process.c:1911-3506`) — static, tier 4.

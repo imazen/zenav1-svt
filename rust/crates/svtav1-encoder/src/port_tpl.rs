@@ -30,6 +30,7 @@
 //! segmented-thread plumbing; the port drives the same SB loop sequentially
 //! in [`tpl_mc_flow_dispenser`], so there is nothing to translate there.
 
+use alloc::vec::Vec;
 use svtav1_dsp::hadamard::aom_satd;
 use svtav1_types::block::BlockSize;
 use svtav1_types::motion::Mv;
@@ -1806,7 +1807,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                         &mut above0,
                         &mut left0,
                     );
-                    if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_y == 0 {
+                    if crate::dbgenv::blkdbg() && mb_origin_y == 0 {
                         eprintln!(
                             "  NDBG x={} y={} after-openloop corner={} a0={} l0={} l1={}",
                             mb_origin_x, mb_origin_y, above0[0], above0[1], left0[0], left0[1]
@@ -1829,7 +1830,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     &mut recon.y[dst_mb_offset..],
                     dst_buffer_stride,
                 );
-                if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_y == 0 {
+                if crate::dbgenv::blkdbg() && mb_origin_y == 0 {
                     eprintln!(
                         "  PDBG x={} y={} rc={:?} p0={} p15={} p240={}",
                         mb_origin_x,
@@ -1880,7 +1881,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 );
             }
 
-            if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_x < 32 && mb_origin_y == 0 {
+            if crate::dbgenv::blkdbg() && mb_origin_x < 32 && mb_origin_y == 0 {
                 let mut psum = 0u64;
                 for r in 0..size {
                     for c in 0..size {
@@ -1995,7 +1996,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
             tpl_stats.ref_frame_poc = best_ref_poc;
         }
 
-        if std::env::var_os("SVTAV1_BLKDBG").is_some() {
+        if crate::dbgenv::blkdbg() {
             let mut rsum = 0u64;
             for r in 0..size {
                 for c in 0..size {
@@ -2933,7 +2934,7 @@ pub fn tpl_mc_flow<'a>(
             }
             let (_, right) = window.split_at_mut(frame_idx);
             let frame = &mut right[0];
-            if std::env::var_os("SVTAV1_BLKDBG").is_some() {
+            if crate::dbgenv::blkdbg() {
                 eprintln!(
                     "RUN poc={} tl={}",
                     frame.picture_number, frame.tpl_data.tpl_temporal_layer_index

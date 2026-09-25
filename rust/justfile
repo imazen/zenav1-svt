@@ -59,6 +59,12 @@ symtrace-check:
 test-minimal:
     cargo nextest run --workspace --no-default-features
 
+# The library crates build without `std`. Per crate: a workspace-level
+# --no-default-features unifies `std` back on through dev-dependencies, so it
+# cannot catch a no_std break (the encoder carried 121 errors past it).
+nostd-check:
+    for c in zenav1-svt-types zenav1-svt-dsp zenav1-svt-encoder; do RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=target/nostd cargo check -p $c --no-default-features --lib --locked || exit 1; done
+
 # Format and lint
 fmt:
     cargo fmt --all
@@ -68,7 +74,7 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Local CI sanity check
-ci: fmt clippy test test-all test-minimal symtrace-check
+ci: fmt clippy test test-all test-minimal nostd-check symtrace-check
 
 # Alignment / stride gate — the CI subset (74 cells, ~4 min).
 # true-vs-aligned on each axis at every residue mod 8, dims straddling 64,

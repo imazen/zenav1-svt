@@ -37,6 +37,7 @@
 //! `estimate_ref_frames_num_bits` itself is `static`; it is a loop over
 //! the reference array calling the tier-1 function, and is **tier 4**.
 
+use alloc::vec::Vec;
 use svtav1_types::prediction::PredictionMode;
 
 /// C `TOTAL_REFS_PER_FRAME` (definitions.h:1398).

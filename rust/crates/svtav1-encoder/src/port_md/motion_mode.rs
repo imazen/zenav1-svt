@@ -43,6 +43,7 @@
 //! [`super::inject::InjectHooks`]-style parameters, for the same reason
 //! stated there: a caller without them must say so.
 
+use alloc::{vec, vec::Vec};
 use super::inject::{CandArray, InterCandidate};
 use super::pme::MvCostTable;
 use super::predicates::{MotionMode, is_global_mv_block, is_motion_variation_allowed_bsize};

@@ -75,7 +75,7 @@ typed facade setter or an explicit refusal that names it.
 
 ## Phase 2 — oracle hygiene (before any parity work on a new pin)
 
-- [x] 2.1 (this change) Shim and source citation check: `tools/citations.py check
+- [x] 2.1 (`2169f16f`) Shim and source citation check: `tools/citations.py check
   --to <oracle>` fingerprints every cited C span in the base oracle and
   classifies it in the target: same, moved, ambig, changed, unresolved.
   Measured hybrid-3115 -> ghost-robot: 7,386 citations; 903 changed (12%),
@@ -87,7 +87,7 @@ typed facade setter or an explicit refusal that names it.
   (`SVT_ORACLE`), so `c_parity_*` runs per target.
 - [ ] 2.3 Wrap-fired check in `capture_c_trace`: report every `--wrap`
   interposer that never fired on a cell known to reach it.
-- [x] 2.4 (this change) Citation remap: `tools/citations.py remap --to <oracle>`
+- [x] 2.4 (`2169f16f`) Citation remap: `tools/citations.py remap --to <oracle>`
   rewrites `moved` citations in place. Run it in the same change that bumps
   or retires a pin, not before.
 - [ ] 2.5 Mirror the pinned Ghost Robot commit into `imazen/zenav1-svt-c`.
@@ -131,11 +131,12 @@ In dependency order:
 - S5 shared vocabulary and math helpers in `svtav1-types`.
   - Done: `svtav1_types::math` replaces 43 copies of `round_power_of_two*`,
     `divide_and_round` and `clip3` in 30 files, imported under the old local
-    names, with pins unchanged (this change).
+    names, with pins unchanged (`0d544f9d`).
   - Kept: the two `wrapping_add` variants (different overflow semantics), and
     the copies in `intra_pred.rs` and `hbd.rs` (owned by the intra-x86
     delegate; fold them in after it lands).
-  - Next: the 13 `rdcost` copies, AV1 vocabulary constants (`INTRA_FRAME` ×8,
+  - Done: the 13 `rdcost` copies -> `svtav1_types::math::rd` (`fc82b896`).
+  - Next: AV1 vocabulary constants (`INTRA_FRAME` ×8,
     `LAST_FRAME` ×9, `MI_SIZE` ×9), and same-name types (`SbVariance` ×3, and
     others).
 - S4 a `Pixel` sample trait plus a `BitDepth` enum;
@@ -163,7 +164,7 @@ Order, by expected size:
    - Done: the post-encode per-SB full-pel `mv_map` fill (its only reader
      had already run) and the `tpl_sb_qp_offsets` full-frame pass (consumed
      by `let _`) are removed; the dead homegrown temporal-filter branch is
-     gone from the pipeline (this change).
+     gone from the pipeline (`092c7e27`).
    - Open: the third symbol-writing walk (`recon_only`), and the per-leaf
      `FunnelFrame` deep clones under TPL/SSIM lambdas.
    - Delete `temporal_filter::temporal_filter` and the f64 `estimate_noise`
@@ -180,7 +181,7 @@ Order, by expected size:
 
 ## Phase 6 — test structure
 
-- [x] T5 (this change) never-panics sweep: `svtav1/tests/never_panics.rs`,
+- [x] T5 (`978df514`) never-panics sweep: `svtav1/tests/never_panics.rs`,
   536 tiny encodes across geometry, depth, chroma, preset, qp, every
   reference and mode, fork knobs, LD/RA video and all Zen enhancements, in
   3 s. Measured 2026-09-25: 453 Ok, 83 explicit refusals, 0 panics; it
@@ -189,4 +190,15 @@ Order, by expected size:
 - [ ] T3 one cell harness instead of 39 bash copies.
 - [ ] T4 stage-boundary differentials.
 - [ ] T6 no_std, tier and dead-code gates.
+  - Done: no_std. `just nostd-check` (and a CI step in shard 3) checks
+    `types`, `dsp` and `encoder` one at a time with `--no-default-features`
+    and `-D warnings`. It must be per crate: at workspace level, feature
+    unification through dev-dependencies turns `std` back on, which is how
+    the encoder carried 121 no_std errors past `test-minimal`. The encoder's
+    `std` feature now forwards to `types/std` and `dsp/std`. The raw
+    `std::env` debug reads (DISPDBG, QTRACE, BLKDBG, CRDBG, PSYM, and the
+    `SC_TOOLS` bisect knob) moved into `dbgenv`, which reads each one once
+    and returns `false` or `None` without std. OBMC's thread-local buffers
+    fall back to fresh buffers on every call.
+  - Open: the tier gate (S8) and a dead-code gate.
 - [ ] T7 inline tests out of product files.

@@ -188,8 +188,8 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         }
         palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
     }
-    let palette_ycolor = std::array::from_fn(|n| {
-        std::array::from_fn(|c| {
+    let palette_ycolor = core::array::from_fn(|n| {
+        core::array::from_fn(|c| {
             // Row width = n+2 symbols; syntax_rate_from_cdf reads to the
             // terminator, so slice per-row like the uv 13/14 handling.
             let nsym = n + 2;
@@ -216,8 +216,8 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
             full
         })
     });
-    let uv = std::array::from_fn(|cfl| {
-        std::array::from_fn(|y| {
+    let uv = core::array::from_fn(|cfl| {
+        core::array::from_fn(|y| {
             let mut c = [0i32; 14];
             // CFL-disallowed rows have 13 symbols; cost fn reads the CDF
             // up to the terminator, so slice per-row width.
@@ -261,22 +261,22 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         bits
     };
     alloc::boxed::Box::new(MdRates {
-        kf_y: std::array::from_fn(|a| {
-            std::array::from_fn(|l| costs_from_cdf(&fc.kf_y_mode_cdf[a][l]))
+        kf_y: core::array::from_fn(|a| {
+            core::array::from_fn(|l| costs_from_cdf(&fc.kf_y_mode_cdf[a][l]))
         }),
         // The NON-I-slice intra luma table (C `mb_mode_fac_bits`), and the
         // `is_inter = 0` flag an intra block pays only on a non-I-slice.
-        mb_mode: std::array::from_fn(|g| costs_from_cdf(&fc.y_mode_cdf[g])),
-        intra_inter: std::array::from_fn(|c| costs_from_cdf(&fc.intra_inter_cdf[c])),
+        mb_mode: core::array::from_fn(|g| costs_from_cdf(&fc.y_mode_cdf[g])),
+        intra_inter: core::array::from_fn(|c| costs_from_cdf(&fc.intra_inter_cdf[c])),
         uv,
-        angle: std::array::from_fn(|m| costs_from_cdf(&fc.angle_delta_cdf[m])),
-        fi_flag: std::array::from_fn(|b| costs_from_cdf(&fc.filter_intra_cdfs[b])),
+        angle: core::array::from_fn(|m| costs_from_cdf(&fc.angle_delta_cdf[m])),
+        fi_flag: core::array::from_fn(|b| costs_from_cdf(&fc.filter_intra_cdfs[b])),
         fi_mode: costs_from_cdf(&fc.filter_intra_mode_cdf),
-        skip: std::array::from_fn(|c| costs_from_cdf(&fc.skip_cdf[c])),
-        tx_size: std::array::from_fn(|cat| {
-            std::array::from_fn(|c| costs_from_cdf(&fc.tx_size_cdf[cat][c]))
+        skip: core::array::from_fn(|c| costs_from_cdf(&fc.skip_cdf[c])),
+        tx_size: core::array::from_fn(|cat| {
+            core::array::from_fn(|c| costs_from_cdf(&fc.tx_size_cdf[cat][c]))
         }),
-        intra_ext_tx: std::array::from_fn(|row| costs_from_cdf(&cfc.intra_ext_tx_cdf[row])),
+        intra_ext_tx: core::array::from_fn(|row| costs_from_cdf(&cfc.intra_ext_tx_cdf[row])),
         cfl_alpha_fac_bits,
         palette_y_no,
         palette_uv_no: [
@@ -287,8 +287,8 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         palette_ysize,
         palette_ycolor,
         intrabc_fac_bits: costs_from_cdf::<2>(&fc.intrabc_cdf),
-        inter_ext_tx: std::array::from_fn(|row| costs_from_cdf(&cfc.inter_ext_tx_cdf[row])),
-        txfm_partition_fac_bits: std::array::from_fn(|row| {
+        inter_ext_tx: core::array::from_fn(|row| costs_from_cdf(&cfc.inter_ext_tx_cdf[row])),
+        txfm_partition_fac_bits: core::array::from_fn(|row| {
             costs_from_cdf::<2>(&fc.txfm_partition_cdf[row])
         }),
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),

@@ -12,8 +12,8 @@ repository.workspace = true
 name = "svtav1_encoder"
 
 [dependencies]
-zenav1-svt-types = { workspace = true, features = ["std"] }
-zenav1-svt-dsp = { workspace = true, features = ["std"] }
+zenav1-svt-types = { workspace = true }
+zenav1-svt-dsp = { workspace = true }
 # The range coder / CDF tables / OBU writer live in `src/entropy/` (folded in
 # from the former zenav1-svt-entropy crate, issue #3); archmage + magetypes are
 # its SIMD coefficient-context kernels.
@@ -37,7 +37,7 @@ workspace = true
 
 [features]
 default = ["std", "avx512"]
-std = []
+std = ["zenav1-svt-types/std", "zenav1-svt-dsp/std"]
 # Same rationale as zenav1-svt-dsp's `avx512` feature: default-on so the `_v4`
 # arms this crate's `incant!` lists name are actually compiled; whether they
 # RUN is a run-time `X64V4Token::summon()` (CPUID) decision.
@@ -49,7 +49,7 @@ unchecked_entropy = []
 # a gdb-instrumented reference decoder / the identity harness. Requires std.
 symtrace = ["std"]
 # Feature 3: forward fallible allocation to svtav1-types (parallels the
-# unconditional std forwarding above).
+# std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
 # Expert-only encoder controls that have NO C-parity claim and are not part of
 # the stable surface (double-underscore prefix: do not depend on this in

@@ -29,6 +29,7 @@
 //! Nothing calls this yet — the public entry point still refuses inter
 //! frames (`docs/WORKING-ON-THIS.md` §7).
 
+use alloc::{vec, vec::Vec};
 use super::nic_prune::{
     self, CAND_CLASS_TOTAL, CandClass, Mds0Prune, NicPruningCtrls, StageWinner,
 };

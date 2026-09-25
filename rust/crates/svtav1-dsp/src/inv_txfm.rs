@@ -2515,6 +2515,7 @@ pub(crate) fn mod_input_64(
 /// region the copy does not cover. Identical contents to the allocating form;
 /// used by the TLS-backed wrapper so the 64-dim inverse path stops paying a
 /// fresh `calloc` per call.
+#[cfg(feature = "std")]
 pub(crate) fn mod_input_64_into(
     input: &[TranLow],
     input_stride: usize,

@@ -77,7 +77,14 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
-- **Release panic on fork alt-SSIM video** (this change): with the HDR fork
+- **no_std build of `zenav1-svt-encoder`** (this change): it did not compile
+  (121 errors), and nothing noticed, because `test-minimal` runs at workspace
+  level where dev-dependencies re-enable `std`. The encoder's `std` feature
+  now forwards to `types/std` and `dsp/std`. `just nostd-check` and a CI step
+  check each library crate on its own. Without `std`, the debug env reads
+  return false and OBMC rebuilds its neighbour predictions on every call.
+
+- **Release panic on fork alt-SSIM video** (0ffa9ec3): with the HDR fork
   and `alt_ssim_tuning`, an inter frame reached an `assert!` in
   `leaf_funnel/mds3.rs` ("the tune-SSIM parallel full cost has no INTER skip
   arm") and panicked in release (reproduced on `i265`: `gradient 128x128 q40

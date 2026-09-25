@@ -12,6 +12,7 @@
 //! 7. Reconstruction and reference frame update
 //! 8. Bitstream packetization (OBU output)
 
+use alloc::vec;
 use crate::picture::{DecodedPictureBuffer, GopStructure, PictureControlSet, ReferenceFrame};
 use crate::rate_control::{RcConfig, RcState, assign_picture_qp, update_rc_state};
 use crate::speed_config::SpeedConfig;
@@ -3168,14 +3169,14 @@ impl EncodePipeline {
                         args.frame.src_stats,
                         args.frame.stats,
                     );
-                    if std::env::var_os("SVTAV1_DISPDBG").is_some() {
+                    if crate::dbgenv::dispdbg() {
                         let (mut s, mut r, mut d) = (0i64, 0i64, 0i64);
                         for st in args.frame.stats.iter() {
                             s += st.srcrf_dist;
                             r += st.recrf_dist;
                             d += st.mc_dep_dist;
                         }
-                        std::eprintln!(
+                        eprintln!(
                             "DISPDBG idx={} poc={} src={} rec={} dep={} rdmult={} nref={},{}",
                             args.frame_idx,
                             pic.picture_number,
@@ -3188,7 +3189,7 @@ impl EncodePipeline {
                         );
                         for l in 0..2 {
                             for ri in 0..pt::REF_LIST_MAX_DEPTH {
-                                std::eprintln!(
+                                eprintln!(
                                     "  REF l{} r{} poc={} sw={} gidx={}",
                                     l,
                                     ri,
@@ -6737,7 +6738,7 @@ impl EncodePipeline {
             }
         }
         let mut picture_qp = crate::rate_control::picture_qp_from_qindex(base_qindex);
-        if std::env::var_os("SVTAV1_QTRACE").is_some() {
+        if crate::dbgenv::qtrace() {
             eprintln!(
                 "QTRACE display={display_order} base_qindex={base_qindex} temporal_layer={temporal_layer} hier={frame_hier} is_ref={:?} update_type={:?}",
                 pic_decision.as_ref().map(|p| p.is_ref),
@@ -17125,12 +17126,7 @@ fn merge_sb_units(
     out
 }
 
-/// TEMPORARY: SVTAV1_PSYM env gate for the partition-symbol stream trace —
-/// joins against the C interposer's PSYM lines (SVT_PARTSYM_OUT).
-fn psym_dbg() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var_os("SVTAV1_PSYM").is_some())
-}
+use crate::dbgenv::psym as psym_dbg;
 
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
@@ -18516,9 +18512,9 @@ fn encode_tile_rows(
         // otherwise meant hand-editing this line and rebuilding, once per
         // hypothesis -- and an edit-to-measure loop is where measurements stop
         // getting made.
-        match std::env::var("SVTAV1_SC_TOOLS").as_deref() {
-            Ok("nopalette") => funnel_cfg.palette_level = 0,
-            Ok("none") => funnel_cfg.palette_level = 0,
+        match crate::dbgenv::sc_tools() {
+            Some("nopalette") => funnel_cfg.palette_level = 0,
+            Some("none") => funnel_cfg.palette_level = 0,
             _ => {}
         }
         // IBC chunk 3: the frame-level svt_aom_allow_intrabc (always
@@ -18527,8 +18523,8 @@ fn encode_tile_rows(
         // non-screen / p5+ frame (byte-inert there).
         funnel_cfg.allow_intrabc = tile_sc.allow_intrabc;
         // See SVTAV1_SC_TOOLS above.
-        match std::env::var("SVTAV1_SC_TOOLS").as_deref() {
-            Ok("noibc") | Ok("none") => funnel_cfg.allow_intrabc = false,
+        match crate::dbgenv::sc_tools() {
+            Some("noibc") | Some("none") => funnel_cfg.allow_intrabc = false,
             _ => {}
         }
         let cwid = md_cw;

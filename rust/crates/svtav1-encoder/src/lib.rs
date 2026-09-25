@@ -1,8 +1,23 @@
 //! Mode decision, rate control, encoding loop, and pipeline.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
+// Without `std`, the diagnostics are dead: `dbgenv` flags read `false`, and
+// the dumps gated on `feature = "std"` leave their inputs and helpers unused.
+// The std build — the one CI lints with `-D warnings` — keeps these lints.
+#![cfg_attr(not(feature = "std"), allow(dead_code, unused_variables, unused_assignments))]
 
 extern crate alloc;
+
+/// Without `std` there is no stderr. The debug dumps stay compiled — every
+/// `dbgenv` flag reads `false` there, so they are dead code — and this inert
+/// `eprintln!` keeps their format arguments type-checked and "used".
+#[cfg(not(feature = "std"))]
+macro_rules! eprintln {
+    () => {};
+    ($($t:tt)*) => {{
+        let _ = ::core::format_args!($($t)*);
+    }};
+}
 
 // Feature 2: per-crate whereat crate-info so `at!(..)` in this crate can tag
 // errors with `crate::at_crate_info()` (source location + repo links).

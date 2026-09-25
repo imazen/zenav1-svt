@@ -20,7 +20,10 @@
 //! `capture_c_trace`, the NSQDBG captures), which sets the variable before
 //! launching the process, so nothing that exists loses a capability. Vars that
 //! carry a *value* rather than presence (`SVTAV1_DBG_MI`, `SVTAV1_RECON_BIN`,
-//! `SVTAV1_SC_TOOLS`, …) are unaffected and stay where they are.
+//! …) mostly stay where they are; the per-block ones are in `value_vars!`.
+//!
+//! Without `std` every flag reads `false` and every value `None`, so the
+//! dumps compile to dead code (the crate root supplies an inert `eprintln!`).
 //!
 //! Bit-identity: these are pure read-side caches of a value the encoder already
 //! read; no arithmetic and no coding decision changes. Pinned by
@@ -244,6 +247,17 @@ presence_flags! {
     mfmv_dbg => "SVT_MFMV_DBG",
     /// `ZZ_TPL`: TPL debug gate in `pipeline`.
     zz_tpl => "ZZ_TPL",
+    /// `SVTAV1_DISPDBG`: per-frame TPL dispenser totals (`pipeline`).
+    dispdbg => "SVTAV1_DISPDBG",
+    /// `SVTAV1_QTRACE`: per-frame base qindex / layer line (`pipeline`).
+    qtrace => "SVTAV1_QTRACE",
+    /// `SVTAV1_BLKDBG`: per-block TPL dispenser dump (`port_tpl`).
+    blkdbg => "SVTAV1_BLKDBG",
+    /// `SVTAV1_CRDBG`: cyclic-refresh per-b64 decisions (`sb_qindex`).
+    crdbg => "SVTAV1_CRDBG",
+    /// `SVTAV1_PSYM`: partition-symbol stream trace, joinable against the C
+    /// interposer's PSYM lines (`SVT_PARTSYM_OUT`).
+    psym => "SVTAV1_PSYM",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same
@@ -280,4 +294,9 @@ value_vars! {
     dlf_try_bin => "SVTAV1_DLF_TRY_BIN",
     /// `SVTAV1_DLF_TRY_LEVEL=<n>`: which trial [`dlf_try_bin`] captures.
     dlf_try_level => "SVTAV1_DLF_TRY_LEVEL",
+    /// `SVTAV1_SC_TOOLS=nopalette|noibc|none`: bisect knob that removes
+    /// palette and/or IntraBC from the MD candidate set WITHOUT touching the
+    /// frame-header bit (`pipeline`). Unlike every other entry here it changes
+    /// coding decisions; it is a debugging aid, not a configuration surface.
+    sc_tools => "SVTAV1_SC_TOOLS",
 }

@@ -42,6 +42,8 @@
 //! with flat arguments are ALSO tier 1 via a facade shim, and the few that
 //! take deep PCS pointers say so explicitly.
 
+use alloc::vec::Vec;
+
 /// `TF_BW` / `TF_BH` (temporal_filtering.h:23-24).
 pub const TF_BW: usize = 64;
 pub const TF_BH: usize = 64;
