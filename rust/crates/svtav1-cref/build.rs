@@ -192,14 +192,46 @@ fn main() {
     // the shim compile because the shim's tier-1 entry points are behind the
     // define this returns. See the function for the whole rationale and the
     // failure modes it deliberately tolerates.
-    let picstruct_statics = link_globalized_pd_statics(&build_dir, &out_dir_path());
+    //
+    // Each archive is also kept beside the C library, because a restored
+    // library cache (CI caches `Bin/Release`, never the object tree) has no
+    // objects to globalize: `statics_beside_lib` links that copy then.
+    let keep = env::var_os("SVT_CREF_LIB_DIR").is_none();
+    let statics = |built: bool, name: &str, cfg: &str| {
+        statics_beside_lib(
+            built,
+            name,
+            cfg,
+            &build_dir,
+            &out_dir_path(),
+            &lib_dir,
+            keep,
+        )
+    };
+    let picstruct_statics = statics(
+        link_globalized_pd_statics(&build_dir, &out_dir_path()),
+        "pd_statics",
+        "picstruct_statics",
+    );
     // Same mechanism for `rc_vbr_cbr.c`'s five surviving statics (lane wx-rc).
-    let rc_vbr_statics = link_globalized_rc_vbr_statics(&build_dir, &out_dir_path());
+    let rc_vbr_statics = statics(
+        link_globalized_rc_vbr_statics(&build_dir, &out_dir_path()),
+        "rc_vbr_statics",
+        "rc_vbr_statics",
+    );
     // Same mechanism again for `enc_dec_process.c`'s two SSIM walkers.
-    let enc_dec_statics = link_globalized_enc_dec_statics(&build_dir, &out_dir_path());
+    let enc_dec_statics = statics(
+        link_globalized_enc_dec_statics(&build_dir, &out_dir_path()),
+        "enc_dec_statics",
+        "enc_dec_statics",
+    );
     // Same mechanism for `motion_estimation.c`'s hme_level_2 / check_00_center,
     // which ghost-robot's build inlines away entirely.
-    let me_statics = link_globalized_me_statics(&build_dir, &out_dir_path());
+    let me_statics = statics(
+        link_globalized_me_statics(&build_dir, &out_dir_path()),
+        "me_statics",
+        "me_statics",
+    );
 
     let mut shims = cc::Build::new();
     if let Some(o) = &pinned {
@@ -815,6 +847,51 @@ fn link_globalized_me_statics(build_dir: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-link-lib=static=me_statics");
     println!("cargo:rustc-cfg=me_statics");
     true
+}
+
+/// Keep a globalized statics archive `lib<name>.a` beside the C library, and
+/// link that copy when this host has the library but not its object tree.
+///
+/// CI restores `Bin/Release` from cache (the object tree is deliberately not
+/// cached; see rust-gates.yml), so on a cache hit the `link_globalized_*`
+/// functions find no objects and every tier-1 statics test would lose its C
+/// reference: the ME ones returned early and passed. The copy comes from the
+/// same C build as the library beside it. It is used ONLY when the object tree
+/// is absent; when the tree exists but globalization failed, the copy is
+/// deleted so a stale archive can never answer for a new build. `keep` is
+/// false for a caller-supplied `SVT_CREF_LIB_DIR`, which is never written to.
+fn statics_beside_lib(
+    built: bool,
+    name: &str,
+    cfg: &str,
+    build_dir: &Path,
+    out_dir: &Path,
+    lib_dir: &Path,
+    keep: bool,
+) -> bool {
+    let kept = lib_dir.join(format!("lib{name}.a"));
+    if built {
+        if keep {
+            let _ = fs::copy(out_dir.join(format!("lib{name}.a")), &kept);
+        }
+        return true;
+    }
+    if !keep {
+        return false;
+    }
+    if !build_dir.exists() && kept.exists() {
+        println!(
+            "cargo:warning={name}: no C object tree on this host; linking the archive \
+             kept beside the C library ({})",
+            kept.display()
+        );
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        println!("cargo:rustc-link-lib=static={name}");
+        println!("cargo:rustc-cfg={cfg}");
+        return true;
+    }
+    let _ = fs::remove_file(&kept);
+    false
 }
 
 /// First working objcopy, or `None`. `--version` is the probe because a name
