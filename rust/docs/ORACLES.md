@@ -52,15 +52,14 @@ ignored. On the Rust side, `SvtReference::validate_hdr_config` refuses the
 same knobs for `Mainline420`, and `GhostRobot` refuses the mainline mode,
 because the fork has none.
 
-First measurement (2026-09-25, `i265`, `gradient 128x128 p6`, one switch
-driving both encoders):
+Where each oracle stands (measured 2026-09-25, `i265`). Re-measure a row in
+the change that moves it.
 
-| oracle | q20 | q45 |
+| oracle | still grid, 288 cells (`tools/oracle_still_grid.sh`) | function-level C parity (`just cparity-oracle`) |
 |---|---|---|
-| `hybrid-3115` | same | same |
-| `hybrid-3115-hdr` | same | differs (357 B port vs 443 B C) |
-| `mainline-4.2.0` | same | same |
-| `ghost-robot` | differs | differs (phase 3 of the plan) |
+| `mainline-4.2.0` | 288/288 | 867/867, 8 fork-only tests excluded by the caller |
+| `ghost-robot` | 41/288 (`28c3693a`) | 830/875; the 45 are the plan phase 3 work list |
+| `hybrid-3115` | not run | 875/875 |
 
 ## How an oracle is built
 
