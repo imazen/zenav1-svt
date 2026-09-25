@@ -195,13 +195,16 @@ pub struct InterMdEnv {
     /// sign-flip a neighbour candidate whose ref is on the opposite
     /// temporal side. All-zero under low delay; live under random access.
     pub ref_frame_sign_bias: [i32; 8],
-    /// C `pcs->av1_cm->symteric_refs` — `svt_aom_generate_av1_mvp_table`'s
-    /// LAST_BWD shortcut: a RA B picture on a temporal layer above 0 whose
-    /// entire ref list is {LAST, BWDREF, LAST_BWD}
-    /// (`inter_mvp::symmetric_refs_gate`). Stamped by the pipeline once the
-    /// availability-filtered `ref_frame_type_arr` exists; `inter_mvp_fields`
-    /// reads the same value so the coded stack matches MD's.
-    pub symmetric_refs: bool,
+    /// C's picture-level `symteric_refs` preconditions —
+    /// `pcs->temporal_layer_index > 0 && pred_structure == RANDOM_ACCESS`
+    /// (adaptive_mv_pred.c:1339-1341). The list half of C's gate is
+    /// evaluated per call inside `inter_mvp::generate_av1_mvp_table` on
+    /// the block's own `ref_frame_type_arr` — `determine_best_references`
+    /// may reorder it away from {LAST, BWDREF, LAST_BWD} — so a
+    /// picture-level stamp of the whole gate is wrong. Stamped by the
+    /// pipeline; `inter_mvp_fields` reads the same eligibility so the
+    /// coded stack matches MD's.
+    pub symmetric_refs_eligible: bool,
     /// C `pcs->tpl_mvs` — every cell `INVALID_MV` (the state
     /// `av1_setup_motion_field`'s reset leaves) until the temporal MV field
     /// is wired. Allocated rather than empty because `add_tpl_ref_mv`
@@ -241,10 +244,13 @@ impl InterMdEnv {
             // block it is about, with `InterMvpEnv::for_block`. Carrying the
             // picture-level bool through would look like an answer.
             sb64_sq_no4xn_geom: false,
-            // C's `symteric_refs` gate reads the picture's
-            // `ref_frame_type_arr`; the pipeline stamps the derived value
-            // on this env once the availability-filtered list exists.
-            symmetric_refs: self.symmetric_refs,
+            symmetric_refs_eligible: self.symmetric_refs_eligible,
+            // The per-call gate result — `generate_av1_mvp_table` stamps it
+            // on its own env copy from `symmetric_refs_eligible` and the
+            // ref list it is driven with; callers that need the shortcut
+            // outside that driver (the entropy-side single-ref rebuild)
+            // stamp it on their own env explicitly.
+            symmetric_refs: false,
         }
     }
 }

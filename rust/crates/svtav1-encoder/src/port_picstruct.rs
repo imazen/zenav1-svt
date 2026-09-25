@@ -933,6 +933,10 @@ pub struct PicDecisionCtx {
     /// `low_delay_store_tf_pictures` fills and `low_delay_release_tf_pictures`
     /// drains. Dead while low-delay TF is disabled, transcribed anyway.
     pub ld_tf_ring: LowDelayTfRing,
+    /// C's `pd_ctx` scene-detector members — `ahd_running_avg`,
+    /// `prev_picture_histogram`, `prev_average_intensity_per_region` and
+    /// `reset_running_avg`, kept on [`SceneDetectState`].
+    pub scene_detect: SceneDetectState,
 }
 
 impl PicDecisionCtx {
@@ -4408,6 +4412,62 @@ pub struct SceneChangeOutcome {
     pub transition_detected: i32,
     /// C `ctx->is_scene_change_detected`.
     pub is_scene_change_detected: bool,
+}
+
+/// C's `scs->scd_delay` derivation (`enc_handle.c:4005-4038`).
+///
+/// The number of FUTURE pictures `check_window_availability` requires in the
+/// reorder queue before it lets a picture through picture decision — and
+/// therefore before `perform_scene_change_detection` may run for it. The
+/// detector itself only reads `pd_window[2]` (the immediate future), but the
+/// availability gate scans `pd_window[2 .. 2+scd_delay)` and stalls the
+/// release until all of them are present and none carries EOS.
+#[must_use]
+pub fn derive_scd_delay(
+    intra_period_is_zero: bool,
+    tf_params_per_type: &[TfCtrls; 3],
+    scene_transition_armed: bool,
+    lap_rc: bool,
+) -> u32 {
+    // `scd_delay_islice`: only the "non-delayed intra" shape
+    // (`intra_period_length == 0`) can put an I slice's TF window into the
+    // lookahead.
+    let scd_delay_islice = if intra_period_is_zero && tf_params_per_type[0].enabled {
+        u32::from(
+            tf_params_per_type[0]
+                .num_future_pics
+                .saturating_add(if tf_params_per_type[0].modulate_pics != 0 {
+                    TF_MAX_EXTENSION as u8
+                } else {
+                    0
+                }),
+        )
+        .min(u32::from(tf_params_per_type[0].max_num_future_pics))
+    } else {
+        0
+    };
+    let scd_delay_base = if tf_params_per_type[1].enabled {
+        u32::from(
+            tf_params_per_type[1]
+                .num_future_pics
+                .saturating_add(if tf_params_per_type[1].modulate_pics != 0 {
+                    TF_MAX_EXTENSION as u8
+                } else {
+                    0
+                }),
+        )
+        .min(u32::from(tf_params_per_type[1].max_num_future_pics))
+    } else {
+        0
+    };
+    let mut delay = scd_delay_islice.max(scd_delay_base);
+    // `enc_handle.c:4036-4038`: SCD (force-zeroed but transcribed), the
+    // sharpness scene-transition arm, and lookahead RC all pin the floor at
+    // two future pictures.
+    if scene_transition_armed || lap_rc {
+        delay = delay.max(2);
+    }
+    delay
 }
 
 /// C `perform_scene_change_detection` (`pd_process.c:4682-4700`) — static.

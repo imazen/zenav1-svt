@@ -36,15 +36,23 @@ struct RaBufferedFrame {
     v: Vec<u8>,
     /// C `pcs->picture_number` — display-order POC.
     display_order: u64,
+    /// C `pcs->input_ptr->pic_type == EB_AV1_KEY_PICTURE` — the drain stamps
+    /// `pcs->idr_flag` from it (`pd_process.c:5418-5425`).
+    is_key: bool,
+    /// C `pcs->end_of_sequence_flag` — the last input picture's flag, set by
+    /// `try_flush`. Feeds `check_window_availability`'s `eos_reached` and
+    /// `svt_aom_is_delayed_intra`'s not-delayed-at-EOS arm.
+    is_eos: bool,
 }
 
-/// A key frame held back for its temporal-filter window. C fills an IDR's
-/// `temp_filt_pcs_list` future slots from `picture_decision_reorder_queue`
-/// (`pd_process.c:3979-3995`), which lookahead already populated — the
-/// pictures buffered AFTER the key here. The frame is staged at input, the
-/// filter runs at the head of the next window's pass-3, and its packet is
-/// emitted ahead of that window's — the same release ordering C produces.
-struct PendingKey {
+/// C `ctx->prev_delayed_intra` (`pd_process.c:5103-5132`): an intra picture
+/// that passed picture decision inside its own `[tail + intra]` release but
+/// whose `store_gf_group`/`mctf_frame`/`send_picture_out` C defers to the
+/// NEXT release's `process_pics`, because its `temp_filt_pcs_list` future
+/// slots come from the pictures that follow it (`pd_process.c:3979-3995`).
+/// Its packet lands ahead of that next release's — the release ordering C
+/// produces at `pd_process.c:5129-5131`.
+struct DelayedIntra {
     frame: RaBufferedFrame,
     /// `gather_tf_stats` for this frame — the centre histogram `calc_ahd`
     /// diffs each window member against.
@@ -52,11 +60,8 @@ struct PendingKey {
     /// The padded PA/TF buffer set, ready for `ra_mctf_filter` to filter in
     /// place; emitted through `encode_frame_impl` afterwards.
     bufs: crate::port_tf_driver::TfPicBufs,
-    /// The key's picture decision, run at STAGING time. C releases the
-    /// delayed intra in the buffer that precedes the following window, so
-    /// its `picture_decision_per_picture` — and the `pd_ctx` reference-ring
-    /// advance that carries — lands BEFORE the next window's decision, not
-    /// at this key's (later) emit.
+    /// The intra's picture decision — run inside its own release's passes
+    /// like every other member, then held here.
     pic: crate::port_picstruct::PicParams,
 }
 
@@ -164,26 +169,32 @@ pub struct EncodePipeline {
     /// The picture-analysis statistics `svt_aom_gathering_picture_statistics`
     /// produces per buffered input — region histograms and `avg_luma`,
     /// indexed exactly like `ra_input`. `None` per slot while `calc_hist` is
-    /// off (C gathers them only when a TF type is enabled or scene-change
-    /// detection runs; only the TF arm exists here). Filled lazily by
-    /// [`Self::run_ra_picture_decision`], consumed by the TF window assembly
-    /// and the filter itself.
+    /// off — in random access `calc_hist` is always 1
+    /// (`vq_ctrls.sharpness_ctrls.scene_transition` is set in both
+    /// `derive_vq_params` arms and only cleared for low delay / first pass,
+    /// `enc_handle.c:3282-3326`), so every buffered input gathers.
+    /// Filled at input alongside `ra_input`, drained with it.
     ra_stats:
         alloc::vec::Vec<Option<alloc::boxed::Box<crate::port_preanalysis::PictureStatistics>>>,
-    /// The held key frame awaiting its TF future window (`PendingKey`). Its
-    /// filtered `TfPicBufs` also lands back here after `run_ra_tf_prep`
-    /// filters it, paired with the `PicParams` the prep stamped — so
-    /// `encode_ra_window` can emit it without re-deriving either.
-    pending_key: Option<PendingKey>,
-    pending_key_out: Option<(
+    /// C `ctx->prev_delayed_intra` — the intra member whose TF window and
+    /// packet C defers to the next release's `process_pics`
+    /// (`pd_process.c:5103-5131`). Set when a `[tail + intra]` release
+    /// drains: the intra member's `PicParams` is decided in-pass like every
+    /// member, then moved here with its frame/stats until
+    /// `filter_delayed_intra` runs.
+    delayed_intra: Option<DelayedIntra>,
+    /// The filtered output of `delayed_intra`, staged for emit by
+    /// `filter_delayed_intra` so `encode_ra_window` can emit it ahead of the
+    /// release's member packets (`pd_process.c:5129`).
+    delayed_intra_out: Option<(
         crate::port_tf_driver::TfPicBufs,
         crate::port_picstruct::PicParams,
     )>,
-    /// The held key's TPL stage output — `run_tpl_stage` produces it from
-    /// the `[key] + window` group while `pending_key_out` is still staged;
-    /// `encode_pending_key` takes it so the key's `initial_rc` results ride
-    /// into its encode exactly like a window member's.
-    pending_key_tpl: Option<crate::port_tpl::FrameTplIn>,
+    /// The delayed intra's TPL stage output — `run_tpl_stage` produces it
+    /// from the `[key] + window` group while `delayed_intra_out` is still
+    /// staged; `encode_delayed_intra` takes it so the intra's `initial_rc`
+    /// results ride into its encode exactly like a window member's.
+    delayed_intra_tpl: Option<crate::port_tpl::FrameTplIn>,
     /// The display-order POC the next accepted input takes under random
     /// access. `frame_count` stays the count of CODED frames (it increments
     /// inside `encode_frame_impl`); under RA the two orders differ inside a
@@ -714,9 +725,9 @@ impl EncodePipeline {
             pred_structure: crate::port_picstruct::PredStructure::LowDelay,
             ra_input: alloc::vec::Vec::new(),
             ra_stats: alloc::vec::Vec::new(),
-            pending_key: None,
-            pending_key_out: None,
-            pending_key_tpl: None,
+            delayed_intra: None,
+            delayed_intra_out: None,
+            delayed_intra_tpl: None,
             ra_display_next: 0,
             frame_count: 0,
             width: dims.aligned_w as u32,
@@ -1063,32 +1074,51 @@ impl EncodePipeline {
         let display_order = self.ra_display_next;
         self.ra_display_next += 1;
 
-        // C `perform_picture_structure` releases the buffer on an intra
-        // picture (`pre_assignment_buffer_intra_count > 0` fires the window).
-        // A mid-stream key drains whatever partial mini-GOP precedes it —
-        // coded low-delay, as `is_pic_cutting_short_ra_mg` decides — then
-        // takes the normal sequential path. Its OWN temporal filter still
-        // needs the future pictures C finds in the reorder queue
-        // (`pd_process.c:3979-3995`), so the key is HELD (`pending_key`)
-        // until the next window releases; `encode_ra_window` emits it ahead
-        // of that window's packets, matching C's release order.
-        if self.gop.is_key_frame(display_order) {
-            let out = if self.ra_input.is_empty() && self.pending_key.is_none() {
-                alloc::vec::Vec::new()
-            } else {
-                self.encode_ra_window()?
-            };
-            self.pending_key = Some(self.stage_pending_key(y, u, v, y_stride, display_order)?);
-            return Ok(out);
-        }
-
-        // Stage the frame at TRUE dims; the encode pads per picture.
-        let frame = self.pack_ra_frame(y, u, v, y_stride, display_order);
+        // Stage the frame at TRUE dims; the encode pads per picture. The
+        // PA statistics gather is unconditional — `calc_hist` is 1 in RA.
+        // A key frame is just another reorder-queue entry here: C's drain
+        // stamps `pcs->idr_flag` on it, which both terminates the current
+        // release (`pre_assignment_buffer_intra_count > 0`) and, under a
+        // live intra period, defers its TF window + packet to the NEXT
+        // release (`svt_aom_is_delayed_intra` → `ctx->prev_delayed_intra`,
+        // `pd_process.c:3620-3635, 5103-5131`).
+        let is_key = self.gop.is_key_frame(display_order);
+        let frame = self.pack_ra_frame(y, u, v, y_stride, display_order, is_key);
+        let stats = self.gather_tf_stats_frame(&frame);
         self.ra_input.push(frame);
-        if self.ra_input.len() as u32 == self.gop.mini_gop_size {
-            return self.encode_ra_window();
+        self.ra_stats
+            .push(Some(alloc::boxed::Box::new(stats)));
+        self.ra_try_release()
+    }
+
+    /// Fire every pending release whose window the newly pushed frame just
+    /// completed (`check_window_availability`'s `pd_window[2..2+scd_delay)`
+    /// requirement — `pd_process.c:4659-4676` + the release trigger at
+    /// `:5478-5484`). Queue order: an intra-terminated `[tail + intra]`
+    /// release fires the moment the intra is committed — but only once the
+    /// INTRA's own `scd_delay` future entries are queued, since its
+    /// detector turn runs in the same drain.
+    fn ra_try_release(&mut self) -> EncodeResult<Vec<u8>> {
+        let mut out = alloc::vec::Vec::new();
+        loop {
+            let len = self.ra_input.len();
+            let mg = self.gop.mini_gop_size as usize;
+            let scd = self.ra_scd_delay() as usize;
+            let fire = match self.ra_input.iter().position(|f| f.is_key) {
+                // The release is `[tail + intra]` — `kp + 1` entries — once
+                // the intra's `scd_delay` futures sit behind it:
+                // `kp + scd < len`.
+                Some(kp) if kp < mg => len > kp + scd,
+                // A plain release commits `mg` entries; the deepest one's
+                // window needs `mg - 1 + scd < len`.
+                _ => len >= mg + scd,
+            };
+            if !fire {
+                break;
+            }
+            out.extend_from_slice(&self.encode_ra_window()?);
         }
-        Ok(alloc::vec::Vec::new())
+        Ok(out)
     }
 
     /// Pack one input into a [`RaBufferedFrame`] at TRUE dims.
@@ -1099,6 +1129,7 @@ impl EncodePipeline {
         v: &[u8],
         y_stride: usize,
         display_order: u64,
+        is_key: bool,
     ) -> RaBufferedFrame {
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
@@ -1111,79 +1142,145 @@ impl EncodePipeline {
             u: u[..cw * ch].to_vec(),
             v: v[..cw * ch].to_vec(),
             display_order,
+            is_key,
+            is_eos: false,
         }
     }
 
-    /// Stage a key frame for its deferred temporal filter: the packed input,
-    /// its TF statistics, the padded buffer set `ra_mctf_filter` writes the
-    /// filtered pixels into, and — critically — its PICTURE DECISION.
-    ///
-    /// C releases the delayed intra in the buffer that precedes the next
-    /// window: its `picture_decision_per_picture` runs there, advancing the
-    /// `pd_ctx` reference ring BEFORE that window's pictures are decided.
-    /// Running it here (rather than inside `encode_frame_impl` at emit time)
-    /// is what keeps the announced `ref_order_hint` ring consistent with the
-    /// decoder's — running it late poisons every window decided in between.
-    fn stage_pending_key(
-        &mut self,
-        y: &[u8],
-        u: &[u8],
-        v: &[u8],
-        y_stride: usize,
-        display_order: u64,
-    ) -> EncodeResult<PendingKey> {
-        let mut pic = self.run_picture_decision(display_order, /*is_key=*/ true)?;
-        let frame = self.pack_ra_frame(y, u, v, y_stride, display_order);
-        let stats = self.gather_tf_stats_frame(&frame);
-        // C `pcs->avg_luma` is `INVALID_LUMA` unless `calc_hist` ran
-        // (`pic_analysis_process.c:628-630`); the stats gather above is
-        // unconditional for the TF window's `calc_ahd`, so the stamp — not
-        // the gather — carries the gate. `calc_hist` reduces to "any TF
-        // type enabled" in this envelope (`enc_handle.c:1353`: SCD and the
-        // sharpness scene-transition arm are not ported).
-        let (_, tf_params) = crate::port_picstruct::derive_tf_params(
+    /// The `enhanced_pic` + `pa_ref_pic_wrapper` pair one buffered input
+    /// owns in C: the padded aligned-dims planes the TF window's members
+    /// are read through, fused into one [`crate::port_tf_driver::TfPicBufs`].
+    fn ra_tf_bufs(&self, f: &RaBufferedFrame) -> crate::port_tf_driver::TfPicBufs {
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
+        let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
+        let y_pad = if aw == tw && ah == th {
+            f.y.clone()
+        } else {
+            pad_plane_replicate(&f.y, tw, tw, th, aw, ah)
+                .expect("aligned dims are never smaller than true dims")
+        };
+        let (u_pad, v_pad) = if f.u.is_empty() {
+            (alloc::vec::Vec::new(), alloc::vec::Vec::new())
+        } else {
+            (
+                pad_plane_replicate(&f.u, cw, cw, ch, acw, ach)
+                    .expect("aligned dims are never smaller than true dims"),
+                pad_plane_replicate(&f.v, cw, cw, ch, acw, ach)
+                    .expect("aligned dims are never smaller than true dims"),
+            )
+        };
+        crate::port_tf_driver::TfPicBufs::from_aligned_planes(
+            &y_pad,
+            &u_pad,
+            &v_pad,
+            aw,
+            ah,
+            f.display_order,
+        )
+    }
+
+    /// `scs->scd_delay` (`enc_handle.c:4005-4038`) for this stream: the
+    /// future-picture depth `check_window_availability` requires before a
+    /// queue entry may pass picture decision — and the extra depth
+    /// `ra_input` must buffer past each release.
+    fn ra_scd_delay(&self) -> u32 {
+        let (_tf_level, tf_params_per_type) = crate::port_picstruct::derive_tf_params(
             self.pred_structure,
             self.speed_config.preset,
             self.gop.hierarchical_levels,
             self.enable_tf,
             /*lossless=*/ false,
         );
-        if tf_params.iter().any(|c| c.enabled) {
-            pic.avg_luma = stats.avg_luma;
+        crate::port_picstruct::derive_scd_delay(
+            /*intra_period_is_zero=*/ self.gop.intra_period == 0,
+            &tf_params_per_type,
+            // `vq_ctrls.sharpness_ctrls.scene_transition` is 1 for every
+            // single-pass RANDOM_ACCESS config (`enc_handle.c:3282-3291`,
+            // cleared only for low delay / first pass at `:3324-3326`).
+            /*scene_transition_armed=*/ true,
+            /*lap_rc=*/ false,
+        )
+    }
+
+    /// One release's queue turns of `perform_scene_change_detection` +
+    /// `copy_histograms` (`pd_process.c:5378-5386, 5449-5452`), in display
+    /// order over the release's `committed` queue entries.
+    ///
+    /// `check_window_availability` requires `scd_delay` future queue entries
+    /// past each picture, none of them `end_of_sequence_flag`
+    /// (`pd_process.c:4664-4674`). Mid-stream the release triggers guarantee
+    /// every committed picture clears it; at EOS the missing tail entries
+    /// are exactly what C's `eos_reached` resolves to `window_avail ==
+    /// false` — the entry still commits, its detection is skipped.
+    fn ra_pump_release(&mut self, committed: usize) {
+        use crate::port_picstruct as pp;
+        let scd = self.ra_scd_delay() as usize;
+        let eff_len = self.ra_input.len();
+        // `enhanced_pic->width/height` is the 8-aligned input size
+        // (`max_input_luma_*` after `MIN_BLOCK_SIZE` pad,
+        // resource_coordination_process.c:715-727); the region split keys
+        // on the same field (`enc_handle.c:4392-4397`).
+        let (tw, th) = (self.width, self.height);
+        let (rw, rh) = (
+            if tw >= 64 { 4usize } else { 1 },
+            if th >= 64 { 4usize } else { 1 },
+        );
+        // Take the detector state out of `pd_ctx` so the stats borrows on
+        // `self` can coexist with the detector's `&mut`.
+        let mut sd = core::mem::take(&mut self.pd_ctx.scene_detect);
+        let mut td = self.pd_ctx.transition_detected;
+        for pos in 0..committed {
+            // `:4664-4674` — every slot in `pd_window[2..2+scd)` must be
+            // filled AND none may be `end_of_sequence_flag`; an EOS frame
+            // inside the window also marks it unavailable.
+            let window_avail = pos + scd < eff_len
+                && !self.ra_input[pos + 1..=pos + scd]
+                    .iter()
+                    .any(|f| f.is_eos);
+            let display_order = self.ra_input[pos].display_order;
+            if window_avail && display_order > 0 {
+                let cur = self.ra_stats[pos]
+                    .as_deref()
+                    .expect("committed positions always carry stats");
+                let fut = self.ra_stats[pos + 1]
+                    .as_deref()
+                    .expect("window_avail implies at least one future");
+                let out = pp::perform_scene_change_detection(
+                    // `static_config.scene_change_detection` is force-zeroed
+                    // in this SVT (`enc_settings.c:839-843`) — only the
+                    // sharpness arm ever runs the detector.
+                    /*scene_change_detection_enabled=*/ false,
+                    /*sharpness_scene_transition=*/ true,
+                    td,
+                    /*cra_flag_in=*/ false,
+                    || {
+                        pp::scene_transition_detector(
+                            &mut sd,
+                            &cur.picture_histogram,
+                            &cur.average_intensity_per_region,
+                            &fut.average_intensity_per_region,
+                            tw,
+                            th,
+                            rw,
+                            rh,
+                        )
+                    },
+                );
+                td = out.transition_detected;
+            }
+            let cur = self.ra_stats[pos]
+                .as_deref()
+                .expect("committed positions always carry stats");
+            pp::copy_histograms(
+                &mut sd,
+                &cur.picture_histogram,
+                &cur.average_intensity_per_region,
+            );
         }
-        let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (aw, ah) = (self.width as usize, self.height as usize);
-        let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
-        let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
-        let y_pad = if aw == tw && ah == th {
-            frame.y.clone()
-        } else {
-            pad_plane_replicate(&frame.y, tw, tw, th, aw, ah)
-                .expect("aligned dims are never smaller than true dims")
-        };
-        let (u_pad, v_pad) = if frame.u.is_empty() {
-            (alloc::vec::Vec::new(), alloc::vec::Vec::new())
-        } else {
-            (
-                pad_plane_replicate(&frame.u, cw, cw, ch, acw, ach)
-                    .expect("aligned dims are never smaller than true dims"),
-                pad_plane_replicate(&frame.v, cw, cw, ch, acw, ach)
-                    .expect("aligned dims are never smaller than true dims"),
-            )
-        };
-        Ok(PendingKey {
-            frame,
-            stats,
-            bufs: crate::port_tf_driver::TfPicBufs::from_aligned_planes(
-                &y_pad,
-                &u_pad,
-                &v_pad,
-                aw,
-                ah,
-                display_order,
-            ),
-            pic,
-        })
+        self.pd_ctx.scene_detect = sd;
+        self.pd_ctx.transition_detected = td;
     }
 
     /// Drain any pending output. Under `PredStructure::RandomAccess` this
@@ -1194,11 +1291,26 @@ impl EncodePipeline {
     /// stream is silently un-emitted.
     pub fn try_flush(&mut self) -> EncodeResult<Vec<u8>> {
         if self.pred_structure != crate::port_picstruct::PredStructure::RandomAccess
-            || (self.ra_input.is_empty() && self.pending_key.is_none())
+            || (self.ra_input.is_empty() && self.delayed_intra.is_none())
         {
             return Ok(alloc::vec::Vec::new());
         }
-        self.encode_ra_window()
+        // The last input carries `end_of_sequence_flag` — C reads it in
+        // `check_window_availability` (window never resolves past it) and
+        // `svt_aom_is_delayed_intra` (a trailing intra is NOT delayed).
+        if let Some(last) = self.ra_input.last_mut() {
+            last.is_eos = true;
+        }
+        // C releases the whole reorder queue at EOS in queue order — an
+        // intra-terminated release first when an intra is queued, then
+        // `mini_gop_size` windows, then the cut-short remainder
+        // (`pre_assignment_buffer_eos_flag`). Each `encode_ra_window` call
+        // commits exactly one release and always makes progress.
+        let mut out = alloc::vec::Vec::new();
+        while !self.ra_input.is_empty() || self.delayed_intra.is_some() {
+            out.extend_from_slice(&self.encode_ra_window()?);
+        }
+        Ok(out)
     }
 
     /// One random-access pre-assignment buffer's worth of packets.
@@ -1209,34 +1321,44 @@ impl EncodePipeline {
     /// decision produced one (`pic.has_show_existing`), which is exactly the
     /// display-order point C emits it at.
     fn encode_ra_window(&mut self) -> EncodeResult<Vec<u8>> {
-        // The held key frame alone: nothing buffered to give it a future
-        // window (EOS, or a back-to-back intra). Its lone-release pass still
-        // runs — C's reorder queue is just as empty there.
-        if self.ra_input.is_empty() {
-            let mut out = alloc::vec::Vec::new();
-            if self.pending_key.is_some() {
-                let scs_tf = self.ra_tf_scs();
-                let (q_weight, q_weight_denom) =
-                    crate::port_enc_mode_config::me::get_qp_based_th_scaling_factors(
-                        self.speed_config.preset > -1,
-                        u32::from(self.rc_config.qp),
-                    );
-                let rw = if self.true_width >= 64 { 4 } else { 1 };
-                let rh = if self.true_height >= 64 { 4 } else { 1 };
-                self.filter_pending_key(
-                    &scs_tf,
-                    q_weight,
-                    q_weight_denom,
-                    &mut alloc::vec::Vec::new(),
-                    /*first_future_hier=*/ None,
-                    rw,
-                    rh,
+        let mg = self.gop.mini_gop_size as usize;
+        // A held `prev_delayed_intra` with an empty queue still gets its
+        // deferred `mctf_frame` + `send_picture_out` — C's `process_pics`
+        // runs it ahead of any member work; here there are no members.
+        if self.ra_input.is_empty() && self.delayed_intra.is_some() {
+            let scs_tf = self.ra_tf_scs();
+            let (q_weight, q_weight_denom) =
+                crate::port_enc_mode_config::me::get_qp_based_th_scaling_factors(
+                    self.speed_config.preset > -1,
+                    u32::from(self.rc_config.qp),
                 );
-                out.extend_from_slice(&self.encode_pending_key()?);
-            }
-            return Ok(out);
+            let rw = if self.width >= 64 { 4 } else { 1 };
+            let rh = if self.height >= 64 { 4 } else { 1 };
+            self.filter_delayed_intra(
+                &scs_tf,
+                q_weight,
+                q_weight_denom,
+                &mut alloc::vec::Vec::new(),
+                /*first_future_hier=*/ None,
+                rw,
+                rh,
+                /*mg_len=*/ 0,
+            );
+            return Ok(self.encode_delayed_intra()?);
         }
-        let (mut pics, emit, frames_tf) = self.run_ra_picture_decision()?;
+        // Queue order decides the release shape: an intra inside the next
+        // `mg` entries terminates the release at `[tail + intra]`
+        // (`pre_assignment_buffer_intra_count > 0`, `pd_process.c:5478`);
+        // otherwise the release is the next `min(mg, len)` entries.
+        let kp = self.ra_input.iter().position(|f| f.is_key);
+        let (n, key_member) = match kp {
+            Some(kp) if kp < mg => (kp, true),
+            _ => (mg.min(self.ra_input.len()), false),
+        };
+        // One display-order pass of detection + histogram carry for every
+        // committed queue entry (`pd_process.c:5378-5386, 5449-5452`).
+        self.ra_pump_release(n + usize::from(key_member));
+        let (mut pics, emit, frames_tf) = self.run_ra_picture_decision(n, key_member)?;
         #[cfg(feature = "std")]
         if crate::dbgenv::medbg() {
             std::eprintln!(
@@ -1248,11 +1370,33 @@ impl EncodePipeline {
                     .collect::<alloc::vec::Vec<_>>()
             );
         }
-        // Drain the buffer up front: each index is visited exactly once (the
-        // emit order is a permutation), and holding the frames locally keeps
-        // `&mut self` free for the per-picture encode.
-        let mut frames = alloc::vec::Vec::new();
-        core::mem::swap(&mut frames, &mut self.ra_input);
+        // Drain only this release's members: the `scd_delay` spillover (and
+        // any post-intra frames past an intra-terminated release) stay
+        // buffered for the next release. Holding the drained frames locally
+        // keeps `&mut self` free for the per-picture encode.
+        let m = n + usize::from(key_member);
+        let mut frames: alloc::vec::Vec<RaBufferedFrame> =
+            self.ra_input.drain(..m).collect();
+        let stats_drained: alloc::vec::Vec<_> = self.ra_stats.drain(..m).collect();
+        if key_member && pics[n].as_ref().is_some_and(|p| p.is_delayed_intra) {
+            // `ctx->prev_delayed_intra = pcs` (`pd_process.c:5151-5154`): the
+            // intra member's send is replaced by the hold — its TF window and
+            // packet run inside the NEXT release's `process_pics`.
+            debug_assert!(frames.last().is_some_and(|f| f.is_key));
+            let kf = frames.pop().expect("the intra is the last member");
+            let stats = stats_drained[n]
+                .as_deref()
+                .expect("the intra gathered stats at push")
+                .clone();
+            self.delayed_intra = Some(DelayedIntra {
+                bufs: self.ra_tf_bufs(&kf),
+                frame: kf,
+                stats,
+                pic: pics[n]
+                    .clone()
+                    .expect("the intra's decision ran in the release"),
+            });
+        }
         // C `initial_rc_process` (src_ops): TPL runs between picture
         // decision and the encode loop — `tpl_prep_info` + `tpl_mc_flow` +
         // `generate_r0beta` per group base, producing each picture's `r0`,
@@ -1260,13 +1404,14 @@ impl EncodePipeline {
         // results the encode then reuses. `None` on every configuration
         // where C's `get_tpl` disables TPL.
         let mut tpl_stage = self.run_tpl_stage(&frames, &pics, &emit, &frames_tf)?;
-        self.pending_key_tpl = tpl_stage.as_mut().and_then(|s| s.key.take());
+        self.delayed_intra_tpl = tpl_stage.as_mut().and_then(|s| s.key.take());
         let mut out = alloc::vec::Vec::new();
-        // The held key frame's packet belongs ahead of this window's — the
-        // IDR is decode-first of the new GOP, and C emits it in that
-        // position (its own earlier release).
-        if self.pending_key_out.is_some() {
-            out.extend_from_slice(&self.encode_pending_key()?);
+        // `send_picture_out(ctx->prev_delayed_intra)` (`pd_process.c:5129`):
+        // the delayed intra's packet lands inside THIS release, after its
+        // `mctf_frame` in pass 4 staged `delayed_intra_out`, ahead of the
+        // member packets.
+        if self.delayed_intra_out.is_some() {
+            out.extend_from_slice(&self.encode_delayed_intra()?);
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
@@ -1351,15 +1496,27 @@ impl EncodePipeline {
     /// then `picture_decision_per_picture` — RPS + DPB + settings — in
     /// DECODE order, because `update_dpb` applies each picture's refresh
     /// mask to the toggle ring in coded order.
+    /// `n` non-intra members, plus — when `key_member` — the intra queue
+    /// entry at member index `n`. C's pre-assignment buffer holds the intra
+    /// like any other committed entry: `set_mini_gop_structure` splits the
+    /// `n + 1` buffer with `pcs->idr_flag` exceptions, and the intra goes
+    /// through passes 1-3 (`update_pred_struct_and_pic_type`,
+    /// `av1_generate_rps_info`, `init_pic_settings` — where its TL0
+    /// `transition_present` consumes `ctx->transition_detected`). Its
+    /// `mctf_frame`/`send_picture_out` defer to the next release via
+    /// `ctx->prev_delayed_intra` — the caller moves the member into
+    /// `self.delayed_intra` when `pics[n].is_delayed_intra`.
     fn run_ra_picture_decision(
         &mut self,
+        n: usize,
+        key_member: bool,
     ) -> EncodeResult<(
         alloc::vec::Vec<Option<crate::port_picstruct::PicParams>>,
         alloc::vec::Vec<usize>,
         alloc::vec::Vec<crate::port_tf_driver::TfPicBufs>,
     )> {
         use crate::port_picstruct as pp;
-        let n = self.ra_input.len() as u32;
+        let m = n + usize::from(key_member);
         let hier = self.gop.hierarchical_levels;
         // C `set_mrp_ctrl` (`enc_handle.c:3574`) — same call as the
         // low-delay path but with the RANDOM_ACCESS structure, whose caps
@@ -1397,17 +1554,19 @@ impl EncodePipeline {
             tf_params_per_type,
         };
 
-        // The buffer C releases is `pre_assignment_buffer_count` pictures
-        // with no intra pictures inside it (a mid-stream key drains first —
-        // see `try_encode_frame_420_ra`).
-        self.enc_pic.pre_assignment_buffer_count = n;
-        self.enc_pic.pre_assignment_buffer_intra_count = 0;
-        self.enc_pic.pre_assignment_buffer_idr_count = 0;
-        // `set_mini_gop_structure` reads `pic.picture_number` (the first
-        // picture's POC selects previous-MG init) and `pic.hierarchical_levels`
-        // (RTC arm only — `seq.rtc` is false here).
+        // The buffer C releases is `pre_assignment_buffer_count` committed
+        // queue entries — `n` non-intra members plus, for an
+        // intra-terminated release, the intra itself (member `n`): the
+        // `pcs->idr_flag` exceptions in the split see it.
+        self.enc_pic.pre_assignment_buffer_count = m as u32;
+        self.enc_pic.pre_assignment_buffer_intra_count = u32::from(key_member);
+        self.enc_pic.pre_assignment_buffer_idr_count = u32::from(key_member);
+        // `set_mini_gop_structure` reads `pic.picture_number` — the LAST
+        // committed entry's POC (`pcs` at `pd_process.c:5486` is the entry
+        // just appended) — and `pic.hierarchical_levels` (RTC arm only —
+        // `seq.rtc` is false here).
         let stub = pp::PicParams {
-            picture_number: self.ra_input[0].display_order,
+            picture_number: self.ra_input[m - 1].display_order,
             hierarchical_levels: hier,
             ..Default::default()
         };
@@ -1428,7 +1587,9 @@ impl EncodePipeline {
             &stub,
             u32::from(hier),
             /*startup_mg_size=*/ 0,
-            /*idr_flag=*/ false,
+            // The last committed entry's `pcs->idr_flag` — the intra's own
+            // flag on an intra-terminated release.
+            /*idr_flag=*/ key_member,
             /*enable_dg=*/ false,
             list0_only,
         );
@@ -1438,21 +1599,18 @@ impl EncodePipeline {
             "eval_sub_mini_gop is unported; hier < 5 cannot reach it"
         );
 
-        let mut pics: alloc::vec::Vec<Option<pp::PicParams>> = (0..n).map(|_| None).collect();
+        let mut pics: alloc::vec::Vec<Option<pp::PicParams>> = (0..m).map(|_| None).collect();
         let mut emit: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
 
         // `scs->calc_hist` (enc_handle.c:1353): the region histograms +
-        // `avg_luma` the TF window's `calc_ahd` reads are gathered for EVERY
-        // buffered input once any `tf_params_per_type` entry is enabled.
-        // (Scene-change detection, the other `calc_hist` consumer, is not
-        // part of this envelope.)
-        self.ra_stats.clear();
-        if tf_params_per_type.iter().any(|c| c.enabled) {
-            for pic_idx in 0..self.ra_input.len() {
-                let stats = self.gather_tf_stats(pic_idx);
-                self.ra_stats.push(Some(alloc::boxed::Box::new(stats)));
-            }
-        }
+        // `avg_luma` are gathered for EVERY buffered input at push time —
+        // the sharpness scene-transition arm makes `calc_hist` 1 in every
+        // RA config, not just TF-enabled ones.
+        debug_assert_eq!(
+            self.ra_stats.len(),
+            self.ra_input.len(),
+            "ra_stats must be parallel to ra_input"
+        );
 
         // The `enhanced_pic` + `pa_ref_pic_wrapper` pair every buffered
         // input owns in C: the padded aligned-dims planes the TF window's
@@ -1463,35 +1621,12 @@ impl EncodePipeline {
         let mut frames_tf: alloc::vec::Vec<crate::port_tf_driver::TfPicBufs> =
             alloc::vec::Vec::new();
         if tf_params_per_type.iter().any(|c| c.enabled) {
-            let (tw, th) = (self.true_width as usize, self.true_height as usize);
-            let (aw, ah) = (self.width as usize, self.height as usize);
-            let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
-            let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
+            // EVERY queued entry owns buffers — C's reorder-queue entries
+            // each carry `enhanced_pic`/`pa_ref_pic_wrapper`, and a member's
+            // TF window reaches past the release into the `scd_delay`
+            // spillover (`mg_pictures_array` + queue lookahead).
             for f in &self.ra_input {
-                let y_pad = if aw == tw && ah == th {
-                    f.y.clone()
-                } else {
-                    pad_plane_replicate(&f.y, tw, tw, th, aw, ah)
-                        .expect("aligned dims are never smaller than true dims")
-                };
-                let (u_pad, v_pad) = if f.u.is_empty() {
-                    (alloc::vec::Vec::new(), alloc::vec::Vec::new())
-                } else {
-                    (
-                        pad_plane_replicate(&f.u, cw, cw, ch, acw, ach)
-                            .expect("aligned dims are never smaller than true dims"),
-                        pad_plane_replicate(&f.v, cw, cw, ch, acw, ach)
-                            .expect("aligned dims are never smaller than true dims"),
-                    )
-                };
-                frames_tf.push(crate::port_tf_driver::TfPicBufs::from_aligned_planes(
-                    &y_pad,
-                    &u_pad,
-                    &v_pad,
-                    aw,
-                    ah,
-                    f.display_order,
-                ));
+                frames_tf.push(self.ra_tf_bufs(f));
             }
         }
 
@@ -1515,8 +1650,18 @@ impl EncodePipeline {
             let mut pic_idx_in_mg = alloc::vec::Vec::with_capacity(end - start + 1);
             for pic_idx in start..=end {
                 let first = pic_idx == start;
+                // The intra-terminated release's last member IS the intra:
+                // `pcs->idr_flag` runs the IDR arms of the pred-struct
+                // helpers and `picture_decision_per_picture`, and pass 3
+                // stamps `is_delayed_intra`.
+                let intra_member = key_member && pic_idx == m - 1;
                 let mut pic = pp::PicParams {
                     picture_number: self.ra_input[pic_idx].display_order,
+                    // `frm_hdr.frame_type` (`pd_process.c:5674-5679`): the
+                    // intra member is a KEY_FRAME — `generate_rps_info`'s
+                    // `set_key_frame_rps` arm resets the DPB on it.
+                    is_key_frame: intra_member,
+                    is_intra_only: intra_member,
                     slice_type: pp::SliceType::B,
                     pred_struct_type: pp::PredStructure::RandomAccess,
                     aligned_width: self.width,
@@ -1548,29 +1693,54 @@ impl EncodePipeline {
                     seq.pred_structure,
                     hier,
                     /*startup_mg_size=*/ 0,
-                    /*idr_flag=*/ false,
+                    /*idr_flag=*/ intra_member,
                     /*cra_flag=*/ false,
                 );
                 // `pred_struct_ptr` follows the (possibly cut-short) type
                 // and the MINI-GOP's level, not the sequence's.
                 pic.pred_struct_entry_count = 1u32 << pic.hierarchical_levels;
-                let _slice = pp::update_pred_struct_and_pic_type(
+                pic.slice_type = pp::update_pred_struct_and_pic_type(
                     &mut pic,
                     &mut self.enc_pic,
                     &mut self.mg_map,
                     &mut self.pd_ctx,
                     mg_idx,
                     /*pre_assignment_buffer_first_pass_flag=*/ first,
-                    /*idr_flag=*/ false,
+                    /*idr_flag=*/ intra_member,
                     /*cra_flag=*/ false,
                     /*init_pred_struct_position_flag=*/ first && init_pos_flag,
                     /*init_pic_index=*/ 0,
                 );
-                // `pd_process.c:5563-5590`: a B slice bumps both elapsed
-                // counters, clipped. (`elapsed_non_idr_count` has no reader
-                // in the ported subset; the CRA one feeds the position walk.)
-                self.enc_pic.elapsed_non_cra_count =
-                    self.enc_pic.elapsed_non_cra_count.saturating_add(1);
+                if intra_member {
+                    // `svt_aom_is_delayed_intra` (`pd_process.c:3620-3635`),
+                    // stamped where C computes it — before `init_pic_settings`'s
+                    // `copy_tf_params` reads it. An IDR in RA with a live
+                    // intra period is held for the next release unless it IS
+                    // the sequence's last input (`end_of_sequence_flag`).
+                    pic.is_delayed_intra = pp::is_delayed_intra(
+                        /*idr_flag=*/ true,
+                        /*cra_flag=*/ false,
+                        seq.pred_structure,
+                        self.gop.intra_period as i32,
+                        self.ra_input[pic_idx].is_eos,
+                        self.enc_pic.pre_assignment_buffer_count,
+                        pic.pred_struct_entry_count,
+                    );
+                }
+                // `pd_process.c:5563-5590`'s slice-type switch: an I slice
+                // RESETS `elapsed_non_cra_count` (and, for an IDR, stamps
+                // `ctx->key_poc`); a B slice bumps both elapsed counters,
+                // clipped. (`elapsed_non_idr_count` has no reader in the
+                // ported subset; the CRA one feeds the position walk.)
+                if pic.slice_type == pp::SliceType::I {
+                    self.enc_pic.elapsed_non_cra_count = 0;
+                    if intra_member {
+                        self.pd_ctx.key_poc = pic.picture_number;
+                    }
+                } else {
+                    self.enc_pic.elapsed_non_cra_count =
+                        self.enc_pic.elapsed_non_cra_count.saturating_add(1);
+                }
                 // `pd_process.c:5548/4869/5559`: position AFTER the walk
                 // indexes the entry; the entry carries the temporal layer.
                 let pos = self.enc_pic.pred_struct_position as usize;
@@ -1621,16 +1791,14 @@ impl EncodePipeline {
             // C `ref_pa_pic_ptr_array[list][0]`'s `avg_luma` — the PA
             // reference object's luma mean (`pic_analysis_process.c:2003`),
             // resolved for `get_similar_ref_brightness` inside
-            // `init_pic_settings`. A reference can name three kinds of
+            // `init_pic_settings`. A reference can name two kinds of
             // picture here: an in-window member (its `ra_stats` slot — the
-            // same gather `avg_luma` was stamped from), the held key
-            // (staged, not yet encoded — its `avg_luma` lives on its
-            // `PicParams`), or a prior window's coded picture (the
-            // DPB-mirrored `pa_slots` pyramid). `INVALID_LUMA` when the
-            // reference can't be resolved — which is also C's answer
-            // whenever `calc_hist` is off, since every arm is gated
-            // upstream. Scoped to pass 3 so the field borrows end before
-            // pass 4's `&mut self` filter prep.
+            // same gather `avg_luma` was stamped from) or a prior window's
+            // coded picture (the DPB-mirrored `pa_slots` pyramid).
+            // `INVALID_LUMA` when the reference can't be resolved — which
+            // is also C's answer whenever `calc_hist` is off, since every
+            // arm is gated upstream. Scoped to pass 3 so the field borrows
+            // end before pass 4's `&mut self` filter prep.
             let pa_luma = |poc: u64, slot: usize| -> u64 {
                 if let Some(i) = self.ra_input.iter().position(|f| f.display_order == poc) {
                     return self
@@ -1639,12 +1807,25 @@ impl EncodePipeline {
                         .and_then(|s| s.as_deref())
                         .map_or(pp::INVALID_LUMA, |s| s.avg_luma);
                 }
-                if let Some(k) = self
-                    .pending_key
+                // The delayed intra (C's `prev_delayed_intra`) is a viable
+                // reference target for the NEXT release's members — the
+                // new GOP's L0 anchor. Its PA mean sits on `DelayedIntra`
+                // before pass 4's `mctf_frame`, then on the staged output's
+                // `PicParams` (`pcs->avg_luma` — stamped at member
+                // construction from the same gather) after the hold moves.
+                if let Some(d) = self
+                    .delayed_intra
                     .as_ref()
-                    .filter(|k| k.frame.display_order == poc)
+                    .filter(|d| d.frame.display_order == poc)
                 {
-                    return k.pic.avg_luma;
+                    return d.stats.avg_luma;
+                }
+                if let Some((_, p)) = self
+                    .delayed_intra_out
+                    .as_ref()
+                    .filter(|(_, p)| p.picture_number == poc)
+                {
+                    return p.avg_luma;
                 }
                 self.pa_slots
                     .get(slot)
@@ -1672,7 +1853,12 @@ impl EncodePipeline {
                          the ported tables [C: logs the same config as an error]",
                     ))
                 })?;
-                emit.push(pic_idx);
+                // `pd_process.c:5151-5154`: the delayed intra's send is
+                // replaced by the `ctx->prev_delayed_intra` hold — its
+                // packet emits inside the NEXT release.
+                if !pic.is_delayed_intra {
+                    emit.push(pic_idx);
+                }
             }
 
             // ---- Pass 4, DISPLAY order (`pd_process.c:5090-5132`) ----
@@ -1689,13 +1875,9 @@ impl EncodePipeline {
     /// `svt_aom_gathering_picture_statistics` for one buffered RA input
     /// (`pic_analysis_process.c:1960-2006`): pad the luma to aligned dims,
     /// decimate to the 1/16 plane, then gather the region histograms and
-    /// `avg_luma` the TF window's `calc_ahd` reads.
-    fn gather_tf_stats(&self, pic_idx: usize) -> crate::port_preanalysis::PictureStatistics {
-        self.gather_tf_stats_frame(&self.ra_input[pic_idx])
-    }
-
-    /// [`Self::gather_tf_stats`] on an explicit frame — the pending key's
-    /// staging path needs the same gather outside `ra_input`.
+    /// `avg_luma` the TF window's `calc_ahd` reads — and, now that
+    /// `calc_hist` is always on in RA, the scene-transition detector's
+    /// per-region histograms and intensities.
     fn gather_tf_stats_frame(
         &self,
         frame: &RaBufferedFrame,
@@ -1713,8 +1895,11 @@ impl EncodePipeline {
         };
         let pa =
             crate::inter_me_arm::PaPicture::from_source(&y_pad, aw, aw, ah, frame.display_order);
-        let regions_per_width = if self.true_width >= 64 { 4 } else { 1 };
-        let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
+        // `scs->picture_analysis_number_of_regions_per_*` keys on
+        // `max_input_luma_*` AFTER the `MIN_BLOCK_SIZE` pad — the aligned
+        // dims (`enc_handle.c:4392-4397`).
+        let regions_per_width = if self.width >= 64 { 4 } else { 1 };
+        let regions_per_height = if self.height >= 64 { 4 } else { 1 };
         let mut stats = crate::port_preanalysis::PictureStatistics::default();
         crate::port_preanalysis::gathering_picture_statistics(
             /*calc_hist=*/ true,
@@ -1746,18 +1931,20 @@ impl EncodePipeline {
     /// 4. an I slice publishes its filt/unfilt difference back to the
     ///    context (`:5124`).
     ///
-    /// The delayed-intra slot (`:5103-5110`) is unreachable here: a
-    /// mid-stream key drains the partial window and takes the sequential
-    /// path before any of this runs, so no buffered picture is
-    /// `is_delayed_intra` today — the `continue` is kept for the day that
-    /// changes. `gm_pp_enabled`'s base-layer toggle (`:5117-5120`) has no
-    /// ported consumer yet and is noted rather than reproduced.
+    /// The delayed-intra slot (`:5103-5110`): an `is_delayed_intra` member
+    /// skips this loop — its `mctf_frame` runs inside the NEXT release's
+    /// `process_pics` via `filter_delayed_intra`, exactly C's
+    /// `prev_delayed_intra` ordering. `gm_pp_enabled`'s base-layer toggle
+    /// (`:5117-5120`) has no ported consumer yet and is noted rather than
+    /// reproduced.
     /// The `RaTfScs` bundle `run_ra_tf_prep` builds — extracted so the held
     /// key frame's lone-release path (EOS, or a back-to-back intra) runs the
     /// same scaffolding.
     fn ra_tf_scs(&self) -> crate::port_tf_driver::RaTfScs {
-        let regions_per_width = if self.true_width >= 64 { 4 } else { 1 };
-        let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
+        // Same `max_input_luma_*` (post-`MIN_BLOCK_SIZE`-pad) key as the
+        // gather — `enc_handle.c:4392-4397`.
+        let regions_per_width = if self.width >= 64 { 4 } else { 1 };
+        let regions_per_height = if self.height >= 64 { 4 } else { 1 };
         // `derive_vq_params`' `vq_ctrls.sharpness_ctrls.tf`
         // (`enc_handle.c:3277-3293`): on for the subjective tunes only.
         let vq_sharpness_tf =
@@ -1799,13 +1986,15 @@ impl EncodePipeline {
         }
     }
 
-    /// The held key frame's `mctf_frame` (`pd_process.c:5103-5132`), run
-    /// ahead of the buffered window's pass-3. The future members C pulls
-    /// from the reorder queue are `self.ra_input` — the buffered mini-GOP;
-    /// an empty buffer is the lone-release case (EOS or back-to-back
-    /// intra), where C's queue was just as empty. The filtered buffers land
-    /// in `pending_key_out` for `encode_ra_window` to emit.
-    fn filter_pending_key(
+    /// `ctx->prev_delayed_intra`'s `mctf_frame` (`pd_process.c:5103-5132`),
+    /// run at the head of the FOLLOWING release's `process_pics` — ahead of
+    /// the member loop so its `:5124` publish lands before any member
+    /// inherits `:5122`. The future members C pulls from the released
+    /// buffer's `mg_pictures_array` are this release's `mg_len` `frames`;
+    /// `mg_len == 0` is the lone-release case (EOS), where C's buffer was
+    /// just as empty. The filtered buffers land in `delayed_intra_out` for
+    /// `encode_ra_window` to emit ahead of the member packets.
+    fn filter_delayed_intra(
         &mut self,
         scs_tf: &crate::port_tf_driver::RaTfScs,
         q_weight: u32,
@@ -1814,16 +2003,15 @@ impl EncodePipeline {
         first_future_hier: Option<u8>,
         regions_per_width: usize,
         regions_per_height: usize,
+        mg_len: usize,
     ) {
         use crate::port_picstruct as pp;
-        let Some(key) = self.pending_key.take() else {
+        let Some(key) = self.delayed_intra.take() else {
             return;
         };
-        // The staged decision IS the pcs C carries — slice I, delayed intra
-        // under RA, the sequence's `hierarchical_levels`
-        // (`pd_process.c:968`), tl 0, `update_type` from
-        // `set_frame_update_type`.
-        let mut pic = key.pic.clone();
+        // The member's decision IS the pcs C carries — slice I, delayed
+        // intra, decided in its own release.
+        let mut pic = key.pic;
         // `derive_tf_window_params`' key-frame pred-structure fixup
         // (`pd_process.c:3936-3943`): when the first future picture's
         // hierarchy differs from the delayed intra's, the intra adopts the
@@ -1915,12 +2103,14 @@ impl EncodePipeline {
                 0
             };
             // `pcs->idr_flag` arm of `derive_tf_window_params`
-            // (`:3964-3998`): centre at slot 0, future from the reorder
-            // queue — the buffered mini-GOP head here.
+            // (`:3964-3998`): centre at slot 0, future from the released
+            // buffer's `mg_pictures_array` — this release's `mg_len`
+            // members (`ra_input[..mg_len]` while they still sit in the
+            // queue, `frames` for their bufs).
             let empty_hist: alloc::boxed::Box<pp::RegionHistograms> =
                 alloc::boxed::Box::new([[[0u32; 256]; 4]; 4]);
             let mut key_cands: alloc::vec::Vec<pp::TfWindowCand<'_>> =
-                alloc::vec::Vec::with_capacity(self.ra_input.len() + 1);
+                alloc::vec::Vec::with_capacity(mg_len + 1);
             key_cands.push(pp::TfWindowCand {
                 picture_number: key.frame.display_order,
                 frame_width: self.true_width,
@@ -1929,7 +2119,7 @@ impl EncodePipeline {
                 avg_luma: key.stats.avg_luma,
                 picture_histogram: &key.stats.picture_histogram,
             });
-            key_cands.extend((0..self.ra_input.len()).map(|i| {
+            key_cands.extend((0..mg_len).map(|i| {
                 let st = self.ra_stats.get(i).and_then(|s| s.as_deref());
                 pp::TfWindowCand {
                     picture_number: self.ra_input[i].display_order,
@@ -1973,13 +2163,16 @@ impl EncodePipeline {
             pic.tf_avg_ahd_error = window.tf_avg_ahd_error;
             pic.tf_window = Some(alloc::boxed::Box::new(window));
             // The window's member indexes address the combined buffer view:
-            // the key at 0, the buffered pictures after it.
+            // the intra at 0, this release's members after it.
             frames.insert(0, key.bufs);
             let mut member_stats: alloc::vec::Vec<
                 Option<alloc::boxed::Box<crate::port_preanalysis::PictureStatistics>>,
-            > = alloc::vec::Vec::with_capacity(self.ra_stats.len() + 1);
+            > = alloc::vec::Vec::with_capacity(mg_len + 1);
             member_stats.push(Some(alloc::boxed::Box::new(key.stats)));
-            member_stats.extend(self.ra_stats.iter().cloned());
+            member_stats.extend(self.ra_stats.iter().take(mg_len).cloned());
+            #[cfg(feature = "std")]
+            std::eprintln!("TFDI frames={} mg_len={} members={:?}", frames.len(), mg_len,
+                pic.tf_window.as_ref().map(|w| w.members.iter().flatten().map(|m| m.index).collect::<alloc::vec::Vec<_>>()));
             let out = crate::port_tf_driver::ra_mctf_filter(
                 scs_tf,
                 /*centre_slot=*/ 0,
@@ -1997,30 +2190,32 @@ impl EncodePipeline {
                 self.pd_ctx.last_i_noise_levels_log1p_fp16[0] >= pp::VQ_NOISE_LVL_TH;
             // `:5124` — an I slice publishes its measured difference.
             pp::tf_publish_filt_to_unfilt_diff(&mut self.pd_ctx, &pic);
-            self.pending_key_out = Some((bufs, pic));
+            self.delayed_intra_out = Some((bufs, pic));
         } else {
             // Disabled ctrls still take the stamp + publish (`:4240`, `:5124`);
             // the bufs pass through unfiltered.
             pic.is_noise_level =
                 self.pd_ctx.last_i_noise_levels_log1p_fp16[0] >= pp::VQ_NOISE_LVL_TH;
             pp::tf_publish_filt_to_unfilt_diff(&mut self.pd_ctx, &pic);
-            self.pending_key_out = Some((key.bufs, pic));
+            self.delayed_intra_out = Some((key.bufs, pic));
         }
     }
 
-    /// Emit the held key frame's packet — the filtered (or pass-through)
-    /// aligned planes. The decision ran at STAGING (`stage_pending_key`),
-    /// so it arrives as `decided` like any window picture; re-running it
-    /// here would advance the `pd_ctx` toggles a second time.
-    fn encode_pending_key(&mut self) -> EncodeResult<Vec<u8>> {
-        let Some((bufs, pic)) = self.pending_key_out.take() else {
+    /// Emit the delayed intra's packet — the filtered (or pass-through)
+    /// aligned planes, C's `send_picture_out(ctx->prev_delayed_intra)`
+    /// (`pd_process.c:5129`). The decision ran in the intra's own release
+    /// as a buffer member, so it arrives as `decided` like any window
+    /// picture; re-running it here would advance the `pd_ctx` toggles a
+    /// second time.
+    fn encode_delayed_intra(&mut self) -> EncodeResult<Vec<u8>> {
+        let Some((bufs, pic)) = self.delayed_intra_out.take() else {
             return Ok(alloc::vec::Vec::new());
         };
         let aw = self.width as usize;
         let y_f = bufs.extract_luma();
         let u_f = bufs.extract_u();
         let v_f = bufs.extract_v();
-        let tpl = self.pending_key_tpl.take();
+        let tpl = self.delayed_intra_tpl.take();
         self.encode_frame_impl(
             &y_f,
             aw,
@@ -2043,8 +2238,10 @@ impl EncodePipeline {
         use crate::port_picstruct as pp;
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let cw = tw.div_ceil(2);
-        let regions_per_width = if self.true_width >= 64 { 4 } else { 1 };
-        let regions_per_height = if self.true_height >= 64 { 4 } else { 1 };
+        // `scs->picture_analysis_number_of_regions_per_*` — aligned dims
+        // (`enc_handle.c:4392-4397`).
+        let regions_per_width = if self.width >= 64 { 4 } else { 1 };
+        let regions_per_height = if self.height >= 64 { 4 } else { 1 };
         let scs_tf = self.ra_tf_scs();
         // `set_qp_based_th_scaling_ctrls_default` (enc_handle.c:3785-3816):
         // `tf_ref_qp_based_th_scaling` is off only at ENC_MR (preset -1).
@@ -2054,11 +2251,13 @@ impl EncodePipeline {
                 u32::from(self.rc_config.qp),
             );
 
-        // The held key frame's `mctf_frame` belongs ahead of this window's
-        // pass-3: C processed it in its own (earlier) release, so its
-        // `filt_to_unfilt_diff` publish and the noise carry must land before
-        // the buffered pictures inherit (`pd_process.c:5103-5132`).
-        self.filter_pending_key(
+        // `ctx->prev_delayed_intra`'s `mctf_frame` + `send_picture_out`
+        // run at the head of THIS release's `process_pics`
+        // (`pd_process.c:5103-5131`) — ahead of the member loop, so the
+        // intra's `filt_to_unfilt_diff` publish and noise carry land before
+        // the members inherit `:5122`, and `delayed_intra_out` stages for
+        // `encode_ra_window`'s emit-ahead.
+        self.filter_delayed_intra(
             &scs_tf,
             q_weight,
             q_weight_denom,
@@ -2066,6 +2265,10 @@ impl EncodePipeline {
             pics[0].as_ref().map(|p| p.hierarchical_levels),
             regions_per_width,
             regions_per_height,
+            // The intra's future window is this release's `mg_pictures_array`
+            // — the `pics` member count, not the deeper queue `frames`
+            // covers.
+            pics.len(),
         );
 
         // The candidate view `assemble_tf_window` searches: every buffered
@@ -2081,7 +2284,13 @@ impl EncodePipeline {
                     picture_number: self.ra_input[i].display_order,
                     frame_width: self.true_width,
                     frame_height: self.true_height,
-                    hierarchical_levels: pics[i].as_ref().map_or(0, |p| p.hierarchical_levels),
+                    // Members carry their decided level; spillover entries
+                    // deeper in the queue have no decision yet — C's pcs
+                    // ctor value, `scs->static_config.hierarchical_levels`.
+                    hierarchical_levels: pics
+                        .get(i)
+                        .and_then(|o| o.as_ref())
+                        .map_or(self.gop.hierarchical_levels, |p| p.hierarchical_levels),
                     avg_luma: st.map_or(crate::port_preanalysis::INVALID_LUMA, |s| s.avg_luma),
                     picture_histogram: st.map_or(&*empty_hist, |s| &s.picture_histogram),
                 }
@@ -2208,6 +2417,9 @@ impl EncodePipeline {
                 // picture inherits the stale carried value at `:5122`. The
                 // filtered pixels land in `frames[pic_idx]`, which the
                 // encode loop substitutes for the source.
+                #[cfg(feature = "std")]
+                std::eprintln!("TFMEM pic_idx={pic_idx} frames={} members={:?}", frames.len(),
+                    pics[pic_idx].as_ref().unwrap().tf_window.as_ref().map(|w| w.members.iter().flatten().map(|m| m.index).collect::<alloc::vec::Vec<_>>()));
                 let out = crate::port_tf_driver::ra_mctf_filter(
                     &scs_tf,
                     pic_idx,
@@ -2367,7 +2579,7 @@ impl EncodePipeline {
             pp::TplControls,
             u8,
             &crate::inter_me_arm::PaPicture,
-        )> = self.pending_key_out.as_ref().map(|(bufs, pic)| {
+        )> = self.delayed_intra_out.as_ref().map(|(bufs, pic)| {
             let (t, synth) = pic_tpl(pic);
             (pic.clone(), t, synth, &bufs.pa)
         });
@@ -2409,7 +2621,7 @@ impl EncodePipeline {
 
         // Resolve a reference POC to its PA source: an in-window member's
         // own `ra_pa` entry, the held key's pyramid (staged but not yet in
-        // `pa_slots` — `run_tpl_stage` runs before `encode_pending_key`),
+        // `pa_slots` — `run_tpl_stage` runs before `encode_delayed_intra`),
         // else the coded picture's `pa_slots` DPB pyramid — the three
         // origins C's `ref_pa_pic_ptr_array` merges.
         let pa_for_poc = |poc: u64, slot: usize| -> Option<&crate::inter_me_arm::PaPicture> {
@@ -8162,10 +8374,11 @@ impl EncodePipeline {
                     ref_frame_sign_bias: pic_decision
                         .as_ref()
                         .map_or([0; 8], |p| p.ref_frame_sign_bias),
-                    // Stamped below, once the availability-filtered
-                    // `inter_ref_types` exists — C's gate reads the same
-                    // list the MVP driver iterates.
-                    symmetric_refs: false,
+                    // Stamped below with `pic_decision` — the picture-level
+                    // `temporal_layer_index > 0 && RANDOM_ACCESS` half of
+                    // C's `symteric_refs` gate; the list half is evaluated
+                    // per call inside `generate_av1_mvp_table`.
+                    symmetric_refs_eligible: false,
                     // C `av1_setup_motion_field`, run over this picture's own
                     // DPB references. On a two-frame cell every projection
                     // returns 0 — LAST is the KEY frame and C aborts on
@@ -8390,20 +8603,18 @@ impl EncodePipeline {
                         || inter_padded_by_ref[rf[1].max(0) as usize].is_some())
             })
             .collect();
-        // C `pcs->av1_cm->symteric_refs` (adaptive_mv_pred.c's
-        // `svt_aom_generate_av1_mvp_table` gate :1338-1347): a RA B picture
-        // above temporal layer 0 whose ENTIRE ref list is
-        // {LAST, BWDREF, LAST_BWD} reuses the LAST pass's projected MV as
-        // the BWD pass's, negated. The gate reads the same
-        // `ref_frame_type_arr` the driver iterates — the filtered list —
-        // and lands on the env so both the MD stacks and the entropy-side
-        // `inter_mvp_fields` rebuild see it.
+        // C's `symteric_refs` preconditions (adaptive_mv_pred.c:1339-1341):
+        // a RA B picture above temporal layer 0. The LIST half of C's gate
+        // ({LAST, BWDREF, LAST_BWD}) is evaluated per call inside
+        // `generate_av1_mvp_table` on the block's own ref array —
+        // `determine_best_references` may rebuild a block's
+        // `ref_frame_type_arr` in an order the gate rejects even when the
+        // picture-level list passes, so stamping the whole gate here is
+        // wrong. `inter_mvp_fields` reads the same eligibility so the
+        // coded stack matches MD's.
         if let (Some(env), Some(pic)) = (inter_mvp_env.as_mut(), pic_decision.as_ref()) {
-            env.symmetric_refs = crate::inter_mvp::symmetric_refs_gate(
-                pic.temporal_layer_index,
-                self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess,
-                &inter_ref_types,
-            );
+            env.symmetric_refs_eligible = pic.temporal_layer_index > 0
+                && self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess;
         }
         #[cfg(feature = "std")]
         if crate::dbgenv::rpsdbg()
@@ -13964,9 +14175,19 @@ impl EntropyCtx {
         // projection, so seed it with a LAST pass first exactly as the
         // driver does. LAST_FRAME is always in the list when the gate
         // fired ({LAST, BWDREF, LAST_BWD}).
-        let stack = if mvp_env.symmetric_refs && ref_frame_type != crate::inter_mvp::LAST_FRAME {
+        //
+        // The seeded build is also value-correct for a block whose OWN
+        // `symteric_refs` evaluated false (a `determine_best_references`
+        // reorder): the mirror is the sign-exact negation of the
+        // projection the non-symmetric arm computes, so either path
+        // yields the same stack C left on `ctx->ref_mv_stack`.
+        let stack = if mvp_env.symmetric_refs_eligible
+            && ref_frame_type != crate::inter_mvp::LAST_FRAME
+        {
+            let mut seeded_env = mvp_env;
+            seeded_env.symmetric_refs = true;
             let gm_last = crate::inter_mvp::gm_mv_candidates_for(
-                &mvp_env,
+                &seeded_env,
                 crate::inter_mvp::LAST_FRAME,
                 bsize,
                 mi_col,
@@ -13975,14 +14196,14 @@ impl EntropyCtx {
             let last = crate::inter_mvp::setup_ref_mv_list(
                 &grid,
                 &ctx,
-                &mvp_env,
+                &seeded_env,
                 crate::inter_mvp::LAST_FRAME,
                 gm_last,
             );
             crate::inter_mvp::setup_ref_mv_list_seeded(
                 &grid,
                 &ctx,
-                &mvp_env,
+                &seeded_env,
                 ref_frame_type,
                 gm_mv,
                 last.mv_ref0,
@@ -22804,6 +23025,7 @@ mod inter_decision_probe {
             tpl_mvs: &tpl_mvs,
             tpl_stride,
             sb64_sq_no4xn_geom: true,
+            symmetric_refs_eligible: false,
             symmetric_refs: false,
         };
 
@@ -23273,7 +23495,7 @@ mod inter_decision_probe {
             cur_order_hint: 1,
             ref_order_hint: [0; 8],
             ref_frame_sign_bias: [0; 8],
-            symmetric_refs: false,
+            symmetric_refs_eligible: false,
             tpl_mvs: vec![
                 crate::inter_mvp::TplMvRef::default();
                 (((mi_rows + 32) >> 1) * tpl_stride) as usize

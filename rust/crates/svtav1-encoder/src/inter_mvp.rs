@@ -574,8 +574,22 @@ pub struct InterMvpEnv<'a> {
     /// C `ctx->sb64_sq_no4xn_geom` — selects the simplified MFMV block
     /// walk (64x64 SB, square, no 4xN).
     pub sb64_sq_no4xn_geom: bool,
+    /// C's picture-level `symteric_refs` preconditions
+    /// (adaptive_mv_pred.c:1339-1341): `pcs->temporal_layer_index > 0`
+    /// under `pred_structure == RANDOM_ACCESS`. The FULL gate is evaluated
+    /// per call inside [`generate_av1_mvp_table`] against the ref list it
+    /// is actually driven with — `determine_best_references` can reorder a
+    /// block's `ref_frame_type_arr` away from `{LAST, BWDREF, LAST_BWD}`,
+    /// which turns the shortcut off for that block even when the
+    /// picture-level list would pass. Stamping the whole gate at picture
+    /// level read `{1,5,8}` where C read e.g. `{5,8,1}` and produced empty
+    /// compound ref-mv stacks (MEASURED: poc3 block (64,64)64x64 of a
+    /// 5-frame RA encode — C's stack had 5 entries, the port's 2).
+    pub symmetric_refs_eligible: bool,
     /// C `symteric_refs` (sic) — the LAST/BWD symmetric-projection
-    /// shortcut, set by `generate_av1_mvp_table` (:1339-1347).
+    /// shortcut, set by `generate_av1_mvp_table` (:1339-1347) per ref-list
+    /// argument. Never stamped at picture level; [`generate_av1_mvp_table`]
+    /// derives it per call.
     pub symmetric_refs: bool,
 }
 
@@ -1784,6 +1798,18 @@ pub fn generate_av1_mvp_table(
     bsize: usize,
     ref_frames: &[i8],
 ) -> alloc::vec::Vec<InterMvpStack> {
+    // C `symteric_refs` (adaptive_mv_pred.c:1338-1347): evaluated HERE, on
+    // the ref list THIS call is driven with — `ctx->ref_frame_type_arr`,
+    // which `determine_best_references` may have reordered away from
+    // `{LAST, BWDREF, LAST_BWD}` per block. The picture-level
+    // `ref_frame_type_arr` can pass the list test while a block's rebuilt
+    // one cannot, and the shortcut's `mv_ref0` shortcut reads slots the
+    // LAST pass wrote — so evaluating it once per picture on the wrong
+    // list both desyncs the compound stack order (the reorder runs
+    // LAST_BWD before LAST) and wrongly arms the mirror.
+    let mut env = *env;
+    env.symmetric_refs = symmetric_refs_gate(env.symmetric_refs_eligible, ref_frames);
+    let env = &env;
     // C's `Mv mv_ref0[64]` is ONE local, shared across the whole ref loop
     // (adaptive_mv_pred.c:1336) — the symmetric-refs shortcut depends on
     // that sharing, so thread it here rather than restarting per ref.
@@ -1847,19 +1873,14 @@ pub fn gm_mv_candidates_for(
 }
 
 /// C `svt_aom_generate_av1_mvp_table`'s `symteric_refs` gate
-/// (adaptive_mv_pred.c:1338-1347). `pred_structure_is_random_access` is
-/// C's `scs->static_config.pred_structure == RANDOM_ACCESS`.
-pub fn symmetric_refs_gate(
-    temporal_layer_index: u8,
-    pred_structure_is_random_access: bool,
-    ref_frames: &[i8],
-) -> bool {
-    temporal_layer_index > 0
-        && pred_structure_is_random_access
-        && ref_frames.len() == 3
-        && ref_frames[0] == LAST_FRAME
-        && ref_frames[1] == BWDREF_FRAME
-        && ref_frames[2] == LAST_BWD_FRAME
+/// (adaptive_mv_pred.c:1338-1347). `symteric_refs_eligible` is the
+/// picture-level half — C's `pcs->temporal_layer_index > 0 &&
+/// scs->static_config.pred_structure == RANDOM_ACCESS` — and the
+/// `ref_frames` half is evaluated on the list the call is driven with,
+/// exactly as C reads `ctx->ref_frame_type_arr` (which
+/// `determine_best_references` may have reordered per block).
+pub fn symmetric_refs_gate(symteric_refs_eligible: bool, ref_frames: &[i8]) -> bool {
+    symteric_refs_eligible && ref_frames == [LAST_FRAME, BWDREF_FRAME, LAST_BWD_FRAME]
 }
 
 // ---------------------------------------------------------------------------

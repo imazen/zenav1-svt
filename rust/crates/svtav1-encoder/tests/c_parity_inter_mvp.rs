@@ -343,6 +343,7 @@ fn c_parity_setup_ref_mv_list_inter() {
                         tpl_mvs: &tpl,
                         tpl_stride: TPL_STRIDE,
                         sb64_sq_no4xn_geom: sb64_geom,
+                        symmetric_refs_eligible: false,
                         symmetric_refs: symmetric,
                     };
                     let c_env = env_to_c(&env);
@@ -824,6 +825,7 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
         tpl_mvs: &tpl,
         tpl_stride: TPL_STRIDE,
         sb64_sq_no4xn_geom: false,
+        symmetric_refs_eligible: false,
         symmetric_refs: false,
     };
     let c_env = env_to_c(&env);
@@ -1033,7 +1035,7 @@ fn c_parity_generate_av1_mvp_table_threads_mv_ref0() {
     // C's symteric_refs gate fires only for exactly this ref list.
     let ref_frames = [1i8, 5, 8]; // LAST_FRAME, BWDREF_FRAME, LAST_BWD_FRAME
     assert!(
-        rmvp::symmetric_refs_gate(1, true, &ref_frames),
+        rmvp::symmetric_refs_gate(true, &ref_frames),
         "the gate must accept the ref list this test is built on"
     );
     let mut checked = 0u64;
@@ -1079,6 +1081,10 @@ fn c_parity_generate_av1_mvp_table_threads_mv_ref0() {
             tpl_mvs: &tpl,
             tpl_stride: TPL_STRIDE,
             sb64_sq_no4xn_geom: false,
+            // Eligible at picture level AND the [1,5,8] list — the derived
+            // per-call gate fires, matching the `symteric_refs` the C env
+            // below carries.
+            symmetric_refs_eligible: true,
             symmetric_refs: true,
         };
         let c_env = env_to_c(&env);
