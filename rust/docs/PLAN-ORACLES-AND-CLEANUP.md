@@ -519,6 +519,17 @@ Order, by expected size:
 
 ## Maintenance backlog
 
+- [ ] `obmc_gate.sh` is red in CI shard 3 (owner: leave red until
+  explained). It had never run in CI: `global_motion_gate.sh` stopped the
+  step before it. Three p0 cells select fewer OBMC blocks than their
+  2026-09-11 floors: vidyo3 256 118 (138), vidyo1 256 58 (76), vidyo3 128 40
+  (62); recon == dav1d everywhere. Bisected to `606c4accd` (wm_level-1 warp
+  injection, the same commit as the GM re-pin). Frame 1 of all three is NOT
+  byte-identical to C, so parity does not settle what C's OBMC count is.
+  Next: count C's motion modes on those cells (temporary C instrumentation or
+  a C-side trace of `motion_mode`), then re-pin to C's behaviour or fix the
+  port. Brief: `obmc-count`.
+
 - [x] CI green (2026-09-25; the global_motion_gate re-pin below was
   owner-approved and landed with its evidence in the gate). Was: shard 3's
   `global_motion_gate.sh` (running in CI for the first time, now that the
