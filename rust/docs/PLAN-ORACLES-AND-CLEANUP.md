@@ -109,7 +109,13 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   stage histogram. The non-flat/video legs of the wider baseline remain
   open.
 - [ ] 3.2 Output-changing mainline-master commits:
-  - `1e3da1d7` HBD Hadamard in all-intra MDS0
+  - `1e3da1d7` (`1bdae047`) HBD Hadamard in all-intra MDS0: ported
+    `svt_aom_highbd_hadamard_{8x8(avx2),16x16,32x32}` as
+    `aom_highbd_hadamard_*`, gated on `GhostRobot` in `hadamard_satd_hbd`.
+    Grid 32/288 identical (unchanged) — the bd10 cells it moves (op 9→15
+    on photo-256-b10-p8-q32, payloads closer on six more) still hit
+    earlier divergences; kernel parity pinned in c_parity_hadamard
+    (avx2 multiset + composed _c oracle). Mainline control 288/288.
   - `8b1f9a0d` restoration-enable derivation
   - `507025f6` PD1/LPD1 switch
   - `ccdfdb09` fractional CRF above 63

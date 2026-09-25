@@ -1,0 +1,13 @@
+Ghost Robot port 1e3da1d7 (HBD Hadamard in all-intra MDS0), i265.
+Commit: 1bdae047 on main@origin.
+
+ghost-robot:    32/288 IDENTICAL (unchanged from baseline 32/288).
+  The port IS live: bd10 outputs changed on 7 cells — photo-256-b10-p8-q32
+  first divergence op 9 -> 15, six others moved stage/payload toward C
+  (photo-256-b10-p8-q20 tile payload 10680 -> 10657 vs C 11302B).
+  bd10 cells still diverge earlier (CDF11/CDF10 ops 0-8, FH fields) —
+  the hadamard fix lands but earlier mismatches dominate at other qps.
+mainline-4.2.0: 288/288 IDENTICAL (control).
+
+Gates: c_parity_hadamard 14/14 (4 new highbd pins), nextest 2774/2774,
+regression_spotcheck 147/147, output_pins 6/6 (no moves).
