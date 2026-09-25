@@ -480,3 +480,53 @@ commits, as was done for Chromedome. It preserves the v4.2.0 claim but
 keeps a private C fork alive. It also conflicts wherever fork commits build
 on mainline master work: the fused ac-bias/Hadamard kernels
 (`9144140a`) sit on master's `svt_psy_distortion` and Hadamard commits.
+
+### Instrumentation, and what a rebase does to it (measured 2026-09-25)
+
+The C tree carries no instrumentation. The only `getenv` in `Source/Lib`
+is `svt_log.c`, and `3115c0c1b` adds just one line of it. Differential
+tooling reaches C in two ways, which age very differently.
+
+**1. The trace driver survives a rebase almost untouched.**
+`tools/capture_c_trace/` is 4.2k lines: the driver, `wrap_recon.c` (41
+wraps, 74 `getenv` dump switches) and `wrap_odec.c` (the 6 range-coder
+wraps that produce the per-symbol trace). It interposes on 47 exported
+functions with `-Wl,--wrap`. Against Ghost Robot `9dabe3ca`:
+- all 47 functions exist with the same first signature line;
+- of 634 C identifiers the driver and wraps reference, only `qindex` is gone;
+- all 28 fork config fields set via `FORK_SET` exist in Ghost Robot's
+  `EbSvtAv1Enc.h`, which adds `enable_qmpsnr` and `luminance_qp_bias`.
+
+`build.sh` already guards staleness three ways, and refuses a trace on
+linkers without `--wrap`. The gap is a wrap that stops firing: if upstream
+makes a wrapped function `static` or inlines it across a unit, `--wrap`
+silently intercepts nothing and the dump comes back empty. Add a check
+that every wrapped function fired at least once on a cell known to reach
+it.
+
+**2. The `svtav1-cref` shims will not follow a rebase.** They are 28 C
+files (16.5k lines, 311 function definitions) behind the `c_parity_*`
+tests. Beyond exposing `static INLINE` helpers, they hold copies of
+`static` C bodies with line citations ("enc_cdef.c:823-872, verbatim";
+`mv_check_bounds`, "verbatim"). The files carry 299 `file.c:NNN`
+citations and 86 verbatim/replicate/copy markers.
+
+After a rebase those copies still hold the old C, so a passing
+`c_parity` test would then certify Rust against the previous oracle — a
+tool that reports a confidently wrong result. Before any rebase:
+- **Either** record each copied block with a hash of the cited C text at
+  the pinned SHA, in a gate that fails when the new pin's text differs;
+- **or** stop copying: compile the owning translation unit into the shim
+  (`#include "file.c"`) so statics track the pin automatically.
+
+**3. Rust-side citations go stale on a rebase.** Encoder and DSP source
+cite C by line 5,161 times. Every line shifts:
+`svt_aom_pick_partition` moves from `product_coding_loop.c:11010` to
+`:11337` in Ghost Robot. `rust/CLAUDE.md` already calls line numbers
+orientation only. A mechanical remap (a `git diff -U0` line map between
+the two pins, rewriting `file.c:N` in place) keeps them useful. Without it
+they turn into thousands of small misdirections.
+
+The Rust side's own tracing (the `symtrace` feature, the 87 `SVTAV1_*`
+knobs) is covered under S7. The per-symbol trace format it shares with
+`wrap_odec.c` is not version-dependent.
