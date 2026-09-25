@@ -12,11 +12,11 @@
 //! 7. Reconstruction and reference frame update
 //! 8. Bitstream packetization (OBU output)
 
-use alloc::vec;
 use crate::picture::{DecodedPictureBuffer, GopStructure, PictureControlSet, ReferenceFrame};
 use crate::rate_control::{RcConfig, RcState, assign_picture_qp, update_rc_state};
 use crate::speed_config::SpeedConfig;
 use crate::{EncodeError, EncodeResult};
+use alloc::vec;
 mod bd10_reencode;
 use bd10_reencode::{bd10_reencode_chroma, bd10_reencode_luma};
 
@@ -1494,10 +1494,9 @@ impl EncodePipeline {
         // `pa_slots`. `INVALID_LUMA` whenever `calc_hist` was off, because
         // the picture decision's `avg_luma` was already gated there.
         if let Some(pa) = pa_cur.as_mut() {
-            pa.avg_luma = pic_decision.as_ref().map_or(
-                crate::port_picstruct::INVALID_LUMA,
-                |p| p.avg_luma,
-            );
+            pa.avg_luma = pic_decision
+                .as_ref()
+                .map_or(crate::port_picstruct::INVALID_LUMA, |p| p.avg_luma);
         }
         // The TPL stage already ran this picture's open-loop ME against the
         // same reference pyramids with the same `FrameMeParams` — C's
@@ -1506,116 +1505,18 @@ impl EncodePipeline {
         // skipped (I slice, or a reference pyramid it could not resolve)
         // falls through to the sequential computation, whose `None`/`Some`
         // answer is then identical.
-        let frame_me = match tpl_in.as_mut().and_then(|f| f.frame_me.take()) {
-            me @ Some(_) => me,
-            None => match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
-                (false, Some(cur), Some(pic)) => {
-                    // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
-                    // the picture decision offered, resolved to its DPB slot's PA
-                    // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
-                    // This used to feed only `pa_ref` — the PREVIOUS frame — to
-                    // both lists, which is the [1,1] shape frame 1 happens to
-                    // produce but leaves a frame with `ref_list0_count_try > 1`
-                    // (frame 2 onward on a flat GOP) searching LAST2's MV slot
-                    // against LAST's picture.
-                    let mut refs = crate::inter_me::context::MeRefs::default();
-                    for rt in 1i8..=7 {
-                        let (li, ri) = (
-                            crate::inter_mvp::get_list_idx(rt),
-                            crate::inter_mvp::get_ref_frame_idx(rt),
-                        );
-                        let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
-                        if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
-                            refs.arr[li][ri] = Some(pa.ds_ref());
-                        }
-                    }
-                    #[cfg(feature = "std")]
-                    if crate::dbgenv::medbg() {
-                        let mut s = alloc::string::String::new();
-                        for (i, sl) in self.pa_slots.iter().enumerate() {
-                            s.push_str(&alloc::format!(
-                                "{i}:{} ",
-                                sl.as_deref().map_or(-1, |p| p.picture_number as i64)
-                            ));
-                        }
-                        std::eprintln!(
-                            "PASLOTS poc={} dpb={:?} slots=[{s}]",
-                            pic.picture_number,
-                            pic.rps.ref_dpb_index
-                        );
-                    }
-                    // `me_process.c:212-213` — the counts the picture decision
-                    // offered. `MeRefs::get` panics on a hole a search reaches,
-                    // so a missing pyramid means no ME rather than a wrong one —
-                    // the same shape the `pa_ref == None` arm produced before.
-                    let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
-                    let complete = (0..2).all(|li| {
-                        (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
-                    });
-                    if !complete {
-                        None
-                    } else {
-                        // Recycle the previous frame's result set.
-                        // `run_frame_me_into` resets every per-b64 entry to
-                        // exactly what `MeB64Output::new` builds and reassigns
-                        // every scalar, so this is byte-identical to a fresh
-                        // `run_frame_me`.
-                        let mut out = self
-                            .me_scratch
-                            .take()
-                            .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
-                        crate::inter_me_arm::run_frame_me_into(
-                            &mut out,
-                            cur,
-                            &refs,
-                            num_to_search,
-                            crate::inter_me_arm::FrameMeParams {
-                                // C `pcs->enc_mode` — post-clamp
-                                // (enc_handle.c:4433): the `sig_deriv_me`
-                                // ladders branch at M11 (search area, prehme).
-                                enc_mode: crate::rate_arm::eff_enc_mode(
-                                    sc_arm,
-                                    self.speed_config.preset,
-                                ),
-                                qp: self.rc_config.qp,
-                                width: w,
-                                height: h,
-                                picture_number: display_order,
-                                // C `frame_is_boosted(pcs)` (enc_mode_config.h:108)
-                                // = `frame_is_kf_gf_arf` = intra-only || ARF || GF
-                                // update. A flat low-delay P GOP DOES still emit
-                                // GF_UPDATE frames (picture_decision marks the
-                                // base of each mini-GOP `SVT_AV1_GF_UPDATE`), so
-                                // `sig_deriv_me`'s `is_base ? 1 : 6` arm is live
-                                // here — the `96x96 q20 p6` cell's poc4 is one.
-                                frame_is_boosted: crate::port_picstruct::frame_is_boosted(pic),
-                                hierarchical_levels: frame_hier,
-                                // C `me_process.c:214-215` — `pcs->temporal_layer_index`
-                                // / `pcs->is_ref`, straight off the picture decision.
-                                temporal_layer_index: pic.temporal_layer_index,
-                                is_ref: pic.is_ref,
-                                sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                                // C `scs->mrp_ctrls` — set this frame by
-                                // `run_picture_decision` above.
-                                only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
-                                safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
-                                safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
-                                // C `pcs->similar_brightness_refs` /
-                                // `frame_is_leaf(pcs)` — picture decision's
-                                // outputs, gating the safe-limit ME arm
-                                // (`motion_estimation.c:2231`).
-                                similar_brightness_refs: pic.similar_brightness_refs,
-                                frame_is_leaf: crate::port_picstruct::frame_is_leaf(
-                                    pic.update_type,
-                                ),
-                            },
-                        );
-                        Some(out)
-                    }
-                }
-                _ => None,
-            },
-        };
+        let frame_me = self.resolve_frame_me(
+            display_order,
+            is_key,
+            sc_arm,
+            &pic_decision,
+            &mut tpl_in,
+            frame_hier,
+            w,
+            h,
+            sc_derivation,
+            &pa_cur,
+        );
 
         // THE single CLI-qp -> qindex conversion (C: quantizer_to_qindex
         // lookup on picture_qp, rc_crf_cqp.c). Everything above this line
@@ -1881,91 +1782,17 @@ impl EncodePipeline {
         // consumer (lambda, CDF bucket, deblock, FH) — C order: rc_aq runs
         // in rc_init_sb_qindex ahead of MD. picture_qp follows C's
         // (base+2)>>2 update.
-        let mut sb_plan = if self.rc_config.mode == crate::rate_control::RcMode::Cbr {
-            // C `svt_av1_rc_init_sb_qindex` (rc_aq.c:879-885): under AOM_CBR
-            // the cyclic-refresh decision made inside
-            // `rc_calc_qindex_rate_control` is the ONLY per-SB plan —
-            // variance boost and the TPL arm below are skipped entirely
-            // ("mutually exclusive with other AQ modes"). `None` is C's
-            // flat arm — every SB takes the frame `base_q_idx` and
-            // `delta_q_present` stays 0.
-            cbr_sb_plan
-        } else if self.hdr.enable_variance_boost {
-            let sb_cols_p = w.div_ceil(64);
-            let sb_rows_p = h.div_ceil(64);
-            // C iterates the per-SB plan `sb_addr < scs->sb_total_count`
-            // (rc_aq.c:465 / :233) over `ppcs->variance[sb_addr]` — but that
-            // array is the per-B64 map picture analysis fills
-            // (pic_analysis_process.c:414). At sb_size 128 sb_total_count is
-            // a QUARTER of the b64 count, so C's plan consumes only the
-            // first sb_cnt b64 entries (raster order = the frame's top-left
-            // quadrant) for every real SB. Mirror the quirk by truncating
-            // the b64 map to the real SB count; at sb_size 64 the counts are
-            // equal and this is byte-neutral.
-            let sb_cnt = w.div_ceil(self.sb_size) * h.div_ceil(self.sb_size);
-            let mut vars = svtav1_types::try_with_capacity![sb_cols_p * sb_rows_p]?;
-            for r in 0..sb_rows_p {
-                for c in 0..sb_cols_p {
-                    vars.push(crate::sb_qindex::compute_sb_variances(
-                        &encode_input,
-                        w,
-                        w,
-                        h,
-                        c * 64,
-                        r * 64,
-                    ));
-                }
-            }
-            vars.truncate(sb_cnt);
-            // C has TWO boost paths and they take DIFFERENT variance domains:
-            // mainline (rc_aq.c:350/454) reads the INTEGER per-b64 map that
-            // picture analysis builds (`pd0::compute_b64_variance`) and leaves
-            // the frame base alone; the fork build (rc_aq.c:87/226) reads f64
-            // maps, takes a mean, and resignals the recentered base. Feeding
-            // the fork kernel on a mainline encode computes the boost in the
-            // wrong domain and returns 0 — which is what made mainline tune IQ
-            // emit a flat delta-q plan where C emits a real one.
-            let plan = if self.hdr.is_fork() {
-                crate::sb_qindex::variance_adjust_qp(
-                    base_qindex,
-                    &vars,
-                    self.hdr.variance_boost_strength,
-                    self.hdr.variance_octile,
-                    self.hdr.variance_boost_curve,
-                    tpl_adjusted_qp,
-                    self.bit_depth,
-                )
-            } else {
-                let ivars: alloc::vec::Vec<crate::pd0::SbVariance> = (0..sb_rows_p)
-                    .flat_map(|r| (0..sb_cols_p).map(move |c| (r, c)))
-                    .map(|(r, c)| {
-                        crate::pd0::compute_b64_variance(sb_input, in_stride, c * 64, r * 64)
-                    })
-                    .take(sb_cnt)
-                    .collect();
-                crate::sb_qindex::variance_adjust_qp_mainline(
-                    base_qindex,
-                    &ivars,
-                    self.hdr.variance_boost_strength,
-                    self.hdr.variance_octile,
-                    self.hdr.variance_boost_curve,
-                    tpl_adjusted_qp,
-                    self.bit_depth,
-                )
-            };
-            base_qindex = plan.base_qindex;
-            // The fork's recentered base moves BOTH: C's variance-boost path
-            // resignals `frm_hdr.base_q_idx` before rate control's
-            // `picture_qp` update, and the port has always carried the
-            // recentre into its single CLI-domain qp. Keep that (identical to
-            // the pre-split behaviour whenever the CRF offset is 0, which is
-            // every fork cell the gates cover).
-            picture_qp = crate::rate_control::picture_qp_from_qindex(plan.base_qindex);
-            tpl_adjusted_qp = picture_qp;
-            Some(plan)
-        } else {
-            None
-        };
+        let mut sb_plan = self.plan_sb_qindex(
+            w,
+            h,
+            &encode_input,
+            sb_input,
+            in_stride,
+            &mut tpl_adjusted_qp,
+            cbr_sb_plan,
+            &mut base_qindex,
+            &mut picture_qp,
+        )?;
 
         // C `svt_av1_rc_init_sb_qindex`'s TPL arm (rc_aq.c:897-901): under
         // `aq_mode == 2 && tpl_ctrls.enable && ppcs->r0 != 0` — the r0 the
@@ -2342,187 +2169,18 @@ impl EncodePipeline {
         // 1)`) and from the picture ORIGIN, so a tightly-packed plane gives the
         // same answer as C's bordered one; the strides differ and the pixels do
         // not.
-        let gm_models = match gm_estimation.as_ref() {
-            Some(g) if !g.all_identity() => {
-                let me = frame_me.as_ref().expect("gm_estimation implies frame_me");
-                let ctrls = crate::port_enc_mode_config::ctrls::set_gm_controls(
-                    self.gm_level_for_frame(is_key),
-                    crate::port_enc_mode_config::ResolutionRange::from_luma_area(
-                        self.width * self.height,
-                    ),
-                );
-                let pa_ref = self.pa_ref.as_deref();
-                match (ctrls, pa_ref) {
-                    (Some(ctrls), Some(pr)) => {
-                        // C's `me_results[b64]` arrays are one allocation per
-                        // b64; `MeResultsView` wants them flat across the
-                        // picture, which is how C's `pa_me_data` indexes them.
-                        let pu = crate::inter_me::context::SQUARE_PU_COUNT;
-                        let mut totals: alloc::vec::Vec<u8> =
-                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu);
-                        let mut cands: alloc::vec::Vec<crate::port_md::predicates::MeCandidateRef> =
-                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu * me.max_cand);
-                        let mut mvs: alloc::vec::Vec<svtav1_types::motion::Mv> =
-                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu * me.max_refs);
-                        for b in &me.per_b64 {
-                            totals.extend_from_slice(&b.total_me_candidate_index);
-                            cands.extend(b.me_candidate_array.iter().map(|c| {
-                                crate::port_md::predicates::MeCandidateRef {
-                                    direction: c.direction(),
-                                    ref_idx_l0: c.ref_idx_l0(),
-                                    ref_idx_l1: c.ref_idx_l1(),
-                                    ref0_list: c.ref0_list(),
-                                    ref1_list: c.ref1_list(),
-                                }
-                            }));
-                            mvs.extend_from_slice(&b.me_mv_array);
-                        }
-                        let view = crate::port_gm_correspondence::MeResultsView {
-                            total_me_candidate_index: &totals,
-                            me_candidate_array: &cands,
-                            me_mv_array: &mvs,
-                            pu_count: pu,
-                            max_cand: me.max_cand,
-                            max_refs: me.max_refs,
-                            max_l0: me.max_l0,
-                        };
-                        let geom = crate::port_gm_correspondence::GmPictureGeometry {
-                            aligned_width: w as u32,
-                            aligned_height: h as u32,
-                            b64_size: 64,
-                            enable_me_8x8: me.enable_me_8x8,
-                            enable_me_16x16: me.enable_me_16x16,
-                            gm_downsample_level:
-                                crate::port_gm_correspondence::GmDownsampleLevel::Full,
-                        };
-                        // `encode_input` is at stride `w` (the ALIGNED width);
-                        // `in_stride` belongs to `sb_input`, the SB-extent
-                        // padded twin, and they differ on any frame whose
-                        // aligned dims are not a multiple of 64.
-                        let src_plane = crate::port_global_me::GmPlane {
-                            buf: &encode_input,
-                            stride: w,
-                            width: self.true_width,
-                            height: self.true_height,
-                        };
-                        let rp = &pr.full;
-                        let ref_plane = crate::port_global_me::GmPlane {
-                            buf: &rp.buf[rp.org..],
-                            stride: rp.stride,
-                            width: self.true_width,
-                            height: self.true_height,
-                        };
-                        // C `pcs->pa_ref_pic_ptr_array[list][ref]`. The
-                        // (list, ref) pair names a REFERENCE FRAME, and the
-                        // DPB slot it resolves to is the one the header's
-                        // `ref_frame_idx[]` carries: list 0 is
-                        // LAST..GOLDEN (entries 0..3) and list 1 is
-                        // BWDREF..ALTREF (entries 4..6), which is C's
-                        // `get_list_idx` / `get_ref_frame_idx` read backwards.
-                        //
-                        // Resolved into planes HERE rather than inside the
-                        // closure because the closure also borrows `self`
-                        // through `true_width`/`true_height`.
-                        let mut slot_pics = [0u64; 7];
-                        let slot_planes: [Option<crate::port_global_me::GmPlane<'_>>; 7] =
-                            core::array::from_fn(|i| {
-                                let slot = pic_decision.as_ref()?.rps.ref_dpb_index[i] as usize;
-                                let pa = self.pa_slots.get(slot)?.as_ref()?;
-                                slot_pics[i] = pa.picture_number;
-                                Some(crate::port_global_me::GmPlane {
-                                    buf: &pa.full.buf[pa.full.org..],
-                                    stride: pa.full.stride,
-                                    width: self.true_width,
-                                    height: self.true_height,
-                                })
-                            });
-                        if crate::dbgenv::gmdbg() {
-                            eprintln!(
-                                "GMSLOTS poc={display_order} ref_dpb={:?} pics={:?} pa_ref={:?}",
-                                pic_decision.as_ref().map(|p| p.rps.ref_dpb_index),
-                                slot_pics,
-                                self.pa_ref.as_ref().map(|p| p.picture_number)
-                            );
-                        }
-                        let mut sink = |a: core::fmt::Arguments<'_>| {
-                            if crate::dbgenv::gmdbg() {
-                                eprintln!("GMSEARCH poc={display_order} {a}");
-                            }
-                        };
-                        crate::port_global_me::global_motion_search(
-                            g,
-                            &ctrls,
-                            &view,
-                            &geom,
-                            src_plane,
-                            &|l, r| {
-                                // Every (list, ref) resolves through the
-                                // DPB table first: `ref_pa_pic_ptr_array`
-                                // names the picture the RPS chose, which is
-                                // NOT `pa_ref` once hierarchical reference
-                                // selection puts an older frame in the
-                                // nearest list-0 slot (measured 2026-09-25:
-                                // LD+hl3 poc3's list0 ref0 is a DIFFERENT
-                                // picture than the previous frame — warping
-                                // pa_ref computed pic_sad 1072640 where C's
-                                // own dump reads 1879552, rejecting a
-                                // translation model C accepts).
-                                //
-                                // `pa_ref` remains the (0,0) fallback for
-                                // the flat single-reference path, whose
-                                // slots are populated only at the presets
-                                // where `gm_level` is non-zero.
-                                let idx = if l == 0 { r } else { 4 + r };
-                                slot_planes
-                                    .get(idx)
-                                    .copied()
-                                    .flatten()
-                                    .or(if l == 0 && r == 0 && !decided_is_some {
-                                        Some(ref_plane)
-                                    } else {
-                                        None
-                                    })
-                            },
-                            // C's `allow_high_precision_mv` argument is
-                            // `pcs->frm_hdr.allow_high_precision_mv`
-                            // (`global_me.c:270`), and at ME time that field
-                            // is STILL ZERO: it is assigned in
-                            // `svt_aom_sig_deriv_mode_decision_config`
-                            // (md_config_process), which runs AFTER
-                            // me_process. MEASURED with `SVT_GMSEARCH_OUT` on
-                            // the 33/32-zoom photo 256 cell at q10 and q20 —
-                            // two quantizers whose final
-                            // `allow_high_precision_mv` differs — C's
-                            // `GMCOST` line reads `hp=0` in both. So this is
-                            // C's own ordering, not a value to derive.
-                            /*allow_high_precision_mv=*/
-                            false,
-                            temporal_layer,
-                            [
-                                pic_decision
-                                    .as_ref()
-                                    .map_or(0, |p| u32::from(p.ref_list0_count_try)),
-                                pic_decision
-                                    .as_ref()
-                                    .map_or(0, |p| u32::from(p.ref_list1_count_try)),
-                            ],
-                            [
-                                pic_decision
-                                    .as_ref()
-                                    .map_or(0, |p| u32::from(p.ref_list0_count)),
-                                pic_decision
-                                    .as_ref()
-                                    .map_or(0, |p| u32::from(p.ref_list1_count)),
-                            ],
-                            Some(&mut sink),
-                        )
-                        .ok()
-                    }
-                    _ => None,
-                }
-            }
-            _ => Some(crate::port_global_me::GmModels::default()),
-        };
+        let gm_models = self.resolve_gm_models(
+            display_order,
+            is_key,
+            decided_is_some,
+            &pic_decision,
+            temporal_layer,
+            w,
+            h,
+            &encode_input,
+            &frame_me,
+            gm_estimation,
+        );
         // Printed BEFORE the refusal below, deliberately: the frame whose
         // derivation a join gate most needs to see is exactly the one the
         // refusal stops (`tools/gm_join_gate.sh`).
@@ -2572,175 +2230,26 @@ impl EncodePipeline {
         {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
-        let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            // Task #95 chunk 2: was gated on 64-aligned dims; the padded
-            // `sb_input` now lets the per-b64 walk read C's replicated border
-            // on partial SBs, so the still/PD0 coding quantizer is built for any
-            // 8-aligned key frame. pic_avg_variance averages over the ALIGNED
-            // b64 grid (sb_cols x sb_rows), matching C. Full-SB is unchanged.
-            if is_key {
-                // Superres chunk B.3: C's picture analysis runs BEFORE the
-                // superres downscale (pd_process.c:4344), so `pic_avg_variance`
-                // is derived from the FULL-RESOLUTION picture. Walk that grid
-                // when a superres source was stashed; otherwise this is the
-                // unchanged coded-source walk.
-                let pic_avg_variance = if let Some(vars) = stale_vars.as_ref() {
-                    // Reuse the full-resolution, border-padded statistics.
-                    // The tight pre-scaling source cannot serve a full b64
-                    // read when either original dimension is partial.
-                    (vars.iter().map(|v| u64::from(v.0[0])).sum::<u64>()
-                        / vars.len() as u64) as u16
-                } else {
-                    let mut tot = 0u64;
-                    let mut cnt = 0u64;
-                    for sy in (0..h).step_by(64) {
-                        for sx in (0..w).step_by(64) {
-                            tot += u64::from(crate::pd0::compute_b64_variance(
-                                sb_input, in_stride, sx, sy,
-                            ).0[0]);
-                            cnt += 1;
-                        }
-                    }
-                    (tot / cnt) as u16
-                };
-                let coeff_lvl = crate::quant::derive_intra_coeff_level(
-                    pic_avg_variance,
-                    tpl_adjusted_qp as u32,
-                    w,
-                    h,
-                );
-                // C's per-arm preset clamp (enc_handle.c:4415-4436): allintra
-                // above M9 -> M9, video (non-RTC) above M11 -> M11. The still
-                // path's `preset.min(9)` is the allintra arm of the same rule
-                // (`rate_arm::allintra_flattening_matches_the_ladder` pins it).
-                let eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
-                // Coded-lossless: `perform_rdoq = !svt_av1_is_lossless_segment
-                // && ...` (full_loop.c:1756) — RDOQ never runs at qp 0.
-                //
-                // The VIDEO arm's ladder (`rdoq_level_default`, :8933) is a
-                // flat 1 up to M10 and ignores `coeff_lvl` entirely — which is
-                // why C can leave `pcs->coeff_lvl` at INVALID_LVL for a
-                // video-mode I-slice. The allintra arm (:9904) is the
-                // coeff-driven one, and is unchanged here.
-                let rdoq_level = if coded_lossless {
-                    0
-                } else {
-                    // ZenEnhancement::DeepSearch (allintra 4:2:0 only —
-                    // `filter_chroma` keeps 4:4:4 and mono out of the arm):
-                    // the -1 tier's `rdoq_level = 1` — full RDOQ at every
-                    // preset, instead of the coeff-driven 0/2/3 ladder
-                    // above M5.
-                    crate::rate_arm::rdoq_level(
-                        sc_arm,
-                        if self
-                            .enhancements
-                            .contains(crate::enhancements::ZenEnhancement::DeepSearch)
-                            && matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
-                            && filter_chroma
-                        {
-                            -1
-                        } else {
-                            eff_mode
-                        },
-                        coeff_lvl,
-                    )
-                };
-                let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
-                    base_qindex,
-                    picture_qp as u32,
-                    self.hdr.is_fork() && self.hdr.alt_lambda_factors,
-                    0,
-                    // The frame `lambda_weight`, resolved exactly as C's
-                    // allintra block does (enc_mode_config.c:10093-10115):
-                    // the tune-IQ curve OR the PSNR ladder, then the
-                    // extended-CRF bump. Both key on `picture_qp`.
-                    Some(crate::pd0::frame_lambda_weight_for_preset(self.speed_config.preset,
-                        picture_qp as u32,
-                        self.hdr.tune == crate::tune::TUNE_IQ,
-                        lw_bump,
-                    )),
-                );
-                let mut cq = crate::quant::CodingQuantCfg::new(
-                    rdoq_level,
-                    lambda,
-                    base_qindex,
-                );
-                cq.input_coeff_level = coeff_lvl;
-                // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046)
-                // — the first index of `PLANE_RD_MULT`. `scs->allintra` is set
-                // only for `intra_period_length == 0 || avif` (enc_handle.c:518),
-                // which is exactly `ScArm::Allintra` here; `rtc` is never set by
-                // this port. Video frames therefore weight CHROMA rate at 20,
-                // not 13.
-                cq.allintra_rd_mult = matches!(sc_arm, crate::sc_detect::ScArm::Allintra);
-                Some(alloc::sync::Arc::new(cq))
-            } else if let Some(me) = frame_me.as_ref() {
-                // The INTER frame's coding quantizer (docs/INTER-ENCODE-PLAN.md
-                // §1s item 1b). Without it `use_funnel` is false on every frame
-                // with a reference and the C-exact MD path is unreachable no
-                // matter what the two `ref_*.is_none()` gates say — which is
-                // what item 1's measurement could not see.
-                //
-                // C `derive_inter_coeff_level` (md_config_process.c:650) keys
-                // on `ppcs->norm_me_dist`, the MEAN of the open-loop ME's
-                // per-b64 8x8 distortion (initial_rc_process.c:718-726) — so
-                // the search has to have run, which is why this sits below it.
-                let dist: u64 = me.per_b64.iter().map(|o| u64::from(o.me_8x8_distortion)).sum();
-                let norm_me_dist = dist / me.per_b64.len().max(1) as u64;
-                let coeff_lvl = crate::quant::derive_inter_coeff_level(
-                    norm_me_dist,
-                    tpl_adjusted_qp as u32,
-                    w,
-                    h,
-                );
-                if crate::dbgenv::coeffdbg() {
-                    eprintln!(
-                        "COEFFDBG nmd={} qp={} w={} h={} -> {:?}",
-                        norm_me_dist, tpl_adjusted_qp, w, h, coeff_lvl
-                    );
-                }
-                let eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
-                // The VIDEO arm's RDOQ ladder (`rdoq_level_default`,
-                // enc_mode_config.c:8933) is a flat 1 through M10 and ignores
-                // `coeff_lvl` — which is why C can leave a video-mode I-slice
-                // at INVALID_LVL. The level is still derived, because the
-                // coeff-driven arms above M10 read it.
-                let rdoq_level = crate::rate_arm::rdoq_level(sc_arm, eff_mode, coeff_lvl);
-                // C `av1_lambda_assign_md` (md_process.c:725) for a non-key
-                // frame. The rdmult BASE and the frame-type FACTOR read
-                // DIFFERENT update types — `ppcs->update_type` and
-                // `update_lambda`'s own `gf_update_type` — and on a flat
-                // low-delay P GOP they disagree (LF vs ARF). MEASURED against
-                // C's `svt_aom_full_cost_pd0` lambda: 241 378 on
-                // `diag 64x64 q40 p8` frame 1, where one update type for both
-                // gave 244 792.
-                let lambda = crate::pd0::inter_full_lambda_8bit(
-                    base_qindex,
-                    md_lambda_base_update_type
-                        .expect("an inter frame always has a picture decision"),
-                    md_lambda_factor_update_type,
-                    md_alt_lambda_factors,
-                    0,
-                    lambda_mod_intra,
-                    crate::pd0::frame_lambda_weight_for_preset(self.speed_config.preset,
-                        picture_qp as u32,
-                        self.hdr.tune == crate::tune::TUNE_IQ,
-                        lw_bump,
-                    ),
-                );
-                let mut cq =
-                    crate::quant::CodingQuantCfg::new(rdoq_level, lambda, base_qindex);
-                // `pcs->coeff_lvl` — the depth-refinement ladder
-                // (enc_mode_config.c:9370-9390) and the NSQ-search ladder read
-                // it on inter frames.
-                cq.input_coeff_level = coeff_lvl;
-                // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046):
-                // an inter frame is never `allintra`, so chroma rate weighs 20.
-                cq.allintra_rd_mult = false;
-                Some(alloc::sync::Arc::new(cq))
-            } else {
-                None
-            };
+        let mut c_quant = self.build_coding_quant(
+            &stale_vars,
+            is_key,
+            sc_arm,
+            md_lambda_base_update_type,
+            md_lambda_factor_update_type,
+            md_alt_lambda_factors,
+            lambda_mod_intra,
+            w,
+            h,
+            filter_chroma,
+            sb_input,
+            in_stride,
+            tpl_adjusted_qp,
+            &frame_me,
+            base_qindex,
+            picture_qp,
+            lw_bump,
+            coded_lossless,
+        );
 
         // Step 4: Encode the frame superblock-by-superblock in raster order.
         // This ensures each SB can read above/left neighbors from previously
@@ -3082,81 +2591,7 @@ impl EncodePipeline {
         // the per-block use_filter_intra symbol exists exactly when the
         // SH signals the tool, so all three consumers MUST see one value.
         let is_single_frame = self.gop.intra_period == 1;
-        let seq_tools = {
-            let mut t = crate::speed_config::seq_tools_for_preset(
-                self.speed_config.preset,
-                is_single_frame,
-                self.width as usize * self.height as usize,
-            );
-            // Task #91: C derives `use_128x128_superblock` at SH-write time
-            // from `sb_size == BLOCK_128X128` (entropy_coding.c:2800). The
-            // port's `sb_size` comes from the same rule
-            // (sb128_geom::derive_super_block_size), so the bit follows it.
-            t.use_128x128_superblock = self.sb_size == 128;
-            // Superres chunk B.3: the SH tool bit must agree with what the
-            // frame header signals (`SuperresParams::enabled_in_seq`) or the
-            // decoder's bit walk desyncs. Off by default -> unchanged bit.
-            t.enable_superres = self.superres_denom.is_some();
-            // Issue #9 item 5: C writes `static_config.chroma_sample_position`
-            // into the 4:2:0 color_config (entropy_coding.c:2743).
-            t.chroma_sample_position = self.chroma_sample_position;
-            // Inter campaign C1a: the non-reduced header's
-            // `initial_display_delay` is `min(hierarchical_levels + 1, 10)`
-            // (enc_handle.c:4975-4993). Unread on the still path, where those
-            // bits are not written at all.
-            t.hierarchical_levels = self.gop.hierarchical_levels;
-            // ZenEnhancement::DeepSearch (allintra 4:2:0 — `validate`
-            // refuses anything else): the funnel's filter-intra and
-            // intra-edge-filter search config evaluates at enc_mode -1,
-            // so the two symbol-gating sequence bits must take the -1
-            // values or the decoder's bit walk desyncs
-            // (`enable_filter_intra`) or its prediction semantics
-            // disagree with what MD priced (`enable_intra_edge_filter`).
-            // The other preset-derived bits — wn/sg/`enable_restoration`
-            // — stay at the caller's preset: they are post-filters the
-            // deep-search arm does not touch.
-            if self
-                .enhancements
-                .contains(crate::enhancements::ZenEnhancement::DeepSearch)
-                && self.gop.intra_period == 1
-                && self.chroma_420
-            {
-                t.enable_filter_intra =
-                    crate::intra_arm::filter_intra_level(crate::sc_detect::ScArm::Allintra, -1)
-                        != 0;
-                t.enable_intra_edge_filter =
-                    crate::intra_arm::intra_edge_filter(crate::sc_detect::ScArm::Allintra, -1);
-            }
-            // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
-            // (its FH writes independent U/V deltas — entropy_coding.c
-            // fork block hardcodes both flags true). An `__expert` chroma
-            // override with distinct U/V deltas needs it too.
-            if self.separate_uv_delta_q() {
-                t.separate_uv_delta_q = true;
-            }
-            if self.hdr.is_fork() {
-                // Photon noise signals grain tables per frame.
-                t.film_grain_params_present = self.hdr.noise_strength > 0;
-            }
-            t.film_grain_params_present |= self.film_grain.enabled();
-            // enable_intra_edge_filter's C-parity surface is still/420
-            // (the C matched config). The mono extension keeps 0: C cannot
-            // emit mono, and the mono leaf coder predicts without edge
-            // filtering — signaling 0 keeps our recon decoder-exact on
-            // that self-consistent surface.
-            t.enable_intra_edge_filter &= self.chroma_420;
-            t.enable_intra_edge_filter |= zen_intra_edge_filter;
-            // Small-frame implementation limit (enc_settings.c:214-232):
-            // when the TRUE source width OR height is < 64, C force-clears
-            // enable_restoration_filtering (and aq_mode, already off on the
-            // allintra path) BEFORE the SH derivation, so the SH bit is 0.
-            // Uses the TRUE (unaligned) dims — a 60x60 frame aligns to
-            // 64x64 but still trips this.
-            if self.true_width < 64 || self.true_height < 64 {
-                t.enable_restoration = false;
-            }
-            t
-        };
+        let seq_tools = self.derive_seq_tools(zen_intra_edge_filter, is_single_frame);
 
         // The picture-level MD inputs, BOUND rather than passed inline because
         // TWO derivations read them: `md_config_inputs` ->
@@ -3337,110 +2772,13 @@ impl EncodePipeline {
         //
         // `md_config_signals` moved up with it for the same reason; nothing
         // between its old and new position reads it.
-        let inter_syntax_state: Option<InterSyntaxState> = md_config_signals.map(|sigs| {
-            let mut ref_order_hint = [0i32; 7];
-            if let Some(pic) = pic_decision.as_ref() {
-                for (i, oh) in ref_order_hint.iter_mut().enumerate() {
-                    let slot = pic.rps.ref_dpb_index[i] as usize;
-                    *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
-                }
-            }
-            InterSyntaxState {
-                // C `pd_process.c:4958`, and NOT the constant this port used
-                // to imply: `skip_mode_flag` IS `skip_mode_allowed`.
-                skip_mode_flag: pic_decision
-                    .as_ref()
-                    .is_some_and(|p| p.skip_mode.skip_mode_allowed != 0),
-                // C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}` —
-                // `setup_skip_mode_allowed` leaves them `INVALID_IDX` (-1)
-                // when the frame's reference structure has no skip-mode
-                // pair (single reference, or order-hint signalling off).
-                skip_mode_ref_frame_idx_0: pic_decision
-                    .as_ref()
-                    .map_or(-1, |p| p.skip_mode.ref_frame_idx_0 as i8),
-                skip_mode_ref_frame_idx_1: pic_decision
-                    .as_ref()
-                    .map_or(-1, |p| p.skip_mode.ref_frame_idx_1 as i8),
-                // C `frm_hdr->reference_mode`. The port has no compound
-                // candidate yet, but the SYMBOL layout depends on this bit
-                // and the header writes it, so it must be the header's value
-                // and not a convenient constant.
-                // C `frm_hdr->reference_mode`, i.e. the header's
-                // `reference_select` bit — `inter_hdr_arm::inter_signal`
-                // derives it from `pic.reference_mode` and this reads the
-                // same field, so the tile and the header cannot disagree.
-                reference_mode: match pic_decision.as_ref().map(|p| p.reference_mode) {
-                    Some(crate::port_picstruct::ReferenceMode::Select) => {
-                        crate::port_entropy_inter::refframe::ReferenceMode::Select
-                    }
-                    _ => crate::port_entropy_inter::refframe::ReferenceMode::Single,
-                },
-                interpolation_filter: sigs.interpolation_filter,
-                enable_dual_filter: seq_tools.enable_dual_filter,
-                enable_interintra_compound: seq_tools.enable_interintra_compound,
-                enable_masked_compound: seq_tools.enable_masked_compound,
-                enable_jnt_comp: seq_tools.enable_jnt_comp,
-                enable_order_hint: seq_tools.enable_order_hint,
-                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
-                is_motion_mode_switchable: sigs.is_motion_mode_switchable,
-                allow_warped_motion: sigs.allow_warped_motion,
-                allow_high_precision_mv: sigs.allow_high_precision_mv != 0,
-                // C keeps `frm_hdr->force_integer_mv = 0` unconditionally
-                // (resource_coordination_process.c:362), which is also the
-                // bit `write_uncompressed_header` emits (obu.rs:1421). Read
-                // from the same place rather than from a signal that has no
-                // such field.
-                force_integer_mv: false,
-                // C `pcs->ppcs->global_motion[ref].wmtype`, read by the
-                // entropy walk to decide whether a block's mode is a GLOBALMV
-                // that codes no MV. It is the SAME array the frame header
-                // wrote (`gm_field`, above), converted through the one
-                // `WarpParams` conversion, so the header and the per-block
-                // walk cannot disagree about a reference's model.
-                gm_wmtype: core::array::from_fn(|i| {
-                    crate::port_entropy_inter::gm::WarpParams::from(gm_field[i]).wmtype
-                }),
-                cur_order_hint: display_order as i32,
-                ref_order_hint,
-                // C `mfmv_controls` (enc_mode_config.c:8853) for the VALUE
-                // and `frame_might_allow_ref_frame_mvs`
-                // (entropy_coding.h:71) for its PRESENCE — the same two
-                // rules `inter_hdr_arm::inter_signal` applies to write the
-                // header bit, asserted equal to it below.
-                //
-                // This used to spell the VALUE as `mfmv_level == 1`, a THIRD
-                // transcription of a function ported once in
-                // `port_enc_mode_config::tail` and re-derived in
-                // `inter_hdr_arm`. It agreed with C only because every level
-                // above 1 was refused before it could be reached; the moment
-                // level 2 was allowed it would have been a silent
-                // disagreement in a bit that moves a `newmv` CDF row. It now
-                // calls the same shared port the header does.
-                use_ref_frame_mvs: !crate::dbgenv::mfmv_off()
-                    && seq_tools.enable_ref_frame_mvs
-                    && seq_tools.enable_order_hint
-                    && crate::port_enc_mode_config::tail::mfmv_controls(
-                        crate::port_enc_mode_config::tail::MfmvInputs {
-                            mfmv_level: sigs.mfmv_level,
-                            is_base: pic_decision
-                                .as_ref()
-                                .is_some_and(|p| p.temporal_layer_index == 0),
-                            tpl: self.scs_tpl(),
-                            r0_gen: false,
-                            r0: 0.0,
-                            is_b_slice: pic_decision.as_ref().is_some_and(|p| {
-                                p.slice_type == crate::port_picstruct::SliceType::B
-                            }),
-                            ref_list1_count_try: pic_decision
-                                .as_ref()
-                                .map_or(0, |p| u32::from(p.ref_list1_count_try)),
-                            ref_l0_is_mfmv_used: false,
-                            ref_l1_is_mfmv_used: false,
-                        },
-                    )
-                    .is_some_and(|v| v != 0),
-            }
-        });
+        let inter_syntax_state = self.build_inter_syntax_state(
+            display_order,
+            &pic_decision,
+            seq_tools,
+            md_config_signals,
+            gm_field,
+        );
 
         // The frame-constant MVP environment the pack derives `predmv` /
         // `inter_mode_ctx` / `drl_ctx` from (§1s items 2 and 3). Same
@@ -3455,219 +2793,16 @@ impl EncodePipeline {
         // walk's `av1_copy_frame_mvs` — so it is computed once here and both
         // are carried, rather than derived twice.
         let mut inter_ref_frame_side = [0i8; 8];
-        let mut inter_mvp_env: Option<crate::partition::InterMdEnv> =
-            inter_syntax_state.as_ref().map(|st| {
-                let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
-                let tpl_stride = (mi_cols + 1) >> 1;
-                crate::partition::InterMdEnv {
-                    mi_stride: mi_cols,
-                    mi_rows,
-                    mi_cols,
-                    tile: crate::intrabc::TileMiBounds {
-                        mi_col_start: 0,
-                        mi_col_end: mi_cols,
-                        mi_row_start: 0,
-                        mi_row_end: mi_rows,
-                    },
-                    sb_mi_size: (sb_size / 4) as i32,
-                    global_motion: gm_field,
-                    allow_high_precision_mv: st.allow_high_precision_mv,
-                    force_integer_mv: st.force_integer_mv,
-                    use_ref_frame_mvs: st.use_ref_frame_mvs,
-                    order_hint_info: crate::inter_mvp::OrderHintInfo {
-                        enable_order_hint: st.enable_order_hint,
-                        order_hint_bits: st.order_hint_bits,
-                    },
-                    cur_order_hint: st.cur_order_hint,
-                    // `inter_mvp` indexes by `MvReferenceFrame`
-                    // (LAST = 1 ..= ALTREF = 7, slot 0 unused); the entropy
-                    // side's array is `ref_frame - 1`.
-                    ref_order_hint: {
-                        let mut a = [0i32; 8];
-                        a[1..8].copy_from_slice(&st.ref_order_hint);
-                        a
-                    },
-                    // C `pcs->av1_cm->ref_frame_sign_bias[8]`
-                    // (`svt_av1_setup_frame_sign_bias`,
-                    // pd_process.c:4894-4909) — already derived into
-                    // `pic_decision` by `port_picstruct::set_ref_frame_sign_bias`
-                    // on every frame; zeroed on a key or when order hints
-                    // are off.
-                    ref_frame_sign_bias: pic_decision
-                        .as_ref()
-                        .map_or([0; 8], |p| p.ref_frame_sign_bias),
-                    // Stamped below with `pic_decision` — the picture-level
-                    // `temporal_layer_index > 0 && RANDOM_ACCESS` half of
-                    // C's `symteric_refs` gate; the list half is evaluated
-                    // per call inside `generate_av1_mvp_table`.
-                    symmetric_refs_eligible: false,
-                    // C `av1_setup_motion_field`, run over this picture's own
-                    // DPB references. On a two-frame cell every projection
-                    // returns 0 — LAST is the KEY frame and C aborts on
-                    // `start_frame_buf->frame_type == KEY_FRAME`
-                    // (md_config_process.c:441) — so every cell stays
-                    // `INVALID_MV` and `add_tpl_ref_mv` returns 0, which is
-                    // what sets the GLOBALMV bit of `mode_context` (§1t).
-                    // From the SECOND inter frame on, LAST has a saved motion
-                    // field and this is where it enters the ref-MV stack.
-                    tpl_mvs: {
-                        let mut tpl = alloc::vec![
-                            crate::inter_mvp::TplMvRef::default();
-                            (((mi_rows + 32) >> 1) * tpl_stride) as usize
-                        ];
-                        let refs = crate::inter_mvp::MotionFieldRefs {
-                            refs: core::array::from_fn(|idx| {
-                                let pic = pic_decision.as_ref()?;
-                                let slot = pic.rps.ref_dpb_index[idx] as usize;
-                                let rf = self.dpb.get(slot)?;
-                                // C's field always exists at the reference's
-                                // own half-mi extent. A DPB entry that carries
-                                // none is one this port wrote before the
-                                // writeback existed, or an allintra picture
-                                // that can never be a reference in a GOP; C's
-                                // own `mi_rows != cm->mi_rows` abort covers a
-                                // different-SIZE reference, but nothing in
-                                // that function can see a SHORT slice, so the
-                                // length is checked here rather than indexed
-                                // on faith.
-                                let rf_mi_rows = (rf.height as i32 + 3) >> 2;
-                                let rf_mi_cols = (rf.width as i32 + 3) >> 2;
-                                if rf.mvs.len()
-                                    != (((rf_mi_rows + 1) >> 1) * ((rf_mi_cols + 1) >> 1)) as usize
-                                {
-                                    return None;
-                                }
-                                Some(crate::inter_mvp::RefMotionField {
-                                    mvs: &rf.mvs,
-                                    order_hint: rf.order_hint as i32,
-                                    ref_order_hint: rf.ref_order_hint,
-                                    is_intra_only: rf.is_islice,
-                                    mi_rows: rf_mi_rows,
-                                    mi_cols: rf_mi_cols,
-                                })
-                            }),
-                        };
-                        inter_ref_frame_side = crate::inter_mvp::setup_motion_field(
-                            &mut tpl,
-                            tpl_stride,
-                            mi_rows,
-                            mi_cols,
-                            st.cur_order_hint,
-                            crate::inter_mvp::OrderHintInfo {
-                                enable_order_hint: st.enable_order_hint,
-                                order_hint_bits: st.order_hint_bits,
-                            },
-                            st.use_ref_frame_mvs,
-                            &refs,
-                        );
-                        #[cfg(feature = "std")]
-                        if let Some(path) = std::env::var_os("SVTAV1_TPL_OUT") {
-                            // Diagnostic twin of the vendored-libaom `TPL`
-                            // dump (AOM_TPL_OUT): the projected temporal-MV
-                            // field this frame's ref-MV scan consumes,
-                            // emitted in libaom's `as_int` packing
-                            // (row | col<<16) so the two can be diffed.
-                            use std::io::Write as _;
-                            if let Ok(file) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
-                            {
-                                let mut w = std::io::BufWriter::new(file);
-                                let mut line = alloc::string::String::with_capacity(
-                                    32 + tpl.len() * 12,
-                                );
-                                core::fmt::Write::write_fmt(
-                                    &mut line,
-                                    format_args!("TPL {} {}", st.cur_order_hint, tpl.len()),
-                                )
-                                .ok();
-                                for t in &tpl {
-                                    let c_int = (t.mfmv0.y as u16 as u32)
-                                        | ((t.mfmv0.x as u16 as u32) << 16);
-                                    core::fmt::Write::write_fmt(
-                                        &mut line,
-                                        format_args!(
-                                            " {c_int},{}",
-                                            t.ref_frame_offset as i8
-                                        ),
-                                    )
-                                    .ok();
-                                }
-                                line.push('\n');
-                                let _ = w.write_all(line.as_bytes());
-                            }
-                        }
-                        #[cfg(feature = "std")]
-                        if crate::dbgenv::mfmv_dbg() {
-                            let mut valid = 0usize;
-                            let mut hash: u64 = 1469598103934665603;
-                            for t in &tpl {
-                                if t.ref_frame_offset != 0 || t.mfmv0.as_int() != crate::intrabc_mvp::INVALID_MV {
-                                    valid += 1;
-                                    hash = (hash ^ (t.mfmv0.as_int() as u32 as u64))
-                                        .wrapping_mul(1099511628211);
-                                    hash = (hash ^ u64::from(t.ref_frame_offset))
-                                        .wrapping_mul(1099511628211);
-                                }
-                            }
-                            std::eprintln!(
-                                "RS_MFMV poc={display_order} cur={} use={} mi={mi_rows}x{mi_cols} \
-                                 stride={} roh={},{},{},{},{},{},{} side={},{},{},{},{},{},{}",
-                                st.cur_order_hint,
-                                u8::from(st.use_ref_frame_mvs),
-                                tpl_stride * 2,
-                                st.ref_order_hint[0], st.ref_order_hint[1], st.ref_order_hint[2],
-                                st.ref_order_hint[3], st.ref_order_hint[4], st.ref_order_hint[5],
-                                st.ref_order_hint[6],
-                                inter_ref_frame_side[1], inter_ref_frame_side[2],
-                                inter_ref_frame_side[3], inter_ref_frame_side[4],
-                                inter_ref_frame_side[5], inter_ref_frame_side[6],
-                                inter_ref_frame_side[7],
-                            );
-                            std::eprintln!(
-                                "RS_MFMVSUM poc={display_order} size={} valid={valid} hash={hash:x}",
-                                tpl.len(),
-                            );
-                        }
-                        #[cfg(feature = "std")]
-                        if crate::dbgenv::zz_tpl() {
-                            let valid = tpl
-                                .iter()
-                                .filter(|t| t.ref_frame_offset != 0)
-                                .count();
-                            std::eprintln!(
-                                "ZZTPL poc={display_order} cells={} valid={} use_mvs={} refs_present={}",
-                                tpl.len(),
-                                valid,
-                                st.use_ref_frame_mvs,
-                                refs.refs.iter().filter(|r| r.is_some()).count(),
-                            );
-                        }
-                        tpl
-                    },
-                    tpl_stride,
-                    // C `ctx->sb64_sq_no4xn_geom` selects the SIMPLIFIED MFMV
-                    // block walk, and it means all three of its parts: a 64x64
-                    // superblock, SQUARE-only shapes, and no 4xN. This was set
-                    // from `sb_size == 64` ALONE, which is true at every preset
-                    // this port ships, so the simplified walk ran even where
-                    // rectangular blocks exist.
-                    //
-                    // The simplified walk uses `n4_w` for BOTH the row and the
-                    // column extent (`inter_mvp.rs`, the `sb64_sq_no4xn_geom`
-                    // arm). On a square block that is the same number; on a
-                    // 16x32 it scans four rows instead of eight and never sees
-                    // the lower half's temporal candidates. NEARESTMV/NEARMV
-                    // derive their MV from that stack, so the encoder and a
-                    // decoder pick DIFFERENT motion vectors for the same block.
-                    //
-                    // MEASURED: with this corrected, vidyo1/vidyo3/vidyo4 all go
-                    // from drifting (or failing to decode) to 8 of 8 frames
-                    // byte-identical to aomdec.
-                    sb_size_64: sb_size == 64,
-                }
-            });
+        let mut inter_mvp_env = self.build_inter_mvp_env(
+            display_order,
+            &pic_decision,
+            w,
+            h,
+            sb_size,
+            gm_field,
+            &inter_syntax_state,
+            &mut inter_ref_frame_side,
+        );
 
         // C `ctx->ref_frame_type_arr` (`set_all_ref_frame_type`,
         // pd_process.c:1044) — single-reference entries AND the compound
@@ -4008,9 +3143,7 @@ impl EncodePipeline {
                     ref_list1_count_try: pic_decision
                         .as_ref()
                         .is_some_and(|p| p.ref_list1_count_try > 0),
-                    sframe_ref_pruned: pic_decision
-                        .as_ref()
-                        .is_some_and(|p| p.sframe_ref_pruned),
+                    sframe_ref_pruned: pic_decision.as_ref().is_some_and(|p| p.sframe_ref_pruned),
                     // C `pcs->ppcs->max_can_count` —
                     // `svt_aom_get_max_can_count(enc_mode, rtc)`; the rtc
                     // half is false on every config this port accepts
@@ -4047,151 +3180,29 @@ impl EncodePipeline {
         // factor is the identity 128 — and this whole binding is `None`
         // unless `inter_md_frame` is `Some`, which is exactly "non-key with a
         // DPB reference".
-        let sb_inter_lambda: Option<Vec<crate::pd0::SbInterLambda>> = match (
-            frame_me.as_ref(),
-            inter_md_frame.as_ref(),
-        ) {
-            // C `scs->stats_based_sb_lambda_modulation` (enc_handle.c:4375)
-            // reads the POST-clamp `static_config.enc_mode` — so at CLI
-            // p12/p13 the non-RTC video arm still sees M11 and the
-            // modulation stays ON. When it is off, `generate_sb_qindex`
-            // never builds `b64_me_qindex` at all (rc_process.c:747).
-            // Skipping the whole binding there leaves every consumer on
-            // the frame lambda, which is what C prices with.
-            (Some(me), Some(imf))
-                if crate::port_rc_process::stats_based_sb_lambda_modulation(
-                    crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset),
-                    false,
-                ) =>
-            {
-                let mev: Vec<u32> = me.per_b64.iter().map(|o| o.me_8x8_cost_variance).collect();
-                let map = crate::port_rc_process::generate_b64_me_qindex_map(
-                    &mev,
-                    i32::from(base_qindex),
-                    /*is_islice=*/ false,
-                );
-                let lw = crate::pd0::frame_lambda_weight_for_preset(
-                    self.speed_config.preset,
-                    picture_qp as u32,
-                    self.hdr.tune == crate::tune::TUNE_IQ,
-                    lw_bump,
-                );
-                let lctx = crate::port_rc_process::LambdaContext {
-                    frame_type: 1, // not KEY_FRAME
-                    temporal_layer_index: temporal_layer,
-                    hierarchical_levels: frame_hier,
-                    update_type: imf.base_update_type,
-                    alt_lambda_factors: md_alt_lambda_factors,
-                    rtc: false,
-                    // C `scs->stats_based_sb_lambda_modulation`
-                    // (enc_handle.c:4375). The match guard above already
-                    // proved it true for this frame; passing a literal
-                    // here would be a second spelling of the same rule.
-                    stats_based_sb_lambda_modulation: true,
-                    base_q_idx: i32::from(base_qindex),
-                    delta_q_present,
-                    r0_delta_qp_md,
-                    lambda_scale_factors: [128; 7],
-                };
-                // C `svt_aom_mode_decision_configure_sb` (md_process.c:800-803):
-                // `ctx->qp_index = delta_q_present || r0_delta_qp_md ?
-                // sb_qp : base_q_idx`. `sb_qp` is the `generate_sb_qindex`
-                // map — TPL-derived when `r0_delta_qp_md` ran.
-                let qp_mod_arm = delta_q_present || r0_delta_qp_md;
-                let mut out = Vec::with_capacity(sb_cols * sb_rows);
-                for sb_row in 0..sb_rows {
-                    for sb_col in 0..sb_cols {
-                        crate::stop_check(&stop)?;
-                        let sb_idx = sb_row * sb_cols + sb_col;
-                        let me_q = crate::port_md_rate_estimation::get_me_qindex(
-                            &map,
-                            u16::try_from(w).unwrap_or(u16::MAX),
-                            u16::try_from(h).unwrap_or(u16::MAX),
-                            u32::try_from(sb_idx).unwrap_or(u32::MAX),
-                            u32::try_from(sb_col * sb_size).unwrap_or(u32::MAX),
-                            u32::try_from(sb_row * sb_size).unwrap_or(u32::MAX),
-                            sb_size == 128,
-                        );
-                        let qp_idx = if qp_mod_arm {
-                            md_sb_qindex.map_or(base_qindex, |p| p.sb_qindex[sb_idx])
-                        } else {
-                            base_qindex
-                        };
-                        // `update_lambda` picks its stats-factor arm on the
-                        // lctx flags: `delta_q_present || r0_delta_qp_md`
-                        // uses `q_index - base` at +-8 (rc_process.c:430-441),
-                        // else `me_q_index - base` at +-4 (:442-446) — the
-                        // same factor PD0's lambda fold below carries as
-                        // `me_qdiff`.
-                        let me_qdiff = if qp_mod_arm {
-                            i32::from(qp_idx) - i32::from(base_qindex)
-                        } else {
-                            i32::from(me_q) - i32::from(base_qindex)
-                        };
-                        let raw =
-                            crate::port_rc_process::compute_fast_lambda(&lctx, qp_idx, me_q, 8);
-                        // C scales `fast_lambda_md` by the same
-                        // LAMBDA_MOD_INTRA arm before `lambda_weight`
-                        // (md_process.c:740).
-                        let raw = ((u64::from(raw) * lambda_mod_intra as u64) >> 7) as u32;
-                        // `full_lambda_md[0]` — `svt_aom_compute_rd_mult`
-                        // then LAMBDA_MOD_INTRA then `lambda_weight`
-                        // (md_process.c:725-751).
-                        let mut full_8bit = ((u64::from(crate::port_rc_process::compute_rd_mult(
-                            &lctx, qp_idx, me_q, 8,
-                        )) * lambda_mod_intra as u64)
-                            >> 7) as u32;
-                        if lw != 0 {
-                            full_8bit = ((u64::from(full_8bit) * u64::from(lw)) >> 7) as u32;
-                        }
-                        // `full_lambda_md[EB_10_BIT_MD]` — the same chain at
-                        // 10 bits, ending in `*16` (md_process.c:728/753).
-                        let mut full_10bit = ((u64::from(crate::port_rc_process::compute_rd_mult(
-                            &lctx, qp_idx, me_q, 10,
-                        )) * lambda_mod_intra as u64)
-                            >> 7) as u32;
-                        if lw != 0 {
-                            full_10bit = ((u64::from(full_10bit) * u64::from(lw)) >> 7) as u32;
-                        }
-                        // `*full_lambda *= 16` on C's `uint32_t` wraps.
-                        let full_10bit = full_10bit.wrapping_mul(16);
-                        #[cfg(feature = "std")]
-                        if crate::dbgenv::lamdump() {
-                            std::eprintln!(
-                                "LAM poc={} tl={} sb={} baseq={} but={:?} fut={:?} alt={} meq={} meqd={} lmi={} lw={} -> full={} fast={}",
-                                pic_decision
-                                    .as_ref()
-                                    .map_or(-1, |p| p.picture_number as i64),
-                                temporal_layer,
-                                sb_idx,
-                                base_qindex,
-                                imf.base_update_type,
-                                md_lambda_factor_update_type,
-                                md_alt_lambda_factors,
-                                me_q,
-                                me_qdiff,
-                                lambda_mod_intra,
-                                lw,
-                                full_8bit,
-                                raw,
-                            );
-                        }
-                        out.push(crate::pd0::SbInterLambda {
-                            full_8bit,
-                            fast_8bit: if lw == 0 {
-                                raw
-                            } else {
-                                ((u64::from(raw) * u64::from(lw)) >> 7) as u32
-                            },
-                            me_qdiff,
-                            full_10bit,
-                        });
-                    }
-                }
-                Some(out)
-            }
-            _ => None,
-        };
+        let sb_inter_lambda = self.derive_sb_inter_lambda(
+            &stop,
+            sc_arm,
+            &pic_decision,
+            temporal_layer,
+            frame_hier,
+            md_lambda_factor_update_type,
+            md_alt_lambda_factors,
+            lambda_mod_intra,
+            w,
+            h,
+            &frame_me,
+            base_qindex,
+            r0_delta_qp_md,
+            picture_qp,
+            lw_bump,
+            delta_q_present,
+            md_sb_qindex,
+            sb_size,
+            sb_cols,
+            sb_rows,
+            &inter_md_frame,
+        )?;
 
         // C `set_blocks_to_be_tested`'s per-SB `min_sq_size`
         // (enc_dec_process.c:1485), which `depth_removal_ctrls` decides.
@@ -4213,164 +3224,27 @@ impl EncodePipeline {
         // the min_sq fold alone would discard.
         let mut pd0_dr_res: Option<Vec<crate::port_enc_mode_config::common::DepthRemovalResult>> =
             None;
-        let pd0_min_sq: Option<Vec<u8>> = match (
-            md_config_signals.as_ref(),
-            frame_me.as_ref(),
-            inter_md_frame.as_ref(),
-        ) {
-            (Some(sigs), Some(me), Some(_imf)) => {
-                use crate::port_enc_mode_config::common as pcommon;
-                // C `ctx->disallow_8x8` on the VIDEO arm
-                // (`sig_deriv_enc_dec_common`, enc_mode_config.c:7122).
-                let disallow_8x8 = crate::port_enc_mode_config::leaf::get_disallow_8x8_default();
-                // C `pd0_depth_removal`'s reference read is
-                // `ref_obj_l0->sb_min_sq_size[sb_index]`, i.e. LAST's — see
-                // `last_ref_slot`, not DPB slot 0. C only reads it when the
-                // reference is POC-ADJACENT (`abs(picture_number - ref_poc)
-                // <= 1`, enc_mode_config.c:3175-3177); a farther ref leaves
-                // `sb_min_sq_size` at `(uint8_t)~0` and the deviation
-                // thresholds get NO bump — feeding the value unconditionally
-                // was the `96x96 hier` over-disallow on poc>=2. The L1
-                // `MIN()` arm (:3179-3186) fires on an RA B slice where
-                // `ref_list1_count_try` and a same-size BWD reference
-                // (`ref_dpb_index[BWD]`) exist, on ITS OWN POC adjacency —
-                // unreachable on low-delay, which never populates list 1.
-                // `svt_aom_is_ref_same_size` (enc_mode_config.c:2857) gates
-                // each list: `is_not_scaled` short-circuits true.
-                let ref_same_size = |rf: &crate::picture::ReferenceFrame| {
-                    self.superres_denom.is_none()
-                        || (rf.width == self.width as u32 && rf.height == self.height as u32)
-                };
-                let ref_l0_adj = last_ref_slot
-                    .and_then(|slot| self.dpb.get(slot))
-                    .filter(|rf| ref_same_size(rf))
-                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1);
-                let ref_l1_adj = pic_decision
-                    .as_ref()
-                    .filter(|p| {
-                        p.slice_type == crate::port_picstruct::SliceType::B
-                            && p.ref_list1_count_try > 0
-                    })
-                    .and_then(|p| {
-                        self.dpb
-                            .get(p.rps.ref_dpb_index[crate::port_picstruct::BWD] as usize)
-                    })
-                    .filter(|rf| ref_same_size(rf))
-                    .filter(|rf| display_order.abs_diff(rf.display_order) <= 1);
-                let mut out = Vec::with_capacity(sb_cols * sb_rows);
-                let mut dr_out = Vec::with_capacity(sb_cols * sb_rows);
-                for sb_row in 0..sb_rows {
-                    for sb_col in 0..sb_cols {
-                        crate::stop_check(&stop)?;
-                        let sb_idx = sb_row * sb_cols + sb_col;
-                        let (x0, y0) = (sb_col * sb_size, sb_row * sb_size);
-                        let b = me.per_b64.get(sb_idx);
-                        // C `ctx->fast_lambda_md[EB_8_BIT_MD]` for THIS
-                        // superblock, from the one derivation above — the
-                        // depth-removal thresholds are scaled by it
-                        // (`set_depth_removal_level_controls`), and C's own
-                        // `SVT_PD0CFG_OUT` `fastlam` field is this value.
-                        let fast_lambda = sb_inter_lambda
-                            .as_ref()
-                            .and_then(|v| v.get(sb_idx))
-                            .map_or(0, |l| l.fast_8bit);
-                        let res = pcommon::set_depth_removal_level_controls(
-                            pcommon::DepthRemovalInputs {
-                                level: sigs.pic_depth_removal_level,
-                                is_islice: false,
-                                fast_lambda_8bit: fast_lambda,
-                                delta_q_present,
-                                r0_delta_qp_md,
-                                // `sb_ptr->qindex` — the generate_sb_qindex
-                                // map — vs the signalled frame base; the
-                                // level modulation arm reads their diff.
-                                sb_qindex: md_sb_qindex.map_or(i32::from(base_qindex), |p| {
-                                    i32::from(p.sb_qindex[sb_idx])
-                                }),
-                                picture_qindex: i32::from(base_qindex),
-                                picture_qp: i32::from(picture_qp),
-                                dist_64: b.map_or(0, |o| o.me_64x64_distortion),
-                                dist_32: b.map_or(0, |o| o.me_32x32_distortion),
-                                dist_16: b.map_or(0, |o| o.me_16x16_distortion),
-                                dist_8: b.map_or(0, |o| o.me_8x8_distortion),
-                                me_8x8_cost_variance: b.map_or(0, |o| o.me_8x8_cost_variance),
-                                sb_width: u16::try_from(sb_size.min(w - x0)).unwrap_or(u16::MAX),
-                                sb_height: u16::try_from(sb_size.min(h - y0)).unwrap_or(u16::MAX),
-                                disallow_4x4_in: true,
-                                // C `(uint8_t)~0` when neither list's
-                                // reference is POC-adjacent — `None` takes
-                                // the no-adjustment arm. With both present
-                                // C keeps the `MIN()`.
-                                ref_sb_min_sq_size: [
-                                    ref_l0_adj.and_then(|rf| rf.sb_min_sq_size.get(sb_idx)),
-                                    ref_l1_adj.and_then(|rf| rf.sb_min_sq_size.get(sb_idx)),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .copied()
-                                .reduce(u8::min),
-                            },
-                        );
-                        let c = res.map(|r| r.ctrls).unwrap_or_default();
-                        // C `set_blocks_to_be_tested` (enc_dec_process.c:1485).
-                        let min_sq = if c.enabled != 0 && c.disallow_below_64x64 != 0 {
-                            64usize
-                        } else if c.enabled != 0 && c.disallow_below_32x32 != 0 {
-                            32
-                        } else if disallow_8x8 || (c.enabled != 0 && c.disallow_below_16x16 != 0) {
-                            16
-                        } else {
-                            // `pic_disallow_4x4` is 1 at every preset this
-                            // port reaches, so C's `: 4` arm is unreachable.
-                            8
-                        };
-                        // `SVTAV1_PD0DBG`: the port-side twin of C's
-                        // `SVT_PD0CFG_OUT` `dr=<enabled>/<64>/<32>/<16>`
-                        // field, same order, so the two join per superblock.
-                        #[cfg(feature = "std")]
-                        if crate::dbgenv::pd0dbg() {
-                            eprintln!(
-                                "PD0DR poc={display_order} nb64={} sb={sb_idx} org=({x0},{y0}) dr={}/{}/{}/{} minsq={min_sq} \
-                                 drlvl={} fastlam={fast_lambda} pqp={picture_qp} \
-                                 med={}/{}/{}/{} mev={} refmin={}/{}",
-                                me.per_b64.len(),
-                                c.enabled,
-                                c.disallow_below_64x64,
-                                c.disallow_below_32x32,
-                                c.disallow_below_16x16,
-                                sigs.pic_depth_removal_level,
-                                b.map_or(0, |o| o.me_64x64_distortion),
-                                b.map_or(0, |o| o.me_32x32_distortion),
-                                b.map_or(0, |o| o.me_16x16_distortion),
-                                b.map_or(0, |o| o.me_8x8_distortion),
-                                b.map_or(0, |o| o.me_8x8_cost_variance),
-                                ref_l0_adj
-                                    .and_then(|rf| rf.sb_min_sq_size.get(sb_idx))
-                                    .map_or(255, |v| u32::from(*v)),
-                                ref_l1_adj
-                                    .and_then(|rf| rf.sb_min_sq_size.get(sb_idx))
-                                    .map_or(255, |v| u32::from(*v)),
-                            );
-                        }
-                        out.push(
-                            u8::try_from(min_sq.min(usize::from(self.hdr.max_tx_size)))
-                                .unwrap_or(8),
-                        );
-                        // The whole result — `sig_deriv_enc_dec_pd0`'s
-                        // subres ladder reads `depth_removal_ctrls` and the
-                        // post-call `disallow_4x4` per superblock, not just
-                        // the folded `min_sq`.
-                        dr_out.push(res.unwrap_or(pcommon::DepthRemovalResult {
-                            ctrls: pcommon::DepthRemovalCtrls::default(),
-                            disallow_4x4: true,
-                        }));
-                    }
-                }
-                pd0_dr_res = Some(dr_out);
-                Some(out)
-            }
-            _ => None,
-        };
+        let pd0_min_sq = self.derive_pd0_min_sq(
+            display_order,
+            &stop,
+            &pic_decision,
+            w,
+            h,
+            &frame_me,
+            base_qindex,
+            r0_delta_qp_md,
+            picture_qp,
+            delta_q_present,
+            md_sb_qindex,
+            sb_size,
+            sb_cols,
+            sb_rows,
+            last_ref_slot,
+            md_config_signals,
+            &inter_md_frame,
+            &sb_inter_lambda,
+            &mut pd0_dr_res,
+        )?;
 
         // C `pd0_detector`'s reference-side inputs (enc_dec_process.c:
         // 2142-2168): `ref_pic_ptr_array[list][0]`'s `sb_intra`, admitted
@@ -4758,7 +3632,6 @@ impl EncodePipeline {
                         );
                     }
                     offset += cur_w * cur_h;
-
                 }
             }
         }
@@ -6768,383 +5641,43 @@ impl EncodePipeline {
         // ever wrongly disabled the stage on inter frames — the exact
         // `lr_type[0]` C=2 vs 0 divergence on `johnny_256x256` q40 p6
         // frame 1.
-        if seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless {
-            // LOOP-RESTORATION LEVEL LADDERS — the `scs->allintra` fork
-            // (`pd_process.c:4935-4938`), the same selector `sc_detect`, the
-            // deblock ladder and the rate ladders already take.
-            //
-            // The all-intra arm is `wn_filter_level_allintra` (3 / 4 / off) with
-            // `sg_filter_level_allintra` == 0 at normal presets 0 through 13,
-            // which is why the port has only ever run Wiener. The VIDEO arm is
-            // `_default`: Wiener 4 at <= M3 and 5 at <= M8 on a non-last layer
-            // (level 5 is LUMA-ONLY), and SGR level 3 at <= M3 — so a video-mode
-            // key frame at presets 0..3 can emit RESTORE_SGRPROJ and, on a plane
-            // with more than one restoration unit, RESTORE_SWITCHABLE.
-            //
-            // The two arms must move TOGETHER: the video Wiener ladder is
-            // nonzero at p7/p8 where the all-intra one is off, so wiring `sg`
-            // alone would leave the frame RD comparing an SGR candidate against
-            // a Wiener candidate C never searched, and wiring `wn` alone cannot
-            // close the p3 cell whose gap is `sg`.
-            let lr_enc_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
-            // `ppcs->input_resolution`, derived exactly as the deblock ladder
-            // above derives it.
-            let lr_resolution = crate::port_enc_mode_config::ResolutionRange::from_luma_area(
-                self.true_width.next_multiple_of(8) * self.true_height.next_multiple_of(8),
-            )
-            .as_u8();
-            // `is_not_last_layer = !ppcs->is_highest_layer` — the same value the
-            // deblock ladder derived above, reused rather than re-derived so the
-            // two cannot drift.
-            let lr_is_not_last_layer = dlf_is_not_last_layer != 0;
-            let (ctrls, sg_ctrls) = match sc_arm {
-                crate::sc_detect::ScArm::Allintra => (
-                    crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset),
-                    crate::port_lr_level::set_sg_filter_ctrls(
-                        crate::port_enc_mode_config::leaf::get_sg_filter_level_allintra(
-                            lr_enc_mode,
-                        ),
-                    ),
-                ),
-                crate::sc_detect::ScArm::Video { .. } => {
-                    let wn = crate::port_lr_level::wn_filter_level_default(
-                        lr_enc_mode,
-                        lr_resolution,
-                        lr_is_not_last_layer,
-                    );
-                    // `scs->static_config.fast_decode` is 0 for every
-                    // configuration this port and the inter harness produce.
-                    let sg = crate::port_lr_level::sg_filter_level_default(
-                        lr_enc_mode,
-                        lr_resolution,
-                        false,
-                    );
-                    (
-                        crate::restoration::WnFilterCtrls::from(
-                            crate::port_lr_level::set_wn_filter_ctrls(wn),
-                        ),
-                        crate::port_lr_level::set_sg_filter_ctrls(sg),
-                    )
-                }
-            };
-            if ctrls.enabled || sg_ctrls.enabled {
-                // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
-                // EB_10_BIT_MD : EB_8_BIT_MD]` (enc_dec_process.c:3246-3247),
-                // i.e. `svt_aom_lambda_assign(.., multiply_lambda = true)` —
-                // whose `*= 16` arm is 10-bit-ONLY, so bd8 is the unweighted
-                // value and bd10 is 16x the bd10 one. (Contrast the CDEF
-                // search, enc_cdef.c:958, which passes false.)
-                let rdmult = match (self.bit_depth, recon10.as_ref()) {
-                    (10, Some(_)) => crate::pd0::kf_full_lambda_bd10_pic(base_qindex) as i64,
-                    _ => crate::pd0::kf_full_lambda_8bit_unweighted(base_qindex) as i64,
-                };
-                let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                // PORT-NOTE(VERIFIED whole-frame — do NOT make per-tile):
-                // this call (and the per-SB `write_lr_for_sb` walk below)
-                // computes the restoration-unit grid across the WHOLE FRAME
-                // (`svtav1_dsp::restoration::count_units_in_tile(unit_size,
-                // pw)` — restoration.rs:425-426 — with the full plane
-                // width/height), which is EXACTLY what C does regardless of
-                // tile count: `svt_aom_foreach_rest_unit_in_frame` /
-                // `_frame_seg` (restoration.c:1274-1297 / 1379-1394) build
-                // the grid from `whole_frame_rect`, call `on_tile(0,0)`
-                // exactly once, and the stripe-derivation tile loop is
-                // hardcoded `for i < 1 /*cm->tile_rows*/` (restoration.c:1699).
-                // So the LR RU grid / tap-delta chain is tile-INDEPENDENT.
-                // (The earlier task-#86 "genuinely PER-TILE" hypothesis was
-                // WRONG — read the C source, not the "in_tile" name.) The
-                // task-#86 2-tile-row `lr-taps` divergence was a downstream
-                // SYMPTOM: a recon difference reprices the whole-frame Wiener
-                // taps, and that recon difference was the M6 PD0 partition
-                // search predicting DC across the tile boundary (pd0.rs
-                // `lvl1_block_cost_rect`, now fixed via `extract_neighbors_
-                // tiled`). With that fixed the LR taps match C byte-for-byte
-                // on the full multi-tile sweep (162/162), confirming this
-                // whole-frame grid is correct as-is.
-                // Task #95 goal 1 (odd true dims): the search runs on the TRUE
-                // luma / CEILING chroma extent, reading the recon at its aligned
-                // buffer stride while `extend_frame` replicates the true edge —
-                // so it never sees the aligned padding (matching C, whose
-                // extend replicates the frame edge into the LR border). Extract
-                // tight true/ceil buffers from the aligned-strided recon +
-                // source (luma stride `w`, chroma stride `cw`); on an 8-aligned
-                // frame true == aligned, so these are byte-neutral copies.
-                let (lr_tcw, lr_tch) = (fmt.chroma_width(lr_true_w), fmt.chroma_height(lr_true_h));
-                let extract_tight = |src: &[u8], src_stride: usize, pw: usize, ph: usize| {
-                    let mut out = alloc::vec![0u8; pw * ph];
-                    for r in 0..ph {
-                        out[r * pw..(r + 1) * pw]
-                            .copy_from_slice(&src[r * src_stride..r * src_stride + pw]);
-                    }
-                    out
-                };
-                let lr_src_y = extract_tight(&encode_input, w, lr_true_w, lr_true_h);
-                let lr_rec_y = extract_tight(&recon, w, lr_true_w, lr_true_h);
-                let (lr_src_u, lr_src_v, lr_rec_u, lr_rec_v) = if chroma.is_some() {
-                    (
-                        extract_tight(su, cw, lr_tcw, lr_tch),
-                        extract_tight(sv, cw, lr_tcw, lr_tch),
-                        extract_tight(&u_recon, cw, lr_tcw, lr_tch),
-                        extract_tight(&v_recon, cw, lr_tcw, lr_tch),
-                    )
-                } else {
-                    (
-                        alloc::vec::Vec::new(),
-                        alloc::vec::Vec::new(),
-                        alloc::vec::Vec::new(),
-                        alloc::vec::Vec::new(),
-                    )
-                };
-                // bd10: run the search on the TRUE 10-bit post-CDEF recon
-                // against the true 10-bit source. Same tight true/ceil
-                // extraction as the u8 arm — the 10-bit canvas is already
-                // tight (`w` / `w/2` stride), and the 10-bit source is
-                // `u8 << (bd - 8)` by construction (the harness writes exactly
-                // that .yuv for both encoders).
-                // LR search-input dump (SVTAV1_LRREC_BIN) — the tight
-                // post-CDEF planes the Wiener/SGR search reads, one set per
-                // frame. Pairs with the C `SVT_LFRECON_BIN` interposer
-                // dump (post-deblock == post-CDEF whenever every coded CDEF
-                // strength is 0).
-                #[cfg(feature = "std")]
-                if let Ok(prefix) = std::env::var("SVTAV1_LRREC_BIN") {
-                    static CALL: core::sync::atomic::AtomicUsize =
-                        core::sync::atomic::AtomicUsize::new(0);
-                    let call = CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    for (plane, buf) in [&lr_rec_y, &lr_rec_u, &lr_rec_v].into_iter().enumerate() {
-                        if !buf.is_empty() {
-                            std::fs::write(format!("{prefix}.f{call}.p{plane}"), buf)
-                                .expect("write LR search-input recon");
-                        }
-                    }
-                }
-                let rest_info = match recon10.as_ref() {
-                    Some((y10, u10, v10)) => {
-                        let sh = (self.bit_depth - 8) as u32;
-                        let widen_tight =
-                            |src: &[u8], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
-                                if src.is_empty() {
-                                    return Vec::new();
-                                }
-                                let mut out = alloc::vec![0u16; pw * ph];
-                                for r in 0..ph {
-                                    for c in 0..pw {
-                                        out[r * pw + c] = (src[r * src_stride + c] as u16) << sh;
-                                    }
-                                }
-                                out
-                            };
-                        let tight10 =
-                            |src: &[u16], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
-                                if src.is_empty() {
-                                    return Vec::new();
-                                }
-                                let mut out = alloc::vec![0u16; pw * ph];
-                                for r in 0..ph {
-                                    out[r * pw..(r + 1) * pw]
-                                        .copy_from_slice(&src[r * src_stride..r * src_stride + pw]);
-                                }
-                                out
-                            };
-                        // Task #6 chunk 2: with a native HBD source the Wiener
-                        // tap search sees the caller's real u16 samples (same
-                        // tight true/ceil extraction, just from the u16 plane);
-                        // otherwise the identical `u8 << sh` widening as before.
-                        let (lr_sy10, lr_su10, lr_sv10) = match hbd_source.as_ref() {
-                            Some(hbd) => {
-                                hbd_used = true;
-                                (
-                                    tight10(&hbd.y, w, lr_true_w, lr_true_h),
-                                    tight10(&hbd.u, cw, lr_tcw, lr_tch),
-                                    tight10(&hbd.v, cw, lr_tcw, lr_tch),
-                                )
-                            }
-                            None => (
-                                widen_tight(&encode_input, w, lr_true_w, lr_true_h),
-                                widen_tight(su, cw, lr_tcw, lr_tch),
-                                widen_tight(sv, cw, lr_tcw, lr_tch),
-                            ),
-                        };
-                        crate::restoration::search_restoration_still_configured_with_stop(
-                            &ctrls,
-                            &sg_ctrls,
-                            &lr_sy10,
-                            &lr_su10,
-                            &lr_sv10,
-                            &tight10(y10, w, lr_true_w, lr_true_h),
-                            &tight10(u10, acw, lr_tcw, lr_tch),
-                            &tight10(v10, acw, lr_tcw, lr_tch),
-                            lr_true_w,
-                            lr_true_h,
-                            filter_chroma,
-                            rdmult,
-                            self.bit_depth,
-                            self.enhancements.contains(
-                                crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
-                            ),
-                            self.sb_size,
-                            &stop,
-                        )?
-                    }
-                    None => {
-                        crate::restoration::search_restoration_still_configured_with_stop::<u8>(
-                            &ctrls,
-                            &sg_ctrls,
-                            &lr_src_y,
-                            &lr_src_u,
-                            &lr_src_v,
-                            &lr_rec_y,
-                            &lr_rec_u,
-                            &lr_rec_v,
-                            lr_true_w,
-                            lr_true_h,
-                            filter_chroma,
-                            rdmult,
-                            8,
-                            self.enhancements.contains(
-                                crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
-                            ),
-                            self.sb_size,
-                            &stop,
-                        )?
-                    }
-                };
-                #[cfg(feature = "std")]
-                if crate::dbgenv::dump_lr() {
-                    for (p, pr) in rest_info.planes.iter().enumerate() {
-                        eprintln!(
-                            "LR plane={p} frame_rtype={} units={:?}",
-                            pr.frame_rtype,
-                            pr.units
-                                .iter()
-                                .map(|u| (u.rtype, u.wiener.vfilter, u.wiener.hfilter))
-                                .collect::<alloc::vec::Vec<_>>()
-                        );
-                    }
-                }
-                if rest_info.any_non_none() {
-                    // Decoder-exact application to the output copy: stripe
-                    // boundaries from the post-deblock (pre-CDEF) and
-                    // post-CDEF planes (dlf_process.c:134 after_cdef=0,
-                    // cdef_process.c:707 after_cdef=1).
-                    let (pre_y, pre_u, pre_v) = self
-                        .last_recon_pre_cdef
-                        .as_ref()
-                        .expect("pre-CDEF recon captured above");
-                    // Task #95 goal 1 / issue #11: the boundary save and the
-                    // unit walk take the SAME TRUE extent the search sized the
-                    // RU grid from (C drives all three off one
-                    // `whole_frame_rect`), read at the ALIGNED canvas strides
-                    // the planes are stored at. Passing the aligned extent here
-                    // while the grid was counted on the true one made the walk
-                    // visit more units than the grid holds — an out-of-bounds
-                    // index whenever alignment crossed a `count_units_in_tile`
-                    // boundary (e.g. true 383 -> 1 unit, aligned 384 -> 2).
-                    // Byte-neutral for 8-aligned dims (true == aligned).
-                    let bounds = crate::restoration::save_lr_boundaries(
-                        pre_y,
-                        pre_u,
-                        pre_v,
-                        &recon,
-                        &u_recon,
-                        &v_recon,
-                        lr_true_w,
-                        lr_true_h,
-                        w,
-                        cw,
-                        filter_chroma,
-                    );
-                    crate::restoration::apply_restoration_frame_bd_with_stop(
-                        &mut recon,
-                        &mut u_recon,
-                        &mut v_recon,
-                        lr_true_w,
-                        lr_true_h,
-                        w,
-                        cw,
-                        filter_chroma,
-                        &rest_info,
-                        &bounds,
-                        8,
-                        &stop,
-                    )?;
-                    // Issue #13: the 10-bit canvas gets the SAME apply. The
-                    // search above picked these taps on the 10-bit recon and
-                    // the frame header signals them, so a decoder applies
-                    // them to its 10-bit output — until now no 10-bit plane
-                    // in the port ever received them. Same true extent, same
-                    // ALIGNED strides the 10-bit canvas is stored at (`w`
-                    // luma, `w / 2` chroma — see `tight10` above), boundary
-                    // lines from the 10-bit post-deblock (pre-CDEF) and
-                    // post-CDEF planes (C: rest_process.c on the 16-bit
-                    // recon picture, highbd = 1).
-                    if let (Some((y10, u10, v10)), Some((py10, pu10, pv10))) =
-                        (recon10.as_mut(), recon10_pre_cdef.as_ref())
-                    {
-                        let bounds10 = crate::restoration::save_lr_boundaries_bd::<u16>(
-                            py10,
-                            pu10,
-                            pv10,
-                            y10,
-                            u10,
-                            v10,
-                            lr_true_w,
-                            lr_true_h,
-                            w,
-                            acw,
-                            filter_chroma,
-                        );
-                        crate::restoration::apply_restoration_frame_bd_with_stop::<u16>(
-                            y10,
-                            u10,
-                            v10,
-                            lr_true_w,
-                            lr_true_h,
-                            w,
-                            acw,
-                            filter_chroma,
-                            &rest_info,
-                            &bounds10,
-                            self.bit_depth,
-                            &stop,
-                        )?;
-                    }
-                }
-                self.last_lr_unit_size = Some(rest_info.planes[0].unit_size as usize);
-                self.last_lr_stats = (
-                    [
-                        rest_info.planes[0].frame_rtype,
-                        rest_info.planes[1].frame_rtype,
-                        rest_info.planes[2].frame_rtype,
-                    ],
-                    rest_info
-                        .planes
-                        .iter()
-                        .flat_map(|p| p.units.iter())
-                        .filter(|u| u.rtype == svtav1_dsp::restoration::RESTORE_WIENER)
-                        .count(),
-                );
-                lr_signal = crate::entropy::obu::LrSignal {
-                    enabled: true,
-                    frame_types: [
-                        rest_info.planes[0].frame_rtype,
-                        rest_info.planes[1].frame_rtype,
-                        rest_info.planes[2].frame_rtype,
-                    ],
-                    unit_size: rest_info.planes[0].unit_size as u16,
-                    // C: rst_info[1].size != rst_info[0].size — always
-                    // equal (set_restoration_unit_size s = 0).
-                    uv_size_differs: false,
-                };
-                if decoder_chroma_recon {
-                    output_restoration = Some(rest_info.clone());
-                }
-                // Arm the bit-producing walk below with the LR syntax —
-                // `Some` here is exactly the old `if rest_info.any_non_none()`
-                // re-walk gate.
-                walk_rest_info = Some(rest_info);
-            }
-        }
+        // `&self`, not `&mut self`: `run_entropy_walk` holds a shared borrow of
+        // `self` across this stage, so the LR records come back out here.
+        let (mut last_lr_unit_size, mut last_lr_stats) =
+            (self.last_lr_unit_size, self.last_lr_stats);
+        self.search_restoration(
+            chroma,
+            &hbd_source,
+            &mut hbd_used,
+            &stop,
+            sc_arm,
+            w,
+            fmt,
+            acw,
+            filter_chroma,
+            encode_input,
+            sc_derivation,
+            base_qindex,
+            coded_lossless,
+            &mut recon,
+            seq_tools,
+            cw,
+            lr_true_w,
+            lr_true_h,
+            &mut u_recon,
+            &mut v_recon,
+            &mut recon10,
+            dlf_is_not_last_layer,
+            recon10_pre_cdef,
+            &mut lr_signal,
+            &mut walk_rest_info,
+            decoder_chroma_recon,
+            &mut output_restoration,
+            &mut last_lr_unit_size,
+            &mut last_lr_stats,
+        )?;
+        self.last_lr_unit_size = last_lr_unit_size;
+        self.last_lr_stats = last_lr_stats;
 
         // The ONE bit-producing walk — C order (rest_process before the EC
         // kernel): armed with whatever CDEF/LR syntax the searches picked,
@@ -7203,184 +5736,16 @@ impl EncodePipeline {
         // `run_picture_decision` and the tool ladders out of
         // `svt_aom_sig_deriv_mode_decision_config_default`. See
         // `crate::inter_hdr_arm`.
-        let mut inter_signal: Option<crate::entropy::obu::InterSignal> = if is_key {
-            None
-        } else {
-            let pic = pic_decision.as_ref().ok_or_else(|| {
-                whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame reached header signalling without a picture decision — \
-                     unreachable since run_picture_decision covers every intra_period != 1 \
-                     config (defensive; remove the caller's is_key guard instead of emitting \
-                     a header that disagrees with the encode) [C: accepts]",
-                ))
-            })?;
-            let ref_queue =
-                crate::inter_hdr_arm::ref_queue_from_dpb(&pic.ref_queue_dpb, base_qindex);
-            let binding = crate::port_picstruct::bind_refs_and_primary_ref_frame(
-                pic, &ref_queue,
-                // C `frame_end_cdf_update_mode` — the picture manager assigns
-                // REFRESH_FRAME_CONTEXT_BACKWARD to coded pictures, which is
-                // the same fact the header's `disable_frame_end_update_cdf = 0`
-                // records (obu.rs).
-                true, /*is_s_frame=*/ false,
-            );
-            // THE FRAME-2 WALL, MOVED 2026-09-03 and now naming the gap
-            // that is actually left.
-            //
-            // It used to be `md_config_inputs` returning `None` for any
-            // `get_ref_hp_percentage` answer other than its -1 sentinel,
-            // because the port carried NONE of the three coded-area
-            // statistics C reads off a reference. It carries all three now —
-            // `ReferenceFrame::{intra,skip,hp}_coded_area`, accumulated in
-            // the walk by `CodedAreaAcc` exactly where C's `update_b` does,
-            // and VERIFIED against C's own reference objects
-            // (`SVT_REFSTATS_OUT` on `gradient 64x64 q32 p8 frames=3`): C
-            // reads its frame-2 list-0 reference as `0/0/100/0`
-            // (slice/intra/skip/hp) and this port writes exactly
-            // `slice=0 intra=0 skip=100 hp=0` onto frame 1's DPB entry.
-            //
-            // WHAT IS STILL MISSING — RE-KEYED 2026-09-03, because the
-            // mechanism this refusal used to name was NOT the first
-            // divergence and the number it quoted was a DIFFERENT defect's.
-            //
-            // It said frame 2 needs `pd0_detector`'s per-superblock
-            // `ref_obj_l0->sb_intra[sb_index]` and cited "466 B against C's
-            // 21". That 466 B was the port PREDICTING FRAME 2 FROM THE WRONG
-            // PICTURE: `ref_frame_data` / `ref_padded_luma` / the PD0
-            // `sb_min_sq_size` read read a hard-coded DPB SLOT 0, where C
-            // resolves LAST through `pic.rps.ref_dpb_index[LAST]` — slot 1 at
-            // poc 2. With that fixed (see `last_ref_slot`) the same cell codes
-            // **22 B against C's 21**, and the frame-2 frontier is a byte, not
-            // a rewrite.
-            //
-            // The measured first divergence NOW is the TEMPORAL MOTION FIELD.
-            // `fh_fields.py` on frame 2 of `diag 64x64 q40 p8 frames=3` shows
-            // `use_ref_frame_mvs = 1` on BOTH sides, so C's MFMV block is live
-            // and so is the port's — but the port's `tpl_mvs` are all
-            // `INVALID_MV` (see `inter_mvp_env` above). On the 2-frame
-            // envelope that is FAITHFUL — the reference is a key frame and C's
-            // own projection returns 0 for it
-            // (`start_frame_buf->frame_type == KEY_FRAME`,
-            // md_config_process.c:441) — and at poc 2 it is a gap: C's
-            // `SVT_CINTER_OUT` codes `mode=13 NEARESTMV mv=(0,-24)` off a
-            // stack whose only source is that field (0 spatial matches,
-            // `imc=8` on both sides), while the port's `SVTAV1_CANDDBG`
-            // reports `refmvcnt=0` and a NEARESTMV of `(0,0)`.
-            //
-            // THAT FIELD IS WIRED NOW (§1z²⁸) and the refusal survived it.
-            // `ReferenceFrame::mvs` carries C's per-8x8 `MV_REF` grid, the
-            // walk folds it through `port_coding_loop::copy_frame_mvs` under
-            // C's own gate, and `inter_mvp_env.tpl_mvs` is
-            // `inter_mvp::setup_motion_field`'s output rather than a constant.
-            // MEASURED: the port's frame-2 `NEARESTMV` is C's `(0,-24)` off a
-            // stack of 1 where it was `(0,0)` off an empty one, and SIX of
-            // eight `frames=3` cells match C's frame-2 byte COUNT. None is
-            // byte-identical, so what is left is the RECON — the first
-            // diverging frame-header field is a CDEF search output, and on two
-            // cells no header field differs at all.
-            //
-            // `part_arm::VideoPic`'s missing `InterOnInterRef` arm — §1z²⁵'s
-            // mechanism — is still a real gap and still unported. It is a
-            // candidate for that residual: it picks `pic_pd0_lvl`, the level
-            // the whole partition search runs at, and the DPB already carries
-            // the `sb_intra` / `sb_skip` it needs.
-            //
-            // See `docs/INTER-ENCODE-PLAN.md` 1z27 and 1z28.
-            #[cfg(feature = "std")]
-            if crate::dbgenv::refstats() {
-                std::eprintln!(
-                    "PORTREFBIND poc={display_order} l0cnt={} l1cnt={} dpb0={} l0slot={} \
-                     l0_is_islice={:?} prf={} refresh=0x{:02x}",
-                    pic.ref_list0_count_try,
-                    pic.ref_list1_count_try,
-                    self.dpb.occupied_slots(),
-                    pic.rps.ref_dpb_index[0],
-                    self.dpb
-                        .get(pic.rps.ref_dpb_index[0] as usize)
-                        .map(|rf| rf.is_islice),
-                    binding.primary_ref_frame,
-                    pic.rps.refresh_frame_mask,
-                );
-            }
-            // THE CHAIN REFUSAL IS GONE (2026-09-11). It used to reject any
-            // inter frame whose LIST-0 reference is itself an inter frame —
-            // i.e. everything past frame 1 — and it was lifted only by
-            // `SVTAV1_INTER_CHAIN_EXPERIMENTAL`, now deleted along with it.
-            //
-            // Its text said "NONE is byte-identical" and named the temporal
-            // motion field as the suspect. Both halves have since been
-            // settled by measurement. The field's defect was
-            // `sb64_sq_no4xn_geom` being derived from `sb_size == 64` alone,
-            // so C's SIMPLIFIED MFMV block walk ran on rectangular blocks and
-            // used `n4_w` for both extents; with that corrected,
-            // `tools/video_selfcheck_gate.sh` reports 18 of 18 real-clip cells
-            // reconstructing byte-identically to `aomdec` across all 8 frames.
-            // And "NONE is byte-identical" is simply no longer true: on the
-            // 96-cell frontier grid at frames=4, 60 cells match C exactly on
-            // frame 2 and 58 on frame 3 (MEASURED 2026-09-11).
-            //
-            // What is left is a parity frontier, not a correctness one, and it
-            // is recorded in the README's video rows rather than as a refusal
-            // — a refusal that describes a closed gap tells the next reader
-            // not to look.
-            let sigs = md_config_signals.ok_or_else(|| {
-                whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame's mode-decision configuration is outside this port's \
-                     envelope: sig_deriv_mode_decision_config_default declined a level \
-                     (crate::inter_hdr_arm::md_config_inputs) [C: accepts]",
-                ))
-            })?;
-            // The tile above was coded from whatever `primary_ref_frame_for_cdf`
-            // resolved to; the header must announce the SAME reference or the
-            // decoder restores different CDFs than the encoder used.
-            assert_eq!(
-                binding.primary_ref_frame, primary_ref_frame_for_cdf,
-                "the header's primary_ref_frame must equal the one the tile's CDFs came from",
-            );
-            Some(
-                crate::inter_hdr_arm::inter_signal(
-                    pic,
-                    &sigs,
-                    binding.primary_ref_frame,
-                    crate::entropy::obu::ORDER_HINT_BITS,
-                    crate::inter_hdr_arm::SeqInterTools {
-                        enable_order_hint: seq_tools.enable_order_hint,
-                        enable_ref_frame_mvs: seq_tools.enable_ref_frame_mvs,
-                        enable_warped_motion: seq_tools.enable_warped_motion,
-                    },
-                    self.scs_tpl(),
-                    // Retained as an ASSERTION input, not a refusal: the
-                    // header now codes the real models. `gm_models` is `None`
-                    // only when a search was needed and could not run, which
-                    // `gm_search_config_error` still refuses above.
-                    gm_models.as_ref().is_none_or(|m| !m.is_gm_on),
-                )
-                .map_err(|e| {
-                    // One message per variant. These used to share one, so a
-                    // GLOBAL-MOTION refusal was reported as an mfmv/TPL one —
-                    // a refusal that names the wrong feature sends the next
-                    // reader to the wrong file.
-                    whereat::at!(EncodeError::UnsupportedConfig(match e {
-                        crate::inter_hdr_arm::InterHdrError::MfmvLevelNotDerivable(_) =>
-                            "an inter frame header field is not implemented for this \
-                             configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL \
-                             r0 and the references' own is_mfmv_used (crate::inter_hdr_arm::\
-                             InterHdrError). This port's TPL is structurally off (aq_mode 0), \
-                             so reaching this means the aq_mode refusal was lifted without \
-                             porting r0 [C: accepts]",
-                        // RETIRED: `inter_signal` no longer raises this — global
-                        // motion is coded. The arm stays because the variant is
-                        // public API and a `match` must be total.
-                        crate::inter_hdr_arm::InterHdrError::GlobalMotionNotImplemented =>
-                            "global motion is not implemented: the inter frame header writer \
-                             reached global_motion_params() with a model it could not code. \
-                             This refusal is RETIRED — `port_entropy_inter::gm::\
-                             write_global_motion` codes the frame's real models — and reaching \
-                             it means a caller constructed the variant by hand [C: accepts]",
-                    }))
-                })?,
-            )
-        };
+        let mut inter_signal = self.derive_inter_signal(
+            display_order,
+            is_key,
+            &pic_decision,
+            base_qindex,
+            primary_ref_frame_for_cdf,
+            gm_models,
+            seq_tools,
+            md_config_signals,
+        )?;
 
         // The header's `global_motion_params()`. `inter_signal` leaves both
         // arrays IDENTITY (it has no access to the search); they are filled
@@ -7424,170 +5789,28 @@ impl EncodePipeline {
         // tile_info() or the chroma quantizer deltas the encode actually used.
         // Signaling and application must agree on every one of those or the
         // recon desyncs from a conforming decoder.
-        let bitstream = {
-            let mut bs = alloc::vec::Vec::new();
-            bs.extend_from_slice(&crate::entropy::obu::write_temporal_delimiter());
-            // The sequence header is written once, on the key frame — C emits
-            // it on the first packet only (verified: `c.obu.pts1` of the
-            // 2-frame cell is a temporal delimiter plus one OBU_FRAME).
-            if is_key {
-                bs.extend_from_slice(&crate::entropy::obu::write_sequence_header_ex(
-                    // TRUE (unaligned) dims flow to the sequence header:
-                    // max_frame_width/height_minus_1 carry the coded size, and
-                    // the level derivation keys off the real picture size (C
-                    // captures max_frame_width BEFORE 8-alignment,
-                    // enc_handle.c:4792). Everything else in the encode uses
-                    // the aligned self.width/height.
-                    // Superres: the sequence header advertises the UPSCALED
-                    // width (what a decoder outputs); the encode itself ran at
-                    // the reduced `true_width`. Equal when superres is off.
-                    self.upscaled_width,
-                    self.true_height,
-                    is_single_frame && !self.image_sequence,
-                    self.bit_depth,
-                    &self.color_description,
-                    chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
-                    // seq_level_idx auto-derivation input (C: scs->frame_rate).
-                    self.rc_config.framerate,
-                    {
-                        let mut t = seq_tools;
-                        // The coded chroma format selects seq_profile +
-                        // subsampling bits (spec 5.5.2); at Yuv420 this is
-                        // profile 0, identical to every existing cell.
-                        t.chroma_format = self
-                            .chroma_format
-                            .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420);
-                        t
-                    },
-                ));
-            }
-            // Frame header (raw bytes) + tile group with proper header.
-            // base_qindex is the SAME value used for quantization, CDF
-            // bucket selection and the deblock picker above — the decoder's
-            // dequant/CDF init must match the encoder's exactly.
-            let fh_bytes = crate::entropy::obu::write_frame_header_full_lr_sb(
-                self.width,
-                self.height,
-                base_qindex,
-                is_single_frame && !self.image_sequence,
-                chroma.is_none(),
-                // The levels applied to the output recon above — signaling
-                // and application MUST agree or the recon desyncs from
-                // every conforming decoder.
-                lf_levels.levels,
-                // Signaled loop_filter_sharpness — must match the value the
-                // deblock search + application used (fork default 1).
-                lf_sharp_eff,
-                // The CDEF strengths applied to the output recon above —
-                // like the deblock levels, signaling and application MUST
-                // agree or the recon desyncs from every conforming decoder.
-                &cdef_params.signal(),
-                // lr_params: `enabled` MUST equal the SH's
-                // enable_restoration bit (spec 5.9.20 gates on it — same
-                // SeqTools the SH got); the per-plane types/taps are the
-                // ones the tile signals and the output recon had applied.
-                &lr_signal,
-                sc_signal,
-                // Chroma-q deltas: the quantizer above used qindex_u /
-                // qindex_v built from EXACTLY these deltas, so signaling and
-                // application agree (chroma_q.rs). BOTH modes derive them now
-                // — the fork block unconditionally, MAINLINE only under tune
-                // IQ (rc_crf_cqp.c's `#else` arm). `None` selects the
-                // zero-delta bit pattern, which is what every non-tune-IQ
-                // mainline encode still gets.
-                //
-                // Separate is checked FIRST: under a SH that signalled
-                // separate_uv_delta_q = 1 the decoder reads diff_uv_delta (and,
-                // with QM, qm_v) even when every delta is zero, and `None`
-                // writes neither — a desync. The fork's derived deltas are
-                // never all zero (U = V + 12), so this ordering is byte-inert
-                // for it; an `__expert` override of (0, 0) on the fork is the
-                // case that reached it (tools/chroma_q_override_gate.sh,
-                // 2026-09-24: aomdec and dav1d both rejected the stream).
-                if self.separate_uv_delta_q() {
-                    // The fork's SH signals separate_uv_delta_q = 1, so the FH
-                    // carries diff_uv_delta + four independent deltas (its U
-                    // delta has a further +12, so U and V really do differ).
-                    // An `__expert` override with U != V takes this form too.
-                    Some(crate::entropy::obu::ChromaQSignal::Separate([
-                        chroma_deltas.u_dc,
-                        chroma_deltas.u_ac,
-                        chroma_deltas.v_dc,
-                        chroma_deltas.v_ac,
-                    ]))
-                } else if chroma_deltas.is_zero() {
-                    None
-                } else {
-                    // MAINLINE: the SH signals separate_uv_delta_q = 0, so the
-                    // FH must NOT write a diff_uv_delta bit — one (dc, ac)
-                    // pair, reused for V. C assigns the same value to
-                    // delta_q_{dc,ac}[1] and [2] (rc_crf_cqp.c:600-601), which
-                    // this asserts rather than assumes.
-                    debug_assert_eq!(
-                        (chroma_deltas.u_dc, chroma_deltas.u_ac),
-                        (chroma_deltas.v_dc, chroma_deltas.v_ac),
-                        "mainline chroma-q must be plane-symmetric (SH separate_uv_delta_q = 0)"
-                    );
-                    Some(crate::entropy::obu::ChromaQSignal::Shared {
-                        dc: chroma_deltas.u_dc,
-                        ac: chroma_deltas.u_ac,
-                    })
-                },
-                // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
-                // same value gates the walk's per-SB delta symbols.
-                delta_q_res_signal,
-                // C hardwires `delta_lf_present = 0`
-                // (resource_coordination_process.c:434-441).
-                false,
-                // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
-                // mainline mode. The quantizers used the SAME levels.
-                if qm_levels == [15; 3] {
-                    None
-                } else {
-                    Some(qm_levels)
-                },
-                film_grain.as_ref(),
-                // task #86: real tile rows. tile_rows_log2 was resolved
-                // (clamped) before encode_tile_rows/run_entropy_walk ran;
-                // tile_size_bytes_minus_1 comes from the SAME walk that
-                // produced tile_data (updated alongside every re-walk
-                // reassignment above), so the FH's declared TileSizeBytes
-                // always matches the tile group's actual size prefixes.
-                tile_rows_log2,
-                tile_cols_log2,
-                tile_size_bytes_minus_1,
-                // Task #91: must match the SH's use_128x128_superblock
-                // (the FH's tile_info() limits are SB-derived).
-                self.sb_size as u32,
-                // `frm_hdr->tx_mode`, for THIS arm (`crate::txs_arm`). The
-                // allintra arm signals TX_MODE_SELECT unconditionally; the
-                // video arm signals it only while `pcs->txs_level != 0`,
-                // which is false from preset 10 up — where this used to emit
-                // a literal 1 and then code per-block tx_depth symbols that
-                // TX_MODE_LARGEST forbids.
-                frame_tx_mode_select,
-                // `None` on a key frame -> exactly the previous bit layout.
-                inter_signal.as_ref(),
-            );
-            // Diagnostic (SVTAV1_FHDUMP=<path>): dump the raw frame-header
-            // bytes (the OBU_FRAME payload prefix before tile data — the FH
-            // is byte-aligned at its end, so a prefix compare against the C
-            // stream's frame OBU is exact FH byte identity). Consumed by
-            // tools/screen_ibc_fh_gate.sh (IBC chunk 1).
-            #[cfg(feature = "std")]
-            if let Some(path) = std::env::var_os("SVTAV1_FHDUMP") {
-                let _ = std::fs::write(path, &fh_bytes);
-            }
-            // tile_data is already a complete tile_group (with TG header)
-            let mut frame_payload = alloc::vec::Vec::new();
-            frame_payload.extend_from_slice(&fh_bytes);
-            frame_payload.extend_from_slice(&tile_data);
-            bs.extend_from_slice(&crate::entropy::obu::write_obu(
-                crate::entropy::obu::ObuType::Frame,
-                &frame_payload,
-            ));
-            bs
-        };
+        let bitstream = self.assemble_bitstream(
+            chroma,
+            is_key,
+            frame_tx_mode_select,
+            base_qindex,
+            tile_rows_log2,
+            tile_cols_log2,
+            chroma_deltas,
+            delta_q_res_signal,
+            lf_sharp_eff,
+            qm_levels,
+            &film_grain,
+            is_single_frame,
+            seq_tools,
+            tile_data,
+            tile_size_bytes_minus_1,
+            lf_levels,
+            &cdef_params,
+            lr_signal,
+            sc_signal,
+            inter_signal,
+        );
 
         // C's deblock search truncates odd chroma dimensions. A decoder
         // filters the ceiling-sized plane. Replay the signaled filters on
@@ -7654,108 +5877,17 @@ impl EncodePipeline {
         // every inter prediction under superres score the wrong reference.)
         let mut out8: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = None;
         let mut out10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = None;
-        if self.superres_denom.is_some() {
-            let (cw, uw, hh) = (
-                self.width as usize,
-                self.upscaled_width as usize,
-                self.height as usize,
-            );
-            // Phase uses the coded plane width, while the tile rectangle
-            // extends to mi_col_end. Its reconstructed padding participates
-            // in the final taps (C av1_upscale_normative_rows).
-            let upscale = |src: &[u8],
-                           stride: usize,
-                           coded: usize,
-                           dst: &mut [u8],
-                           out: usize,
-                           rows: usize| {
-                let step = svtav1_dsp::superres::upscale_convolve_step(coded as i32, out as i32);
-                let x0 = svtav1_dsp::superres::upscale_convolve_x0(coded as i32, out as i32, step);
-                for r in 0..rows {
-                    svtav1_dsp::superres::upscale_normative_row(
-                        &src[r * stride..],
-                        0,
-                        stride,
-                        &mut dst[r * out..],
-                        out,
-                        step,
-                        x0,
-                        svtav1_dsp::superres::TileColPad::FRAME,
-                    );
-                }
-            };
-            let upscale_frame =
-                |y: &[u8], u: &[u8], v: &[u8]| -> EncodeResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-                    let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
-                    upscale(y, cw, self.true_width as usize, &mut y_up, uw, hh);
-                    let (mut u_up, mut v_up) = (alloc::vec::Vec::new(), alloc::vec::Vec::new());
-                    if chroma.is_some() {
-                        let (ccw, cuw, chh) = (
-                            fmt.chroma_width(cw),
-                            fmt.chroma_width(uw),
-                            fmt.chroma_height(hh),
-                        );
-                        let coded = fmt.chroma_width(self.true_width as usize);
-                        u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                        v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                        upscale(u, ccw, coded, &mut u_up, cuw, chh);
-                        upscale(v, ccw, coded, &mut v_up, cuw, chh);
-                    }
-                    Ok((y_up, u_up, v_up))
-                };
-            // The decoder-equivalent output takes the replayed-filters
-            // canvas when it exists, else the search recon — same preference
-            // `last_recon` expresses below.
-            out8 = Some(match decoder_output8.as_ref() {
-                Some((y, u, v)) => upscale_frame(y, u, v)?,
-                None => upscale_frame(&recon, &u_recon, &v_recon)?,
-            });
-            // The 10-bit output: C runs `av1_highbd_convolve_horiz_rs_c` on
-            // the unpacked recon (the `high_bd` arm of
-            // `svt_av1_upscale_normative_rows`, super_res.c:289). Same
-            // normative taps and border policy on u16; `recon10` stays at
-            // coded geometry for `padded_ref_hbd`/`recon_msb8` below.
-            if let Some((y10, u10, v10)) = recon10.as_ref() {
-                let bd = i32::from(self.bit_depth);
-                let upscale_hbd = |src: &[u16],
-                                   stride: usize,
-                                   coded: usize,
-                                   out: usize,
-                                   rows: usize|
-                 -> EncodeResult<Vec<u16>> {
-                    let step =
-                        svtav1_dsp::superres::upscale_convolve_step(coded as i32, out as i32);
-                    let x0 =
-                        svtav1_dsp::superres::upscale_convolve_x0(coded as i32, out as i32, step);
-                    let mut dst = svtav1_types::try_vec![0u16; out * rows]?;
-                    for r in 0..rows {
-                        svtav1_dsp::superres::highbd_upscale_normative_row(
-                            &src[r * stride..],
-                            0,
-                            stride,
-                            &mut dst[r * out..],
-                            out,
-                            step,
-                            x0,
-                            svtav1_dsp::superres::TileColPad::FRAME,
-                            bd,
-                        );
-                    }
-                    Ok(dst)
-                };
-                let (ccw, cuw, chh) = (
-                    fmt.chroma_width(cw),
-                    fmt.chroma_width(uw),
-                    fmt.chroma_height(hh),
-                );
-                let coded = fmt.chroma_width(self.true_width as usize);
-                out10 = Some((
-                    upscale_hbd(y10, cw, self.true_width as usize, uw, hh)?,
-                    upscale_hbd(u10, ccw, coded, cuw, chh)?,
-                    upscale_hbd(v10, ccw, coded, cuw, chh)?,
-                ));
-            }
-        }
+        self.superres_upscale_stage(
+            chroma,
+            fmt,
+            &recon,
+            &u_recon,
+            &v_recon,
+            &recon10,
+            &decoder_output8,
+            &mut out8,
+            &mut out10,
+        )?;
 
         // C `pad_ref_and_set_flags` again, on the 16-bit picture: at
         // `bit_depth > 8` C's reference IS the 10-bit buffer and
@@ -7979,158 +6111,31 @@ impl EncodePipeline {
                 acc.as_ref().map(|a| a.sb_skip.as_slice()),
             );
         }
-        let ref_frame = ReferenceFrame {
-            padded: Some(padded_ref),
-            // C `EbReferenceObject::global_motion` — what a later frame that
-            // names this picture in `primary_ref_frame` delta-codes against.
-            // C substitutes IDENTITY for an I_SLICE reference at READ time
-            // (pic_manager_process.c:833); this stores IDENTITY for a key frame
-            // at WRITE time, which is the same value with one fewer place to
-            // get the slice type wrong.
-            global_motion: if is_key {
-                [svtav1_types::motion::WarpedMotionParams::default(); 8]
-            } else {
-                gm_field
-            },
-            // The stored planes are the same canvas `padded` pads — the
-            // 10-bit recon's MSBs at bd10 (`recon_msb8`), the u8-domain
-            // recon otherwise.
-            y_plane: recon_msb8
-                .as_ref()
-                .map_or_else(|| recon.clone(), |(my, _, _)| my.clone()),
-            // 4:2:0 chroma recon, empty on the monochrome path. Inter
-            // prediction needs all three planes; see `ReferenceFrame::u_plane`.
-            u_plane: if chroma.is_some() {
-                recon_msb8
-                    .as_ref()
-                    .map_or_else(|| u_recon.clone(), |(_, mu, _)| mu.clone())
-            } else {
-                alloc::vec::Vec::new()
-            },
-            v_plane: if chroma.is_some() {
-                recon_msb8
-                    .as_ref()
-                    .map_or_else(|| v_recon.clone(), |(_, _, mv)| mv.clone())
-            } else {
-                alloc::vec::Vec::new()
-            },
-            // C `rest_process.c:207-210`: the strengths the FRAME HEADER
-            // signalled, not the ones the search proposed. A later frame's
-            // CDEF candidate set is rewritten from these
-            // (`update_cdef_filters_on_ref_info`).
-            sb_min_sq_size: sb_min_sq_sizes,
-            sb_max_sq_size: sb_max_sq_sizes,
-            // C `copy_statistics_to_ref_obj_ect` (rest_process.c:190-220):
-            // the NORMALISED percentages (`:347-349`) and the per-superblock
-            // flags this picture's walk accumulated. All zero / empty on
-            // every allintra cell, where the walk never armed the
-            // accumulator — and C's own readers return 0 / 0 / -1 for an
-            // I_SLICE reference regardless of what it stored.
-            intra_coded_area: coded_area_pct.0,
-            skip_coded_area: coded_area_pct.1,
-            hp_coded_area: coded_area_pct.2,
-            sb_intra: frame_coded_area
-                .borrow()
-                .as_ref()
-                .map(|a| a.sb_intra.clone())
-                .unwrap_or_default(),
-            sb_skip: frame_coded_area
-                .borrow()
-                .as_ref()
-                .map(|a| a.sb_skip.clone())
-                .unwrap_or_default(),
-            // C `copy_statistics_to_ref_obj_ect` (rest_process.c:190-220)
-            // also stores this picture's open-loop ME per-SB distortions, so a
-            // later frame's `lpd1_detector_skip_pd0` can compare its own
-            // `me_64x64_distortion`/`me_8x8_cost_variance` against them.
-            // Empty on a key frame, where `frame_me` never ran.
-            sb_me_64x64_dist: frame_me
-                .as_ref()
-                .map(|m| m.per_b64.iter().map(|b| b.me_64x64_distortion).collect())
-                .unwrap_or_default(),
-            sb_me_8x8_cost_var: frame_me
-                .as_ref()
-                .map(|m| m.per_b64.iter().map(|b| b.me_8x8_cost_variance).collect())
-                .unwrap_or_default(),
-            // C `rest_process.c:216` copies `pcs->sb_64x64_mvp` to the ref —
-            // the same `update_b`-accumulated array as `sb_intra`/`sb_skip`.
-            sb_64x64_mvp: frame_coded_area
-                .borrow()
-                .as_ref()
-                .map(|a| a.sb_64x64_mvp.clone())
-                .unwrap_or_default(),
-            // C `EbReferenceObject::slice_type`.
-            is_islice: is_key,
-            // C `enc_dec_process.c:1248-1252` — the ref object takes the
-            // signalled `base_q_idx` and `ppcs->r0` (post `crf_qindex_calc`
-            // adjustment; 0 when TPL did not run this frame) so a LATER
-            // frame's `ref_base_q_idx`/`ref_pic_r0` reads them back.
-            base_q_idx: base_qindex,
-            r0: tpl_r0,
-            cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
-            cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
-            // C `packetization_process.c:741-744`: reset the CDF symbol
-            // counters, THEN copy into the reference object. The reset is not
-            // cosmetic — `update_cdf` reads `cdf[nsymbs]` to choose the
-            // adaptation RATE, so a saved state that kept a frame's final
-            // counts would make the next frame adapt at the slow late-frame
-            // rate from its first symbol.
-            frame_cdfs: walk_end_cdfs.borrow_mut().take().map(|mut c| {
-                c.reset_symbol_counters();
-                #[cfg(feature = "std")]
-                if let Some(path) = std::env::var_os("SVTAV1_FCTX_OUT") {
-                    // Same format and field order as the C oracle's
-                    // `__wrap_svt_av1_reset_cdf_symbol_counters`
-                    // (tools/capture_c_trace/wrap_recon.c), so
-                    // tools/fctx_diff.py can compare them directly.
-                    c.dump_to(&path, display_order as u32);
-                }
-                alloc::sync::Arc::new(c)
-            }),
-            // C `rest_process.c:200-204`: the loop-filter levels this frame's
-            // HEADER signalled, plus the SSE-improvement measure. The next
-            // frame's deblock level is derived from BOTH — see
-            // `crate::dlf_arm`.
-            lf_levels: lf_levels.levels,
-            dlf_dist_dev,
-            // C `rest_process.c:205`: `obj->cdef_dist_dev =
-            // pcs->cdef_dist_dev` — the search-path measurement, -1 on the
-            // fast paths, 0 whenever the signalled strengths are all zero.
-            cdef_dist_dev,
-            width: self.width,
-            height: self.height,
+        let ref_frame = self.build_reference_frame(
+            chroma,
             display_order,
-            order_hint: display_order as u32,
-            // C `av1_copy_frame_mvs`'s output, which `update_b` wrote into
-            // this picture's own reference object during the walk. EMPTY on a
-            // key frame and on every allintra cell, exactly where C's gate is
-            // false — see `CodedAreaAcc::mfmv_active`.
-            mvs: frame_coded_area
-                .borrow()
-                .as_ref()
-                .map(|a| a.mvs.clone())
-                .unwrap_or_default(),
-            // C `EbReferenceObject::ref_order_hint[0..7]`
-            // (`rest_process.c` / `pad_ref_and_set_flags`): the order hints of
-            // THIS picture's own references, which a LATER picture's
-            // `motion_field_projection` reads to scale a saved MV. All zero on
-            // a key frame, which has none.
-            ref_order_hint: {
-                let mut a = [0i32; 7];
-                if let Some(pic) = pic_decision.as_ref() {
-                    for (i, oh) in a.iter_mut().enumerate() {
-                        let slot = pic.rps.ref_dpb_index[i] as usize;
-                        *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
-                    }
-                }
-                a
-            },
-            // C `EbReferenceObject::tmp_layer_idx` — this picture's own
-            // `temporal_layer_index` (enc_dec_process.c:2149's reader
-            // compares a LATER frame's layer against it). 0 on every flat
-            // low-delay frame.
+            is_key,
+            pic_decision,
             temporal_layer,
-        };
+            &frame_me,
+            base_qindex,
+            tpl_r0,
+            recon,
+            gm_field,
+            sb_min_sq_sizes,
+            sb_max_sq_sizes,
+            &frame_coded_area,
+            walk_end_cdfs,
+            u_recon,
+            v_recon,
+            lf_levels,
+            dlf_dist_dev,
+            cdef_params,
+            cdef_dist_dev,
+            recon_msb8,
+            padded_ref,
+            coded_area_pct,
+        );
         #[cfg(feature = "std")]
         if let Some(path) = std::env::var_os("SVTAV1_MVS_OUT") {
             // Diagnostic twin of the vendored-libaom `MVS` dump: the stored
@@ -8257,13 +6262,10 @@ impl EncodePipeline {
         // `avg_cnt_zeromv` is the `rest_process.c:350` normalization of the
         // `update_b`-accumulated zero-MV area.
         if let Some(frame) = cbr_frame_rc.as_mut() {
-            let avg_cnt_zeromv = frame_coded_area
-                .borrow()
-                .as_ref()
-                .map_or(0, |a| {
-                    let n = (w * h) as u64;
-                    if n == 0 { 0 } else { 100 * a.zeromv_area / n }
-                });
+            let avg_cnt_zeromv = frame_coded_area.borrow().as_ref().map_or(0, |a| {
+                let n = (w * h) as u64;
+                if n == 0 { 0 } else { 100 * a.zeromv_area / n }
+            });
             self.cbr_postencode(
                 frame,
                 bitstream.len().saturating_sub(2) as u64 * 8,
@@ -8291,6 +6293,7 @@ impl EncodePipeline {
         self.frame_count += 1;
         Ok(bitstream)
     }
+
 }
 
 /// Encode tile rows, returning per-tile recon buffers.
@@ -8495,3 +6498,11 @@ mod config_check;
 mod superres;
 
 mod cbr;
+
+mod frame_setup;
+
+mod inter_setup;
+
+mod restoration_stage;
+
+mod frame_output;

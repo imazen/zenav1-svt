@@ -149,10 +149,21 @@ In dependency order:
     takes `pipeline.rs` from 23,560 to 13,351 lines. The tools are
     `tools/split_inline_mod.py` and `tools/move_items.py`; they only raise
     privacy to `pub(super)`, and the pins are unchanged.
-  - Done (this change): `EncodePipeline` methods move by name
+  - Done (`394ebdb5`): `EncodePipeline` methods move by name
     (`tools/move_methods.py`) into
     `pipeline/{ra, tpl_stage, setup, entry, grain, config_check, superres,
     cbr}.rs`, taking `pipeline.rs` to 8,497 lines.
+  - Done (this change): 14 stages extracted from `encode_frame_impl`
+    (`tools/ra_extract.py` drives rust-analyzer's "Extract into function",
+    which works out every stage's inputs and outputs) and moved into
+    `pipeline/{frame_setup, inter_setup, restoration_stage,
+    frame_output}.rs`. `pipeline.rs` is 6,508 lines; `encode_frame_impl` is
+    5,625. Lesson from the attempt: a stage cannot take `&mut self` while
+    `run_entropy_walk` (a closure holding a shared borrow of `self`) is live,
+    and a stage that RETURNS data borrowing `self` pins all of `self`. Such
+    stages take `&self` and hand their `self` writes back to the caller
+    (`search_restoration`). `build_inter_md_frame` and `bd10_post_pass` are
+    left inline until they can take the specific fields they borrow.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting

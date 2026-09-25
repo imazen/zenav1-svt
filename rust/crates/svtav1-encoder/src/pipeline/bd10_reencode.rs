@@ -1,7 +1,7 @@
 //! The 10-bit level re-encode pass, kept beside its pipeline caller.
 
-use alloc::vec;
 use super::{Bd10CoeffNeighbors, Bd10ModeNeighbors};
+use alloc::vec;
 
 /// The INTER arm's 10-bit prediction for one committed leaf — the single-
 /// reference [`crate::inter_pred_arm::predict_inter_leaf_hbd`] or, for a
