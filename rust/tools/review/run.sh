@@ -48,4 +48,7 @@ echo "== near-duplicates, same normalization on both sides"
 echo "== exact copies (jscpd)"
 "${nice_[@]}" jscpd --min-tokens 80 --min-lines 8 --format rust --reporters json --output jscpd-rs --silent keep/mirror | tail -1
 
-echo "outputs in $out: drop/bundle/*.rs (read these), cmp/*.tsv + cmp.txt, clones-{rs,c}/*.tsv, jscpd-rs/"
+
+echo "== functions no product code reaches (transitive, comments + tests stripped)"
+"${nice_[@]}" "$py" "$here/deadfns.py" --src drop/mirror --transitive > dead.tsv
+echo "outputs in $out: drop/bundle/*.rs (read these), cmp/*.tsv + cmp.txt, clones-{rs,c}/*.tsv, jscpd-rs/, dead.tsv"

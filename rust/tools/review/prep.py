@@ -18,6 +18,7 @@ What counts as test code (removed):
 Outputs, under --out:
   mirror/   the same tree with test code blanked OUT BUT LINE NUMBERS KEPT, so
             jscpd / lizard / rust-code-analysis findings point at real source lines.
+            With --comments=drop, comments are blanked in the mirror as well.
   bundle/   compact reading copies, one file per crate area, split into chunks of
             about --chunk-tokens. Large literal tables are replaced by a one-line
             stub. With --comments=drop, comments are removed too. Every gap is
@@ -310,7 +311,12 @@ def main():
             manifest.append(f"{rel}\t{nlines}\t0\t{nlines}\t0\t0")
             continue
         tranges = merge(tr_cache[f][0])
-        blanked = blank_bytes(src, tranges)
+        mirror_ranges = tranges
+        if args.comments == "drop":
+            # The drop mirror has comments blanked too, so text-based tools
+            # (deadfns.py) do not count a name mentioned in a comment as a use.
+            mirror_ranges = merge(tranges + comment_ranges(src, tree))
+        blanked = blank_bytes(src, mirror_ranges)
         mirror.write_bytes(blanked)
 
         def line_of(b):
