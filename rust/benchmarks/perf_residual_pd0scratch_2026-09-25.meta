@@ -1,0 +1,27 @@
+Snapshot 2026-09-25 (i265): residual_i16 row overhead and per-thread PD0 scratch.
+
+Found by profiling the port against C at 1024x1024 gradient qp40 p10 (still),
+where the port ran 347.2M instructions to C's 198.7M on byte-identical output
+(perf_gate 2026-09-25-gap: 1.37x C wall at 1024 p10, 1.31x at p6).
+
+1. residual_i16 (v3): 10.30M -> 4.73M Ir against C's 2.04M. The block sizes are
+   mostly 8x8/16x16/16x8 (histogram at this cell: 3688 8x8, 3264 16x16,
+   3152 16x8, 1024 32x32), and per-row slicing cost more than the arithmetic.
+   16- and 32-wide blocks now walk full-stride rows with `chunks_exact`
+   (loop-invariant length check), 8-wide takes row pairs, wider blocks use
+   `as_chunks::<32>`.
+2. PD0 scratch: every PD0 entry built a fresh `Pd0Scratch` per superblock, so
+   its buffers regrew and re-zeroed each time. It is now a per-thread scratch
+   (the pattern `TxScratch` already uses; fresh under no_std).
+   memset 19.9M -> 14.8M Ir.
+
+output: byte-identical (.obu cmp at the profiled cell; perf_ab ident=Y;
+        nextest 2767/2767 with output pins unchanged; spotcheck 147/147)
+
+callgrind, 1024 p10: 347,178,192 -> 336,290,577 (-3.14%)
+
+wall clock, tools/perf_ab.sh (interleaved, 11 rounds) vs b0c5515a:
+  perf_residual_pd0scratch_2026-09-25.tsv
+  256 p6 1.005   256 p10 1.004   1024 p6 1.020   1024 p10 1.131 (p25/p75 0.83/1.00: noisy)
+  A 7-round run of an earlier revision read 1.002 / 1.007 / 0.991 / 1.007, so
+  the wall-clock effect is small and only the instruction count is firm.

@@ -107,13 +107,14 @@ pub fn pd0_pick_sb_partition(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
-        scratch: Pd0Scratch::default(),
+        scratch: take_scratch(),
         root_det: Pd0RootDet {
             rd_cost: 0,
             blk: None,
         },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
+    return_scratch(core::mem::take(&mut ctx.scratch));
     eval.tree()
 }
 
@@ -224,13 +225,14 @@ pub fn pd0_pick_sb_partition_lvl0(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
-        scratch: Pd0Scratch::default(),
+        scratch: take_scratch(),
         root_det: Pd0RootDet {
             rd_cost: 0,
             blk: None,
         },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
+    return_scratch(core::mem::take(&mut ctx.scratch));
     eval.tree()
 }
 
@@ -322,13 +324,14 @@ pub fn pd0_pick_sb_partition_m6(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
-        scratch: Pd0Scratch::default(),
+        scratch: take_scratch(),
         root_det: Pd0RootDet {
             rd_cost: 0,
             blk: None,
         },
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
+    return_scratch(core::mem::take(&mut ctx.scratch));
     eval.tree()
 }
 
@@ -546,13 +549,14 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         inter,
         pending_recon: None,
-        scratch: Pd0Scratch::default(),
+        scratch: take_scratch(),
         root_det: Pd0RootDet {
             rd_cost: 0,
             blk: None,
         },
     };
     let (rd_cost, mut eval) = ctx.pick(64, 0, 0);
+    return_scratch(core::mem::take(&mut ctx.scratch));
     // `lpd1_detector_post_pd0` reads the PART_N root block at every
     // `pd0_level < PD0_LVL_6` — including the 0..=2 levels this entry point
     // serves — so surface it the same way `pd0_pick_sb_partition_video_eval`
@@ -875,13 +879,14 @@ pub fn pd0_pick_sb_partition_video_eval(
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         inter,
         pending_recon: None,
-        scratch: Pd0Scratch::default(),
+        scratch: take_scratch(),
         root_det: Pd0RootDet {
             rd_cost: 0,
             blk: None,
         },
     };
     let (rd_cost, mut eval) = ctx.pick(64, 0, 0);
+    return_scratch(core::mem::take(&mut ctx.scratch));
     eval.root_det = Some(Pd0RootDet {
         rd_cost,
         blk: ctx.root_det.blk,

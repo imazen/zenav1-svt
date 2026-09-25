@@ -353,6 +353,16 @@ Order, by expected size:
      `fallible-alloc` test now calls `try_vec!` inside the encoder crate
      directly, which is what it was testing;
 6. per-call allocations (S6).
+7. the remaining gap to C. `tools/perf_gate.sh` on 2026-09-25 (i265,
+   gradient qp40 stills, `benchmarks/perf_2026-09-25-gap.meta`): 1.18x C at
+   256 p6, 1.31x at 1024 p6, 1.37x at 1024 p10; faster than C at 64. At
+   1024 p10 the port runs 347M instructions to C's 199M.
+   - Done (this change): `residual_i16` row overhead and a per-thread PD0
+     scratch, -3.1% instructions at 1024 p10
+     (`benchmarks/perf_residual_pd0scratch_2026-09-25.meta`).
+   - Open, by excess over C at that cell: memset (14.8M vs 3.0M),
+     `cost_coeffs_txb` (10.8M, no C counterpart in its top list), SSE and
+     variance kernels (17.8M vs about 6M), memcpy (10.3M vs 3.1M).
 
 ## Maintenance backlog
 

@@ -228,6 +228,79 @@ fn residual_i16_core(
     }
 }
 
+/// Calls `f` on each of `h` rows of a `W`-wide strided block. All rows but
+/// the last are full strides, so `chunks_exact` gives them a loop-invariant
+/// length and the per-row `[..W]` checks hoist out of the loop; the last row
+/// may be exactly `W` long. Strides must be nonzero.
+#[inline(always)]
+fn rows_fixed<const W: usize>(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    h: usize,
+    out: &mut [i16],
+    mut f: impl FnMut(&[u8; W], &[u8; W], &mut [i16]),
+) {
+    if h == 0 {
+        return;
+    }
+    let (s_body, s_last) = src.split_at((h - 1) * src_stride);
+    let (p_body, p_last) = pred.split_at((h - 1) * pred_stride);
+    let (o_body, o_last) = out[..h * W].split_at_mut((h - 1) * W);
+    let rows = s_body
+        .chunks_exact(src_stride)
+        .zip(p_body.chunks_exact(pred_stride))
+        .zip(o_body.as_chunks_mut::<W>().0);
+    for ((s, p), o) in rows {
+        f(s[..W].try_into().unwrap(), p[..W].try_into().unwrap(), o);
+    }
+    f(
+        s_last[..W].try_into().unwrap(),
+        p_last[..W].try_into().unwrap(),
+        o_last,
+    );
+}
+
+/// [`rows_fixed`] two rows at a time: `f` gets both rows of each of `pairs`
+/// row pairs and the `2 * W` outputs they fill. Needs strides of at least `W`.
+#[inline(always)]
+fn row_pairs<const W: usize>(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pairs: usize,
+    out: &mut [i16],
+    mut f: impl FnMut([&[u8; W]; 2], [&[u8; W]; 2], &mut [i16]),
+) {
+    if pairs == 0 {
+        return;
+    }
+    #[inline(always)]
+    fn two<const W: usize>(r: &[u8], stride: usize) -> [&[u8; W]; 2] {
+        [
+            r[..W].try_into().unwrap(),
+            r[stride..stride + W].try_into().unwrap(),
+        ]
+    }
+    let (s_body, s_last) = src.split_at((pairs - 1) * 2 * src_stride);
+    let (p_body, p_last) = pred.split_at((pairs - 1) * 2 * pred_stride);
+    let (o_body, o_last) = out[..pairs * 2 * W].split_at_mut((pairs - 1) * 2 * W);
+    let rows = s_body
+        .chunks_exact(2 * src_stride)
+        .zip(p_body.chunks_exact(2 * pred_stride))
+        .zip(o_body.as_chunks_mut::<W>().0.as_chunks_mut::<2>().0);
+    for ((s, p), o) in rows {
+        f(
+            two(s, src_stride),
+            two(p, pred_stride),
+            o.as_flattened_mut(),
+        );
+    }
+    f(two(s_last, src_stride), two(p_last, pred_stride), o_last);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn residual_i16_impl_scalar(
     _token: ScalarToken,
@@ -302,36 +375,19 @@ fn residual_i16_impl_v3(
                 }
             }
         }
-        8 => {
-            // Two rows per u8x16: pack 2x u64.
-            let full = h / 2;
-            for r2 in 0..full {
-                let r = r2 * 2;
-                let a: [u8; 16] = (u64::from_le_bytes(
-                    src[r * src_stride..r * src_stride + 8].try_into().unwrap(),
-                ) as u128
-                    | ((u64::from_le_bytes(
-                        src[(r + 1) * src_stride..(r + 1) * src_stride + 8]
-                            .try_into()
-                            .unwrap(),
-                    ) as u128)
-                        << 64))
-                    .to_le_bytes();
-                let b: [u8; 16] = (u64::from_le_bytes(
-                    pred[r * pred_stride..r * pred_stride + 8]
-                        .try_into()
-                        .unwrap(),
-                ) as u128
-                    | ((u64::from_le_bytes(
-                        pred[(r + 1) * pred_stride..(r + 1) * pred_stride + 8]
-                            .try_into()
-                            .unwrap(),
-                    ) as u128)
-                        << 64))
-                    .to_le_bytes();
-                sub16(&a, &b, &mut out[r * 8..r * 8 + 16]);
-            }
-            if h % 2 != 0 {
+        8 if src_stride >= 8 && pred_stride >= 8 => {
+            // Two rows per u8x16.
+            let pairs = h / 2;
+            row_pairs::<8>(src, src_stride, pred, pred_stride, pairs, out, |a, b, o| {
+                let mut av = [0u8; 16];
+                let mut bv = [0u8; 16];
+                av[..8].copy_from_slice(a[0]);
+                av[8..].copy_from_slice(a[1]);
+                bv[..8].copy_from_slice(b[0]);
+                bv[8..].copy_from_slice(b[1]);
+                sub16(&av, &bv, o)
+            });
+            if !h.is_multiple_of(2) {
                 let r = h - 1;
                 let s = &src[r * src_stride..r * src_stride + 8];
                 let p = &pred[r * pred_stride..r * pred_stride + 8];
@@ -341,28 +397,49 @@ fn residual_i16_impl_v3(
                 }
             }
         }
+        // At these widths the per-row slicing cost more than the arithmetic;
+        // `rows_fixed` walks full-stride rows with no per-row range checks.
+        16 if src_stride != 0 && pred_stride != 0 => {
+            rows_fixed::<16>(src, src_stride, pred, pred_stride, h, out, |a, b, o| {
+                sub16(a, b, o)
+            });
+        }
+        32 if src_stride != 0 && pred_stride != 0 => {
+            rows_fixed::<32>(src, src_stride, pred, pred_stride, h, out, |a, b, o| {
+                let av = u8x32::load(token, a);
+                let bv = u8x32::load(token, b);
+                let d_lo = av.widen_low().bitcast_i16x16() - bv.widen_low().bitcast_i16x16();
+                let d_hi = av.widen_high().bitcast_i16x16() - bv.widen_high().bitcast_i16x16();
+                let (lo, hi) = o.split_at_mut(16);
+                d_lo.store(lo.try_into().unwrap());
+                d_hi.store(hi.try_into().unwrap());
+            });
+        }
         w if w % 16 == 0 => {
+            // Row slices once, then fixed-size chunks: no per-chunk range
+            // checks, and each operand is loaded once for both halves.
             for r in 0..h {
-                let s0 = r * src_stride;
-                let p0 = r * pred_stride;
-                let o0 = r * w;
-                let mut c = 0;
-                while c + 32 <= w {
-                    let a: &[u8; 32] = src[s0 + c..s0 + c + 32].try_into().unwrap();
-                    let b: &[u8; 32] = pred[p0 + c..p0 + c + 32].try_into().unwrap();
-                    let d_lo = u8x32::load(token, a).widen_low().bitcast_i16x16()
-                        - u8x32::load(token, b).widen_low().bitcast_i16x16();
-                    let d_hi = u8x32::load(token, a).widen_high().bitcast_i16x16()
-                        - u8x32::load(token, b).widen_high().bitcast_i16x16();
-                    d_lo.store((&mut out[o0 + c..o0 + c + 16]).try_into().unwrap());
-                    d_hi.store((&mut out[o0 + c + 16..o0 + c + 32]).try_into().unwrap());
-                    c += 32;
+                let s = &src[r * src_stride..][..w];
+                let p = &pred[r * pred_stride..][..w];
+                let o = &mut out[r * w..][..w];
+                let (sc, s_tail) = s.as_chunks::<32>();
+                let (pc, p_tail) = p.as_chunks::<32>();
+                let (oc, o_tail) = o.as_chunks_mut::<32>();
+                for ((a, b), d) in sc.iter().zip(pc).zip(oc) {
+                    let av = u8x32::load(token, a);
+                    let bv = u8x32::load(token, b);
+                    let d_lo = av.widen_low().bitcast_i16x16() - bv.widen_low().bitcast_i16x16();
+                    let d_hi = av.widen_high().bitcast_i16x16() - bv.widen_high().bitcast_i16x16();
+                    let (lo, hi) = d.split_at_mut(16);
+                    d_lo.store(lo.try_into().unwrap());
+                    d_hi.store(hi.try_into().unwrap());
                 }
-                while c + 16 <= w {
-                    let a: &[u8; 16] = src[s0 + c..s0 + c + 16].try_into().unwrap();
-                    let b: &[u8; 16] = pred[p0 + c..p0 + c + 16].try_into().unwrap();
-                    sub16(a, b, &mut out[o0 + c..o0 + c + 16]);
-                    c += 16;
+                if !s_tail.is_empty() {
+                    sub16(
+                        s_tail.try_into().unwrap(),
+                        p_tail.try_into().unwrap(),
+                        o_tail,
+                    );
                 }
             }
         }

@@ -821,6 +821,39 @@ struct Pd0Scratch {
     inv: alloc::vec::Vec<i32>,
 }
 
+#[cfg(feature = "std")]
+std::thread_local! {
+    static PD0_SCRATCH: core::cell::RefCell<Pd0Scratch> =
+        const { core::cell::RefCell::new(Pd0Scratch {
+            pred: alloc::vec::Vec::new(), cand: alloc::vec::Vec::new(),
+            residual: alloc::vec::Vec::new(), coeffs: alloc::vec::Vec::new(),
+            qcoeff: alloc::vec::Vec::new(), dqcoeff: alloc::vec::Vec::new(),
+            full: alloc::vec::Vec::new(), inv: alloc::vec::Vec::new(),
+        }) };
+}
+
+/// This thread's [`Pd0Scratch`], taken for one superblock pick and handed
+/// back by [`return_scratch`], so the buffers grow once per thread instead
+/// of once per superblock. A fresh scratch under no_std.
+fn take_scratch() -> Pd0Scratch {
+    #[cfg(feature = "std")]
+    {
+        PD0_SCRATCH.with(|c| core::mem::take(&mut *c.borrow_mut()))
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        Pd0Scratch::default()
+    }
+}
+
+/// Returns a scratch taken by [`take_scratch`].
+fn return_scratch(s: Pd0Scratch) {
+    #[cfg(feature = "std")]
+    PD0_SCRATCH.with(|c| *c.borrow_mut() = s);
+    #[cfg(not(feature = "std"))]
+    drop(s);
+}
+
 /// `v[..n]` as a mutable slice, growing the buffer once when it is too
 /// small. Contents are NOT guaranteed zero — callers must write every
 /// element they read (or `fill(0)` where a tail must read as zero).
