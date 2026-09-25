@@ -280,7 +280,7 @@ jobs:
         # The ledger number rust/CLAUDE.md cites (191/191) came from this gate,
         # which no CI job ran until 2026-09-25; it ran 211 s locally (i265).
         run: |
-          ./tools/bd10_photo_gate.sh
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_photo_gate.sh
 
       - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
         if: matrix.shard == 4
