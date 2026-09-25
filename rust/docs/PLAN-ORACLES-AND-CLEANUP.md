@@ -311,9 +311,18 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   - Measured 2026-09-25 (i265): the still ledger gates hold under the
     mainline pairing (`SVT_ORACLE=mainline-4.2.0` drives both encoders):
     `identity_full_8bit` 1100/1100, `bd10_photo_gate` 191/191,
-    `bd10_nonflat_gate` 309/309. Next: the video byte gates and `just pins`
-    with `Mainline420` as the default reference, then flip the legacy
-    constructors, `AvifEncoder::new` and the registry's default row.
+    `bd10_nonflat_gate` 309/309; the video byte gates too,
+    `bd10_video_gate` 24/24 and `real_video_inter_gate` 24/24, with their
+    pinned tables unchanged. `regression_spotcheck` is 137/147: its 10 mono
+    cells fail because `encode_frame_impl` refuses monochrome under
+    `Mainline420` ("pristine mainline SVT supports 4:2:0 only"), so a default
+    flip would break mono for default users.
+  - Next: decide the extension rule. Proposed: `Mainline420` follows
+    mainline's decisions and still accepts the Rust extensions (mono, 4:4:4,
+    alpha), which carry no C claim either way; `EncodingPolicy::SvtParity`
+    keeps refusing them. Then `just pins` with `Mainline420` as the default,
+    and flip the legacy constructors, `AvifEncoder::new` and the registry's
+    default row.
 
 Done when each gate reports a pinned count under both `mainline-4.2.0`
 and `ghost-robot`, and README states both.
