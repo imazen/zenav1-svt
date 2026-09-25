@@ -489,14 +489,14 @@ Order, by expected size:
 
 ## Maintenance backlog
 
-- [ ] CI green. Restored 2026-09-25 except one gate: shard 3's
+- [x] CI green (2026-09-25; the global_motion_gate re-pin below was
+  owner-approved and landed with its evidence in the gate). Was: shard 3's
   `global_motion_gate.sh` (running in CI for the first time, now that the
   sparse corpus fetches its photo) counts 14 and 2054 GLOBALMV blocks where
   it pins at least 22 and 2738. Bisected to `606c4accd` (wm_level-1 warp
   injection), which made the port commit WARPED_CAUSAL where C does and moved
   four frame-1 cells to byte-identical; these p2 cells sit on the same
-  wm_level-1 ladder. Lowering the floor is a threshold change, so it waits
-  for the owner's decision.
+  wm_level-1 ladder.
 
 - [ ] CHANGELOG `[Unreleased]` is 3,800 lines of repeated
   Added/Changed/Fixed blocks appended per campaign, with QUEUED BREAKING

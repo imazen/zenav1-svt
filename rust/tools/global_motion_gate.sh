@@ -52,9 +52,15 @@ PHOTO="$PHOTO_DIR/3571065.png"
 # non-identity (list, ref) models field-for-field with C on the same cells,
 # and the port's zoom-cell streams are within +1.2% of C's size. See
 # benchmarks/global_motion_2026-09-21.meta.
+# RE-PINNED 2026-09-25 (14 / 2054), owner-approved: bisected to 606c4accd
+# (wm_level-1 warp injection), which made the port commit WARPED_CAUSAL where
+# C does and moved four frame-1 cells to byte-identical with C. These p2
+# cells sit on that wm_level-1 ladder, so blocks that took GLOBALMV now take
+# the warped candidate C also takes. Recon == dav1d 2/2 in both cells. This
+# gate never ran in CI before 1ace7837 (its photo was not fetched).
 CELLS=(
-    "crop:$PHOTO 256 256 40 2 0 33 32 1 22"
-    "crop:$PHOTO 512 512 40 2 0  9  8 1 2738"
+    "crop:$PHOTO 256 256 40 2 0 33 32 1 14"
+    "crop:$PHOTO 512 512 40 2 0  9  8 1 2054"
     "crop:$PHOTO 256 256 40 2 3  1  1 0 0"
     "crop:$PHOTO 128 128 40 2 3  1  1 0 0"
 )
