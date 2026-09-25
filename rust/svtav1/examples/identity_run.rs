@@ -78,6 +78,22 @@ fn apply_enhancement_env(pipeline: &mut EncodePipeline) {
             _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
         }
     }
+    // AOM-style restoration-unit size search: evaluate the legal RU sizes
+    // through the SVT filter search + RD costs instead of the C-fixed grid
+    // pick. Same research envelope as the intra-edge arm (native -1,
+    // all-intra 4:2:0 — `ZenEnhancements::validate` refuses wider).
+    if let Ok(value) = std::env::var("SVTAV1_ZEN_RESTORATION_UNIT_SEARCH") {
+        match value.as_str() {
+            "0" => {}
+            "1" => {
+                pipeline.enhancements = pipeline
+                    .enhancements
+                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomRestorationUnitSearch);
+                eprintln!("SVTAV1_ENHANCEMENT=aom-restoration-unit-search-v1");
+            }
+            _ => panic!("SVTAV1_ZEN_RESTORATION_UNIT_SEARCH must be 0 or 1"),
+        }
+    }
     // AOM-style screen tools on stills: palette + IntraBC stay enabled at
     // every preset when the detector says screen (the allintra ladders
     // switch palette off at M8+ and IntraBC at M5+; the detector itself is
