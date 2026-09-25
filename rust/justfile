@@ -148,3 +148,8 @@ arm-pairwise:
 # Register-only narrow-row experiment, separate from production kernels.
 arm-rowpack:
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 cargo bench -p zenav1-svt-dsp --bench kernel_tiers -- --group=arm_rowpack
+
+# Code-review inputs: test-stripped reading bundles plus duplication and
+# complexity metrics for the port and the C reference. Tool setup: tools/review/run.sh.
+review out="~/tmp/zenav1-review":
+    tools/review/run.sh {{out}}
