@@ -174,7 +174,7 @@ evidence (an FFI parity test, an identity cell, or a differential).
 |---|---|
 | `crates/svtav1-encoder/src/palette.rs` | 9 |
 | `crates/svtav1-encoder/src/intrabc.rs` | 8 |
-| `crates/svtav1-dsp/src/hbd.rs` | 7 |
+| `crates/svtav1-dsp/src/hbd.rs` | 3 |
 | `crates/svtav1-encoder/src/segmentation.rs` | 2 |
 | `crates/svtav1-encoder/src/sb128_geom.rs` | 2 |
 | `crates/svtav1-encoder/src/leaf_funnel/inject.rs` | 2 |
@@ -189,5 +189,9 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-dsp/tests/c_parity_intra_pred_hbd.rs` | 1 |
 | `crates/svtav1-dsp/tests/c_parity_cdef.rs` | 1 |
 | `crates/svtav1-dsp/src/inv_txfm.rs` | 1 |
+| `crates/svtav1-dsp/src/hbd/filter_intra.rs` | 1 |
+| `crates/svtav1-dsp/src/hbd/directional.rs` | 1 |
+| `crates/svtav1-dsp/src/hbd/cfl.rs` | 1 |
+| `crates/svtav1-dsp/src/hbd/cdef.rs` | 1 |
 
 <!-- PORT-NOTE-INDEX:END -->
