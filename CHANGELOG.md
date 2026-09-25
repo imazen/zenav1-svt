@@ -2546,7 +2546,7 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Removed
 
-- **`AomIntraEdgeFilter` and `AomRestorationUnitSearch`** (this change), on the
+- **`AomIntraEdgeFilter` and `AomRestorationUnitSearch`** (8b721dee), on the
   keep-or-drop sweep (`benchmarks/aom_keep_or_drop_2026-09-25.meta`, 7,092
   cells). The intra-edge filter was a small net ssim2 BD loss on photos (median
   +0.12% / +0.51% at tune 1 / 3); the restoration-unit search was RD-neutral
