@@ -93,7 +93,28 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
 DOC=docs/REFUSED-CONFIGS.md
-SRC=(crates/svtav1-encoder/src/pipeline.rs crates/svtav1-encoder/src/entropy/obu.rs svtav1/src/avif.rs)
+# pipeline.rs is split across pipeline/*.rs (S2), so its children are scanned
+# with it; a child the parent declares under `#[cfg(test)]` is test code, not a
+# refusal site. Every source must exist: a renamed or split file must fail this
+# tool, never shrink the ledger (2026-09-25: the split first dropped it from 83
+# rows to 31 without an error).
+PIPE=crates/svtav1-encoder/src/pipeline
+TEST_MODS=$(python3 - "$PIPE.rs" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+print(" ".join(re.findall(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*mod (\w+);", t)))
+PY
+)
+SRC=("$PIPE.rs")
+for f in "$PIPE"/*.rs; do
+    m=$(basename "$f" .rs)
+    case " $TEST_MODS " in *" $m "*) continue ;; esac
+    SRC+=("$f")
+done
+SRC+=(crates/svtav1-encoder/src/entropy/obu.rs svtav1/src/avif.rs)
+for f in "${SRC[@]}"; do
+    [ -f "$f" ] || { echo "refusal_inventory: source $f is missing — update SRC" >&2; exit 2; }
+done
 
 # A refusal message spanning continuation lines is joined before matching, so a
 # wrapped string cannot hide its own keywords.
@@ -149,7 +170,7 @@ CMARK = re.compile(r"\[C:\s*([^\]]*)\]")
 # Trailing comma and `.to_string()` are both common; requiring a bare
 # `)` right after the string silently dropped half the real refusals.
 SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
-FNDEF = re.compile(r"\n\s*(?:pub(?:\(crate\))?\s+)?fn\s+([a-z_0-9]+)")
+FNDEF = re.compile(r"\n\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+([a-z_0-9]+)")
 
 from tools.lib_rust_source import strip_test_modules
 

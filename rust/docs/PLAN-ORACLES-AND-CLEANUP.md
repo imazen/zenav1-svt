@@ -143,12 +143,16 @@ In dependency order:
 - S3 derive signals once through the ported orchestrators;
 - S2 split `pipeline.rs` into stages. Target: every `.rs` file at 2-3 kloc
   (user, 2026-09-25).
-  - Done (this change): pure moves of the tests and the entropy walk into
+  - Done (`64e86276`): pure moves of the tests and the entropy walk into
     `pipeline/{tests, inter_tile_byte_gate, inter_decision_probe,
     entropy_ctx, lpd1, block_syntax, partition_walk, tile_walk}.rs`, which
     takes `pipeline.rs` from 23,560 to 13,351 lines. The tools are
     `tools/split_inline_mod.py` and `tools/move_items.py`; they only raise
     privacy to `pub(super)`, and the pins are unchanged.
+  - Done (this change): `EncodePipeline` methods move by name
+    (`tools/move_methods.py`) into
+    `pipeline/{ra, tpl_stage, setup, entry, grain, config_check, superres,
+    cbr}.rs`, taking `pipeline.rs` to 8,497 lines.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting
