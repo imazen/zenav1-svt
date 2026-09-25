@@ -21,9 +21,11 @@
 //!
 //! MODE1 PARITY IS AN INCREMENTAL CAMPAIGN (like the mainline identity
 //! matrix): each fork behavior lands with its own C-parity witness. The
-//! per-feature status table lives in `docs/HDR-ON-4.2.md`; until every row
-//! is DONE, HdrFork-mode output is NOT yet byte-identical to the MODE1
-//! oracle and the identity harness tracks the growing match set.
+//! standing MODE1 witness is `tools/hdr_bd10_gate.sh`, and README.md states
+//! the current claim; `docs/HDR-ON-4.2.md` is the historical record of how
+//! the fork was rebased onto v4.2, not a live status table. The oracle
+//! carries only the fork's hdr-v4.1.0 "Chromedome" delta, so later fork
+//! behavior is absent on both sides (see docs/CODE-REVIEW-2026-09-25.md).
 
 /// Which C oracle this encode targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,8 +43,8 @@ pub enum SvtHdrMode {
 const TUNE_PSNR_DEFAULT: u8 = 1;
 
 /// Mirrors the C hybrid's config surface. Every field is honored by the
-/// code paths that have been ported; unported consumers are listed in the
-/// status table (docs/HDR-ON-4.2.md) and tracked as tasks.
+/// code paths that have been ported; a knob with no ported consumer must be
+/// refused at config validation rather than silently ignored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdrForkConfig {
     pub mode: SvtHdrMode,

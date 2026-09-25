@@ -299,3 +299,135 @@ product code.
 - `InputCoeffLvl` beside `quant::CoeffLvl`.
 - The C resolution breakpoints (`0x28500`…) are open-coded in four places
   beside `ResolutionRange`.
+
+## Extensions: the svt-av1-hdr fork and the libaom-derived Zen features
+
+*Added the same day, from a second pass focused on the extensions.*
+
+### svt-av1-hdr (juliobbv-p) — ported as a pinned snapshot, now two releases behind
+
+**What the oracle carries.** The C reference (`reference/svt-av1`, one
+commit `3115c0c1b` on v4.2.0) applies only the fork's hdr-v4.1.0
+"Chromedome" delta (`c04f9515..8d13912d`, 2026-03-30), behind
+`-DSVT_HDR_MODE`. The port mirrors that delta as a runtime switch:
+- the flat 30-field `HdrForkConfig` in `hdr_mode.rs`;
+- `SvtHdrMode {Mainline, HdrFork}`;
+- `SvtReference::{Mainline420, Hybrid3115}`, which validates knobs against
+  the selected source.
+
+Every Chromedome knob has a consumer: sharp_tx, kf/tf strength, alt
+lambda, alt-SSIM, tune, tx_bias, complex_hvs, noise_norm, noise-adaptive
+filtering, cdef_scaling, film-grain noise ×5, ac_bias,
+qp_scale_compress, variance boost + octile + curve (curve 3 = PQ is
+present), sharpness, max_tx_size, QM and chroma-QM ranges.
+
+**Organization.**
+- The fork is a runtime mirror of C's compile-time `#if SVT_HDR_MODE`: 23
+  `is_fork()` branches and all knob reads sit in `pipeline.rs`, next to
+  the hand-assembled signals (S3).
+- The facade exposes 4 of the ~30 knobs (`with_qm`, `with_tune`,
+  `with_variance_boost`, `with_film_grain`). The rest are reachable only
+  through the public `EncodePipeline.hdr` field, or through
+  `HdrForkConfig::from_env` in the example harness.
+- `hdr_mode.rs` pointed at a "live status table" in the historical
+  `HDR-ON-4.2.md`. Corrected in this change: the standing witness is
+  `tools/hdr_bd10_gate.sh`, and README.md carries the claim.
+
+**Defect: the film-grain tune value means different things on each side.**
+- The C hybrid numbers `TUNE_VMAF = 5` and `TUNE_FILM_GRAIN = 6`
+  (`definitions.h:1883-1884`, "renumbered 5->6, mainline owns 5").
+- The port numbers `TUNE_FILM_GRAIN = 5` (`tune.rs:32`, following the
+  upstream fork), and `reference.rs:54` refuses `tune > 5`.
+- The identity harness passes one raw `SVT_FORK_TUNE` to both encoders
+  (`capture_c_trace.c:508`). So `5` encodes film-grain tune in Rust and VMAF
+  in C, and `6`, C's film grain, is refused by Rust.
+- Film-grain tune parity therefore cannot be tested as wired. Fix the
+  numbering to the oracle's (film grain = 6) or map the harness value
+  explicitly.
+
+**Behind the upstream fork.** The fork has since shipped its own
+v4.2 ("Ghost Robot", tag `v4.2.0` = `9dabe3ca`, 2026-09-10; latest build
+2026-09-21). Absent from both the oracle and the port:
+
+| fork change | commit | size |
+|---|---|---|
+| QM-PSNR (`--enable-qmpsnr`, QM-weighted distortion) | `dff0a9f8` | 12 files, +529/−229 |
+| High Profile 4:4:4 | `f67a0f74` | 44 files, +1241/−783 |
+| IQ/MS-SSIM adjustments for 4:4:4 | `c4e1b9ce` | +165/−87 |
+| Restore the full 10-bit PD0 path | `2c66d9ea` | +145/−59 |
+| Always enable 10-bit subpel | `ec7e414d` | +23/−23 |
+| complex-hvs matching v3.0.2; allowed for all-intra (`mds0_level = 3`) | `70877799`, `d705ef50` | +48/−16, +5/−1 |
+| Dampen MDS0 ac-bias contribution | `c65c2bfa` | +21/−2 |
+| Auto chroma noise `pow(str_luma, 0.75)`; the port still has Chromedome's `str_luma * 0.6` (`noise_gen.rs:332`) | `9f54af57` | +3/−2 |
+| Optimize delta-q all-skip signaling | `2f08c8e8` | +12/−6 |
+| Preserve lossless across tunes and fast presets | `a74cfb9e` | +42/−9 |
+| Remove luma bias | `0c1c4dec` | +6/−22 |
+| `enable-tf 2` determinism fix | `d6f4b170` | +50/−63 |
+| `hbd-mds 1` determinism fix (PD0 stale 8-bit neighbour pointer) | `f0111bae` | +3/−1 |
+| Effective ac-bias applied to chroma in `model_rd_for_sb` | `560f7453` | +1/−1 |
+
+The oracle still has the bug `560f7453` fixes
+(`enc_inter_prediction.c:2017`). The port's IFS path prices luma only, so
+it does not inherit it there.
+
+Chromedome also dropped research presets −2/−3 (refused in the port) and
+the fork's preset re-tuning; the README's metadata features (Dolby Vision
+RPU, HDR10+ JSON, `--fgs-table`) are frontend work, not in scope here.
+
+**Recommendation.** Decide whether the oracle follows the fork forward.
+If it does, rebase the hybrid onto "Ghost Robot". The fork is now on 4.2
+itself, so the reason Chromedome was cherry-picked (fork on 4.1, oracle on
+4.2) is gone. Then port by the table above, determinism fixes first. If it
+doesn't, say in README.md that the fork parity target is Chromedome, frozen
+at 2026-03-30.
+
+### Zen features from libaom — a scoped experiment set, cleanly fenced
+
+**What exists.** `enhancements.rs` defines eight opt-in experiments:
+- `AomIntraEdgeFilter`, `AomRestorationUnitSearch`
+- `StillImageTune`, `AomAdaptiveCdef`, `AomAdaptiveSharpness`
+- `AomDeltaQLf`, `AomScreenTools`, `DeepSearch`
+
+Each has a versioned slug (`…-v1`) and scope checks: all-intra 4:2:0;
+`DeepSearch` is 8-bit only; the first two require native preset −1.
+`EncodingPolicy::Zen` is required, and `SvtParity` refuses them all. They
+are decoder-verified and never byte-claimed.
+
+RD evidence: `benchmarks/aom_features_2026-09-20.meta` and
+`still_image_tune_v1_2026-09-19.meta`, summarised in `IDENTITY-STATUS.md`.
+- Adaptive CDEF is a small ssim2 BD regression (+0.4% @p6, +0.9% @p10).
+- Adaptive sharpness is a proven no-op under IQ.
+- Delta-LF is RD-neutral.
+- `StillImageTune` v1 adds nothing beyond tune IQ. Its doc comment claimed
+  "Zen extras that beat it"; corrected in this change.
+
+**Organization.** The fencing is the right shape: an explicit bitset, an
+explicit policy, and scoped validation. The implementation is spread
+across 7 files (29 references in `pipeline.rs`, plus `cdef.rs`,
+`deblock.rs`, `obu.rs`, `context.rs`, `port_frame_cdf.rs`). A
+`ZenEnhancement` is a set of `if` branches at use sites, not a module.
+`AomDeltaQLf` added a `delta_lf_cdf` to `FrameContext`, which lengthens the
+hand-maintained CDF lists (see "Cleanup").
+
+**libaom's tune-IQ / SSIMULACRA2 bundle** (`av1_cx_iface.c:1938-1977`
+`handle_tuning` and its consumers), compared with the port:
+
+| libaom behavior | port |
+|---|---|
+| Adaptive CDEF (`CDEF_ADAPTIVE`) | `AomAdaptiveCdef` |
+| Adaptive LF sharpness | `AomAdaptiveSharpness` (a no-op under IQ) |
+| Sharpness 7, QM on | SVT tune IQ (`apply_tune_overrides`) |
+| Chroma delta-q `-clamp(q/2-14, 0, 16)` | SVT v4.2 carries it (`chroma_q.rs:149`) |
+| Variance-boost delta-q | SVT's variance boost |
+| AA-aware screen detection | SVT carries it (`sc_detect.rs:437`); `AomScreenTools` keeps palette/IntraBC on |
+| Intra-edge filter on stills, LR unit-size search, delta-LF | the three `Aom*` features |
+| QM level tables `aom_get_qmlevel_allintra`, `_luma_ssimulacra2`, `_444_chroma` | **absent**; the port uses SVT's degree-7 polynomial (`qm.rs:67`); QM range 2..10 vs SVT 4..10 |
+| QM-PSNR distortion in trellis (`txb_rdopt.c:347`) | **absent** (the fork added its own in `dff0a9f8`) |
+| IQ rdmult weight (`rd.c:406`) | not found |
+| Trellis `rshift` 7 under IQ (`txb_rdopt.c:382`) | not found; SVT derives rshift from sharpness |
+| 1.125× inter RD bias (`rdopt.c:798`) | **absent**; matters for layered images and video, not stills |
+| `SSIMULACRA2` tune (chroma offset 20, its own luma QM table) | **absent** |
+
+QM-PSNR is the one item both upstreams now carry. It is the natural next
+libaom-derived experiment, and it would come from the fork's C, not
+libaom's.

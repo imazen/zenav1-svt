@@ -13,10 +13,12 @@ pub enum ZenEnhancement {
     AomIntraEdgeFilter,
     /// Evaluate legal restoration-unit sizes using SVT filter search and RD costs.
     AomRestorationUnitSearch,
-    /// Apply the measured still-image tune bundle: C's tune-IQ recipe plus
-    /// the Zen extras that beat it on the imazen-26 evaluation subset
-    /// (see [`apply_still_image_tune`]). Not byte-pinned to C — verified by
-    /// decoder + RD measurement, not `cmp`.
+    /// Apply C's tune-IQ recipe while letting caller-set values on the knobs
+    /// it covers survive (see [`apply_still_image_tune`]). v1 adds nothing
+    /// beyond tune IQ: every extra measured on the imazen-26 subset was
+    /// neutral or worse on ssim2 BD-rate
+    /// (`benchmarks/still_image_tune_v1_2026-09-19.meta`), so with no caller
+    /// overrides the stream equals tune IQ's. Not byte-pinned to C.
     StillImageTune,
     /// libaom's `CDEF_ADAPTIVE` (`--enable-cdef=3`, the IQ/ssimulacra2 tune
     /// bundle) semantics applied to the SVT CDEF pick — SVT C v4.2.0 has no
