@@ -125,7 +125,9 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   `benchmarks/ghost_robot_baseline_2026-09-25.meta` with the per-axis and
   stage histogram. The non-flat/video legs of the wider baseline remain
   open.
-- [ ] 3.2 Output-changing mainline-master commits:
+- [x] 3.2 Output-changing mainline-master commits (`1bdae047`,
+  `5382c4e2`, `4b1f125d`, `fae4d9ac`; `507025f6` documented
+  stills-inert):
   - `1e3da1d7` (`1bdae047`) HBD Hadamard in all-intra MDS0: ported
     `svt_aom_highbd_hadamard_{8x8(avx2),16x16,32x32}` as
     `aom_highbd_hadamard_*`, gated on `GhostRobot` in `hadamard_satd_hbd`.
