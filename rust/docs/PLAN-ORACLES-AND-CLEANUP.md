@@ -74,7 +74,11 @@ It was done when:
       classified.
     - The refusal ledger now also scans the `validate*` `Err(...)` refusals
       and the animation facade, which it had missed: 83 -> 112 rows.
-  - Open: the typed facade builder.
+  - Open: the typed facade builder. Plan 1.4 narrows the facade, which
+    needs a decision on what `svtav1_encoder` itself makes public: zenavif
+    (pinned by git rev) uses `EncodePipeline`, `RcConfig`, `HdrForkConfig`,
+    `FilmGrainConfig`, `entropy::obu` and `types::EncodeError` directly,
+    and many integration tests reach internals (T2).
 - [x] 1.3 (`893f6823`) `EncodingPolicy::SvtParity(GhostRobot)` resolves fork defaults
   exactly as Ghost Robot's `svt_av1_set_default_params` does.
 - [ ] 1.4 Narrow the facade (S9):
@@ -273,6 +277,10 @@ Order, by expected size:
   Added/Changed/Fixed blocks appended per campaign, with QUEUED BREAKING
   CHANGES buried at line ~280. Fold it into one set of categories, and cut a
   dated section per released version.
+  - Done (this change): folded into one QUEUED BREAKING / Added / Changed /
+    Removed / Fixed set, with the queued breaks first. Every entry is
+    preserved verbatim (the line multiset was checked).
+  - Open: cut a dated section at the next release.
 
 ## Phase 6 — test structure
 

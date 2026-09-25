@@ -11,7 +11,78 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### QUEUED BREAKING CHANGES
+
+- `SvtReference` is `#[non_exhaustive]` and gains `GhostRobot`; exhaustive
+  matches outside the crate need a wildcard arm (`50c683a4`).
+- Raw tune value 5 now means VMAF, as in every C oracle, and is refused
+  (not ported); film grain moved from 5 to 6 (`50c683a4`). Callers passing a
+  raw `hdr.tune = 5` for film grain must pass `tune::TUNE_FILM_GRAIN`.
+- `ZenEnhancement::{StillImageTune, AomAdaptiveCdef, AomAdaptiveSharpness,
+  AomDeltaQLf}`, `enhancements::apply_still_image_tune`, the
+  `cdef::aom_adaptive_cdef_*` helpers and `deblock::SbDeltaLf` (with the
+  `dlf` parameter of `apply_deblock_frame*`) are removed (30fa9a3a).
+  Measured: no RD gain, or a regression (see Removed).
+
+- `HdrForkConfig` gains `luminance_qp_bias`, `hbd_mds`, `enable_qmpsnr` and
+  `max_hierarchical_levels` (7df9a27f). Struct literals must add them or use
+  `..HdrForkConfig::mainline()`/`..Default::default()`.
+
+<!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
+- **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
+  `InvalidDimensions` now carries `width`, `height`, and `reason`, and
+  `InvalidQuality` carries `quality`. Update matches on the former unit
+  variants and include a fallback arm for the non-exhaustive enum.
+- **Crate consolidation 6 → 4 publishable packages (issue #3, 2026-08-28).**
+  `zenav1-svt-tables` is folded into `zenav1-svt-types` as
+  `svtav1_types::tables::{block, interp, partition, scan, transform}` and
+  `zenav1-svt-entropy` into `zenav1-svt-encoder` as
+  `svtav1_encoder::entropy::{cdf, coeff, coeff_c, context, default_cdfs,
+  default_coef_cdfs, lr, mv_coding, obu, range_coder, scan_tables, tile,
+  writer}`; both former packages are deleted. Path rename only for the two
+  crates' consumers (`svtav1_tables::X` → `svtav1_types::tables::X`,
+  `svtav1_entropy::X` → `svtav1_encoder::entropy::X`); the facade keeps
+  `svtav1::tables` / `svtav1::entropy` as re-exports so facade users are
+  unaffected. The entropy crate's `unchecked_entropy` / `symtrace` features
+  moved onto `zenav1-svt-encoder` (the facade's `symtrace` forwards there).
+  Bitstream bytes unchanged: `byteid_fingerprint` 144/144 cells identical
+  before/after, identity_matrix 54/54, bd10 36/36, partial_sb 146/146,
+  regression_spotcheck 33/33, decode_conformance 1260 + 1575 / 0 failed.
+  Nothing is published yet, so this is a pre-release rename, not a semver
+  event.
+- **`AvifEncoder` knob surface (issue #9 item 7, 2026-08-28).** REMOVED
+  `with_trellis`, `with_seg_boost`, the `seg_boost()` getter and
+  `with_still_image_tuning` — all four were recorded-and-ignored with no
+  counterpart in this pipeline or in C. `with_vaq(bool, f64)` is REPLACED by
+  `with_variance_boost(bool, u8)` (C's 1-4 strength scale). `encode_yuv420`
+  keeps its signature but its OUTPUT CONTRACT changes from three
+  length-prefixed monochrome streams to one real AV1 4:2:0 bitstream — the old
+  format was not decodable, so nothing can have depended on it.
+  `AvifEncoder::{enable_qm, enable_variance_boost}` now default to `false`
+  (C's mainline defaults); the emitted bytes for a caller that sets neither
+  are unchanged.
+- **`crate::pd0::pd0_pick_sb_partition{,_lvl0,_m6,_m6_eval}` take a
+  `lambda_weight: u32` after `qindex` (issue #9 item 4, 2026-08-28).** C's
+  frame `lambda_weight` (`pcs->lambda_weight`, enc_mode_config.c:10093-10115)
+  is a frame-level fact — the tune-IQ curve, the PSNR ladder, and the
+  extended-CRF bump — that these entry points cannot derive from their `qp`
+  argument once a fractional CRF moves `picture_qp` off `static_config.qp`.
+  Callers pass `pd0::frame_lambda_weight(picture_qp, tune_iq, bump)`;
+  `frame_lambda_weight(qp, false, 0)` reproduces the previous internal ladder
+  exactly, so the change is byte-neutral at CRF offset 0.
+- None queued otherwise. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
+  `try_encode_frame_hbd`, `with_superres`) is additive; the `SeqTools` and
+  `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
+  break only for out-of-crate struct literals — there are none.
+
 ### Added
+
+- **Ghost Robot configuration surface** (7df9a27f): the four C options the
+  port runs only at their defaults are `HdrForkConfig` fields, and
+  `validate_hdr_config` refuses any other value instead of ignoring it.
+  `svtav1/tests/config_surface.rs` gives each of Ghost Robot's 139
+  `EbSvtAv1EncConfiguration` fields one disposition. It parses the C
+  header, so an unclassified upstream field fails CI.
 
 - **Named C oracles with one switch** (`5d949d34`, `c48488ae`).
   `rust/oracles/oracles.tsv` registers `mainline-4.2.0` (pristine v4.2.0),
@@ -75,146 +146,6 @@ Crates are not published to crates.io yet — depend by git.
   `debug_assert` that said the port needed it. Byte-inert on every still:
   `identity_full_8bit.sh` 1100/1100.
 
-### Removed
-
-- **Four libaom-derived Zen enhancements** (30fa9a3a), each on its own
-  measurement: `StillImageTune` (v1 was exactly tune IQ), `AomAdaptiveSharpness`
-  (a no-op under IQ in 252/252 cells), `AomAdaptiveCdef` (+0.4 to +0.9 %
-  ssim2 BD against SVT's own CDEF pick) and `AomDeltaQLf` (RD-neutral).
-  C's delta-LF syntax and `delta_lf_cdf` stay, because they are C's; nothing
-  signals them now, as in C. Output pins: five enhancement cells were removed,
-  and every other cell is unchanged.
-
-### Fixed
-
-- **no_std build of `zenav1-svt-encoder`** (9d610a64): it did not compile
-  (121 errors), and nothing noticed, because `test-minimal` runs at workspace
-  level where dev-dependencies re-enable `std`. The encoder's `std` feature
-  now forwards to `types/std` and `dsp/std`. `just nostd-check` and a CI step
-  check each library crate on its own. Without `std`, the debug env reads
-  return false and OBMC rebuilds its neighbour predictions on every call.
-
-- **Release panic on fork alt-SSIM video** (0ffa9ec3): with the HDR fork
-  and `alt_ssim_tuning`, an inter frame reached an `assert!` in
-  `leaf_funnel/mds3.rs` ("the tune-SSIM parallel full cost has no INTER skip
-  arm") and panicked in release (reproduced on `i265`: `gradient 128x128 q40
-  p5`, 4 frames). Such inter frames are now refused with an explicit error;
-  pinned by two `output_pins` video cells.
-
-- **Film-grain tune numbering** (`50c683a4`): the port numbered film grain 5
-  while every C oracle uses 6 (5 is VMAF), so one raw `SVT_FORK_TUNE` value
-  meant different tunes on the two sides of a comparison.
-- **162 integration-test files ran twice** (`ba07b218`): they were both
-  aggregated modules and standalone targets. 188 test targets are now 27; the
-  workspace suite went from 4029 test runs to 2780, all passing.
-  `tools/test_targets_check.py` (CI shard 3) keeps every file in exactly one
-  target.
-
-- **Frame-header chroma-q form under a separate-UV sequence header**
-  (`1611ca68`). With SH `separate_uv_delta_q = 1`, an all-zero chroma delta
-  set took the `None` form, which writes neither `diff_uv_delta` nor (with
-  QM) `qm_v`; aomdec and dav1d both rejected the stream. The fork's derived
-  deltas are never all zero, so no fork stream was affected — the
-  `__expert` override (0, 0) on the fork is what reached it. The Separate
-  form is now chosen whenever the SH signals separation.
-- **The temporal motion-vector field's block-geometry flag was picture-level**
-  (`df614665`). C sets `ctx->sb64_sq_no4xn_geom` PER BLOCK
-  (`product_coding_loop.c:10256`); the port derived it once per frame from the
-  preset ladders, which is wrong on any picture that mixes block shapes.
-- **The global-motion search could only reach the nearest reference**
-  (`df614665`). C resolves `pa_ref_pic_ptr_array[list][ref]` for every
-  reference in `ref_list<N>_count_try`; the port held one previous-frame
-  pyramid, so `gradient 72x72 q40 p2` encoded two frames and REFUSED the third.
-  The PA pictures now sit in a DPB-shaped store.
-- **`identity_run`'s multi-frame recon dump ignored the bit depth**
-  (`df614665`) — it wrote the 8-bit canvas whatever the depth, so every
-  multi-frame 10-bit comparison against a decoder read as a total mismatch from
-  frame 0. It now refuses that substitution, as the single-frame path always
-  has.
-
-### Changed
-
-- **Documentation is routed, not narrated** (`ba4729e2`). The 697-line
-  `CONTEXT-HANDOFF.md` is a 39-line router; thirteen dated snapshots and the
-  `docs/history/` archive carry a first line saying what they are;
-  `INTER-ENCODE-PLAN.md` is headed chronology-not-status; and
-  `bd10_video_gate.sh` now states that its decode leg asserts PARSING, not
-  reconstruction, with the 8-of-18 recon measurement it does not make.
-
-- **Global motion is implemented** — an inter frame whose
-  `svt_aom_global_motion_estimation` fits a non-identity model now ENCODES
-  instead of refusing. `port_global_me::set_global_motion_field` (C
-  `md_config_process.c:37`) publishes the frame's `global_motion[8]`;
-  `port_entropy_inter::gm::write_global_motion` codes
-  `global_motion_params()`, delta-coded against the primary reference
-  picture's own saved models (which the DPB now carries); and the SAME array
-  feeds the MVP walk's `gm_mv`, the injector's GLOBALMV candidates, the
-  entropy walk's `gm_wmtype` and the predictor's `is_wm`. Reconstruction is
-  byte-identical to dav1d on every frame of the new
-  `rust/tools/global_motion_gate.sh`, whose zoom cells are the anti-vacuity
-  load: a zoom about the frame centre is a ROTZOOM no integer MV cancels, and
-  C fits one there. This closes three of `docs/REFUSED-CONFIGS.md`'s entries.
-
-- **Sub-8 inter chroma (`inter_chroma_4xn_pred`, C
-  `enc_inter_prediction.c:3023`)**. A 4xN / Nx4 block's chroma covers the
-  parent 8x8, so C stitches it from the covered mode-info cells' own
-  references, MVs and filters rather than predicting it from this block's MV.
-  The port sized that chroma `bwidth / 2` — 2 samples wide on a 4-wide block,
-  against C's `MAX(4, bwidth >> 1)` — so a 4xN inter leaf with chroma indexed
-  past the end of its own prediction. Now ported, including the
-  `!sub8x8_inter` fallback and the ROUND_UV origin, in both MDS0 and the MDS3
-  interpolation-filter rebuild.
-
-### Changed
-
-- **OBMC is a correctness gap at presets -1/0/1, not "never selected"**
-  (`benchmarks/obmc_census_2026-09-10.meta`, `rust/tools/motion_mode_census.sh`).
-  The preset-6/8 census was being carried in `inter_md_arm.rs` as a general
-  fact about OBMC; asked at the presets global motion made reachable, C codes
-  OBMC on 22.5 % of every coded inter block at preset 0, 22.2 % at MR and
-  27.0 % at preset 1, and exactly zero from preset 2 up — the
-  `svt_aom_get_obmc_level` level 3 -> 5 step. The new census validates itself
-  against the pinned preset-6 warped counts before reporting, because the
-  ad-hoc version produced a clean-looking page of zeros twice.
-
-- **Allocator traffic is down 84.6 %**, 6,851,798 calls to 1,055,233 against C's
-  466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`, `178323b8`,
-  `cb62752f`). Excluding the `intrabc_hash` site that is at parity with C
-  (207,457 on both sides) the gap is 3.3x, from 26x. `crate::vecpool::PoolVec`
-  is a `Vec` that takes from and returns to a per-thread, size-classed free
-  list on `Drop` — the port's equivalent of C's pooled `ctx->quant_coeff_ptr[]`
-  / `recon_ptr[]`. 207,457 of what remains is `intrabc_hash` bucket growth,
-  where C spends exactly the same count, so it is left alone. Runtime cost
-  +0.28 % to +1.35 % instructions against a 1 % budget; every arm byte-identical
-  to C. See `rust/benchmarks/alloc_vecpool_2026-09-10.meta` and
-  `rust/tools/heaptrack_alloc_cell.sh`.
-
-### Fixed
-
-- **The pack's MV predictor ignored global motion**. `EncodePipeline`'s
-  per-block `setup_ref_mv_list` passed a hardcoded zero `gm_mv` with a comment
-  saying the header refuses any non-identity model. `setup_ref_mv_list` FILLS
-  the tail of every block's MV stack with `gm_mv[0]`, so on a frame with a real
-  model the pack differenced every under-populated block's MV against a
-  predictor the decoder does not share. Measured on `crop:` CID22 256 at a
-  33/32 zoom, preset 2: block `mi(0,0)` coded `pmv=(0,0)` where the decoder
-  rebuilds `(30,30)`, and 1557 of 4096 mi units diverged from dav1d.
-
-- **A hierarchical GOP no longer refuses KEY frames** (`c6b1cd158`). The
-  `hierarchical_levels > 0` refusal added in `a64cfdd10` was unconditional, so a
-  caller encoding a single key frame with a non-zero `hierarchical_levels` — an
-  ordinary way to construct the pipeline, and one that cannot reach the unwired
-  RA reference table — was rejected. 13 tests failed on it. Narrowed to
-  non-key frames, with a witness pinning both halves.
-
-- **bd10 chroma recon: restore the u8-quantizer assignment** (`acd62f9c`).
-  `3d8f5c517` made the truncated-10-bit proxy live; measured against C on
-  CID22-512 `1484678` at bd10 q32 preset 5 the port emits 9505 B that way and
-  9501 B — C's own size, byte-identical — the original way. `bd10_photo_gate`
-  is back to 191/191.
-
-### Added
-
 - **Warped motion is wired** (`ddbfa257`). Every piece was already ported and
   tested with no producer; `inter_md_arm` passed a disabled `WmCtrls` and a
   no-op hook set, so the arm was dead. A census of C's own per-block record
@@ -243,16 +174,6 @@ Crates are not published to crates.io yet — depend by git.
   byte-identical to C** — `rust/tools/bd10_video_gate.sh` pins that table.
   Shipping behaviour is unchanged: the public entry points still refuse an
   inter frame at both depths.
-
-### Changed
-
-- Reconcile handoff documentation and GitHub issue scope against implementation `0cbd1279`; preserve original reports and campaign evidence in the dated history archive, and distinguish remaining parity, calibration and deployment work.
-
-### Fixed
-
-- Lossless IntraBC regression checks honor the configured reference decoder outside PATH, request the coded output depth, and report decoder invocation failures separately from pixel mismatches.
-
-### Added
 
 - PR #20 (`a9eeb58e`): express baseline NEON SAD, sum/SSE and wide SSE through released magetypes 0.9.29 pairwise widening. Preserve strides, tails, accumulation order, the frozen ARM benchmark references and row-packing research. Main's registry-only archmage dependencies remain in place; no throughput gain is claimed. See `rust/benchmarks/arm_pairwise_release_2026-09-08.md`.
 
@@ -293,170 +214,6 @@ Crates are not published to crates.io yet — depend by git.
 
 - Animated AVIF metadata and repetition options, poster alpha, and an independent libavif metadata gate; serializer pinned to canonical `7b058bb8` (`b04f372a`).
 
-### QUEUED BREAKING CHANGES
-
-- `SvtReference` is `#[non_exhaustive]` and gains `GhostRobot`; exhaustive
-  matches outside the crate need a wildcard arm (`50c683a4`).
-- Raw tune value 5 now means VMAF, as in every C oracle, and is refused
-  (not ported); film grain moved from 5 to 6 (`50c683a4`). Callers passing a
-  raw `hdr.tune = 5` for film grain must pass `tune::TUNE_FILM_GRAIN`.
-- `ZenEnhancement::{StillImageTune, AomAdaptiveCdef, AomAdaptiveSharpness,
-  AomDeltaQLf}`, `enhancements::apply_still_image_tune`, the
-  `cdef::aom_adaptive_cdef_*` helpers and `deblock::SbDeltaLf` (with the
-  `dlf` parameter of `apply_deblock_frame*`) are removed (30fa9a3a).
-  Measured: no RD gain, or a regression (see Removed).
-
-<!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
-- **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
-  `InvalidDimensions` now carries `width`, `height`, and `reason`, and
-  `InvalidQuality` carries `quality`. Update matches on the former unit
-  variants and include a fallback arm for the non-exhaustive enum.
-- **Crate consolidation 6 → 4 publishable packages (issue #3, 2026-08-28).**
-  `zenav1-svt-tables` is folded into `zenav1-svt-types` as
-  `svtav1_types::tables::{block, interp, partition, scan, transform}` and
-  `zenav1-svt-entropy` into `zenav1-svt-encoder` as
-  `svtav1_encoder::entropy::{cdf, coeff, coeff_c, context, default_cdfs,
-  default_coef_cdfs, lr, mv_coding, obu, range_coder, scan_tables, tile,
-  writer}`; both former packages are deleted. Path rename only for the two
-  crates' consumers (`svtav1_tables::X` → `svtav1_types::tables::X`,
-  `svtav1_entropy::X` → `svtav1_encoder::entropy::X`); the facade keeps
-  `svtav1::tables` / `svtav1::entropy` as re-exports so facade users are
-  unaffected. The entropy crate's `unchecked_entropy` / `symtrace` features
-  moved onto `zenav1-svt-encoder` (the facade's `symtrace` forwards there).
-  Bitstream bytes unchanged: `byteid_fingerprint` 144/144 cells identical
-  before/after, identity_matrix 54/54, bd10 36/36, partial_sb 146/146,
-  regression_spotcheck 33/33, decode_conformance 1260 + 1575 / 0 failed.
-  Nothing is published yet, so this is a pre-release rename, not a semver
-  event.
-- **`AvifEncoder` knob surface (issue #9 item 7, 2026-08-28).** REMOVED
-  `with_trellis`, `with_seg_boost`, the `seg_boost()` getter and
-  `with_still_image_tuning` — all four were recorded-and-ignored with no
-  counterpart in this pipeline or in C. `with_vaq(bool, f64)` is REPLACED by
-  `with_variance_boost(bool, u8)` (C's 1-4 strength scale). `encode_yuv420`
-  keeps its signature but its OUTPUT CONTRACT changes from three
-  length-prefixed monochrome streams to one real AV1 4:2:0 bitstream — the old
-  format was not decodable, so nothing can have depended on it.
-  `AvifEncoder::{enable_qm, enable_variance_boost}` now default to `false`
-  (C's mainline defaults); the emitted bytes for a caller that sets neither
-  are unchanged.
-- **`crate::pd0::pd0_pick_sb_partition{,_lvl0,_m6,_m6_eval}` take a
-  `lambda_weight: u32` after `qindex` (issue #9 item 4, 2026-08-28).** C's
-  frame `lambda_weight` (`pcs->lambda_weight`, enc_mode_config.c:10093-10115)
-  is a frame-level fact — the tune-IQ curve, the PSNR ladder, and the
-  extended-CRF bump — that these entry points cannot derive from their `qp`
-  argument once a fractional CRF moves `picture_qp` off `static_config.qp`.
-  Callers pass `pd0::frame_lambda_weight(picture_qp, tune_iq, bump)`;
-  `frame_lambda_weight(qp, false, 0)` reproduces the previous internal ladder
-  exactly, so the change is byte-neutral at CRF offset 0.
-- None queued otherwise. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
-  `try_encode_frame_hbd`, `with_superres`) is additive; the `SeqTools` and
-  `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
-  break only for out-of-crate struct literals — there are none.
-
-
-### Changed
-- **`variance::sse` is C's `madd_epi16` kernel on x86 — 5.02x C's instructions
-  -> 1.84x at preset 6 and 2.81x -> 1.30x at preset 2, whole frame -1.92 % at
-  both (2026-09-05).** Record `benchmarks/sse_madd_2026-09-05.{tsv,meta}`. The
-  x86 arm was the scalar double loop with a `u64` accumulator, which
-  auto-vectorises but forces every square into 64-bit lanes; C's
-  `svt_spatial_full_distortion_kernel_avx2` keeps them in i32 lanes
-  (`cvtepu8_epi16` / `sub_epi16` / `madd_epi16(d, d)` / `add_epi32`,
-  `ASM_AVX2/pic_operators_inline_avx2.h:111`). It is now one `#[magetypes]`
-  body on archmage PR #96's `u8xN::abs_diff` + `i16xN::madd_adjacent`, plus C's
-  row PACKING for widths 8 and 4 (`pic_operators_intrin_avx2.c:815-847`), which
-  is what preset 2 needed — `sse` was 5.17 % of the p2 frame's instructions
-  against 3.42 % at p6 because most p2 calls are 4- or 8-column transform
-  units. Kernel self Ir 52,495,464 -> 19,234,004 at p6 and 2,436,872,092 ->
-  1,124,658,211 at p2, every run byte-identical to C. **Wall clock, 21
-  interleaved paired rounds with its own same-binary control on a quiet box:
-  p6 0.9911 against a control of 1.0009, corrected 1.010x; p2 is a NULL (0.9997
-  against 0.9976) despite the same -1.9 % of instructions, which is reported
-  rather than explained.** **aarch64 is UNCHANGED,
-  source-identical to before**: the generic body measured 1.45x-2.20x SLOWER
-  than the hand NEON arm there and the memory-staged row packing 1.32x-1.57x
-  slower, both reverted. **`rust/Cargo.toml` carries a DEV-ONLY
-  `[patch.crates-io]`** pinning archmage/magetypes to `imazen/archmage`
-  `cc24398c` (PRs #95 + #96, unmerged) — a fresh clone and CI need network
-  access to that rev until #96 ships.
-- **archmage PR #95 removes ZERO bounds checks from this port, measured
-  (2026-09-05).** The GOT-resolved `panic_bounds_check` census is 2,046 sites
-  on archmage 0.9.28 and on the #95+#96 stack alike, with
-  `quant::optimize_b::{closure#0}` at 72 and
-  `coeff_rate::cost_coeffs_txb_inner::{closure#0}` at 15 in both, and the frame
-  Ir for the patch alone moves +-0.007 % with opposite signs at the two
-  presets. The port had no magetypes generic-type call site before this change,
-  so #95 had nothing to act on; `optimize_b`'s 72 are plain slice indexing and
-  need the fixed-size-array boundary in `quant.rs`. Also recorded: a naive
-  `objdump | grep panic_bounds_check` reads ZERO on this PIE binary — the calls
-  go through a GOT slot that must be resolved from its `R_X86_64_RELATIVE`
-  addend first.
-
-
-### Fixed
-- **Four stale doc claims a new session would have acted on.**
-  `WORKING-ON-THIS.md` §2 said `identity_full_8bit` is 1036 cells (it is 1100,
-  and CI runs a 280-cell subset); §7b still reported the inter grid as 91/4/1
-  with a 93-cell byte gate (it is **94 BOTH / 1 F1DIFF / 1 F0DIFF** and 108
-  required, and the p0..p4 band is 64/64 since global motion landed); §8/§9
-  sent readers to `STATUS.md` for "what is byte-identical" when that file is
-  dated 2026-08-04 and predates the whole inter campaign — it now carries a
-  banner saying so. `README.md`'s CI table carried 2026-08-27 tallies
-  (`regression_spotcheck` 29/29, `sb128` 18/18, `bd10_hbd_src` 100/100,
-  `coverage_combos` 16/16, `screen_ibc_gate` 22/100) and no inter rows at all;
-  every row is now the tip's CI run 33978673841, the IntraBC band is recorded
-  as closed, and an inter/video-mode table was added.
-  **Recorded, not fixed (docs-only chunk):** `pipeline.rs:1863` still tells a
-  caller the inter envelope "is 89 of 96 cells" — it is 94, and the string is
-  mirrored verbatim into the generated `REFUSED-CONFIGS.md`.
-- **C's `allow_high_precision_mv` is ZERO inside the global-motion search**, and
-  a port that derived it would be wrong: `frm_hdr.allow_high_precision_mv` is
-  assigned in `svt_aom_sig_deriv_mode_decision_config` (md_config_process), which
-  runs AFTER me_process. MEASURED at q10 and q20 — two quantizers whose final
-  value differs — C's `GMCOST` line reads `hp=0` in both.
-- **Every multi-superblock inter cell at presets 0..3 PANICKED, behind the
-  global-motion refusal.** `encode_tile_rows`' chain simulation (`sim_ectx`)
-  re-codes each superblock to evolve the per-SB frame contexts and was never
-  armed with the frame's `InterSyntaxState` or MVP environment, so the first
-  inter block hit `.expect("an inter block on a frame with no inter
-  frame-syntax state")`. Its gate is `use_funnel && update_cdf_level(..) != 0
-  && multi_sb`, and `svt_aom_get_update_cdf_level_default` is non-zero on an
-  inter frame only at `enc_mode <= 3` — exactly the band the global-motion
-  refusal made unreachable. Byte-neutral by construction: every cell that
-  reached the arm crashed.
-- **`MePicParams::gm_enabled` was hard-coded `false`**, so
-  `perform_gm_detection` never ran and `pcs->rc_me_allow_gm` was 0 on every b64
-  where C's was 1 (measured against `SVT_GM_OUT`: 1/4/16/4/4/16 of
-  1/4/16/4/4/16). Its only reader is `bypass_based_on_me`, which had no caller —
-  and the sign is the dangerous one, since an all-zero array claims "C found no
-  global motion" on a frame where C searched.
-- **A global-motion refusal was reported as a TPL/mfmv one.** The `map_err` at
-  the inter header assembly collapsed both `InterHdrError` variants into one
-  message. One message per variant now.
-- **`inter_hdr_arm::gm_core_level` was a SECOND transcription of
-  `svt_aom_get_gm_core_level`** — and the LIVE one, while the tier-1 body in
-  `port_enc_mode_config::leaf` had only its own test as a caller. Deleted.
-- **`tools/refusal_inventory.sh` could not see a refusal whose message comes
-  out of a `match`.** Its `UnsupportedConfig(` regex was anchored at the open
-  paren, so introducing one silently dropped the mfmv/TPL refusal from the
-  ledger — the quiet accretion the tool exists to prevent. It now walks the
-  balanced call and collects every string literal inside it.
-- **Screen-content IntraBC band byte-identical: gb82-sc x presets 0..4 x
-  qp {20,40,48} 150/150 (was 22/100 on 2026-07-23).** Three MD-side
-  mechanisms, each a deviation a comment had justified: an IntraBC
-  candidate's tx-depth search takes C's INTRA caps (its mode is DC_PRED;
-  depth 2 at presets 0..3) not the inter cap (6891708c); C's MD-side
-  txfm-context stamp is the chosen tx dims for every winner, with no
-  skip&&inter arm (c19c4f2f); C's MD-side context skips the palette CDF
-  update for non-chroma-reference blocks, which the chain simulation now
-  withholds too (6df06356). Found from the two real-screen divergences of
-  `benchmarks/callcount_realimg_2026-09-04` (terminal.png 512² / graph.png
-  512x480 at p2 qp40), now asserted by the new `tools/screen_ibc_byte_gate.sh`
-  (150 cells + the two record cells, byte-only, self-promoting) and two
-  `regression_spotcheck` cells; `screen_ibc_gate.sh`'s BYTE_EXACT list is
-  promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
-
-### Added
 - **First per-function breakdown of the INTER frame's cost, port vs C**
   (`rust/benchmarks/callcount_inter_2026-09-05.{meta,tsv,fns.tsv,ranked.tsv,
   cells.tsv}`, r7900x callgrind, N=2 minus N=1 per symbol, byte-identical on
@@ -1412,934 +1169,6 @@ Crates are not published to crates.io yet — depend by git.
   pipeline does not produce (inert on any I_SLICE). Frame 1's whole remaining
   divergence is the TILE: C 3 bytes, port 94.
 
-### Changed
-- **The port makes 199x C's allocator calls, and a per-superblock range-coder
-  buffer was sized to the whole frame — 244,967 heap blocks -> 158,413
-  (-35.3 %), 106.2 MB -> 64.0 MB (-39.8 %), instructions -3.16 % (photo_cid
-  512² p6) / -4.84 % (screenshot p6) / -0.82 % (p2), wall clock 1.018x-1.029x
-  on four cells against their own same-binary controls**
-  (`benchmarks/percall_layout_2026-09-05.{tsv,meta}`). Byte-identical on both
-  ISAs; DHAT peak live heap is a NULL (+0.099 %). **The env-var question this
-  work started from is a measured null and is reported as one:** `getenv` fires
-  29 times in a whole photo_cid 512² p6 encode against 133,020 `malloc`s, the
-  two uncached `SVTAV1_SC_TOOLS` reads sit in `encode_tile_rows` (once per
-  TILE, not per superblock), and `Mutex`/`RwLock`/`HashMap`/`BTreeMap`/
-  `Instant::now` do not exist in the shipped encoder or DSP crates — nothing
-  was changed for any of them, so the `SVTAV1_SC_TOOLS` tool still behaves
-  exactly as before. What is a real per-call cost is the allocator, and it is
-  also the layout answer: the port's structs are not systematically fatter
-  (`BlockDecision` 288 B vs C's `BlkStruct` 400; `MvpMiEntry` 20 B vs
-  `MbModeInfo` 60), but `leaf_funnel::Cand` is 528 B against
-  `ModeDecisionCandidate`'s 168 because 16 of its fields are `Vec`/`Option`-of-
-  `Vec` (360 of the 528 bytes are `Vec` headers) where C's candidate points
-  into a pool allocated once per handle (`md_process.c:585-601`). Four sites
-  changed: **(1)** `pipeline.rs`'s per-SB CDF-chain simulation writer was
-  `AomWriter::new(w * h * 2 + 256)` — the FRAME size, 524,544 zeroed bytes 64
-  times per 512² frame, **33,570,816 B of which DHAT counts 63,233 ever written
-  and 2,425 ever read**, 2.10 % of the p6 frame spent zeroing memory nothing
-  reads; it is now sized to a superblock, which `OdEcEnc::new`'s own
-  growth-on-demand contract permits and the never-read-before-written scratch
-  region makes byte-inert. The size dependence was QUADRATIC and the 512² cell
-  hides it — the capacity was per-SB while the SB count also scales with pixels
-  — so the same defect was **8.59 GB of zero-fill per frame at 2048² p6**, now
-  linear in pixels (8.6 MB). **(2)** `partition::extract_neighbors_tiled` returns
-  a stack `NeighborEdges` instead of two `Vec<u8>` — 44,502 blocks per encode
-  for 435,872 bytes, a 9.8-byte average payload per malloc/free pair.
-  **(3)** `leaf_funnel::overlay::predict_unit_overlay` builds its canvas edges
-  on the stack; the canvas INTERIOR was never written and never read.
-  **(4)** `leaf_funnel::predict::hadamard_satd{,_hbd}` take their tiles from a
-  thread-local `HadamardScratch` — the two `vec![0; tx*tx]` already sat outside
-  the tile loops and were fully overwritten per tile, so reuse across calls is
-  the same contract one level up. **One honest caveat, recorded because it is
-  the useful part:** change (1) tripled the Ir saving at photo_cid p6
-  (-1.070 % -> -3.162 %) and moved the wall clock by nothing (three of the four
-  cells flat, the fourth moving 0.8 pp inside its own span) — callgrind charges
-  `rep stosb` one Ir per BYTE while the hardware retires it at tens of bytes per
-  cycle, so 33.5 MB of dead zero-fill is ~2.2 %
-  of the frame's instructions and ~0.2 % of its cycles. It is kept for the
-  memory traffic and because a strictly-dead 2.10 % of the Ir ranking would
-  keep drawing future chunks to it, but no wall-clock gain is claimed for it;
-  the 1.018x-1.029x is changes (2)-(4). Now in `docs/WORKING-ON-THIS.md` §5.
-  **At 2048² p6 — the size where the range-coder defect was quadratic — the
-  series measures 1.155x**: gradient 2048², warmup 1, `/usr/bin/time -v`, runs
-  interleaved, base 0.97/0.96/0.97 s against final 0.84/0.84/0.84 s (every base
-  run above every final run), peak RSS 105.6 MB -> 102.9 MB, byte-identical, and
-  a same-binary control run the same way shows no separation. **aarch64 peak
-  RSS is a NULL and was measured, not argued:** `mem_bisect.sh` round-robin,
-  11 rounds, 0 refused — 2048-inter median 147,936 -> 147,472 KiB (0.997x) with
-  overlapping distributions, 512-still 11,616 -> 11,424 KiB.
-- **The entropy coefficient writer and the range coder take C's SHAPE —
-  -2.285 % of the photo_cid 512² p6 frame's instructions, -2.96 % of its
-  cycles, -7.96 % of its branch misses, 1.037x / 1.029x wall clock on the two
-  photos** (`benchmarks/entropy_coder_cshape_2026-09-05.{tsv,meta}`). Three
-  chunks landed; three more were built, proven byte-identical, measured worse
-  and reverted. **(1) The pack's `eob` scan.** C never recomputes `eob` in the
-  entropy path — `av1_write_coeffs_txb_1d` takes it (`entropy_coding.c:358`)
-  and the caller passes what the quantizer stored (`entropy_coding.c:592` <-
-  `coding_loop.c:441`) — while the port ran a FORWARD full-block scan whose
-  ~50/50 data-dependent branch `stall_attrib_2026-09-05` measured as its
-  largest mispredict site (17.16 %, 82 % of `encode_block_syntax`'s total).
-  Replaced by the reverse-scan-with-early-return already at `quant.rs:318`, at
-  all THREE sites — the record named two; the third is `write_chroma_txb`,
-  which runs for U and V on every coded block. `encode_block_syntax` self Bcm
-  371,547 -> 65,239. **(2) The range coder.** `svt_od_ec_encode_q15` does not
-  exist anywhere in `reference/svt-av1/Source/Lib/`: C fuses the body into
-  `svt_od_ec_encode_cdf_q15` (`bitstream_unit.c:279-301`), sharing `r >> 8` and
-  `EC_MIN_PROB * (nsyms-1-s)` and testing `s > 0` once. The port's private
-  mirror of that deleted function re-tested the predicate as `fl < 32768`; it
-  is now fused and the helper is gone. And C's `normalize` is `static inline`
-  with the flush `NOINLINE` beside it (`bitstream_unit.c:151` + `:110`), where
-  the port's single fused function was its own symbol at 44,725,701 Ir —
-  2.77 % of the frame — so every symbol written paid a call around ~10
-  instructions of work; split `#[inline]` hot + `#[inline(never)] #[cold]`
-  flush, it leaves the profile. -22,676,476 Ir, the largest chunk.
-  **(3) The peel.** C peels the `c == eob - 1` iteration out of the backward
-  pass (`entropy_coding.c:475-501`); the port re-tested that loop-invariant
-  predicate per coefficient. -6,010,994 Ir. **Measured and REVERTED, so nobody
-  retries them:** C's `eob == 1` writer fast path (`entropy_coding.c:414-443`)
-  +1,924,868 Ir — it fires, but `eob == 1` txbs are ~1 % of that cell's writer
-  calls; C's two-loop `update_cdf` (`cabac_context_model.h:98-104`)
-  **+17,538,820 Ir**, because LLVM already predicates the port's single
-  `if i < val` loop and two runtime-trip-count loops defeat that; and wiring
-  the writer to the unread `TxbScratch::ctx` field +1,342,196 Ir. **The
-  measurement finding that outlives the chunk:** a `perf_ab.sh` run with the
-  SAME BINARY on both sides reads 0.997x (p2) / 0.995x (p6), quartile span
-  entirely above 1.0 at p6 — every wall-clock ratio in this campaign carries a
-  bias of that size against the candidate slot — and a quiet-box re-run
-  (load 0.6-1.1) reads the same 0.995x / 0.996x for the same binary, so the bias
-  is the HARNESS, not contention. On that quiet box the candidate reads 1.0046 at
-  p2 where the same binary reads 1.0052 (no regression to explain) and 0.9660 at
-  p6 against a 1.0043 control, quartiles non-overlapping. **Memory:** peak RSS
-  (`/usr/bin/time -v`, x86, gradient 2048² qp40 p13, 5 reps) is a NULL on both
-  arms — still 68,920 -> 68,824 KiB, inter 109,296 -> 109,568 KiB, min/max ranges
-  fully overlapping — as expected from a diff that adds, removes and resizes no
-  allocation. **Gates, both ISAs, every one green:** regression_spotcheck
-  104/104; nextest 2541 (arm) / 2551 (x86), 0 skipped; identity_full_8bit
-  1100/1100; inter_byte_gate 108 required / 0 failed / 0 crashed PASS;
-  video_key_matrix 59/60; screen_ibc_byte_gate 152/152; screen_palette_gate
-  50/50; fctx_gate 96/96 fields PASS; `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH
-  PASS; decode_conformance 1260 passed / 0 failed. The six pinned still cells at
-  290 / 839 / 63 / 171 / 580 / 693 B.
-
-- **CFL predict is branch-free and the alpha search is 1.99x -> 1.72x C's
-  instruction count — and the `#[arcane]` dispatch variant had FEWER
-  instructions and was slower everywhere (2026-09-05).** The port's
-  `cfl_predict_lbd` was a scalar double loop whose per-element body branched on
-  the sign for C's round-half-away-from-zero, at 12x C's AVX2 kernel per call
-  for an identical call count. The same arithmetic is now branch-free
-  (`s = q6 >> 31`; the identity is pinned exhaustively over all 2,162,720 legal
-  `(ac_q3, alpha_q3)` pairs). `md_cfl_rd_pick_alpha` inclusive 886.7 M ->
-  766.7 M against C's 444.5 M; frame instructions -1.03 % on the CLIC glitter
-  photo (port/C 1.727 -> 1.709) and -0.31 % on the CID photo; wall clock 1.016x
-  and 1.009x at 512 preset 2. Wrapping the same core in `incant!` +
-  `#[arcane]` arms was measured and REJECTED: fewer instructions on every cell,
-  slower on all four, and a real gradient regression (0.993x at 256 and 512
-  p2) — the dispatch takes the call out of the per-alpha closure's inliner.
-  Record `rust/benchmarks/cfl_branchfree_2026-09-05.{tsv,meta}`.
-
-- **Three out-of-line helpers C inlines are gone — 17.7 M calls per 512x512
-  photo frame at preset 2, -0.63 % instructions, byte-identical; with the two
-  entries below, a photo's preset-2 port/C instruction ratio is 1.777 -> 1.694
-  and the whole-frame wall clock 1.056x (2026-09-05).** `MdRates::txt_rate`
-  (5,974,663 calls), `tx_pipeline::rs_tx_size` (6,984,051) and
-  `coeff_c::tx_size_from_dims` (4,766,423) all read zero now. `#[inline]` alone
-  fixes only the first — LLVM will not inline a 19-arm `match` on `(w, h)`
-  called from several sites — so both dimension mappings became tables: a 5x5
-  lookup indexed `(log2(w) - 2) * 5 + (log2(h) - 2)`, and a const
-  `TX_SIZE_FROM_C[19]` that `tx_unit_inner`'s two dispatch sites index with the
-  `c_tx` they already hold. Both replaced `match`es are kept as `#[cfg(test)]`
-  oracles and three new tests pin the tables to them over all 25 power-of-two
-  shapes. Record `rust/benchmarks/txsize_tables_2026-09-05.{tsv,meta}`.
-
-- **The residual is derived once per (tx-depth, TXB) again, as C does it:
-  `residual_i32` 4,256,724 -> 1,307,794 calls per 512x512 photo frame at preset
-  2 against C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % instructions,
-  1.016x-1.029x faster, byte-identical (2026-09-05).** C fills
-  `cand_bf->residual->y_buffer` once per (tx-depth, TXB) in
-  `perform_tx_partitioning` (`product_coding_loop.c:5336`) and every tx-type
-  trial transforms that buffer (`:4730`); the port re-subtracted the same block
-  per trial. `txt_search` now fills one `TxtScratch` buffer before its group
-  loop and passes it to every trial as `pre_residual`; single-shot call sites
-  keep the per-call derivation. Positive controls unmoved to the unit
-  (`fwd_txfm2d_dispatch` and `optimize_b` call counts identical), peak heap
-  identical. With the buffer-pooling entry below, a photo's preset-2 port/C
-  instruction ratio goes 1.777 -> 1.704 and the whole-frame wall clock 1.042x.
-  Record `rust/benchmarks/residual_hoist_2026-09-05.{tsv,meta}`.
-
-- **`tx_unit`'s two output buffers are in C's shape: 24.17 M allocator calls
-  per 512x512 photo frame at preset 2 -> 15.14 M (9,296x C -> 5,824x), -1.97 %
-  instructions, and the first allocation removal in this campaign to convert to
-  wall clock — 1.026x faster on a textured photo at 512 p2, byte-identical
-  (2026-09-05).** The port allocated a `Vec` pair per tx-type TRIAL where C
-  allocates the same two buffers once per encoder thread
-  (`svt_aom_mode_decision_context_ctor`, `md_process.c:214`/`:585-601`) and its
-  tx-type search selects a slot by index (`product_coding_loop.c:4723-4725`),
-  keeps the winner by index and copies once per transform unit (`:5082-5084`).
-  `tx_unit_screened_into` now writes into caller-owned `TxOutBufs`; `txt_search`
-  keeps two per thread and swaps on a new best; neither is re-zeroed (every
-  quantizer path defines all `pw*ph` qcoeff positions, every recon path all
-  `w*h`). The split is drawn on `only_dct` rather than C's `tx_type == DCT_DCT`,
-  so one-candidate searches keep the previous owned path exactly. Four variants
-  measured and rejected, two for memory alone — pooling every trial and
-  pre-sizing the buffers in the caller each cost +4.4-5.8 % aarch64 inter peak
-  RSS at 2048 for the same arithmetic. Memory as landed is unmoved on both ISAs
-  and both quantities. Record
-  `rust/benchmarks/txout_cshape_2026-09-05.{tsv,meta}`.
-
-- **Wiener `compute_stats` (loop-restoration tap search) is C's six-step
-  kernel on both ISAs — 127x C per call -> 1.35x on x86 (746.5 M -> 7.9 M Ir
-  per 512x512 frame), byte-identical; preset-6 port/C instruction ratio
-  3.4-5.1x -> 2.3-2.8x on every 512x512 cell (2026-09-04).** One
-  `cs_kernel!` body (full madd dots for M and H's first block row/column,
-  every other H entry by an exact O(width)/O(height) shift delta) over
-  seven per-ISA lane primitives; the aarch64 row-pair arm of 2026-09-03 is
-  replaced by the same body (kernel bench 10.9x -> 24.8x over scalar at
-  win 5). Record `rust/benchmarks/compute_stats_cshape_2026-09-04.meta`.
-
-- **Duplicate-transcription fold, five clusters, byte-inert (2026-09-04).**
-  The two unwired-code reports flagged C functions the port had transcribed
-  two to four times; each cluster now has ONE body and the copies are
-  forwards or gone: `svt_mv_err_cost` (`2b1a74ed`, four spellings to
-  `md_subpel::mv_err_cost`), the 64-dim inverse-transform `mod_input`
-  remap (`e0275930`; the 30 per-size `dct_dct` wrappers stay as tier-1-named
-  forwards), `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize`
-  / `is_global_mv_block` (`24b7027e`, three copies apiece — the same C
-  function in every case), the four dead `sad_NxN` forwards (`a2d8ac46`,
-  zenbenched: the same code either side) and the per-pixel variance about
-  128 (`448290c9`, three loop bodies to `port_src_ops::variance_about_128`
-  plus `tune`'s second `get_perceptual_perpixel_variance` body). **No fold
-  moved a byte**: after every commit, on both ISAs, `identity_full_8bit`
-  1100/1100, `regression_spotcheck` 102/102, `inter_byte_gate` 96/0/1,
-  `video_key_matrix` unmoved (58/60, then 59/60 once upstream `600c5177`
-  closed `screenrep p0`; `gradient p0` is the one open cell throughout),
-  `fctx_gate` 96/96, `inter_decode_gate` 5/5, decode census 96/96,
-  `SCAN_GATE=1` completion scan 64/0/0, six still cells at
-  290/839/63/171/580/693 B, nextest (aarch64 2529, x86_64 2539). Left
-  unfolded on purpose: `port_md/nic_prune.rs` (dead; a wire-or-delete
-  decision, not a fold) and the second `TransformationType` enum in
-  `port_entropy_inter::modes` (a seven-file signature change). Full record:
-  `docs/UNWIRED-PORTED-CODE-2026-09-04.md` "Final duplicate-fold summary".
-
-- **The inter path no longer holds the LAST reference three times and the
-  stored picture twice — aarch64 2048x2048 inter peak RSS 1.311x -> 1.189x
-  of C, 1280 1.263x -> 1.042x; x86 1.185x -> 1.022x; x86 peak heap
-  123.13 -> 101.78 M (2026-09-04).** Per-commit attribution over seventeen
-  binaries on both ISAs (`tools/mem_bisect.sh`, new) found the 2026-09-03b
-  regression is two steps: `4e29d8fa7` (+8.83 M live at 2048) and
-  `8fa2d0353` (+1.58 M, the saved motion field C also stores); the level
-  scratch is a null on main's history. The big step was `ref_frame_data` /
-  `ref_padded_luma` deep-cloning the LAST slot's `y_plane` and `padded`
-  every inter frame, and `DecodedPictureBuffer::refresh` cloning a
-  by-reference `ReferenceFrame` whose owner was still alive. `refresh` now
-  takes the frame by value and the frame holds the slot's `Arc`
-  (`get_shared`). The still arm moves too (the KEY frame was cloned the same
-  way): 1280 still 35792 -> 28256 KiB (0.788x -> 0.623x of C), 2048 still
-  81520 -> 72624 (0.851x -> 0.758x), videokey 0.883x -> 0.708x / 0.901x ->
-  0.788x. Byte-identical: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100. Records
-  `benchmarks/mem_refclone_2026-09-04.{tsv,meta}`.
-- **The funnel honours C's `enable_skipping_mds1` — the MDS1 full loop is
-  skipped when ONE candidate survives the post-MDS0 prune (nic levels 8..=11;
-  product_coding_loop.c:7879), byte for byte (2026-09-04).** `evaluate_leaf`
-  called `mds1::run_mds1` unconditionally; C clears `perform_mds1` there and
-  sends the survivor straight to MDS3 (:9617-9619). MEASURED on
-  `gradient 512x512 qp40 p10` still (callgrind, r7900x): `run_mds1` 886 -> 0
-  calls (C: `perform_mds1` = 0 on 886/886 leaves), `tx_unit_inner` 3,768 ->
-  2,882 = C's `svt_aom_quantize_inv_quantize` 2,882 EXACTLY, program total
-  176.6 M -> 159.3 M Ir (-9.8 %), OBU identical to C. The NIC control table
-  gains tier 1: `svtav1_cref::mode_decision::set_nic_controls` runs the real
-  `svt_aom_set_nic_controls` and `nic_ctrls_matches_the_real_c_at_every_level`
-  pins every row field at all twelve levels. Also CLOSES perf-status's "MDS3
-  candidate count 2.307x at p10 (886 vs 384)": that edge was misjoined —
-  C's 886 MDS3 candidates split 502 `perform_dct_dct_tx` + 384
-  `perform_tx_partitioning` (:6890-6910); the whole-frame admission join
-  shows identical MDS3 sets on 886/886 blocks. Record:
-  `benchmarks/callcount_mds1skip_2026-09-04.{tsv,meta}`,
-  `docs/INTER-ENCODE-PLAN.md` §1z³⁹.
-- **The tx-type search runs C's two phases — transform + SATD screen first,
-  quantize/RDOQ/cost only for the survivors — and is 1.33x faster at 512² p2,
-  byte for byte.** `txt_search` committed the WHOLE `tx_unit` pipeline on every
-  gated tx-type trial and applied C's SATD early exit post-hoc from a
-  `txb_coeff_satd` that re-derived the residual AND the forward transform
-  (`benchmarks/callcount_2026-09-04`: 488,414 committed trials vs C's 270,415
-  at gradient 512x512 qp40 p2, one edge = 45.2 % of the port's p2
-  instructions). `tx_pipeline::SatdScreen` is now C's `best_satd_tx_search`
-  running minimum (`product_coding_loop.c:4741-4755`), evaluated inside
-  `tx_unit_screened` / `tx_unit_hbd_screened` between the transform and the
-  quantizer; a rejected trial returns there; `detect::txb_coeff_satd{,_hbd}`
-  is deleted. MEASURED (r7900x callgrind, nine byte-identical runs): the
-  tx-type-search quantize edge is EXACTLY C's — 270,415 = 270,415 (p2),
-  8,397 = 8,397 (p6), 608 = 608 (p10); the redundant-residual edge 484,442 ->
-  0; p2 Ir total -23.5 %. Wall clock (paired A/B, 9 rounds): 512² p2 652.5 ->
-  491.3 ms (1.325x), 64² p2 1.486x, p6 1.00-1.07x, p10 1.00x (control).
-  Gates on the tree rebased onto the IFS wiring
-  (aarch64): nextest 2524/2524, `regression_spotcheck` 102/102, six still
-  cells byte-identical, `inter_byte_gate` 96 required / 0 failed / 1 known-open,
-  `inter_decode_gate` 5/5, `inter_decode_census` 96/96; pre-rebase
-  `identity_full_8bit` 1100/1100 (aarch64 AND x86-64), completion scan 64/64
-  OK, x86-64 nextest 2529/2529. Records `rust/benchmarks/callcount_txtscreen_2026-09-04.{tsv,meta}`,
-  `perf_ab_txtscreen_2026-09-04.tsv`; `rust/docs/perf-status.md` updated in
-  place. Still open: the residual is derived once per tx-type TRIAL where C
-  derives it once per TXB (595,871 vs 435,245 calls at p2).
-
-### Fixed
-
-- **The independent-uv full-loop count takes C's PICTURE-TYPE base
-  (2026-09-04).** `leaf_funnel::inject` carried `uv_mode_nfl_count`'s base as
-  a literal 32 — the allintra arm of C's four-arm ladder
-  (`search_best_independent_uv_mode`, product_coding_loop.c:7693-7696) — so a
-  VIDEO key frame ran 32 full-loop uv candidates at M0 where C runs 64 (all 61
-  injected). On a flat-chroma SAD tie that dropped `UV_SMOOTH*`/`UV_PAETH`
-  from the full loop and the per-luma table resolved luma PAETH to UV_DC,
-  mispricing PAETH_PRED +1310 / DC+FILTER_PAETH -1315 rate units from MDS0 on
-  at the first divergent block of BOTH stuck `video_key_matrix` cells. Now
-  `intra_arm::ind_uv_nfl_base` + `FunnelCfg::ind_uv_nfl_base`, stamped per
-  picture (`for_preset` bakes the still's 32). `video_key_matrix` **58 -> 59
-  of 60** (`screenrep p0` identical at 2335 B; `gradient p0` now 1341 vs 1342).
-  Instrument: `SVT_FULLCOST_XY=all` + `pm1`/`sq`/`mds` fields and
-  `tools/perf_profile/mds3_admission_join.py`. Record:
-  `docs/INTER-ENCODE-PLAN.md` §1z³⁸.
-- **NIC stage caps use C's PICTURE TYPE on inter frames (2026-09-04).**
-  `leaf_funnel::rate_tables::nic_counts` hardcoded the I_SLICE row of
-  `MD_STAGE_NICS` (definitions.h:811), so every inter frame ran I-slice stage
-  caps — at `p6 q40` an MDS1 cap of 5 where C (`set_md_stage_counts`,
-  product_coding_loop.c:1398, picture type 1 on a flat GOP) runs 3, and 3 vs 2
-  at `p8 q20`. It is now a front on the tier-1 `port_md::nics::set_nics`, with
-  the picture type from the new `port_picstruct::is_highest_layer`
-  (pd_process.c:5560 — FALSE on every picture of a flat GOP); the same helper
-  replaces the `temporal_layer_index != hierarchical_levels` paraphrase in
-  `inter_hdr_arm` (wrong at (0,0)) and the DLF block's inline copy. MEASURED
-  byte-inert: the 96-cell inter grid is identical row for row (94 BOTH / 1
-  F1DIFF / 1 F0DIFF), the eight `frames=3` cells unchanged, stills 1100/1100 —
-  the extra MDS1 survivors the I-slice row admitted never won. Record:
-  `docs/INTER-ENCODE-PLAN.md` §1z³⁷.
-- **The three residual F1DIFF cells are a COST comparison, not a search — and a
-  module header said otherwise.** `inter_md_arm`'s header claimed
-  `md_nsq_motion_search` is "PORTED but NOT CALLED here ... so an NSQ block here
-  takes the square path", quoting 94 of 259 coded inter blocks as its reach.
-  `inter_search_arm` builds that search's MVC list and passes it into
-  `refine_me_mv_for_ref`; the search runs. MEASURED on `diag 72x72 q55 p6`, the
-  cell that reading would have explained: both sides code the SAME six blocks at
-  the same positions and differ at one, and C's own `SVT_SUBPEL_OUT` there
-  reports `start=(32,8) best=(32,8)` — **the port's ME MV exactly** — with
-  `nsqme=1` confirmed from C's `SVT_INJCFG_OUT`. C codes NEARMV `(24,0)` because
-  its COST wins, not because its search found something else; the port injects
-  that candidate at C's own MDS0 rate (2845) and picks NEWMV (6774) on
-  distortion. The residual is the same class as `video_key_matrix`'s two unmoved
-  cells, and the instrument for it is `SVT_FULLCOST_OUT`, not the ME. Header
-  corrected with the stale census kept and dated. **Drilled to the end the same
-  day**: the port's MDS1 costs match C's to the UNIT on five of six candidates
-  at that block (distortion, rate and lambda) and to 0.30 % on the sixth, and
-  NEARMV wins at MDS1 on BOTH sides — what differs is that C admits TWO
-  candidates to MDS3 and the port admits THREE, i.e. C's post-MDS1 NIC prune
-  drops the NEWMV the port keeps, whose distortion collapses from 95 239 to
-  38 192 once the real transform and RDOQ run. The target is
-  `nic::stage_mds1_to_mds3`, and it is the same target as `video_key_matrix`'s
-  two unmoved cells. Full record
-  `rust/benchmarks/f1diff_q55_localization_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z³².
-
-- **`skip_mode` is signalled and coded — FIVE of eight three-frame cells are now
-  byte-identical end to end.** `pd_process.c:4958` assigns
-  `frm_hdr->skip_mode_params.skip_mode_flag = skip_mode_allowed`, and
-  `entropy_coding.c:5119` codes a `skip_mode` symbol on every block of an inter
-  FRAME whose `bsize` allows compound. The port hard-coded the flag `false`,
-  coded no symbol, and priced no skip-mode rate — right by accident on every
-  frame this repo's gates reach, because `skip_mode_allowed` needs two
-  references at DIFFERENT order hints and the campaign's first inter frame has
-  every DPB slot holding the key frame. Three wires, no new transcription:
-  `skip_mode_context`, `encode_skip_mode`, `is_comp_ref_allowed`,
-  `setup_skip_mode_allowed` and the `InterFacBits::skip_mode` rate table were
-  all already in tree. MEASURED at `frames=3` with the frame-2 refusal lifted
-  behind a throwaway env: `gradient 64x64 q32 p8`, `diag 64x64 q40 p8`,
-  `uniform 64x64 q40 p6`, `screen 64x64 q40 p6` and `diag 128x128 q40 p6` are
-  now byte-identical on **every** frame, where this chunk sequence started with
-  frame 2 at 466 B against C's 21. **The refusal STAYS** — `gradient 64x64
-  q40 p6`, `diag 72x72 q40 p8` and `gradient 128x128 q40 p8` are still wrong, so
-  lifting it would be the partial lift the two `refuses_inter3` cells exist to
-  prevent; converting it into the PASS/OPEN gate model the frame-1 path uses is
-  written down as a decision, not taken. Byte-inert on the two-frame envelope
-  (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell, identity 1100/1100). Full
-  record `rust/benchmarks/frame2_skip_mode_wired_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z³¹.
-
-- **`fctx_gate.sh` compares EVERY frame's end-of-frame CDF state, not just
-  frame 0** — and the first thing it found is the symbol frame 2 is missing.
-  The gate stopped at frame 0 on the reasoning that "frame 1's saved context
-  can only match once the inter tile does"; frame 1's tile is byte-identical on
-  the campaign's cells, so that state had simply never been under test even
-  though it is what a THIRD frame restores from. Extended, it reports 96/96
-  identical at frames 0 and 1 of `diag 64x64 q40 p8 frames=3` and exactly ONE
-  differing field at frame 2: `skip_mode`, C 138 against the port's 147 — the
-  DEFAULT, i.e. C adapted that CDF and the port never coded the symbol. That
-  localized the frame-2 tile divergence in one command to
-  `frm_hdr->skip_mode_params.skip_mode_flag`, which `pd_process.c:4958` assigns
-  from `skip_mode_allowed` while `inter_hdr_arm` hard-codes `false` (the ninth
-  "a caller passes a constant where the derivation is already ported" of this
-  campaign; `setup_skip_mode_allowed` is ported at tier 1 and
-  `encode_skip_mode` / `skip_mode_context` are ported and called by nothing).
-  It is inert before frame 2 because `skip_mode_allowed` needs two references
-  at different order hints. Mutation-tested: changing one value of frame 1's
-  `skip_mode` row makes the gate report `95 identical, 1 differ` and exit 1.
-  Full record `rust/benchmarks/frame2_skip_mode_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z³⁰.
-
-- **C's frame-2 header codes the low two bits of MINUS THREE — the CDEF-off
-  gate the port never tested.** The frame-2 divergence on
-  `diag 64x64 q40 p8 frames=3` looked like `cdef_damping_minus_3` (C 1,
-  port 2), which reads as a CDEF search output. It is not:
-  `CDEF_DAMPING_FROM_QP(160) = 5` (`enc_cdef.c:895`) means the field must be 2
-  on both sides, and 1 is the low two bits of `0 - 3` — i.e. `cdef_damping` was
-  still its `resource_coordination_process.c:423` initialiser because **C's
-  frame 2 never ran CDEF at all**. C's `md_config_process.c:980-985` tests three
-  CDEF-off gates and only ELSE-IF none fired rewrites the candidate set from the
-  reference; the port ran the rewrite unconditionally. The live gate here is
-  `cdef_ctrls->skip_th && skip_perc >= CLIP3(25, 100, skip_th + (base_q_idx -
-  128) / 4)`: at preset 8 `skip_th` is 80 on a non-base frame, the threshold is
-  88, and `ref_skip_percentage` is 0 at frame 1 (an I_SLICE reference) but
-  **100** at frame 2, whose reference is a 22-byte all-skip frame. Now ported as
-  `cdef_search::cdef_skip_gate` with four tier-4 tests for the two details that
-  are easy to lose (the guard is on the RAW `skip_th`; C's `/ 4` truncates
-  toward zero). MEASURED: **no frame-header field differs on that cell any
-  more** — the first divergence moves from byte 15 to byte 18, into the tile
-  payload — and six of the eight `frames=3` cells move likewise. Byte-inert on
-  the two-frame envelope (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell,
-  identity 1100/1100) because `skip_th` is 0 at every preset up to M7 and on
-  every base frame. `me_based_cdef_skip`, the first of the three gates, stays
-  unmodelled and is inert below preset 9 by C's own `zero_filter_strength_lvl`
-  table. Full record `rust/benchmarks/frame2_cdef_skip_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁹.
-
-- **The temporal motion field was PORTED and never WIRED.** C's
-  `av1_copy_frame_mvs` (`coding_loop.c:1038`), `motion_field_projection` and
-  `av1_setup_motion_field` (`md_config_process.c:427/523`) were all in tree at
-  tier 4 with traced vectors, called by nothing — and `port_coding_loop`'s own
-  module doc had said since it landed that without them "every frame from the
-  SECOND inter frame onward gets wrong TMVP candidates". What was missing was
-  the state between them: `ReferenceFrame` now carries C's per-8x8 `MV_REF`
-  grid and `ref_order_hint[7]`, the walk's `update_b` port folds the grid under
-  C's own gate (`mfmv_enabled && !I_SLICE && is_ref`), and
-  `inter_mvp_env.tpl_mvs` is `setup_motion_field`'s output over the DPB rather
-  than an all-`INVALID_MV` constant — with `ref_frame_side`, its other product,
-  carried to the walk from the same call so the two cannot disagree. MEASURED
-  at poc 2 of `diag 64x64 q40 p8 frames=3`: the port's `NEARESTMV` becomes C's
-  `(0,-24)` off a stack of 1 where it was `(0,0)` off an empty one, and **six
-  of eight `frames=3` cells now match C's frame-2 byte count** (21/21, 21/21,
-  21/21, 21/21, 21/21, 23/23, 26/27, 23/35). None is byte-identical, so the
-  frame-2 refusal STAYS, re-keyed on the recon. Byte-inert on the two-frame
-  envelope structurally, not by luck — C's own projection returns 0 for a
-  key-frame start frame — and the grid is 92 BOTH / 3 F1DIFF / 1 F0DIFF cell
-  for cell before and after. Guarded by two new `mfmvField` spot-check cells
-  reading a `PORTREFSTATS ... mfmv=<named>/<len>` census, because the wire's
-  only consumer is a frame the port still refuses and so it has no byte
-  observable at all. Full record
-  `rust/benchmarks/frame2_mfmv_wiring_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁸.
-
-- **The frame-2 refusal named the wrong mechanism, and its "466 B" was a
-  hard-coded DPB slot.** Three pipeline sites read the reference picture —
-  `ref_frame_data` (the open-loop ME's plane), `ref_padded_luma` (what motion
-  compensation indexes) and PD0's `sb_min_sq_size` read — and all three took
-  `self.dpb.get(0)`, a hard-coded slot, where C resolves LAST through
-  `pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]` i.e. `rps.ref_dpb_index[LAST]`.
-  They agree on every frame this repo's gates cover (poc 1's LAST *is* slot 0)
-  and diverge at poc 2, because frame 1 refreshes slot 1 — which the previous
-  entry's DPB fix made real. MEASURED on `gradient 64x64 q32 p8 frames=3`: the
-  port's frame-2 MD searched `mv=(2,-36)` against poc 0 where the true poc-1
-  displacement is `(0,-24)` and coded 100 % intra at **466 B against C's 21**;
-  after, **22 B**, with frames 0 and 1 byte-identical and the two-frame byte
-  grid unmoved cell for cell (92 BOTH / 3 F1DIFF / 1 F0DIFF). Seven other
-  `frames=3` cells land at 21/21, 21/21, 21/21, 26/27, 24/23, 24/35, 22/21.
-  The frame-2 refusal is **re-keyed, not lifted**: `fh_fields.py` shows
-  `use_ref_frame_mvs = 1` on BOTH sides at poc 2 while the port's `tpl_mvs` are
-  all `INVALID_MV` — and that is a missing WIRE, not a missing port:
-  `inter_mvp::{motion_field_projection, setup_motion_field}` and
-  `port_coding_loop::copy_frame_mvs` are all ported and tested at tier 4, while
-  `ReferenceFrame` carries no per-8x8 `MV_REF` grid and `tpl_mvs` is built as a
-  constant. C codes that frame as
-  `NEARESTMV mv=(0,-24)` off a stack with zero spatial matches where the port
-  reports `refmvcnt=0` and `(0,0)`. Faithful at two frames, where C's own
-  projection returns 0 for a KEY-frame reference. Full record
-  `rust/benchmarks/frame2_last_slot_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁷.
-
-- **C injects a `NEARMV` candidate on every inter frame and the port injected
-  NONE — the inter byte grid goes 91 → 92 of 96.** `inter_md_arm` handed the
-  candidate injector a defaulted `near_count_ctrls`, justified by a module
-  comment reading "C caps the NEAR DRL loop to ZERO unless this control is
-  enabled ... so `NEARMV` is absent exactly the way C makes it absent". That
-  is a correct reading of C's `enabled == 0` arm (`mode_decision.c:1377-1381`)
-  and a wrong conclusion: `enabled` is **1 in all seven arms** of
-  `set_cand_reduction_ctrls` (`enc_mode_config.c:4113` onward) and the video
-  arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`) — each with
-  `near_count = 3`. MEASURED on `diag 72x72 q40 p6` frame 1 by joining C's
-  `SVT_IFCOST_OUT` to the port's `SVTAV1_CANDDBG` at `mi=(8,16)`: C's MDS0
-  list carries `mode=14 NEARMV` at `fast_luma_rate = 2845` and codes it, the
-  port had no such candidate and coded `NEWMV` at 4187 with the SAME MV
-  `(24,0)`; the port's rate model was already exact on both candidates the two
-  lists share (2520 and 4957 to the unit). The control is now derived through
-  the already-ported, tier-1-gated
-  `port_enc_mode_config::encdec::set_cand_reduction_ctrls`, so this was a
-  missing wire and not a missing port — the **sixth** "a caller passes a
-  constant where the derivation is already ported" finding of the inter
-  campaign. `inter_byte_gate` 93 → **94 required, 0 failed** (mutation-verified:
-  forcing the control off fails exactly `diag 72 72 40 6`); the three residual
-  F1DIFF cells did not move by a byte. Full record
-  `rust/benchmarks/inter_near_candidate_2026-09-03.md`,
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁶.
-
-- **The port's DPB never received an inter frame, and the frame-2 refusal was
-  naming a gap it had closed.** `PictureControlSet::new_inter_frame`
-  hard-coded `refresh_frame_flags: 0`, and that constant — not
-  `pic.rps.refresh_frame_mask`, which the frame HEADER already writes — is
-  what reached `self.dpb.refresh(..)`, so the stream announced C's real mask
-  while the encoder's own DPB stayed all-key-frame. MEASURED at poc 2 of
-  `gradient 64x64 q32 p8 frames=3`: `rps.ref_dpb_index[0]` is slot 1 and all
-  eight slots still held the key frame, so LAST resolved to poc 0 where C's
-  resolves to poc 1. Invisible at two frames (nothing reads the DPB after
-  frame 1), which is the whole envelope every gate covers — so **any frame-2
-  reading taken before this fix is void**. Alongside it, the DPB entry now
-  carries C's three coded-area percentages (`intra`/`skip`/`hp`), the
-  per-superblock `sb_intra` / `sb_skip` flags and the picture's `slice_type`,
-  accumulated in the walk exactly where C's `update_b` does
-  (coding_loop.c:1605-1643) and VERIFIED against C's own reference objects
-  through `SVT_REFSTATS_OUT`: C reads its frame-2 list-0 reference as
-  `slice/intra/skip/hp = 0/0/100/0` and the port writes exactly that onto
-  frame 1's entry. `MdConfigInputs` derives all three `ref_*_percentage`
-  values from them instead of from placeholder zeros, and its
-  `ref_list{0,1}_count_try` fields are now filled from the CAPPED counts C
-  reads rather than the uncapped `ref_list{0,1}_count`. Byte-inert on the
-  two-frame envelope by construction. The frame-2 refusal is NOT lifted: with
-  these in and nothing else, frame 2 codes 466 B against C's 21, so it is
-  re-keyed on the gap that is actually left — `pd0_detector` reads
-  `ref_obj_l0->sb_intra[sb_index]` per superblock and
-  `part_arm::VideoPic` has no `InterOnInterRef` arm.
-  (`docs/INTER-ENCODE-PLAN.md` 1z25,
-  `benchmarks/frame2_mechanisms_2026-09-03.md`)
-
-
-- **C's MD lambda is PER-SUPERBLOCK and this port had one per frame — the
-  inter byte grid goes 89 -> 91 of 96, `inter_byte_gate` 91 -> 93.**
-  `svt_aom_mode_decision_configure_sb` (md_process.c:796) is called per
-  superblock with `svt_aom_get_me_qindex(pcs, sb_ptr, ..)`, so
-  `full_lambda_md[0]` / `fast_lambda_md[0]` / `full_sb_lambda_md[0]` vary by
-  superblock even with no per-SB delta-q signalled: `update_lambda`'s
-  `stats_based_sb_lambda_modulation` block keys on `me_q_index - base_q_idx`,
-  and `me_q_index` is derived from `me_8x8_cost_variance` alone (rc_aq.c:656).
-  MEASURED against C's own `SVT_PD0CFG_OUT` on `diag 72x72 q40 p6` frame 1:
-  C's `fastlam` is 5182 / 5182 / 5182 / 7773 across the four superblocks of
-  one frame where the port reported a flat 6633. Wiring it promoted
-  `gradient 72x72 q20 p6` and `diag 72x72 q20 p8` to byte-identical and
-  CLOSED the residual 72x72 under-split — the partition tree on
-  `diag 72x72 q40 p6` is now C's exactly (five inter blocks, `mi=(8,16)`
-  included, both edge shapes `BLOCK_16X32` `PARTITION_VERT`), with the
-  remaining byte a MODE divergence (port NEWMV, C NEARMV, same MV). The
-  producer and consumer had been ported and tested since 2026-09-02 and only
-  the pipeline threading was missing. Byte-inert on stills and key frames by
-  construction (the per-SB array is `None` unless the frame has a DPB
-  reference). It also deleted a duplicate transcription: the frame inter
-  lambda was derived once for `c_quant` and again for
-  `inter_search_arm::SearchFrameCfg`, so the two lambda fields moved to the
-  per-block `BlockSearchIn` and `SearchFrameCfg` can no longer carry one.
-  Mutation-verified: with the per-SB array forced to `None` the gate reports
-  the two promoted cells failing; restored, 0 failed. The per-SB path is
-  gated on C's own `stats_based_sb_lambda_modulation`
-  (`enc_mode <= (rtc ? ENC_M10 : ENC_M11)`, enc_handle.c:4375), which is OFF
-  at presets 12-13 — where C never builds `b64_me_qindex` at all — and that
-  boundary is guarded by a unit test because no byte gate in this repo
-  reaches it.
-  (`docs/INTER-ENCODE-PLAN.md` §1z24,
-  `benchmarks/inter_byte_matrix_2026-09-03-sblambda.{tsv,meta}`)
-
-
-- **`use_ref_frame_mvs` at `mfmv_level >= 2` is a CLOSED FORM here, and
-  refusing it cost twelve inter cells.** `inter_completion_scan.sh` goes
-  **52 OK / 12 REFUSED -> 64 OK / 0 REFUSED**, and `576x576` at presets 6 and 8
-  is byte-identical to C on BOTH frames (frame 0 41,537 B, frame 1 35 B) where
-  it previously produced no stream at all. The refusal said the bit "needs the
-  TPL r0 and the references' own is_mfmv_used" — true of C in general, false of
-  any configuration this port can encode: C's `mfmv_controls` sets
-  `r0_th = scs->tpl ? 0.1x : 0` and guards that whole block behind
-  `if (r0_th)`, and `get_tpl` (`Globals/enc_handle.c:3657`) returns 0 for
-  `aq_mode == 0`, which this port refuses to be anything else. `mfmv_controls`
-  was ALREADY ported and tier-1 C-parity-tested in
-  `port_enc_mode_config::tail`, with a doc comment stating that argument in
-  those words; `inter_hdr_arm` re-derived the rule and refused, and
-  `inter_mvp_env` carried a THIRD copy spelled `mfmv_level == 1`. All three now
-  call the one ported function (`docs/WORKING-ON-THIS.md` §4). Refused only
-  when TPL is genuinely on. New `inter_byte_gate.sh` cells at 576x576 — the
-  first cells any byte gate in this repo has had above 360p, which is exactly
-  where `mfmv_level` stops being 1. CI floors raised to 64 OK / 0 REFUSED.
-- **Global motion was never refused — only a comment said it was.**
-  `inter_syntax_state` claimed `inter_hdr_arm::inter_signal` "refuses a
-  non-identity model, so every reference is IDENTITY here by the same rule the
-  header is written under — not by assumption", and
-  `InterHdrError::GlobalMotionNotImplemented` existed for it. That variant was
-  never constructed anywhere in the crate. C's `svt_aom_derive_gm_level`
-  (`enc_mode_config.c:194`) gives a NON-I-slice at `enc_mode <= ENC_M4` a
-  non-zero `gm_level`, so C searches a model and `global_motion_params()` codes
-  its type and parameters while this port writes seven `is_global = 0` bits —
-  and the whole inter campaign measures preset >= 6, where C's own level is 0,
-  so nothing could reach it. Now a real refusal at the `encode_frame_impl`
-  choke point.
-- **The sequence header underflowed `frame_width_bits_minus_1` at width or
-  height 1, on BOTH the 4:2:0 and monochrome paths.**
-  `32 - (1 - 1).leading_zeros()` is 0, so `w_bits - 1` wrapped: a release build
-  wrote 15 into that 4-bit field ("16 bits follow") and then wrote ZERO bits of
-  `max_frame_width_minus_1`, shifting every later field. MEASURED: the port's
-  1x1 stream was 21 B and dav1d said "Error parsing sequence header / Overrun
-  in OBU bit buffer"; C's 1x1 stream is 21 B and decodes. After: 24 B on both
-  sides, **byte-identical**, and likewise at 1x8, 1x64, 64x1. `verify_settings`
-  accepts width and height down to 1, so these are inside C's envelope and
-  always were; no gate encoded a 1-pixel dimension. Found while lifting the
-  mono arbitrary-dims refusal, which made these sizes reachable on a second
-  path. Five new `regression_spotcheck.sh` cells (four cases + a 2x2 control);
-  reverting the fix fails exactly those four **at identical byte counts**,
-  which is why they are byte cells and not size cells.
-- **QP 0 (coded-lossless) on SCREEN CONTENT works at preset >= 6, and the
-  blanket refusal was hiding a crash at the other end.** The refusal read "not
-  byte-verified against C so far" — a statement about effort. Measured:
-  presets 6..13 are **48/48 byte-identical to C** over `{screen, screenrep}` x
-  `{64x64, 128x128, 96x80, 200x136}` and lossless under aomdec in every cell;
-  preset 5 diverges on `screenrep` only (128x128 port 17,241 B vs C 17,242,
-  both lossless — an RD residual like the pinned p0..p3 set); presets 0..4
-  **PANIC** in `intrabc_hash::get_block_hash_value`, QP-0-specific (qp 1, 2, 5,
-  20, 40 all encode at preset 4). `AvifEncoder`'s DEFAULT speed 6 maps to
-  preset 7, so lossless AVIF of a screenshot was refused at the default setting
-  for want of running it once. The refusal now stops at preset 6 and names both
-  causes. Pinned from BOTH sides: three `byte` cells for the lift and two
-  `refuses` cells (a new `regression_spotcheck.sh` helper that tells exit 3
-  apart from a panic) for the presets that must stay refused — without the
-  second pair, deleting the refusal outright would pass every test in the repo
-  and re-enable the panic. New CI invocation of `lossless_gate.sh` over the
-  screen contents at presets 6..13.
-
-- **Monochrome encodes arbitrary (non-8-aligned) dimensions — the AVIF alpha
-  case.** An alpha plane is a monochrome AV1 image at the picture's own size,
-  and the mono path refused anything not already 8-aligned ("arbitrary-dims
-  padding is wired on the 4:2:0 path only"). It is not 4:2:0-specific:
-  `encode_frame_impl` already takes the padded plane at the ALIGNED stride and
-  signals the TRUE size, and the mono arm differs only in plane count. The
-  padding is now shared (`encode_frame_mono_core`). MEASURED: 100x100, 98x78,
-  99x77, 171x33 and 250x150 all encode, decode under BOTH aomdec and dav1d, and
-  the decoder emits exactly `w*h` luma bytes — which is what proves the stream
-  announces the true size. Recon-equality cells added to
-  `regression_spotcheck.sh` (93/93, was 83/83). No byte oracle exists and never
-  will: C cannot encode monochrome at all.
-
-
-- **PD0's INTER arm never reached the REFINEMENT path — the grid goes
-  67 BOTH → 89** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²², 89ec75a). `pipeline.rs`
-  builds `pd0_inter` (the reference planes, the frame's update types and the
-  superblock's `min_sq`) and the non-refined arm already used it; the
-  `refined` arm — every preset ≤ 6 on both arms — called the ALLINTRA entry
-  point instead, so an inter frame's PD0 predicted DC intra, priced with the
-  KEY-frame lambda and descended to 8x8. On `gradient 64x64 q20 p6` frame 1
-  that is 80 evaluated nodes against C's 5 and a 64x64 distortion of 2 045 904
-  against C's 50 800; after the fix all five nodes match C field for field.
-  Twenty-two cells promoted, none regressed. `inter_byte_gate` 67 → **89**,
-  mutation-verified (reverting the argument fails exactly the 22). Refusal
-  #12's envelope reads 89 of 96. The residual six are five 72x72 partial-SB
-  cells plus `diag 128x128 q20 p8`, and the direction on them has FLIPPED to
-  an UNDER-split at the frame's 8-px right edge (b97e71a) — an edge-shape
-  DEPTH, which the per-SB lambda's direction predicts.
-  identity_full_8bit 1100/1100, spot-check 83/83, nextest 2483/2483,
-  video_key_matrix 58/60, fctx 96/96, decode census 96/96, completion scan
-  52 OK / 12 REFUSED / 0 CRASH.
-
-- **The DLF VIDEO arm — the port switched deblocking OFF on every inter frame;
-  the grid goes 55 BOTH → 67** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²¹,
-  a7dd951 + 445d3b1). `pipeline.rs` derived `dlf_level` through the ported
-  ladder for both arms and then discarded it for anything but a key frame,
-  because `deblock.rs` carried both level pickers specialized to a KEY frame.
-  C signals `loop_filter_level[0]` of 8/9/12/16/20/24 where the port signalled
-  0, on exactly the 20 cells §1z²⁰ measured as differing FIRST in the frame
-  header — a half now closed to zero. New `dlf_arm` carries C's whole
-  `svt_av1_pick_filter_level` (both pickers, `me_based_dlf_skip`, the
-  reference-average arms and the `prev_dlf_dist < 5` shut-off) and
-  `deblock.rs` delegates to it, so there is ONE transcription; `ReferenceFrame`
-  gained `lf_levels` and `dlf_dist_dev` with C's -1 "never computed" sentinel.
-  Corrects three claims in §1z²⁰, including its ladder prediction —
-  `is_not_last_layer` is TRUE on a flat GOP, so both presets were wrong and by
-  two different pickers. `inter_byte_gate` 55 → **67**, mutation-verified;
-  two new `fhInterFrame` spot-check cells, one per ladder arm.
-  identity_full_8bit 1100/1100, nextest 2483/2483.
-
-- **`tools/ctrace-linux/run.sh` never forwarded three interposer env vars**
-  (a7dd951). `SVT_IFCOST_OUT`, `SVT_PICKPART0_OUT` and `SVT_REFSTATS_OUT`
-  were read by `wrap_recon.c` and listed in neither of the script's forwarding
-  loops, so on a macOS host they wrote inside the container and the host read
-  the silence as "C never called this" — the same failure the script's own
-  comment records for `SVT_RECON_OUT`. All three are forwarded, and a DRIFT
-  GUARD now derives the required set from `wrap_recon.c` itself and refuses to
-  run on a name in neither list (mutation-verified both ways). It found two of
-  the three on its first run against a current `main`.
-
-- **The inter path PANICKED on 18 of 64 video-mode completion cells; it now
-  panics on none** (4974a859, 4ae1ffb6). Two distinct defects, both found by
-  `tools/inter_completion_scan.sh`, both with the same shape — a comment
-  asserting an invariant the code did not implement.
-  (1) A **KEY frame** at 480p and up ran `set_pic_pd0_lvl_default`'s
-  `lpd0_lvl` 7 = `PD0_LVL_6`, which C's `pd0_detector` demotes on an I_SLICE
-  because VERY_LIGHT_PD0 does inter compensation only;
-  `part_arm::video_pd0_params` skipped the detector on an I_SLICE and
-  `pd0::video_pd0_mode` panicked on the level its own doc comment said could
-  not occur. Four cells (568/576/1024/2048 square at p10, and p9 by the same
-  ladder row), frame 0 never written — an ordinary still-image configuration.
-  All four key frames are now byte-IDENTICAL to C.
-  (2) An **INTER frame** whose superblock remainder is 40 px: `Pd0Ctx::pick_q`
-  treated C's `tot_shapes == 0` ("no d1 shape to cost here") as "this node must
-  SPLIT", where C sets `mds->split_flag` from `sq_size > min_sq_size` alone and
-  leaves such a node INVALID. The port descended below `min_sq` — a value only
-  an inter frame's `depth_removal_ctrls` raises above 8 — into a node with no
-  cost. Fourteen cells at p8/p10/p13. Byte-neutral on every key frame,
-  measured against the pre-fix binary.
-  Completion frontier 38 OK / 8 REFUSED / 18 CRASH → **52 OK / 12 REFUSED /
-  0 CRASH**; partial-superblock cells 19/2/15 → **33/3/0**. Records:
-  `rust/benchmarks/inter_completion_2026-09-02{a,b}.tsv` + the `b.meta`, which
-  also documents why the first scan of that day (24 OK / 34 CRASH) described a
-  binary that predated a landed fix by three minutes and was never main.
-  New gates: `regression_spotcheck.sh` grows an `encodesInter` helper (the
-  existing `noPanic` drives the PUBLIC API, which refuses inter frames and so
-  could never reach this code) and five cells, each proved to fail before and
-  pass after; `part_arm::video_pd0_level_tests` pins the PD0 level with a
-  positive control on the raw ladder value; and `inter_completion_scan.sh`
-  gains a `SCAN_GATE=1` mode wired into CI that fails on any crash, on more
-  than `SCAN_MAX_REFUSED` refusals (so a panic cannot be retired by widening a
-  refusal) and on a grid that did not run — proved able to fail all three ways
-  and to pass.
-  EVIDENCE TIER 2 for the first defect, not just byte-identity: C's own
-  `SVT_PD0CFG_OUT` dump for `gradient 568x568 q32 p10` (taken on the Linux
-  host, where `-Wl,--wrap` works) reports `lvl=5` on ALL 81 superblocks of the
-  key frame — `PD0_LVL_6` demoted to `PD0_LVL_5`, the level the port now
-  computes, read out of C's live `ModeDecisionContext`.
-  CROSS-ISA: aarch64 and x86-64 agree on every gate — completion 52/12/0 on
-  both, spot-check 76/76 on both, `inter_byte_gate` 55 required / 0 failed on
-  both, plus `identity_full_8bit` 1100/1100 and `video_key_matrix` 58/60.
-
-- **Every `me_*_distortion` was normalised by the PICTURE's area instead of the
-  superblock's, so all three `disallow_below_*` decisions were wrong on every
-  partial superblock** (this release). C divides by
-  `pix_num = b64_geom->width * b64_geom->height`
-  (`compute_distortion`, motion_estimation.c:2779) and `b64_geom`'s dims are
-  the CROPPED per-superblock extent, `MIN(picture_dim - org, 64)`
-  (pcs.c:1507); `inter_me_arm::run_frame_me` built one `MePicParams` per FRAME
-  and put `p.width` / `p.height` in that field for every b64. On
-  `gradient 168x168` the port divided by 28224 where C divides by 4096, 2560
-  or 1600. MEASURED against C's own `SVT_PD0CFG_OUT` on frame 1: C
-  36736/35776/32640/23584 against the port's 3332/3244/2960/2139 at the
-  (128,0) superblock, and 52326/51640/47933/35553 against 2966/2927/2717/2015
-  at the 40x40 corner — ratios of 11.02 and 17.64, which are
-  `(4096/pix_num_C)/(4096/28224)` exactly. AFTER, all nine superblocks' `med=`
-  AND `dr=` equal C's, and `min_sq` at the three partial ones goes 16 -> 8,
-  which is C's.
-  `me_8x8_cost_variance` matched C throughout and could not have caught this:
-  it is computed from the RAW distortion array before normalisation. That is
-  why the defect survived — the checked statistic was the one it cannot move.
-  BYTE-INERT on everything measured (inter byte gate 55 required / 0 failed,
-  the completion grid's 5 identical cells unchanged, `identity_full_8bit`
-  1100/1100, `video_key_matrix` 58/60, and the four 40-remainder cells emit
-  identical frame-1 bytes before and after), so per the spot-check's own rule
-  it gets no cell there and is gated by
-  `inter_me_arm::tests::a_partial_superblocks_distortions_are_normalised_by_its_own_cropped_extent`,
-  which pins C's numbers and was proved to fail on the old code.
-  Full per-superblock join, and the still-open per-superblock `fast_lambda`
-  divergence beside it: `rust/benchmarks/pd0_depth_removal_join_2026-09-02.md`.
-
-- **The C oracle could not encode more than two frames — and the ceiling was
-  `capture_c_trace`, not the library** (ab253150). It sent every frame before
-  draining any packet, so the finite output-stream buffer pool ran dry on the
-  third send; in a `CONFIG_SINGLE_THREAD_KERNEL` build that is fatal
-  (`ST mode: empty object pool exhausted after pumping dispatcher`) and wrote
-  ZERO packets. The driver now drains one packet after each send when
-  `n_frames > 2`, which is safe because ST mode runs the whole pipeline inside
-  `svt_av1_enc_send_picture`. MEASURED: `SVT_FRAMES=3` on `gradient 64x64 q32
-  p8` codes 1480 / 22 / 21 B and decodes 3/3 frames in both aomdec and dav1d.
-  Gated on `n_frames > 2`, so every 1- and 2-frame run — every gate in this
-  repo — takes byte-identical code. `docs/INTER-ENCODE-PLAN.md` §1q's note that
-  this fix "makes it WORSE" does not reproduce and is corrected in place.
-  The PORT still refuses frame 2, for an unrelated and now precisely scoped
-  reason: the reference picture's `hp_coded_area` / `skip_coded_area` /
-  `intra_coded_area`, which C accumulates per coded block in `update_b`
-  (coding_loop.c:1605-1638). Not the DPB, not reference management, not the
-  GOP requirement — `generate_rps_info` already produces frame 2's RPS.
-
-- **The open-loop ME searched ONE list where C searches two, with four wrong
-  signal fields, and mode decision read an `me_mv_array` slot C never writes**
-  (a473fa38). `inter_me_arm::run_frame_me` hard-coded all four HME flags to 1
-  (C's level 2 is `sc_class5 && enc_mode <= M2`) and passed the qp-based
-  search-area scaling as OFF (C sets it for every preset above `ENC_MR`), so
-  the port searched C's UNSCALED ME/HME areas at every preset and qp; and
-  `num_of_list_to_search = 1` left out the LIST-1 search, whose ZERO HME
-  centre — `set_final_search_centre_sb` skips HME for list 1 at temporal layer
-  0 — is where C's `me_64x64_distortion = 0` actually comes from. C's own
-  list-0 search does NOT find the match (`p_sb_best_sad` 18816 / 13312).
-  Consumers now read the `me_mv_array` slot named by the ME CANDIDATE's own
-  direction, as `inject_new_candidates` does. The port's per-b64 ME output is
-  now an exact join with C's, and `SVTAV1_PD0DBG`'s `PD0DR` line joins
-  `SVT_PD0CFG_OUT` field for field. 96-cell grid unchanged at BOTH 36 /
-  F1DIFF 59 / F0DIFF 1; two cells stopped passing for the WRONG reason (HME
-  level 2 wrongly enabled had been refining list 0 onto the MV C reaches
-  through list 1). Full record: `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³.
-
-- **bd10 DIRECTIONAL intra prediction still crossed tile boundaries after the
-  first fix — issue #18 round 2, the half that real photographs actually hit.**
-  `intra_edge::dr_predict_hbd` took a `DrGeom` carrying the correct tile and
-  derived every availability predicate from the FRAME anyway (`have_top` /
-  `have_left` from `g.mi_row > 0`, `right_available` / `bottom_available`
-  against `mi_cols` / `mi_rows`), while its u8 twin `dr_predict` scoped all
-  four to `g.tile`. Round 1's note that *"the DIRECTIONAL arm was already
-  correct — it passed `tile: geom.tile`"* was the error: **passing a tile is
-  not using one.** The failing band is presets **0-5**, exactly where the intra
-  candidate set still offers directional modes — and round 1's tests pinned
-  presets 6 and 9, the two that pass, so four green tests sat over a live bug.
-  MEASURED at 256x256 / 2 tile rows / bd10: p0,p2,p3,p4,p5 differ from `aomdec`
-  on `gradient` AND `diag` at every qp in {6,12,20,40} (12,480-24,901 of
-  98,304); p6..p9 clean; `uniform` clean everywhere — so it is the PRESET axis,
-  not content, qp, tile axis or orientation. On the reported cell itself, the
-  real 3000x4000 photograph at `AvifEncoder` quality 90 / speed 4 (= qp 6,
-  preset 4): **6,468,452 of 18,000,000 samples differ, first at Y r2048** = the
-  32-SB tile-row boundary, **0 after**. Forced-by-AREA portrait control
-  `gradient 2920x3270` (9.55 MP, 46x52 = 2392 SB, partial SB both axes):
-  4,185,160 of 14,322,600, first Y r1664 = 26 SB x 64, **0 after**. The whole
-  60-cell {gradient,diag,uniform} x preset {0,2,4,6,9} x qp {6,12,20,40} sweep
-  is clean after at 2 tile rows and at 2x2 tiles; **bd8 was clean before and
-  after** (its directional path was always tile-scoped). Byte-INERT elsewhere:
-  **30 of 32** A/B cells emit identical OBUs — every single-tile cell at both
-  depths across presets 0/2/3/4/5/6/9/10/13 including partial-SB and `screen`,
-  and every bd8 multi-tile cell. Gates extended: `issue18_repro.rs` grew a
-  preset-BAND sweep, a directional forced-tile-column cell, a single-tile band
-  control, and a forced-by-area PORTRAIT cell at the reported shape
-  (`2920x3270`, ~6.4 s, partial SB on both axes); `regression_spotcheck.sh`
-  grew 5 `bd10ReconEq` cells. The stale "a single tile spanning the frame"
-  premise in `intra_edge`'s module doc is retracted in place.
-
-- **bd10 intra prediction crossed TILE boundaries, so every forced-multi-tile
-  10-bit encode produced wrong pixels (issue #18).** AV1 forces a multi-tile
-  grid once a frame exceeds `MAX_TILE_AREA` (4096*2304 = 9,437,184 px of
-  SB-aligned area) or `MAX_TILE_WIDTH` (4096 px) — `TileGrid::resolve`, C
-  `svt_av1_get_tile_limits` — so an AVIF caller that never requests a tile
-  still gets two above ~9.44 MP. Intra prediction is tile-scoped in AV1; the
-  u8 path honoured that (`extract_neighbors_tiled`), two bd10 sites did not:
-  `predict_unit_hbd`'s non-directional arm called `extract_neighbors_hbd` with
-  frame-absolute availability (preset <= 8, the full-RD funnel), and
-  `bd10_reencode_{luma,chroma}_node` hardcoded `TileMi::whole_frame`
-  (preset >= 9, the level re-encode post-pass). The encoder read real pixels
-  across the tile edge while a conforming decoder used the unavailable-edge
-  fills, so everything from the boundary onward drifted. Reported as an
-  "8-12 MP size cliff" (mean SSIMULACRA2 **-57.05** at 3000x4000 q90 where the
-  8-bit control read **86.57**); the size threshold is a proxy for the forced
-  tile grid, and the same defect reproduces at **0.27 MP** on a 4160x64 frame.
-  MEASURED, encoder final 10-bit recon vs `aomdec`: `gradient 4160x64 q20 p6`
-  65,054 of 399,360 samples differ before / 0 after; `gradient 256x256 q20`
-  with 2 tile rows 24,169 (p6) and 49,606 (p9/p10/p13) before / 0 after;
-  `gradient 2944x3264` (9.61 MP, 2346 SB > the 2304 SB limit) 3,448,059 of
-  14,413,824 before / 0 after, while `2944x3200` (9.42 MP, 2300 SB, single
-  tile) was and is clean. Byte-INERT outside the broken configuration: 26 of 28
-  A/B cells emit identical OBUs, including every single-tile cell at both
-  depths and every bd8 multi-tile cell; only bd10 x multi-tile moved. New
-  `TileGrid::tile_mi_for_sb` is the single owner of "which tile is this SB in".
-  Gates: `svtav1/tests/issue18_repro.rs` (4 cells + a single-tile control) and
-  four `bd10ReconEq` cells in `tools/regression_spotcheck.sh`. Scope correction
-  recorded in `rust/docs/coverage-combos-map.md` — the 2026-07-22 note that
-  threading this was "byte-inert" was true on the C-byte oracle and blind to
-  this class.
-
-- **`inter_decode_gate.sh` could not report PASS on macOS.** Its `OPEN_CELLS`
-  array emptied when the last open cell was promoted, and `"${arr[@]}"` on an
-  EMPTY array under `set -u` is an "unbound variable" error on bash < 4.4 —
-  `/bin/bash` on every macOS is 3.2.57. The gate printed five green required
-  cells and then aborted nonzero, which reads as a gate failure. Both inter
-  gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
-  `rust/docs/WORKING-ON-THIS.md` §5.
-
-- **An unsigned underflow in C's NSQ shape gate — the last `diag` video-KEY
-  cluster.** `product_coding_loop.c:9732` computes
-  `MAX(1, nsq_split_cost_th - rate_th_offset_lte16)` in `uint32_t`
-  (md_process.h:565/576). `set_nsq_search_ctrls`'s tail rescales the threshold
-  by `MAX(10, qp) / 63` below CLI qp 46 and does NOT rescale the offset, so at
-  low quantizers the subtraction WRAPS to ~4.29e9 and the gate that reads as
-  "skip this shape when its split rate is significant" skips nothing. The port
-  had `saturating_sub(..).max(1)` = 1, the opposite extreme. MEASURED on
-  `diag 64x64 q20 p6` mi=(8,12): C evaluates and CHOOSES `PART_H` (449905 summed
-  against the square's 514776) where the port printed
-  `NSQDBG SKIP ... shape=1 gate=1`; reproducing the underflow makes all three
-  `diag {64,72,128} q20 p6` key frames byte-identical and leaves q40/q55
-  unchanged. Video key frames 4 F0DIFF -> 1. Not reachable on the still
-  envelope (`nsq_qp_based_th_scaling` is 0 through M3 on the allintra arm, the
-  only band that reaches the tail) — `identity_full_8bit` 1100/1100. Recorded
-  as `rust/docs/SUSPECTED-C-BUGS.md` #28, plan §1z⁷.
-
-- **PD0_LVL_5 was unreachable on the pred-depth-only path, and C's
-  `pd0_detector` runs on every inter frame.** Two defects that had to be fixed
-  together: (A) `pipeline.rs`'s pred-depth-only branch took its PD0 model from
-  `part_arm::refined_pd0_model`, which carries levels 3 and 4 and falls back to
-  `Pd0Mode::Lvl1` otherwise — so a CLI-qp-20 M8 video key frame, whose
-  `set_pic_pd0_lvl_default` row is `3 + ldp0_lvl_offset[qp_band]` = 5, ran
-  PD0_LVL_1's block cost against C's PD0_LVL_5, and the port's p8 output was
-  byte-identical to its own p6 output where C's differed. (B) `pd0_detector`
-  (enc_dec_process.c:2406) gates every test on `slice_type != I_SLICE`, so on a
-  KEY frame the picture level IS the SB level, but on an INTER frame whose L0
-  reference is a key frame the `use_ref_info` arms walk 5 -> 4 -> 3 without
-  reading any ME threshold — every inter frame in this envelope runs PD0_LVL_3.
-  New `port_pd0_detector::pd0_ctrls_for_level` (C `set_pd0_ctrls`) plus
-  `part_arm::VideoPic` give the already-ported detector its first caller.
-  Video key frames 6 F0DIFF -> 4 (`gradient {64,72} q20 p8` byte-identical at
-  2044 and 2747 B); nothing regressed. `identity_full_8bit` 1100/1100,
-  `regression_spotcheck` 65/65, `video_key_matrix` 58/60, `fctx_gate` 96/96,
-  `inter_byte_gate` 31 required PASS. Full record in
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z⁶.
-
-- **`fixed_partition` is a TWO-term predicate and the port had one term — 27
-  of 96 cells becomes 31.** C: `fixed_partition = pred_depth_only &&
-  md_disallow_nsq_search` (enc_dec_process.c:3054), where
-  `md_disallow_nsq_search = !nsq_geom_ctrls.enabled || !nsq_search_ctrls.enabled`
-  (:7846). `pipeline.rs`'s `refined = dr.adaptive && use_funnel` had only the
-  first conjunct, so a picture that is pred-depth-only but still SEARCHES NSQ
-  shapes coded squares where C codes an H/V/4-way shape at the same depth. The
-  allintra arm never separated the two terms (`get_nsq_search_level_allintra`
-  is 0 from M4 up), which is why the still envelope never saw it; the video
-  arm's search level saturates to 0 only at CLI qp <= 43, so the whole
-  `{gradient,diag} x {64,72,128} q55 p8` F0DIFF cluster was one cause. Video
-  key frames 12 F0DIFF -> 6, BOTH 27 -> 31, nothing regressed.
-  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
-  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. The SAME defect is
-  still live in the `preset >= 9` PD0 branch, measured and named in
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z''''' rather than fixed.
-
-- **The INTER arm was dropped by one of three leaf paths — 19 of 96 cells
-  becomes 27.** `pipeline.rs` builds `leaf_funnel::FunnelCtx` at three sites;
-  the PD0 FIXED-TREE one hardcoded `inter: None`. That path is taken whenever
-  `DrCtrls::for_arm` reports a non-adaptive depth-refinement level, which on
-  the VIDEO arm is `pic_block_based_depth_refinement_level == 10`, i.e. **M8
-  and above** — so every preset-8 inter frame in the campaign's grid decided
-  its blocks from an intra-only candidate set and emitted an intra block with
-  a full residual where C emits a 22-byte skip frame. MEASURED with the new
-  `NSQDBG PINTER` line: 2 inter candidates offered at p6, ZERO at p8, on
-  `gradient 64x64 q40 frames=2`. Byte-inert on the still envelope by
-  construction (`inter_md` is `None` on every key frame) and measured so:
-  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
-  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. Full record in
-  `rust/docs/INTER-ENCODE-PLAN.md` §1z'''.
-
-- **The frame-CDF shim needed RTCD setup — SIGSEGV on x86-64 only** (4c2e61bb).
-  `svt_aom_init_mode_probs` / `svt_av1_default_coef_probs` copy through
-  `svt_memcpy`, an RTCD pointer that is NULL until
-  `svt_aom_setup_common_rtcd_internal` runs and that NEON devirtualization turns
-  into a direct call on aarch64. Two of the four new tier-1 tests crashed on
-  x86-64 and passed on aarch64; the two that use only the PAINTED shim modes
-  (which call neither initializer) passed on both, which is the fingerprint of a
-  NULL RTCD pointer rather than a buffer bug. `entropy_inter_shims.c:107-118`
-  had already solved and commented this exact trap.
-
-- **`tools/fh_fields.py` was GUESSING `skipModeAllowed`** and got it wrong on
-  the campaign's own first inter cell: C writes no `skip_mode_present` bit
-  there, the tool read one, and every field after it was off by one bit with no
-  sign in the printout (it reported `allow_warped_motion = 0` where the stream
-  says 1). It now implements the real `skip_mode_params()` and threads the
-  decoder's `RefOrderHint[]` across the frames of the stream to do it.
-
-### Added
-
 - **`tools/ctrace-linux/vdiff_cell.sh` + `optrace_first_diff.py`** — op-trace
   localization for a VIDEO-mode cell. `diff_cell.sh` is still-only (it cannot
   express the low-delay-P GOP, and it treats the port's expected frame-1 inter
@@ -3165,7 +1994,401 @@ Crates are not published to crates.io yet — depend by git.
   `lambda_scale` and `preset`; `enable_temporal_filter` is read on the dormant
   inter path and stays.
 
+- **A comprehensive 8-bit byte-parity gate, and CI coverage for it**
+  (`tools/identity_full_8bit.sh`). Until now there was **no 8-bit
+  byte-vs-C identity gate in CI at any preset**: `identity_matrix.sh` is a
+  scoreboard whose own header says "Exit 0 always", and it was not in the
+  workflow either — so every 8-bit byte-identity claim, on the port's primary
+  product surface, rested on hand-run measurements that nothing re-checked.
+  The new gate exits nonzero, sweeps **every preset 0..13** (C clamps all-intra
+  above M9 to M9 but the port does not, so 10..13 are distinct configurations
+  here), carries low-q density where structural problems hide, covers
+  partial-SB / odd / tiny / large geometry and four content classes including
+  screen, pins divergences **self-promotingly** (a pinned cell that starts
+  matching fails until promoted), and fails on harness errors so a cell that
+  could not run can never look like a pass. `identity_matrix.sh` keeps its
+  scoreboard role and gains `IM_STRICT=1` for gate use.
+
+
+- **Native 10-bit input** (#6). `EncodePipeline::try_encode_frame_420_hbd` /
+  `try_encode_frame_hbd` take real `u16` planes. The low 2 bits reach the mode
+  decision, the coded levels, and the deblock / CDEF / Wiener searches — the
+  port no longer widens an 8-bit source internally (35743ebd5, f319ec298).
+  Gate: `tools/bd10_hbd_src_gate.sh`, 100/100 cells byte-identical to C.
+- **Super-resolution**, opt-in via `EncodePipeline::with_superres(denom)` with
+  `denom` in 9..=16, off by default exactly as in C (5c69edcb2, f4a1b7516,
+  2f4d24cba, f319ec298, 174b0f184). Gate: `tools/superres_gate.sh`, 128/128
+  cells checked three ways — byte-parity vs C, decodability at the upscaled
+  size under the reference decoder, and anti-vacuity vs the non-superres stream.
+  - `svtav1-dsp::superres` — the normative 64-phase upscale (was a 16-phase
+    stub); `svtav1-dsp::resize` — the source downscale (new).
+  - Sequence-header `enable_superres` + frame-header `superres_params()`.
+  - C's stale full-resolution variance array, read through coded-grid indices,
+    is reproduced deliberately (chunk B.4) — matching C requires it.
+- `tools/bd10_hbd_src_gate.sh` and `tools/superres_gate.sh`, both wired into CI.
+- `CONTEXT-HANDOFF.md` — build-from-scratch, gate, and open-work guide.
+
 ### Changed
+
+- **Documentation is routed, not narrated** (`ba4729e2`). The 697-line
+  `CONTEXT-HANDOFF.md` is a 39-line router; thirteen dated snapshots and the
+  `docs/history/` archive carry a first line saying what they are;
+  `INTER-ENCODE-PLAN.md` is headed chronology-not-status; and
+  `bd10_video_gate.sh` now states that its decode leg asserts PARSING, not
+  reconstruction, with the 8-of-18 recon measurement it does not make.
+
+- **Global motion is implemented** — an inter frame whose
+  `svt_aom_global_motion_estimation` fits a non-identity model now ENCODES
+  instead of refusing. `port_global_me::set_global_motion_field` (C
+  `md_config_process.c:37`) publishes the frame's `global_motion[8]`;
+  `port_entropy_inter::gm::write_global_motion` codes
+  `global_motion_params()`, delta-coded against the primary reference
+  picture's own saved models (which the DPB now carries); and the SAME array
+  feeds the MVP walk's `gm_mv`, the injector's GLOBALMV candidates, the
+  entropy walk's `gm_wmtype` and the predictor's `is_wm`. Reconstruction is
+  byte-identical to dav1d on every frame of the new
+  `rust/tools/global_motion_gate.sh`, whose zoom cells are the anti-vacuity
+  load: a zoom about the frame centre is a ROTZOOM no integer MV cancels, and
+  C fits one there. This closes three of `docs/REFUSED-CONFIGS.md`'s entries.
+
+- **Sub-8 inter chroma (`inter_chroma_4xn_pred`, C
+  `enc_inter_prediction.c:3023`)**. A 4xN / Nx4 block's chroma covers the
+  parent 8x8, so C stitches it from the covered mode-info cells' own
+  references, MVs and filters rather than predicting it from this block's MV.
+  The port sized that chroma `bwidth / 2` — 2 samples wide on a 4-wide block,
+  against C's `MAX(4, bwidth >> 1)` — so a 4xN inter leaf with chroma indexed
+  past the end of its own prediction. Now ported, including the
+  `!sub8x8_inter` fallback and the ROUND_UV origin, in both MDS0 and the MDS3
+  interpolation-filter rebuild.
+
+- **OBMC is a correctness gap at presets -1/0/1, not "never selected"**
+  (`benchmarks/obmc_census_2026-09-10.meta`, `rust/tools/motion_mode_census.sh`).
+  The preset-6/8 census was being carried in `inter_md_arm.rs` as a general
+  fact about OBMC; asked at the presets global motion made reachable, C codes
+  OBMC on 22.5 % of every coded inter block at preset 0, 22.2 % at MR and
+  27.0 % at preset 1, and exactly zero from preset 2 up — the
+  `svt_aom_get_obmc_level` level 3 -> 5 step. The new census validates itself
+  against the pinned preset-6 warped counts before reporting, because the
+  ad-hoc version produced a clean-looking page of zeros twice.
+
+- **Allocator traffic is down 84.6 %**, 6,851,798 calls to 1,055,233 against C's
+  466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`, `178323b8`,
+  `cb62752f`). Excluding the `intrabc_hash` site that is at parity with C
+  (207,457 on both sides) the gap is 3.3x, from 26x. `crate::vecpool::PoolVec`
+  is a `Vec` that takes from and returns to a per-thread, size-classed free
+  list on `Drop` — the port's equivalent of C's pooled `ctx->quant_coeff_ptr[]`
+  / `recon_ptr[]`. 207,457 of what remains is `intrabc_hash` bucket growth,
+  where C spends exactly the same count, so it is left alone. Runtime cost
+  +0.28 % to +1.35 % instructions against a 1 % budget; every arm byte-identical
+  to C. See `rust/benchmarks/alloc_vecpool_2026-09-10.meta` and
+  `rust/tools/heaptrack_alloc_cell.sh`.
+
+- Reconcile handoff documentation and GitHub issue scope against implementation `0cbd1279`; preserve original reports and campaign evidence in the dated history archive, and distinguish remaining parity, calibration and deployment work.
+
+- **`variance::sse` is C's `madd_epi16` kernel on x86 — 5.02x C's instructions
+  -> 1.84x at preset 6 and 2.81x -> 1.30x at preset 2, whole frame -1.92 % at
+  both (2026-09-05).** Record `benchmarks/sse_madd_2026-09-05.{tsv,meta}`. The
+  x86 arm was the scalar double loop with a `u64` accumulator, which
+  auto-vectorises but forces every square into 64-bit lanes; C's
+  `svt_spatial_full_distortion_kernel_avx2` keeps them in i32 lanes
+  (`cvtepu8_epi16` / `sub_epi16` / `madd_epi16(d, d)` / `add_epi32`,
+  `ASM_AVX2/pic_operators_inline_avx2.h:111`). It is now one `#[magetypes]`
+  body on archmage PR #96's `u8xN::abs_diff` + `i16xN::madd_adjacent`, plus C's
+  row PACKING for widths 8 and 4 (`pic_operators_intrin_avx2.c:815-847`), which
+  is what preset 2 needed — `sse` was 5.17 % of the p2 frame's instructions
+  against 3.42 % at p6 because most p2 calls are 4- or 8-column transform
+  units. Kernel self Ir 52,495,464 -> 19,234,004 at p6 and 2,436,872,092 ->
+  1,124,658,211 at p2, every run byte-identical to C. **Wall clock, 21
+  interleaved paired rounds with its own same-binary control on a quiet box:
+  p6 0.9911 against a control of 1.0009, corrected 1.010x; p2 is a NULL (0.9997
+  against 0.9976) despite the same -1.9 % of instructions, which is reported
+  rather than explained.** **aarch64 is UNCHANGED,
+  source-identical to before**: the generic body measured 1.45x-2.20x SLOWER
+  than the hand NEON arm there and the memory-staged row packing 1.32x-1.57x
+  slower, both reverted. **`rust/Cargo.toml` carries a DEV-ONLY
+  `[patch.crates-io]`** pinning archmage/magetypes to `imazen/archmage`
+  `cc24398c` (PRs #95 + #96, unmerged) — a fresh clone and CI need network
+  access to that rev until #96 ships.
+- **archmage PR #95 removes ZERO bounds checks from this port, measured
+  (2026-09-05).** The GOT-resolved `panic_bounds_check` census is 2,046 sites
+  on archmage 0.9.28 and on the #95+#96 stack alike, with
+  `quant::optimize_b::{closure#0}` at 72 and
+  `coeff_rate::cost_coeffs_txb_inner::{closure#0}` at 15 in both, and the frame
+  Ir for the patch alone moves +-0.007 % with opposite signs at the two
+  presets. The port had no magetypes generic-type call site before this change,
+  so #95 had nothing to act on; `optimize_b`'s 72 are plain slice indexing and
+  need the fixed-size-array boundary in `quant.rs`. Also recorded: a naive
+  `objdump | grep panic_bounds_check` reads ZERO on this PIE binary — the calls
+  go through a GOT slot that must be resolved from its `R_X86_64_RELATIVE`
+  addend first.
+
+- **The port makes 199x C's allocator calls, and a per-superblock range-coder
+  buffer was sized to the whole frame — 244,967 heap blocks -> 158,413
+  (-35.3 %), 106.2 MB -> 64.0 MB (-39.8 %), instructions -3.16 % (photo_cid
+  512² p6) / -4.84 % (screenshot p6) / -0.82 % (p2), wall clock 1.018x-1.029x
+  on four cells against their own same-binary controls**
+  (`benchmarks/percall_layout_2026-09-05.{tsv,meta}`). Byte-identical on both
+  ISAs; DHAT peak live heap is a NULL (+0.099 %). **The env-var question this
+  work started from is a measured null and is reported as one:** `getenv` fires
+  29 times in a whole photo_cid 512² p6 encode against 133,020 `malloc`s, the
+  two uncached `SVTAV1_SC_TOOLS` reads sit in `encode_tile_rows` (once per
+  TILE, not per superblock), and `Mutex`/`RwLock`/`HashMap`/`BTreeMap`/
+  `Instant::now` do not exist in the shipped encoder or DSP crates — nothing
+  was changed for any of them, so the `SVTAV1_SC_TOOLS` tool still behaves
+  exactly as before. What is a real per-call cost is the allocator, and it is
+  also the layout answer: the port's structs are not systematically fatter
+  (`BlockDecision` 288 B vs C's `BlkStruct` 400; `MvpMiEntry` 20 B vs
+  `MbModeInfo` 60), but `leaf_funnel::Cand` is 528 B against
+  `ModeDecisionCandidate`'s 168 because 16 of its fields are `Vec`/`Option`-of-
+  `Vec` (360 of the 528 bytes are `Vec` headers) where C's candidate points
+  into a pool allocated once per handle (`md_process.c:585-601`). Four sites
+  changed: **(1)** `pipeline.rs`'s per-SB CDF-chain simulation writer was
+  `AomWriter::new(w * h * 2 + 256)` — the FRAME size, 524,544 zeroed bytes 64
+  times per 512² frame, **33,570,816 B of which DHAT counts 63,233 ever written
+  and 2,425 ever read**, 2.10 % of the p6 frame spent zeroing memory nothing
+  reads; it is now sized to a superblock, which `OdEcEnc::new`'s own
+  growth-on-demand contract permits and the never-read-before-written scratch
+  region makes byte-inert. The size dependence was QUADRATIC and the 512² cell
+  hides it — the capacity was per-SB while the SB count also scales with pixels
+  — so the same defect was **8.59 GB of zero-fill per frame at 2048² p6**, now
+  linear in pixels (8.6 MB). **(2)** `partition::extract_neighbors_tiled` returns
+  a stack `NeighborEdges` instead of two `Vec<u8>` — 44,502 blocks per encode
+  for 435,872 bytes, a 9.8-byte average payload per malloc/free pair.
+  **(3)** `leaf_funnel::overlay::predict_unit_overlay` builds its canvas edges
+  on the stack; the canvas INTERIOR was never written and never read.
+  **(4)** `leaf_funnel::predict::hadamard_satd{,_hbd}` take their tiles from a
+  thread-local `HadamardScratch` — the two `vec![0; tx*tx]` already sat outside
+  the tile loops and were fully overwritten per tile, so reuse across calls is
+  the same contract one level up. **One honest caveat, recorded because it is
+  the useful part:** change (1) tripled the Ir saving at photo_cid p6
+  (-1.070 % -> -3.162 %) and moved the wall clock by nothing (three of the four
+  cells flat, the fourth moving 0.8 pp inside its own span) — callgrind charges
+  `rep stosb` one Ir per BYTE while the hardware retires it at tens of bytes per
+  cycle, so 33.5 MB of dead zero-fill is ~2.2 %
+  of the frame's instructions and ~0.2 % of its cycles. It is kept for the
+  memory traffic and because a strictly-dead 2.10 % of the Ir ranking would
+  keep drawing future chunks to it, but no wall-clock gain is claimed for it;
+  the 1.018x-1.029x is changes (2)-(4). Now in `docs/WORKING-ON-THIS.md` §5.
+  **At 2048² p6 — the size where the range-coder defect was quadratic — the
+  series measures 1.155x**: gradient 2048², warmup 1, `/usr/bin/time -v`, runs
+  interleaved, base 0.97/0.96/0.97 s against final 0.84/0.84/0.84 s (every base
+  run above every final run), peak RSS 105.6 MB -> 102.9 MB, byte-identical, and
+  a same-binary control run the same way shows no separation. **aarch64 peak
+  RSS is a NULL and was measured, not argued:** `mem_bisect.sh` round-robin,
+  11 rounds, 0 refused — 2048-inter median 147,936 -> 147,472 KiB (0.997x) with
+  overlapping distributions, 512-still 11,616 -> 11,424 KiB.
+- **The entropy coefficient writer and the range coder take C's SHAPE —
+  -2.285 % of the photo_cid 512² p6 frame's instructions, -2.96 % of its
+  cycles, -7.96 % of its branch misses, 1.037x / 1.029x wall clock on the two
+  photos** (`benchmarks/entropy_coder_cshape_2026-09-05.{tsv,meta}`). Three
+  chunks landed; three more were built, proven byte-identical, measured worse
+  and reverted. **(1) The pack's `eob` scan.** C never recomputes `eob` in the
+  entropy path — `av1_write_coeffs_txb_1d` takes it (`entropy_coding.c:358`)
+  and the caller passes what the quantizer stored (`entropy_coding.c:592` <-
+  `coding_loop.c:441`) — while the port ran a FORWARD full-block scan whose
+  ~50/50 data-dependent branch `stall_attrib_2026-09-05` measured as its
+  largest mispredict site (17.16 %, 82 % of `encode_block_syntax`'s total).
+  Replaced by the reverse-scan-with-early-return already at `quant.rs:318`, at
+  all THREE sites — the record named two; the third is `write_chroma_txb`,
+  which runs for U and V on every coded block. `encode_block_syntax` self Bcm
+  371,547 -> 65,239. **(2) The range coder.** `svt_od_ec_encode_q15` does not
+  exist anywhere in `reference/svt-av1/Source/Lib/`: C fuses the body into
+  `svt_od_ec_encode_cdf_q15` (`bitstream_unit.c:279-301`), sharing `r >> 8` and
+  `EC_MIN_PROB * (nsyms-1-s)` and testing `s > 0` once. The port's private
+  mirror of that deleted function re-tested the predicate as `fl < 32768`; it
+  is now fused and the helper is gone. And C's `normalize` is `static inline`
+  with the flush `NOINLINE` beside it (`bitstream_unit.c:151` + `:110`), where
+  the port's single fused function was its own symbol at 44,725,701 Ir —
+  2.77 % of the frame — so every symbol written paid a call around ~10
+  instructions of work; split `#[inline]` hot + `#[inline(never)] #[cold]`
+  flush, it leaves the profile. -22,676,476 Ir, the largest chunk.
+  **(3) The peel.** C peels the `c == eob - 1` iteration out of the backward
+  pass (`entropy_coding.c:475-501`); the port re-tested that loop-invariant
+  predicate per coefficient. -6,010,994 Ir. **Measured and REVERTED, so nobody
+  retries them:** C's `eob == 1` writer fast path (`entropy_coding.c:414-443`)
+  +1,924,868 Ir — it fires, but `eob == 1` txbs are ~1 % of that cell's writer
+  calls; C's two-loop `update_cdf` (`cabac_context_model.h:98-104`)
+  **+17,538,820 Ir**, because LLVM already predicates the port's single
+  `if i < val` loop and two runtime-trip-count loops defeat that; and wiring
+  the writer to the unread `TxbScratch::ctx` field +1,342,196 Ir. **The
+  measurement finding that outlives the chunk:** a `perf_ab.sh` run with the
+  SAME BINARY on both sides reads 0.997x (p2) / 0.995x (p6), quartile span
+  entirely above 1.0 at p6 — every wall-clock ratio in this campaign carries a
+  bias of that size against the candidate slot — and a quiet-box re-run
+  (load 0.6-1.1) reads the same 0.995x / 0.996x for the same binary, so the bias
+  is the HARNESS, not contention. On that quiet box the candidate reads 1.0046 at
+  p2 where the same binary reads 1.0052 (no regression to explain) and 0.9660 at
+  p6 against a 1.0043 control, quartiles non-overlapping. **Memory:** peak RSS
+  (`/usr/bin/time -v`, x86, gradient 2048² qp40 p13, 5 reps) is a NULL on both
+  arms — still 68,920 -> 68,824 KiB, inter 109,296 -> 109,568 KiB, min/max ranges
+  fully overlapping — as expected from a diff that adds, removes and resizes no
+  allocation. **Gates, both ISAs, every one green:** regression_spotcheck
+  104/104; nextest 2541 (arm) / 2551 (x86), 0 skipped; identity_full_8bit
+  1100/1100; inter_byte_gate 108 required / 0 failed / 0 crashed PASS;
+  video_key_matrix 59/60; screen_ibc_byte_gate 152/152; screen_palette_gate
+  50/50; fctx_gate 96/96 fields PASS; `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH
+  PASS; decode_conformance 1260 passed / 0 failed. The six pinned still cells at
+  290 / 839 / 63 / 171 / 580 / 693 B.
+
+- **CFL predict is branch-free and the alpha search is 1.99x -> 1.72x C's
+  instruction count — and the `#[arcane]` dispatch variant had FEWER
+  instructions and was slower everywhere (2026-09-05).** The port's
+  `cfl_predict_lbd` was a scalar double loop whose per-element body branched on
+  the sign for C's round-half-away-from-zero, at 12x C's AVX2 kernel per call
+  for an identical call count. The same arithmetic is now branch-free
+  (`s = q6 >> 31`; the identity is pinned exhaustively over all 2,162,720 legal
+  `(ac_q3, alpha_q3)` pairs). `md_cfl_rd_pick_alpha` inclusive 886.7 M ->
+  766.7 M against C's 444.5 M; frame instructions -1.03 % on the CLIC glitter
+  photo (port/C 1.727 -> 1.709) and -0.31 % on the CID photo; wall clock 1.016x
+  and 1.009x at 512 preset 2. Wrapping the same core in `incant!` +
+  `#[arcane]` arms was measured and REJECTED: fewer instructions on every cell,
+  slower on all four, and a real gradient regression (0.993x at 256 and 512
+  p2) — the dispatch takes the call out of the per-alpha closure's inliner.
+  Record `rust/benchmarks/cfl_branchfree_2026-09-05.{tsv,meta}`.
+
+- **Three out-of-line helpers C inlines are gone — 17.7 M calls per 512x512
+  photo frame at preset 2, -0.63 % instructions, byte-identical; with the two
+  entries below, a photo's preset-2 port/C instruction ratio is 1.777 -> 1.694
+  and the whole-frame wall clock 1.056x (2026-09-05).** `MdRates::txt_rate`
+  (5,974,663 calls), `tx_pipeline::rs_tx_size` (6,984,051) and
+  `coeff_c::tx_size_from_dims` (4,766,423) all read zero now. `#[inline]` alone
+  fixes only the first — LLVM will not inline a 19-arm `match` on `(w, h)`
+  called from several sites — so both dimension mappings became tables: a 5x5
+  lookup indexed `(log2(w) - 2) * 5 + (log2(h) - 2)`, and a const
+  `TX_SIZE_FROM_C[19]` that `tx_unit_inner`'s two dispatch sites index with the
+  `c_tx` they already hold. Both replaced `match`es are kept as `#[cfg(test)]`
+  oracles and three new tests pin the tables to them over all 25 power-of-two
+  shapes. Record `rust/benchmarks/txsize_tables_2026-09-05.{tsv,meta}`.
+
+- **The residual is derived once per (tx-depth, TXB) again, as C does it:
+  `residual_i32` 4,256,724 -> 1,307,794 calls per 512x512 photo frame at preset
+  2 against C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % instructions,
+  1.016x-1.029x faster, byte-identical (2026-09-05).** C fills
+  `cand_bf->residual->y_buffer` once per (tx-depth, TXB) in
+  `perform_tx_partitioning` (`product_coding_loop.c:5336`) and every tx-type
+  trial transforms that buffer (`:4730`); the port re-subtracted the same block
+  per trial. `txt_search` now fills one `TxtScratch` buffer before its group
+  loop and passes it to every trial as `pre_residual`; single-shot call sites
+  keep the per-call derivation. Positive controls unmoved to the unit
+  (`fwd_txfm2d_dispatch` and `optimize_b` call counts identical), peak heap
+  identical. With the buffer-pooling entry below, a photo's preset-2 port/C
+  instruction ratio goes 1.777 -> 1.704 and the whole-frame wall clock 1.042x.
+  Record `rust/benchmarks/residual_hoist_2026-09-05.{tsv,meta}`.
+
+- **`tx_unit`'s two output buffers are in C's shape: 24.17 M allocator calls
+  per 512x512 photo frame at preset 2 -> 15.14 M (9,296x C -> 5,824x), -1.97 %
+  instructions, and the first allocation removal in this campaign to convert to
+  wall clock — 1.026x faster on a textured photo at 512 p2, byte-identical
+  (2026-09-05).** The port allocated a `Vec` pair per tx-type TRIAL where C
+  allocates the same two buffers once per encoder thread
+  (`svt_aom_mode_decision_context_ctor`, `md_process.c:214`/`:585-601`) and its
+  tx-type search selects a slot by index (`product_coding_loop.c:4723-4725`),
+  keeps the winner by index and copies once per transform unit (`:5082-5084`).
+  `tx_unit_screened_into` now writes into caller-owned `TxOutBufs`; `txt_search`
+  keeps two per thread and swaps on a new best; neither is re-zeroed (every
+  quantizer path defines all `pw*ph` qcoeff positions, every recon path all
+  `w*h`). The split is drawn on `only_dct` rather than C's `tx_type == DCT_DCT`,
+  so one-candidate searches keep the previous owned path exactly. Four variants
+  measured and rejected, two for memory alone — pooling every trial and
+  pre-sizing the buffers in the caller each cost +4.4-5.8 % aarch64 inter peak
+  RSS at 2048 for the same arithmetic. Memory as landed is unmoved on both ISAs
+  and both quantities. Record
+  `rust/benchmarks/txout_cshape_2026-09-05.{tsv,meta}`.
+
+- **Wiener `compute_stats` (loop-restoration tap search) is C's six-step
+  kernel on both ISAs — 127x C per call -> 1.35x on x86 (746.5 M -> 7.9 M Ir
+  per 512x512 frame), byte-identical; preset-6 port/C instruction ratio
+  3.4-5.1x -> 2.3-2.8x on every 512x512 cell (2026-09-04).** One
+  `cs_kernel!` body (full madd dots for M and H's first block row/column,
+  every other H entry by an exact O(width)/O(height) shift delta) over
+  seven per-ISA lane primitives; the aarch64 row-pair arm of 2026-09-03 is
+  replaced by the same body (kernel bench 10.9x -> 24.8x over scalar at
+  win 5). Record `rust/benchmarks/compute_stats_cshape_2026-09-04.meta`.
+
+- **Duplicate-transcription fold, five clusters, byte-inert (2026-09-04).**
+  The two unwired-code reports flagged C functions the port had transcribed
+  two to four times; each cluster now has ONE body and the copies are
+  forwards or gone: `svt_mv_err_cost` (`2b1a74ed`, four spellings to
+  `md_subpel::mv_err_cost`), the 64-dim inverse-transform `mod_input`
+  remap (`e0275930`; the 30 per-size `dct_dct` wrappers stay as tier-1-named
+  forwards), `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize`
+  / `is_global_mv_block` (`24b7027e`, three copies apiece — the same C
+  function in every case), the four dead `sad_NxN` forwards (`a2d8ac46`,
+  zenbenched: the same code either side) and the per-pixel variance about
+  128 (`448290c9`, three loop bodies to `port_src_ops::variance_about_128`
+  plus `tune`'s second `get_perceptual_perpixel_variance` body). **No fold
+  moved a byte**: after every commit, on both ISAs, `identity_full_8bit`
+  1100/1100, `regression_spotcheck` 102/102, `inter_byte_gate` 96/0/1,
+  `video_key_matrix` unmoved (58/60, then 59/60 once upstream `600c5177`
+  closed `screenrep p0`; `gradient p0` is the one open cell throughout),
+  `fctx_gate` 96/96, `inter_decode_gate` 5/5, decode census 96/96,
+  `SCAN_GATE=1` completion scan 64/0/0, six still cells at
+  290/839/63/171/580/693 B, nextest (aarch64 2529, x86_64 2539). Left
+  unfolded on purpose: `port_md/nic_prune.rs` (dead; a wire-or-delete
+  decision, not a fold) and the second `TransformationType` enum in
+  `port_entropy_inter::modes` (a seven-file signature change). Full record:
+  `docs/UNWIRED-PORTED-CODE-2026-09-04.md` "Final duplicate-fold summary".
+
+- **The inter path no longer holds the LAST reference three times and the
+  stored picture twice — aarch64 2048x2048 inter peak RSS 1.311x -> 1.189x
+  of C, 1280 1.263x -> 1.042x; x86 1.185x -> 1.022x; x86 peak heap
+  123.13 -> 101.78 M (2026-09-04).** Per-commit attribution over seventeen
+  binaries on both ISAs (`tools/mem_bisect.sh`, new) found the 2026-09-03b
+  regression is two steps: `4e29d8fa7` (+8.83 M live at 2048) and
+  `8fa2d0353` (+1.58 M, the saved motion field C also stores); the level
+  scratch is a null on main's history. The big step was `ref_frame_data` /
+  `ref_padded_luma` deep-cloning the LAST slot's `y_plane` and `padded`
+  every inter frame, and `DecodedPictureBuffer::refresh` cloning a
+  by-reference `ReferenceFrame` whose owner was still alive. `refresh` now
+  takes the frame by value and the frame holds the slot's `Arc`
+  (`get_shared`). The still arm moves too (the KEY frame was cloned the same
+  way): 1280 still 35792 -> 28256 KiB (0.788x -> 0.623x of C), 2048 still
+  81520 -> 72624 (0.851x -> 0.758x), videokey 0.883x -> 0.708x / 0.901x ->
+  0.788x. Byte-identical: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100. Records
+  `benchmarks/mem_refclone_2026-09-04.{tsv,meta}`.
+- **The funnel honours C's `enable_skipping_mds1` — the MDS1 full loop is
+  skipped when ONE candidate survives the post-MDS0 prune (nic levels 8..=11;
+  product_coding_loop.c:7879), byte for byte (2026-09-04).** `evaluate_leaf`
+  called `mds1::run_mds1` unconditionally; C clears `perform_mds1` there and
+  sends the survivor straight to MDS3 (:9617-9619). MEASURED on
+  `gradient 512x512 qp40 p10` still (callgrind, r7900x): `run_mds1` 886 -> 0
+  calls (C: `perform_mds1` = 0 on 886/886 leaves), `tx_unit_inner` 3,768 ->
+  2,882 = C's `svt_aom_quantize_inv_quantize` 2,882 EXACTLY, program total
+  176.6 M -> 159.3 M Ir (-9.8 %), OBU identical to C. The NIC control table
+  gains tier 1: `svtav1_cref::mode_decision::set_nic_controls` runs the real
+  `svt_aom_set_nic_controls` and `nic_ctrls_matches_the_real_c_at_every_level`
+  pins every row field at all twelve levels. Also CLOSES perf-status's "MDS3
+  candidate count 2.307x at p10 (886 vs 384)": that edge was misjoined —
+  C's 886 MDS3 candidates split 502 `perform_dct_dct_tx` + 384
+  `perform_tx_partitioning` (:6890-6910); the whole-frame admission join
+  shows identical MDS3 sets on 886/886 blocks. Record:
+  `benchmarks/callcount_mds1skip_2026-09-04.{tsv,meta}`,
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁹.
+- **The tx-type search runs C's two phases — transform + SATD screen first,
+  quantize/RDOQ/cost only for the survivors — and is 1.33x faster at 512² p2,
+  byte for byte.** `txt_search` committed the WHOLE `tx_unit` pipeline on every
+  gated tx-type trial and applied C's SATD early exit post-hoc from a
+  `txb_coeff_satd` that re-derived the residual AND the forward transform
+  (`benchmarks/callcount_2026-09-04`: 488,414 committed trials vs C's 270,415
+  at gradient 512x512 qp40 p2, one edge = 45.2 % of the port's p2
+  instructions). `tx_pipeline::SatdScreen` is now C's `best_satd_tx_search`
+  running minimum (`product_coding_loop.c:4741-4755`), evaluated inside
+  `tx_unit_screened` / `tx_unit_hbd_screened` between the transform and the
+  quantizer; a rejected trial returns there; `detect::txb_coeff_satd{,_hbd}`
+  is deleted. MEASURED (r7900x callgrind, nine byte-identical runs): the
+  tx-type-search quantize edge is EXACTLY C's — 270,415 = 270,415 (p2),
+  8,397 = 8,397 (p6), 608 = 608 (p10); the redundant-residual edge 484,442 ->
+  0; p2 Ir total -23.5 %. Wall clock (paired A/B, 9 rounds): 512² p2 652.5 ->
+  491.3 ms (1.325x), 64² p2 1.486x, p6 1.00-1.07x, p10 1.00x (control).
+  Gates on the tree rebased onto the IFS wiring
+  (aarch64): nextest 2524/2524, `regression_spotcheck` 102/102, six still
+  cells byte-identical, `inter_byte_gate` 96 required / 0 failed / 1 known-open,
+  `inter_decode_gate` 5/5, `inter_decode_census` 96/96; pre-rebase
+  `identity_full_8bit` 1100/1100 (aarch64 AND x86-64), completion scan 64/64
+  OK, x86-64 nextest 2529/2529. Records `rust/benchmarks/callcount_txtscreen_2026-09-04.{tsv,meta}`,
+  `perf_ab_txtscreen_2026-09-04.tsv`; `rust/docs/perf-status.md` updated in
+  place. Still open: the residual is derived once per tx-type TRIAL where C
+  derives it once per TXB (595,871 vs 435,245 calls at p2).
 
 - **`AvifEncoder` has no inert knobs left — issue #9 item 7.** Two are now
   wired to the real pipeline settings, each with a liveness test that fails if
@@ -3192,7 +2415,929 @@ Crates are not published to crates.io yet — depend by git.
   so for a non-64-multiple gray image the coded frame is larger than
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
+- **Doc debt from the 2026-07-25 publication audit, second pass (issue #8).**
+  The HDR-fork verification bar no longer contradicts itself between
+  `README.md` and `rust/README.md`: fork mode IS byte-gated vs a
+  `SVT_HDR_MODE=ON` C build at 10-bit (`hdr_bd10_gate.sh` 64/64, standing);
+  the 8-bit 48/48 is a 2026-07-19 measurement (`docs/HDR-ON-4.2.md`) with no
+  standing gate script, and `hdr_fork_e2e` is named for what it is (liveness +
+  decode witnesses, 36/36). `identity_matrix` is described as its 54-cell
+  default grid, with the 132/132 figure dated to the 2026-07-16 wider sweep it
+  came from (`rust/README.md`, `C-TEST-PORTING-AUDIT.md`). `screen_ibc_gate`
+  20/100 -> 22/100 (the script's `BYTE_EXACT` list has 22 entries; 78 open).
+  `bd10_photo_gate` is 191 cells (counted from the script's groups A-H:
+  30+64+18+18+12+15+1+32+1); the 154 and 187 figures in `STATUS.md` are dated
+  records and now say so. Every test-count tally the audit listed (669/669,
+  873/873, 902/902, 915/915 x2, 864) carries `(as of <commit>)`, found with
+  `git log -S`. `finishing-survey.md`, `bd10-port-map.md` and `ibc-port-map.md`
+  open with a "line numbers as of <creation commit>; re-locate by symbol"
+  header. The fresh-box README lists `cargo-nextest`, `just`, `aomdec`/`dav1d`
+  and `tools/decode_diff` as the prerequisites cargo does not install.
+  Still open from #8: whether to commit `rust/Cargo.lock` (a decision, not a
+  doc fix), per-gate wall-clock budgets (unmeasured), the "landed work
+  described as open" sections of the port maps, and the CI runner matrix
+  (tracked under #4).
+- **Encode speed: the port-vs-C per-pixel slope gap closes to 2.89x at presets
+  10 and 13, 3.27x at preset 6, and — for the first time this campaign — 3.93x
+  at preset 2** (from 3.06x / 3.07x / 3.39x / 4.14x). All 24 campaign cells
+  byte-identical to C (`rust/benchmarks/perf_gap_2026-08-13-r1r2.meta`). Two
+  byte-identical changes, and unlike everything before them these remove work
+  whose result was **discarded**, not duplicated — the two top findings of
+  `rust/docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`:
+  - **R1: the inverse transform + reconstruction ran even where the
+    reconstruction is thrown away.** C gates both on `mds_do_spatial_sse ||
+    (!is_inter && tx_depth)` (product_coding_loop.c:4783-4784) and the all-intra
+    derivation pins `spatial_sse_full_loop_level = 3`, so C inverts nothing at
+    MDS1/MDS2; the port inverted unconditionally. A census measured the
+    discarded share of inverse-transform pixel work at 40-50% (p10/p13), 36-50%
+    (p8), 43-51% (p7), 28-53% (p6) and 24-44% (p2). Three call sites (MDS1
+    luma, the CfL alpha search, the non-CfL chroma re-cost) now pass an explicit
+    `need_recon = false`, each with an exhaustive-scan proof that the
+    reconstruction is unread in its whole binding scope. 56d19efe1 — A/B 12/12
+    cells 1.021-1.053x at qp40, and 28 of 28 cells below 1.0 across 6 presets x
+    3 sizes x 2 qps against a control arm that split 13/15 (sign test
+    p = 3.7e-9).
+  - **R2: the exact coefficient rate was computed and then overwritten**
+    wherever C's closed forms apply. C's rate tiers are an `if / else if /
+    else` and the estimator is never reached on those arms
+    (product_coding_loop.c:4914-4934, :5540-5564); the port called
+    `cost_coeffs_txb` first and discarded it. Now evaluated in C's order.
+    8179a7d94 — 1.038-1.060x at p10/p13 **qp20**, null at qp40/512+; the wall
+    clock tracks the census share of replaced coefficient work (51-54% at qp20,
+    16-38% at qp40, zero at qp55), which is what identifies the win as the
+    mechanism rather than code placement.
+  - the census instrument behind both, `leaf_funnel::txcensus` (cargo feature
+    `__txcensus`, off by default, zero cost when off). 7dec5f24e.
+- Preceding this, four byte-identical changes that took p10/p13 from 3.53x to
+  3.06x, every one of them removing a duplicated COPY of something already
+  computed rather than making an allocation cheaper:
+  - the frame's block-decision set was materialised **four** times per frame —
+    a leaf-level clone so the partition tree and a parallel `decisions` list
+    could both own it, an aggregation of that list up the tree, a deep clone
+    into a `per_tile_decisions` that was **written and never read**, and a deep
+    clone of each superblock tree into its raster slot. Only the tree survives;
+    `PartitionResult::decisions` is now populated by the legacy
+    `partition_search` path alone and `num_blocks` comes from the new
+    `PartitionTree::count_leaves` (29847e5d3, A/B 1.07-1.11x at p10).
+  - `LeafEval::to_choice` deep-cloned seven of the winning candidate's buffers
+    only because it ran *before* `commit_leaf`; both callers now commit first
+    and `into_choice` moves (6ad044d00, A/B 1.02-1.03x at p10).
+  - `funnel_block_decision`'s depth-0 qcoeff "unpack" was a byte-for-byte copy
+    on every block without a 64-dim transform side, and
+    `DecodedPictureBuffer::refresh` deep-cloned the whole picture once per set
+    bit of `refresh_frame_flags` — eight full Y planes per KEY frame, into
+    slots only ever read as `&ReferenceFrame` (now `Arc`-shared; the field is
+    private and `store`/`get`/`refresh` keep their signatures, so no API
+    change). 81a1bb111, A/B 1.01-1.02x at p10.
+  - the per-SB reconstruction staging buffer (an allocation, a zero-fill and a
+    second pass over every pixel of every superblock) is gone; **measured
+    null**, kept only because it is strictly less work.
+- **Measured negative, recorded so it is not retried**: a thread-local `Vec`
+  pool for the mode-decision buffers removed a whole class of allocations from
+  the profile (`drop_glue::<Cand>` 7.1% of malloc samples -> 0) and measured
+  **null** at n=31 against an in-grid identity control. On macOS's xzone
+  allocator the pool's machinery costs about what `malloc`/`free` costs at
+  these sizes. `rust/benchmarks/alloc_bufpool_null_2026-08-13.meta` names the
+  shape that is still unpriced (one construction-time arena the buffers are
+  slices into, which is what the C reference does).
+- **CI gates four more 8-bit surfaces**: partial-SB / odd dimensions (104
+  cells), tiles across rows AND columns (29), SB128 (22), and panic-freedom on
+  gradient AND screen (80). All four already failed loudly — they were simply
+  never in the workflow.
+- **`identity_run` reports a REFUSAL distinctly from a crash** (exit 3). It
+  called the infallible `encode_frame*` wrappers, whose `.expect()` turned every
+  deliberate out-of-envelope refusal into a panic; `arbitrary_size_robustness.sh`
+  therefore reported 48 correct bd10 refusals as PANIC, unable to tell the
+  port's best behaviour from its worst. That gate now reads 80/80 + 48 refused
+  where it read 80/128, on identical encoder behaviour.
+- **`tools/arbitrary_size_robustness.sh` now sweeps `screen` content as well as
+  `gradient`, and adds sub-64 cells.** It previously ran gradient only, which
+  never arms the screen-content detector — so palette and IntraBC were off in
+  every cell and the gate could not reach the code paths they use. It ran
+  straight past the `intrabc_hash` panics above. A panic-freedom gate that
+  cannot arm half the encoder's tools is not a panic-freedom gate.
+
+- The test runner is `cargo nextest run` (CI and `just test`); each test gets
+  its own process, which prevents archmage's process-wide dispatch-tier state
+  from leaking between tests (d807fa0fe).
+- Out-of-envelope configurations are REFUSED with
+  `EncodeError::UnsupportedConfig` rather than silently encoding truncated or
+  mis-scaled content (`hbd_source_consumed`, `superres_config_error`).
+
+- **`AvifEncoder::encode_y8` no longer pre-pads to a multiple of 64, and now
+  REFUSES the case it used to paper over.** It padded the gray plane up to 64
+  and built the pipeline AT THE PADDED SIZE while still returning
+  `EncodedAvif::{width, height}` = the caller's TRUE size, so for every
+  non-64-multiple gray image the AV1 frame and the announced frame disagreed —
+  a 100x100 alpha plane came back as a 128x128 stream labelled 100x100. It now
+  hands the pipeline the true dimensions. The residual is that below preset 6
+  (speeds 1-4) the mono pipeline still refuses a PARTIAL superblock, which is
+  now a typed `UnsupportedConfig` instead of a padded encode:
+  `examples/decode_conformance.rs`'s avif corpus already had the `Err` arm and
+  a comment saying refusing is the correct behaviour, and the pre-pad was what
+  kept that arm dead. 16 of its 240 mono cells now refuse (the four
+  non-64-multiple sizes at speed 1); 224 encode and all 224 decode.
+
+### Removed
+
+- **Four libaom-derived Zen enhancements** (30fa9a3a), each on its own
+  measurement: `StillImageTune` (v1 was exactly tune IQ), `AomAdaptiveSharpness`
+  (a no-op under IQ in 252/252 cells), `AomAdaptiveCdef` (+0.4 to +0.9 %
+  ssim2 BD against SVT's own CDEF pick) and `AomDeltaQLf` (RD-neutral).
+  C's delta-LF syntax and `delta_lf_cdf` stay, because they are C's; nothing
+  signals them now, as in C. Output pins: five enhancement cells were removed,
+  and every other cell is unchanged.
+
+- `svtav1_dsp::superres::{superres_upscale, superres_upscale_row}` — the
+  non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
+
 ### Fixed
+
+- **no_std build of `zenav1-svt-encoder`** (9d610a64): it did not compile
+  (121 errors), and nothing noticed, because `test-minimal` runs at workspace
+  level where dev-dependencies re-enable `std`. The encoder's `std` feature
+  now forwards to `types/std` and `dsp/std`. `just nostd-check` and a CI step
+  check each library crate on its own. Without `std`, the debug env reads
+  return false and OBMC rebuilds its neighbour predictions on every call.
+
+- **Release panic on fork alt-SSIM video** (0ffa9ec3): with the HDR fork
+  and `alt_ssim_tuning`, an inter frame reached an `assert!` in
+  `leaf_funnel/mds3.rs` ("the tune-SSIM parallel full cost has no INTER skip
+  arm") and panicked in release (reproduced on `i265`: `gradient 128x128 q40
+  p5`, 4 frames). Such inter frames are now refused with an explicit error;
+  pinned by two `output_pins` video cells.
+
+- **Film-grain tune numbering** (`50c683a4`): the port numbered film grain 5
+  while every C oracle uses 6 (5 is VMAF), so one raw `SVT_FORK_TUNE` value
+  meant different tunes on the two sides of a comparison.
+- **162 integration-test files ran twice** (`ba07b218`): they were both
+  aggregated modules and standalone targets. 188 test targets are now 27; the
+  workspace suite went from 4029 test runs to 2780, all passing.
+  `tools/test_targets_check.py` (CI shard 3) keeps every file in exactly one
+  target.
+
+- **Frame-header chroma-q form under a separate-UV sequence header**
+  (`1611ca68`). With SH `separate_uv_delta_q = 1`, an all-zero chroma delta
+  set took the `None` form, which writes neither `diff_uv_delta` nor (with
+  QM) `qm_v`; aomdec and dav1d both rejected the stream. The fork's derived
+  deltas are never all zero, so no fork stream was affected — the
+  `__expert` override (0, 0) on the fork is what reached it. The Separate
+  form is now chosen whenever the SH signals separation.
+- **The temporal motion-vector field's block-geometry flag was picture-level**
+  (`df614665`). C sets `ctx->sb64_sq_no4xn_geom` PER BLOCK
+  (`product_coding_loop.c:10256`); the port derived it once per frame from the
+  preset ladders, which is wrong on any picture that mixes block shapes.
+- **The global-motion search could only reach the nearest reference**
+  (`df614665`). C resolves `pa_ref_pic_ptr_array[list][ref]` for every
+  reference in `ref_list<N>_count_try`; the port held one previous-frame
+  pyramid, so `gradient 72x72 q40 p2` encoded two frames and REFUSED the third.
+  The PA pictures now sit in a DPB-shaped store.
+- **`identity_run`'s multi-frame recon dump ignored the bit depth**
+  (`df614665`) — it wrote the 8-bit canvas whatever the depth, so every
+  multi-frame 10-bit comparison against a decoder read as a total mismatch from
+  frame 0. It now refuses that substitution, as the single-frame path always
+  has.
+
+- **The pack's MV predictor ignored global motion**. `EncodePipeline`'s
+  per-block `setup_ref_mv_list` passed a hardcoded zero `gm_mv` with a comment
+  saying the header refuses any non-identity model. `setup_ref_mv_list` FILLS
+  the tail of every block's MV stack with `gm_mv[0]`, so on a frame with a real
+  model the pack differenced every under-populated block's MV against a
+  predictor the decoder does not share. Measured on `crop:` CID22 256 at a
+  33/32 zoom, preset 2: block `mi(0,0)` coded `pmv=(0,0)` where the decoder
+  rebuilds `(30,30)`, and 1557 of 4096 mi units diverged from dav1d.
+
+- **A hierarchical GOP no longer refuses KEY frames** (`c6b1cd158`). The
+  `hierarchical_levels > 0` refusal added in `a64cfdd10` was unconditional, so a
+  caller encoding a single key frame with a non-zero `hierarchical_levels` — an
+  ordinary way to construct the pipeline, and one that cannot reach the unwired
+  RA reference table — was rejected. 13 tests failed on it. Narrowed to
+  non-key frames, with a witness pinning both halves.
+
+- **bd10 chroma recon: restore the u8-quantizer assignment** (`acd62f9c`).
+  `3d8f5c517` made the truncated-10-bit proxy live; measured against C on
+  CID22-512 `1484678` at bd10 q32 preset 5 the port emits 9505 B that way and
+  9501 B — C's own size, byte-identical — the original way. `bd10_photo_gate`
+  is back to 191/191.
+
+- Lossless IntraBC regression checks honor the configured reference decoder outside PATH, request the coded output depth, and report decoder invocation failures separately from pixel mismatches.
+
+- **Four stale doc claims a new session would have acted on.**
+  `WORKING-ON-THIS.md` §2 said `identity_full_8bit` is 1036 cells (it is 1100,
+  and CI runs a 280-cell subset); §7b still reported the inter grid as 91/4/1
+  with a 93-cell byte gate (it is **94 BOTH / 1 F1DIFF / 1 F0DIFF** and 108
+  required, and the p0..p4 band is 64/64 since global motion landed); §8/§9
+  sent readers to `STATUS.md` for "what is byte-identical" when that file is
+  dated 2026-08-04 and predates the whole inter campaign — it now carries a
+  banner saying so. `README.md`'s CI table carried 2026-08-27 tallies
+  (`regression_spotcheck` 29/29, `sb128` 18/18, `bd10_hbd_src` 100/100,
+  `coverage_combos` 16/16, `screen_ibc_gate` 22/100) and no inter rows at all;
+  every row is now the tip's CI run 33978673841, the IntraBC band is recorded
+  as closed, and an inter/video-mode table was added.
+  **Recorded, not fixed (docs-only chunk):** `pipeline.rs:1863` still tells a
+  caller the inter envelope "is 89 of 96 cells" — it is 94, and the string is
+  mirrored verbatim into the generated `REFUSED-CONFIGS.md`.
+- **C's `allow_high_precision_mv` is ZERO inside the global-motion search**, and
+  a port that derived it would be wrong: `frm_hdr.allow_high_precision_mv` is
+  assigned in `svt_aom_sig_deriv_mode_decision_config` (md_config_process), which
+  runs AFTER me_process. MEASURED at q10 and q20 — two quantizers whose final
+  value differs — C's `GMCOST` line reads `hp=0` in both.
+- **Every multi-superblock inter cell at presets 0..3 PANICKED, behind the
+  global-motion refusal.** `encode_tile_rows`' chain simulation (`sim_ectx`)
+  re-codes each superblock to evolve the per-SB frame contexts and was never
+  armed with the frame's `InterSyntaxState` or MVP environment, so the first
+  inter block hit `.expect("an inter block on a frame with no inter
+  frame-syntax state")`. Its gate is `use_funnel && update_cdf_level(..) != 0
+  && multi_sb`, and `svt_aom_get_update_cdf_level_default` is non-zero on an
+  inter frame only at `enc_mode <= 3` — exactly the band the global-motion
+  refusal made unreachable. Byte-neutral by construction: every cell that
+  reached the arm crashed.
+- **`MePicParams::gm_enabled` was hard-coded `false`**, so
+  `perform_gm_detection` never ran and `pcs->rc_me_allow_gm` was 0 on every b64
+  where C's was 1 (measured against `SVT_GM_OUT`: 1/4/16/4/4/16 of
+  1/4/16/4/4/16). Its only reader is `bypass_based_on_me`, which had no caller —
+  and the sign is the dangerous one, since an all-zero array claims "C found no
+  global motion" on a frame where C searched.
+- **A global-motion refusal was reported as a TPL/mfmv one.** The `map_err` at
+  the inter header assembly collapsed both `InterHdrError` variants into one
+  message. One message per variant now.
+- **`inter_hdr_arm::gm_core_level` was a SECOND transcription of
+  `svt_aom_get_gm_core_level`** — and the LIVE one, while the tier-1 body in
+  `port_enc_mode_config::leaf` had only its own test as a caller. Deleted.
+- **`tools/refusal_inventory.sh` could not see a refusal whose message comes
+  out of a `match`.** Its `UnsupportedConfig(` regex was anchored at the open
+  paren, so introducing one silently dropped the mfmv/TPL refusal from the
+  ledger — the quiet accretion the tool exists to prevent. It now walks the
+  balanced call and collects every string literal inside it.
+- **Screen-content IntraBC band byte-identical: gb82-sc x presets 0..4 x
+  qp {20,40,48} 150/150 (was 22/100 on 2026-07-23).** Three MD-side
+  mechanisms, each a deviation a comment had justified: an IntraBC
+  candidate's tx-depth search takes C's INTRA caps (its mode is DC_PRED;
+  depth 2 at presets 0..3) not the inter cap (6891708c); C's MD-side
+  txfm-context stamp is the chosen tx dims for every winner, with no
+  skip&&inter arm (c19c4f2f); C's MD-side context skips the palette CDF
+  update for non-chroma-reference blocks, which the chain simulation now
+  withholds too (6df06356). Found from the two real-screen divergences of
+  `benchmarks/callcount_realimg_2026-09-04` (terminal.png 512² / graph.png
+  512x480 at p2 qp40), now asserted by the new `tools/screen_ibc_byte_gate.sh`
+  (150 cells + the two record cells, byte-only, self-promoting) and two
+  `regression_spotcheck` cells; `screen_ibc_gate.sh`'s BYTE_EXACT list is
+  promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
+
+- **The independent-uv full-loop count takes C's PICTURE-TYPE base
+  (2026-09-04).** `leaf_funnel::inject` carried `uv_mode_nfl_count`'s base as
+  a literal 32 — the allintra arm of C's four-arm ladder
+  (`search_best_independent_uv_mode`, product_coding_loop.c:7693-7696) — so a
+  VIDEO key frame ran 32 full-loop uv candidates at M0 where C runs 64 (all 61
+  injected). On a flat-chroma SAD tie that dropped `UV_SMOOTH*`/`UV_PAETH`
+  from the full loop and the per-luma table resolved luma PAETH to UV_DC,
+  mispricing PAETH_PRED +1310 / DC+FILTER_PAETH -1315 rate units from MDS0 on
+  at the first divergent block of BOTH stuck `video_key_matrix` cells. Now
+  `intra_arm::ind_uv_nfl_base` + `FunnelCfg::ind_uv_nfl_base`, stamped per
+  picture (`for_preset` bakes the still's 32). `video_key_matrix` **58 -> 59
+  of 60** (`screenrep p0` identical at 2335 B; `gradient p0` now 1341 vs 1342).
+  Instrument: `SVT_FULLCOST_XY=all` + `pm1`/`sq`/`mds` fields and
+  `tools/perf_profile/mds3_admission_join.py`. Record:
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁸.
+- **NIC stage caps use C's PICTURE TYPE on inter frames (2026-09-04).**
+  `leaf_funnel::rate_tables::nic_counts` hardcoded the I_SLICE row of
+  `MD_STAGE_NICS` (definitions.h:811), so every inter frame ran I-slice stage
+  caps — at `p6 q40` an MDS1 cap of 5 where C (`set_md_stage_counts`,
+  product_coding_loop.c:1398, picture type 1 on a flat GOP) runs 3, and 3 vs 2
+  at `p8 q20`. It is now a front on the tier-1 `port_md::nics::set_nics`, with
+  the picture type from the new `port_picstruct::is_highest_layer`
+  (pd_process.c:5560 — FALSE on every picture of a flat GOP); the same helper
+  replaces the `temporal_layer_index != hierarchical_levels` paraphrase in
+  `inter_hdr_arm` (wrong at (0,0)) and the DLF block's inline copy. MEASURED
+  byte-inert: the 96-cell inter grid is identical row for row (94 BOTH / 1
+  F1DIFF / 1 F0DIFF), the eight `frames=3` cells unchanged, stills 1100/1100 —
+  the extra MDS1 survivors the I-slice row admitted never won. Record:
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁷.
+- **The three residual F1DIFF cells are a COST comparison, not a search — and a
+  module header said otherwise.** `inter_md_arm`'s header claimed
+  `md_nsq_motion_search` is "PORTED but NOT CALLED here ... so an NSQ block here
+  takes the square path", quoting 94 of 259 coded inter blocks as its reach.
+  `inter_search_arm` builds that search's MVC list and passes it into
+  `refine_me_mv_for_ref`; the search runs. MEASURED on `diag 72x72 q55 p6`, the
+  cell that reading would have explained: both sides code the SAME six blocks at
+  the same positions and differ at one, and C's own `SVT_SUBPEL_OUT` there
+  reports `start=(32,8) best=(32,8)` — **the port's ME MV exactly** — with
+  `nsqme=1` confirmed from C's `SVT_INJCFG_OUT`. C codes NEARMV `(24,0)` because
+  its COST wins, not because its search found something else; the port injects
+  that candidate at C's own MDS0 rate (2845) and picks NEWMV (6774) on
+  distortion. The residual is the same class as `video_key_matrix`'s two unmoved
+  cells, and the instrument for it is `SVT_FULLCOST_OUT`, not the ME. Header
+  corrected with the stale census kept and dated. **Drilled to the end the same
+  day**: the port's MDS1 costs match C's to the UNIT on five of six candidates
+  at that block (distortion, rate and lambda) and to 0.30 % on the sixth, and
+  NEARMV wins at MDS1 on BOTH sides — what differs is that C admits TWO
+  candidates to MDS3 and the port admits THREE, i.e. C's post-MDS1 NIC prune
+  drops the NEWMV the port keeps, whose distortion collapses from 95 239 to
+  38 192 once the real transform and RDOQ run. The target is
+  `nic::stage_mds1_to_mds3`, and it is the same target as `video_key_matrix`'s
+  two unmoved cells. Full record
+  `rust/benchmarks/f1diff_q55_localization_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³².
+
+- **`skip_mode` is signalled and coded — FIVE of eight three-frame cells are now
+  byte-identical end to end.** `pd_process.c:4958` assigns
+  `frm_hdr->skip_mode_params.skip_mode_flag = skip_mode_allowed`, and
+  `entropy_coding.c:5119` codes a `skip_mode` symbol on every block of an inter
+  FRAME whose `bsize` allows compound. The port hard-coded the flag `false`,
+  coded no symbol, and priced no skip-mode rate — right by accident on every
+  frame this repo's gates reach, because `skip_mode_allowed` needs two
+  references at DIFFERENT order hints and the campaign's first inter frame has
+  every DPB slot holding the key frame. Three wires, no new transcription:
+  `skip_mode_context`, `encode_skip_mode`, `is_comp_ref_allowed`,
+  `setup_skip_mode_allowed` and the `InterFacBits::skip_mode` rate table were
+  all already in tree. MEASURED at `frames=3` with the frame-2 refusal lifted
+  behind a throwaway env: `gradient 64x64 q32 p8`, `diag 64x64 q40 p8`,
+  `uniform 64x64 q40 p6`, `screen 64x64 q40 p6` and `diag 128x128 q40 p6` are
+  now byte-identical on **every** frame, where this chunk sequence started with
+  frame 2 at 466 B against C's 21. **The refusal STAYS** — `gradient 64x64
+  q40 p6`, `diag 72x72 q40 p8` and `gradient 128x128 q40 p8` are still wrong, so
+  lifting it would be the partial lift the two `refuses_inter3` cells exist to
+  prevent; converting it into the PASS/OPEN gate model the frame-1 path uses is
+  written down as a decision, not taken. Byte-inert on the two-frame envelope
+  (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell, identity 1100/1100). Full
+  record `rust/benchmarks/frame2_skip_mode_wired_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³¹.
+
+- **`fctx_gate.sh` compares EVERY frame's end-of-frame CDF state, not just
+  frame 0** — and the first thing it found is the symbol frame 2 is missing.
+  The gate stopped at frame 0 on the reasoning that "frame 1's saved context
+  can only match once the inter tile does"; frame 1's tile is byte-identical on
+  the campaign's cells, so that state had simply never been under test even
+  though it is what a THIRD frame restores from. Extended, it reports 96/96
+  identical at frames 0 and 1 of `diag 64x64 q40 p8 frames=3` and exactly ONE
+  differing field at frame 2: `skip_mode`, C 138 against the port's 147 — the
+  DEFAULT, i.e. C adapted that CDF and the port never coded the symbol. That
+  localized the frame-2 tile divergence in one command to
+  `frm_hdr->skip_mode_params.skip_mode_flag`, which `pd_process.c:4958` assigns
+  from `skip_mode_allowed` while `inter_hdr_arm` hard-codes `false` (the ninth
+  "a caller passes a constant where the derivation is already ported" of this
+  campaign; `setup_skip_mode_allowed` is ported at tier 1 and
+  `encode_skip_mode` / `skip_mode_context` are ported and called by nothing).
+  It is inert before frame 2 because `skip_mode_allowed` needs two references
+  at different order hints. Mutation-tested: changing one value of frame 1's
+  `skip_mode` row makes the gate report `95 identical, 1 differ` and exit 1.
+  Full record `rust/benchmarks/frame2_skip_mode_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³⁰.
+
+- **C's frame-2 header codes the low two bits of MINUS THREE — the CDEF-off
+  gate the port never tested.** The frame-2 divergence on
+  `diag 64x64 q40 p8 frames=3` looked like `cdef_damping_minus_3` (C 1,
+  port 2), which reads as a CDEF search output. It is not:
+  `CDEF_DAMPING_FROM_QP(160) = 5` (`enc_cdef.c:895`) means the field must be 2
+  on both sides, and 1 is the low two bits of `0 - 3` — i.e. `cdef_damping` was
+  still its `resource_coordination_process.c:423` initialiser because **C's
+  frame 2 never ran CDEF at all**. C's `md_config_process.c:980-985` tests three
+  CDEF-off gates and only ELSE-IF none fired rewrites the candidate set from the
+  reference; the port ran the rewrite unconditionally. The live gate here is
+  `cdef_ctrls->skip_th && skip_perc >= CLIP3(25, 100, skip_th + (base_q_idx -
+  128) / 4)`: at preset 8 `skip_th` is 80 on a non-base frame, the threshold is
+  88, and `ref_skip_percentage` is 0 at frame 1 (an I_SLICE reference) but
+  **100** at frame 2, whose reference is a 22-byte all-skip frame. Now ported as
+  `cdef_search::cdef_skip_gate` with four tier-4 tests for the two details that
+  are easy to lose (the guard is on the RAW `skip_th`; C's `/ 4` truncates
+  toward zero). MEASURED: **no frame-header field differs on that cell any
+  more** — the first divergence moves from byte 15 to byte 18, into the tile
+  payload — and six of the eight `frames=3` cells move likewise. Byte-inert on
+  the two-frame envelope (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell,
+  identity 1100/1100) because `skip_th` is 0 at every preset up to M7 and on
+  every base frame. `me_based_cdef_skip`, the first of the three gates, stays
+  unmodelled and is inert below preset 9 by C's own `zero_filter_strength_lvl`
+  table. Full record `rust/benchmarks/frame2_cdef_skip_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁹.
+
+- **The temporal motion field was PORTED and never WIRED.** C's
+  `av1_copy_frame_mvs` (`coding_loop.c:1038`), `motion_field_projection` and
+  `av1_setup_motion_field` (`md_config_process.c:427/523`) were all in tree at
+  tier 4 with traced vectors, called by nothing — and `port_coding_loop`'s own
+  module doc had said since it landed that without them "every frame from the
+  SECOND inter frame onward gets wrong TMVP candidates". What was missing was
+  the state between them: `ReferenceFrame` now carries C's per-8x8 `MV_REF`
+  grid and `ref_order_hint[7]`, the walk's `update_b` port folds the grid under
+  C's own gate (`mfmv_enabled && !I_SLICE && is_ref`), and
+  `inter_mvp_env.tpl_mvs` is `setup_motion_field`'s output over the DPB rather
+  than an all-`INVALID_MV` constant — with `ref_frame_side`, its other product,
+  carried to the walk from the same call so the two cannot disagree. MEASURED
+  at poc 2 of `diag 64x64 q40 p8 frames=3`: the port's `NEARESTMV` becomes C's
+  `(0,-24)` off a stack of 1 where it was `(0,0)` off an empty one, and **six
+  of eight `frames=3` cells now match C's frame-2 byte count** (21/21, 21/21,
+  21/21, 21/21, 21/21, 23/23, 26/27, 23/35). None is byte-identical, so the
+  frame-2 refusal STAYS, re-keyed on the recon. Byte-inert on the two-frame
+  envelope structurally, not by luck — C's own projection returns 0 for a
+  key-frame start frame — and the grid is 92 BOTH / 3 F1DIFF / 1 F0DIFF cell
+  for cell before and after. Guarded by two new `mfmvField` spot-check cells
+  reading a `PORTREFSTATS ... mfmv=<named>/<len>` census, because the wire's
+  only consumer is a frame the port still refuses and so it has no byte
+  observable at all. Full record
+  `rust/benchmarks/frame2_mfmv_wiring_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁸.
+
+- **The frame-2 refusal named the wrong mechanism, and its "466 B" was a
+  hard-coded DPB slot.** Three pipeline sites read the reference picture —
+  `ref_frame_data` (the open-loop ME's plane), `ref_padded_luma` (what motion
+  compensation indexes) and PD0's `sb_min_sq_size` read — and all three took
+  `self.dpb.get(0)`, a hard-coded slot, where C resolves LAST through
+  `pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]` i.e. `rps.ref_dpb_index[LAST]`.
+  They agree on every frame this repo's gates cover (poc 1's LAST *is* slot 0)
+  and diverge at poc 2, because frame 1 refreshes slot 1 — which the previous
+  entry's DPB fix made real. MEASURED on `gradient 64x64 q32 p8 frames=3`: the
+  port's frame-2 MD searched `mv=(2,-36)` against poc 0 where the true poc-1
+  displacement is `(0,-24)` and coded 100 % intra at **466 B against C's 21**;
+  after, **22 B**, with frames 0 and 1 byte-identical and the two-frame byte
+  grid unmoved cell for cell (92 BOTH / 3 F1DIFF / 1 F0DIFF). Seven other
+  `frames=3` cells land at 21/21, 21/21, 21/21, 26/27, 24/23, 24/35, 22/21.
+  The frame-2 refusal is **re-keyed, not lifted**: `fh_fields.py` shows
+  `use_ref_frame_mvs = 1` on BOTH sides at poc 2 while the port's `tpl_mvs` are
+  all `INVALID_MV` — and that is a missing WIRE, not a missing port:
+  `inter_mvp::{motion_field_projection, setup_motion_field}` and
+  `port_coding_loop::copy_frame_mvs` are all ported and tested at tier 4, while
+  `ReferenceFrame` carries no per-8x8 `MV_REF` grid and `tpl_mvs` is built as a
+  constant. C codes that frame as
+  `NEARESTMV mv=(0,-24)` off a stack with zero spatial matches where the port
+  reports `refmvcnt=0` and `(0,0)`. Faithful at two frames, where C's own
+  projection returns 0 for a KEY-frame reference. Full record
+  `rust/benchmarks/frame2_last_slot_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁷.
+
+- **C injects a `NEARMV` candidate on every inter frame and the port injected
+  NONE — the inter byte grid goes 91 → 92 of 96.** `inter_md_arm` handed the
+  candidate injector a defaulted `near_count_ctrls`, justified by a module
+  comment reading "C caps the NEAR DRL loop to ZERO unless this control is
+  enabled ... so `NEARMV` is absent exactly the way C makes it absent". That
+  is a correct reading of C's `enabled == 0` arm (`mode_decision.c:1377-1381`)
+  and a wrong conclusion: `enabled` is **1 in all seven arms** of
+  `set_cand_reduction_ctrls` (`enc_mode_config.c:4113` onward) and the video
+  arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`) — each with
+  `near_count = 3`. MEASURED on `diag 72x72 q40 p6` frame 1 by joining C's
+  `SVT_IFCOST_OUT` to the port's `SVTAV1_CANDDBG` at `mi=(8,16)`: C's MDS0
+  list carries `mode=14 NEARMV` at `fast_luma_rate = 2845` and codes it, the
+  port had no such candidate and coded `NEWMV` at 4187 with the SAME MV
+  `(24,0)`; the port's rate model was already exact on both candidates the two
+  lists share (2520 and 4957 to the unit). The control is now derived through
+  the already-ported, tier-1-gated
+  `port_enc_mode_config::encdec::set_cand_reduction_ctrls`, so this was a
+  missing wire and not a missing port — the **sixth** "a caller passes a
+  constant where the derivation is already ported" finding of the inter
+  campaign. `inter_byte_gate` 93 → **94 required, 0 failed** (mutation-verified:
+  forcing the control off fails exactly `diag 72 72 40 6`); the three residual
+  F1DIFF cells did not move by a byte. Full record
+  `rust/benchmarks/inter_near_candidate_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁶.
+
+- **The port's DPB never received an inter frame, and the frame-2 refusal was
+  naming a gap it had closed.** `PictureControlSet::new_inter_frame`
+  hard-coded `refresh_frame_flags: 0`, and that constant — not
+  `pic.rps.refresh_frame_mask`, which the frame HEADER already writes — is
+  what reached `self.dpb.refresh(..)`, so the stream announced C's real mask
+  while the encoder's own DPB stayed all-key-frame. MEASURED at poc 2 of
+  `gradient 64x64 q32 p8 frames=3`: `rps.ref_dpb_index[0]` is slot 1 and all
+  eight slots still held the key frame, so LAST resolved to poc 0 where C's
+  resolves to poc 1. Invisible at two frames (nothing reads the DPB after
+  frame 1), which is the whole envelope every gate covers — so **any frame-2
+  reading taken before this fix is void**. Alongside it, the DPB entry now
+  carries C's three coded-area percentages (`intra`/`skip`/`hp`), the
+  per-superblock `sb_intra` / `sb_skip` flags and the picture's `slice_type`,
+  accumulated in the walk exactly where C's `update_b` does
+  (coding_loop.c:1605-1643) and VERIFIED against C's own reference objects
+  through `SVT_REFSTATS_OUT`: C reads its frame-2 list-0 reference as
+  `slice/intra/skip/hp = 0/0/100/0` and the port writes exactly that onto
+  frame 1's entry. `MdConfigInputs` derives all three `ref_*_percentage`
+  values from them instead of from placeholder zeros, and its
+  `ref_list{0,1}_count_try` fields are now filled from the CAPPED counts C
+  reads rather than the uncapped `ref_list{0,1}_count`. Byte-inert on the
+  two-frame envelope by construction. The frame-2 refusal is NOT lifted: with
+  these in and nothing else, frame 2 codes 466 B against C's 21, so it is
+  re-keyed on the gap that is actually left — `pd0_detector` reads
+  `ref_obj_l0->sb_intra[sb_index]` per superblock and
+  `part_arm::VideoPic` has no `InterOnInterRef` arm.
+  (`docs/INTER-ENCODE-PLAN.md` 1z25,
+  `benchmarks/frame2_mechanisms_2026-09-03.md`)
+
+
+- **C's MD lambda is PER-SUPERBLOCK and this port had one per frame — the
+  inter byte grid goes 89 -> 91 of 96, `inter_byte_gate` 91 -> 93.**
+  `svt_aom_mode_decision_configure_sb` (md_process.c:796) is called per
+  superblock with `svt_aom_get_me_qindex(pcs, sb_ptr, ..)`, so
+  `full_lambda_md[0]` / `fast_lambda_md[0]` / `full_sb_lambda_md[0]` vary by
+  superblock even with no per-SB delta-q signalled: `update_lambda`'s
+  `stats_based_sb_lambda_modulation` block keys on `me_q_index - base_q_idx`,
+  and `me_q_index` is derived from `me_8x8_cost_variance` alone (rc_aq.c:656).
+  MEASURED against C's own `SVT_PD0CFG_OUT` on `diag 72x72 q40 p6` frame 1:
+  C's `fastlam` is 5182 / 5182 / 5182 / 7773 across the four superblocks of
+  one frame where the port reported a flat 6633. Wiring it promoted
+  `gradient 72x72 q20 p6` and `diag 72x72 q20 p8` to byte-identical and
+  CLOSED the residual 72x72 under-split — the partition tree on
+  `diag 72x72 q40 p6` is now C's exactly (five inter blocks, `mi=(8,16)`
+  included, both edge shapes `BLOCK_16X32` `PARTITION_VERT`), with the
+  remaining byte a MODE divergence (port NEWMV, C NEARMV, same MV). The
+  producer and consumer had been ported and tested since 2026-09-02 and only
+  the pipeline threading was missing. Byte-inert on stills and key frames by
+  construction (the per-SB array is `None` unless the frame has a DPB
+  reference). It also deleted a duplicate transcription: the frame inter
+  lambda was derived once for `c_quant` and again for
+  `inter_search_arm::SearchFrameCfg`, so the two lambda fields moved to the
+  per-block `BlockSearchIn` and `SearchFrameCfg` can no longer carry one.
+  Mutation-verified: with the per-SB array forced to `None` the gate reports
+  the two promoted cells failing; restored, 0 failed. The per-SB path is
+  gated on C's own `stats_based_sb_lambda_modulation`
+  (`enc_mode <= (rtc ? ENC_M10 : ENC_M11)`, enc_handle.c:4375), which is OFF
+  at presets 12-13 — where C never builds `b64_me_qindex` at all — and that
+  boundary is guarded by a unit test because no byte gate in this repo
+  reaches it.
+  (`docs/INTER-ENCODE-PLAN.md` §1z24,
+  `benchmarks/inter_byte_matrix_2026-09-03-sblambda.{tsv,meta}`)
+
+
+- **`use_ref_frame_mvs` at `mfmv_level >= 2` is a CLOSED FORM here, and
+  refusing it cost twelve inter cells.** `inter_completion_scan.sh` goes
+  **52 OK / 12 REFUSED -> 64 OK / 0 REFUSED**, and `576x576` at presets 6 and 8
+  is byte-identical to C on BOTH frames (frame 0 41,537 B, frame 1 35 B) where
+  it previously produced no stream at all. The refusal said the bit "needs the
+  TPL r0 and the references' own is_mfmv_used" — true of C in general, false of
+  any configuration this port can encode: C's `mfmv_controls` sets
+  `r0_th = scs->tpl ? 0.1x : 0` and guards that whole block behind
+  `if (r0_th)`, and `get_tpl` (`Globals/enc_handle.c:3657`) returns 0 for
+  `aq_mode == 0`, which this port refuses to be anything else. `mfmv_controls`
+  was ALREADY ported and tier-1 C-parity-tested in
+  `port_enc_mode_config::tail`, with a doc comment stating that argument in
+  those words; `inter_hdr_arm` re-derived the rule and refused, and
+  `inter_mvp_env` carried a THIRD copy spelled `mfmv_level == 1`. All three now
+  call the one ported function (`docs/WORKING-ON-THIS.md` §4). Refused only
+  when TPL is genuinely on. New `inter_byte_gate.sh` cells at 576x576 — the
+  first cells any byte gate in this repo has had above 360p, which is exactly
+  where `mfmv_level` stops being 1. CI floors raised to 64 OK / 0 REFUSED.
+- **Global motion was never refused — only a comment said it was.**
+  `inter_syntax_state` claimed `inter_hdr_arm::inter_signal` "refuses a
+  non-identity model, so every reference is IDENTITY here by the same rule the
+  header is written under — not by assumption", and
+  `InterHdrError::GlobalMotionNotImplemented` existed for it. That variant was
+  never constructed anywhere in the crate. C's `svt_aom_derive_gm_level`
+  (`enc_mode_config.c:194`) gives a NON-I-slice at `enc_mode <= ENC_M4` a
+  non-zero `gm_level`, so C searches a model and `global_motion_params()` codes
+  its type and parameters while this port writes seven `is_global = 0` bits —
+  and the whole inter campaign measures preset >= 6, where C's own level is 0,
+  so nothing could reach it. Now a real refusal at the `encode_frame_impl`
+  choke point.
+- **The sequence header underflowed `frame_width_bits_minus_1` at width or
+  height 1, on BOTH the 4:2:0 and monochrome paths.**
+  `32 - (1 - 1).leading_zeros()` is 0, so `w_bits - 1` wrapped: a release build
+  wrote 15 into that 4-bit field ("16 bits follow") and then wrote ZERO bits of
+  `max_frame_width_minus_1`, shifting every later field. MEASURED: the port's
+  1x1 stream was 21 B and dav1d said "Error parsing sequence header / Overrun
+  in OBU bit buffer"; C's 1x1 stream is 21 B and decodes. After: 24 B on both
+  sides, **byte-identical**, and likewise at 1x8, 1x64, 64x1. `verify_settings`
+  accepts width and height down to 1, so these are inside C's envelope and
+  always were; no gate encoded a 1-pixel dimension. Found while lifting the
+  mono arbitrary-dims refusal, which made these sizes reachable on a second
+  path. Five new `regression_spotcheck.sh` cells (four cases + a 2x2 control);
+  reverting the fix fails exactly those four **at identical byte counts**,
+  which is why they are byte cells and not size cells.
+- **QP 0 (coded-lossless) on SCREEN CONTENT works at preset >= 6, and the
+  blanket refusal was hiding a crash at the other end.** The refusal read "not
+  byte-verified against C so far" — a statement about effort. Measured:
+  presets 6..13 are **48/48 byte-identical to C** over `{screen, screenrep}` x
+  `{64x64, 128x128, 96x80, 200x136}` and lossless under aomdec in every cell;
+  preset 5 diverges on `screenrep` only (128x128 port 17,241 B vs C 17,242,
+  both lossless — an RD residual like the pinned p0..p3 set); presets 0..4
+  **PANIC** in `intrabc_hash::get_block_hash_value`, QP-0-specific (qp 1, 2, 5,
+  20, 40 all encode at preset 4). `AvifEncoder`'s DEFAULT speed 6 maps to
+  preset 7, so lossless AVIF of a screenshot was refused at the default setting
+  for want of running it once. The refusal now stops at preset 6 and names both
+  causes. Pinned from BOTH sides: three `byte` cells for the lift and two
+  `refuses` cells (a new `regression_spotcheck.sh` helper that tells exit 3
+  apart from a panic) for the presets that must stay refused — without the
+  second pair, deleting the refusal outright would pass every test in the repo
+  and re-enable the panic. New CI invocation of `lossless_gate.sh` over the
+  screen contents at presets 6..13.
+
+- **Monochrome encodes arbitrary (non-8-aligned) dimensions — the AVIF alpha
+  case.** An alpha plane is a monochrome AV1 image at the picture's own size,
+  and the mono path refused anything not already 8-aligned ("arbitrary-dims
+  padding is wired on the 4:2:0 path only"). It is not 4:2:0-specific:
+  `encode_frame_impl` already takes the padded plane at the ALIGNED stride and
+  signals the TRUE size, and the mono arm differs only in plane count. The
+  padding is now shared (`encode_frame_mono_core`). MEASURED: 100x100, 98x78,
+  99x77, 171x33 and 250x150 all encode, decode under BOTH aomdec and dav1d, and
+  the decoder emits exactly `w*h` luma bytes — which is what proves the stream
+  announces the true size. Recon-equality cells added to
+  `regression_spotcheck.sh` (93/93, was 83/83). No byte oracle exists and never
+  will: C cannot encode monochrome at all.
+
+
+- **PD0's INTER arm never reached the REFINEMENT path — the grid goes
+  67 BOTH → 89** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²², 89ec75a). `pipeline.rs`
+  builds `pd0_inter` (the reference planes, the frame's update types and the
+  superblock's `min_sq`) and the non-refined arm already used it; the
+  `refined` arm — every preset ≤ 6 on both arms — called the ALLINTRA entry
+  point instead, so an inter frame's PD0 predicted DC intra, priced with the
+  KEY-frame lambda and descended to 8x8. On `gradient 64x64 q20 p6` frame 1
+  that is 80 evaluated nodes against C's 5 and a 64x64 distortion of 2 045 904
+  against C's 50 800; after the fix all five nodes match C field for field.
+  Twenty-two cells promoted, none regressed. `inter_byte_gate` 67 → **89**,
+  mutation-verified (reverting the argument fails exactly the 22). Refusal
+  #12's envelope reads 89 of 96. The residual six are five 72x72 partial-SB
+  cells plus `diag 128x128 q20 p8`, and the direction on them has FLIPPED to
+  an UNDER-split at the frame's 8-px right edge (b97e71a) — an edge-shape
+  DEPTH, which the per-SB lambda's direction predicts.
+  identity_full_8bit 1100/1100, spot-check 83/83, nextest 2483/2483,
+  video_key_matrix 58/60, fctx 96/96, decode census 96/96, completion scan
+  52 OK / 12 REFUSED / 0 CRASH.
+
+- **The DLF VIDEO arm — the port switched deblocking OFF on every inter frame;
+  the grid goes 55 BOTH → 67** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²¹,
+  a7dd951 + 445d3b1). `pipeline.rs` derived `dlf_level` through the ported
+  ladder for both arms and then discarded it for anything but a key frame,
+  because `deblock.rs` carried both level pickers specialized to a KEY frame.
+  C signals `loop_filter_level[0]` of 8/9/12/16/20/24 where the port signalled
+  0, on exactly the 20 cells §1z²⁰ measured as differing FIRST in the frame
+  header — a half now closed to zero. New `dlf_arm` carries C's whole
+  `svt_av1_pick_filter_level` (both pickers, `me_based_dlf_skip`, the
+  reference-average arms and the `prev_dlf_dist < 5` shut-off) and
+  `deblock.rs` delegates to it, so there is ONE transcription; `ReferenceFrame`
+  gained `lf_levels` and `dlf_dist_dev` with C's -1 "never computed" sentinel.
+  Corrects three claims in §1z²⁰, including its ladder prediction —
+  `is_not_last_layer` is TRUE on a flat GOP, so both presets were wrong and by
+  two different pickers. `inter_byte_gate` 55 → **67**, mutation-verified;
+  two new `fhInterFrame` spot-check cells, one per ladder arm.
+  identity_full_8bit 1100/1100, nextest 2483/2483.
+
+- **`tools/ctrace-linux/run.sh` never forwarded three interposer env vars**
+  (a7dd951). `SVT_IFCOST_OUT`, `SVT_PICKPART0_OUT` and `SVT_REFSTATS_OUT`
+  were read by `wrap_recon.c` and listed in neither of the script's forwarding
+  loops, so on a macOS host they wrote inside the container and the host read
+  the silence as "C never called this" — the same failure the script's own
+  comment records for `SVT_RECON_OUT`. All three are forwarded, and a DRIFT
+  GUARD now derives the required set from `wrap_recon.c` itself and refuses to
+  run on a name in neither list (mutation-verified both ways). It found two of
+  the three on its first run against a current `main`.
+
+- **The inter path PANICKED on 18 of 64 video-mode completion cells; it now
+  panics on none** (4974a859, 4ae1ffb6). Two distinct defects, both found by
+  `tools/inter_completion_scan.sh`, both with the same shape — a comment
+  asserting an invariant the code did not implement.
+  (1) A **KEY frame** at 480p and up ran `set_pic_pd0_lvl_default`'s
+  `lpd0_lvl` 7 = `PD0_LVL_6`, which C's `pd0_detector` demotes on an I_SLICE
+  because VERY_LIGHT_PD0 does inter compensation only;
+  `part_arm::video_pd0_params` skipped the detector on an I_SLICE and
+  `pd0::video_pd0_mode` panicked on the level its own doc comment said could
+  not occur. Four cells (568/576/1024/2048 square at p10, and p9 by the same
+  ladder row), frame 0 never written — an ordinary still-image configuration.
+  All four key frames are now byte-IDENTICAL to C.
+  (2) An **INTER frame** whose superblock remainder is 40 px: `Pd0Ctx::pick_q`
+  treated C's `tot_shapes == 0` ("no d1 shape to cost here") as "this node must
+  SPLIT", where C sets `mds->split_flag` from `sq_size > min_sq_size` alone and
+  leaves such a node INVALID. The port descended below `min_sq` — a value only
+  an inter frame's `depth_removal_ctrls` raises above 8 — into a node with no
+  cost. Fourteen cells at p8/p10/p13. Byte-neutral on every key frame,
+  measured against the pre-fix binary.
+  Completion frontier 38 OK / 8 REFUSED / 18 CRASH → **52 OK / 12 REFUSED /
+  0 CRASH**; partial-superblock cells 19/2/15 → **33/3/0**. Records:
+  `rust/benchmarks/inter_completion_2026-09-02{a,b}.tsv` + the `b.meta`, which
+  also documents why the first scan of that day (24 OK / 34 CRASH) described a
+  binary that predated a landed fix by three minutes and was never main.
+  New gates: `regression_spotcheck.sh` grows an `encodesInter` helper (the
+  existing `noPanic` drives the PUBLIC API, which refuses inter frames and so
+  could never reach this code) and five cells, each proved to fail before and
+  pass after; `part_arm::video_pd0_level_tests` pins the PD0 level with a
+  positive control on the raw ladder value; and `inter_completion_scan.sh`
+  gains a `SCAN_GATE=1` mode wired into CI that fails on any crash, on more
+  than `SCAN_MAX_REFUSED` refusals (so a panic cannot be retired by widening a
+  refusal) and on a grid that did not run — proved able to fail all three ways
+  and to pass.
+  EVIDENCE TIER 2 for the first defect, not just byte-identity: C's own
+  `SVT_PD0CFG_OUT` dump for `gradient 568x568 q32 p10` (taken on the Linux
+  host, where `-Wl,--wrap` works) reports `lvl=5` on ALL 81 superblocks of the
+  key frame — `PD0_LVL_6` demoted to `PD0_LVL_5`, the level the port now
+  computes, read out of C's live `ModeDecisionContext`.
+  CROSS-ISA: aarch64 and x86-64 agree on every gate — completion 52/12/0 on
+  both, spot-check 76/76 on both, `inter_byte_gate` 55 required / 0 failed on
+  both, plus `identity_full_8bit` 1100/1100 and `video_key_matrix` 58/60.
+
+- **Every `me_*_distortion` was normalised by the PICTURE's area instead of the
+  superblock's, so all three `disallow_below_*` decisions were wrong on every
+  partial superblock** (this release). C divides by
+  `pix_num = b64_geom->width * b64_geom->height`
+  (`compute_distortion`, motion_estimation.c:2779) and `b64_geom`'s dims are
+  the CROPPED per-superblock extent, `MIN(picture_dim - org, 64)`
+  (pcs.c:1507); `inter_me_arm::run_frame_me` built one `MePicParams` per FRAME
+  and put `p.width` / `p.height` in that field for every b64. On
+  `gradient 168x168` the port divided by 28224 where C divides by 4096, 2560
+  or 1600. MEASURED against C's own `SVT_PD0CFG_OUT` on frame 1: C
+  36736/35776/32640/23584 against the port's 3332/3244/2960/2139 at the
+  (128,0) superblock, and 52326/51640/47933/35553 against 2966/2927/2717/2015
+  at the 40x40 corner — ratios of 11.02 and 17.64, which are
+  `(4096/pix_num_C)/(4096/28224)` exactly. AFTER, all nine superblocks' `med=`
+  AND `dr=` equal C's, and `min_sq` at the three partial ones goes 16 -> 8,
+  which is C's.
+  `me_8x8_cost_variance` matched C throughout and could not have caught this:
+  it is computed from the RAW distortion array before normalisation. That is
+  why the defect survived — the checked statistic was the one it cannot move.
+  BYTE-INERT on everything measured (inter byte gate 55 required / 0 failed,
+  the completion grid's 5 identical cells unchanged, `identity_full_8bit`
+  1100/1100, `video_key_matrix` 58/60, and the four 40-remainder cells emit
+  identical frame-1 bytes before and after), so per the spot-check's own rule
+  it gets no cell there and is gated by
+  `inter_me_arm::tests::a_partial_superblocks_distortions_are_normalised_by_its_own_cropped_extent`,
+  which pins C's numbers and was proved to fail on the old code.
+  Full per-superblock join, and the still-open per-superblock `fast_lambda`
+  divergence beside it: `rust/benchmarks/pd0_depth_removal_join_2026-09-02.md`.
+
+- **The C oracle could not encode more than two frames — and the ceiling was
+  `capture_c_trace`, not the library** (ab253150). It sent every frame before
+  draining any packet, so the finite output-stream buffer pool ran dry on the
+  third send; in a `CONFIG_SINGLE_THREAD_KERNEL` build that is fatal
+  (`ST mode: empty object pool exhausted after pumping dispatcher`) and wrote
+  ZERO packets. The driver now drains one packet after each send when
+  `n_frames > 2`, which is safe because ST mode runs the whole pipeline inside
+  `svt_av1_enc_send_picture`. MEASURED: `SVT_FRAMES=3` on `gradient 64x64 q32
+  p8` codes 1480 / 22 / 21 B and decodes 3/3 frames in both aomdec and dav1d.
+  Gated on `n_frames > 2`, so every 1- and 2-frame run — every gate in this
+  repo — takes byte-identical code. `docs/INTER-ENCODE-PLAN.md` §1q's note that
+  this fix "makes it WORSE" does not reproduce and is corrected in place.
+  The PORT still refuses frame 2, for an unrelated and now precisely scoped
+  reason: the reference picture's `hp_coded_area` / `skip_coded_area` /
+  `intra_coded_area`, which C accumulates per coded block in `update_b`
+  (coding_loop.c:1605-1638). Not the DPB, not reference management, not the
+  GOP requirement — `generate_rps_info` already produces frame 2's RPS.
+
+- **The open-loop ME searched ONE list where C searches two, with four wrong
+  signal fields, and mode decision read an `me_mv_array` slot C never writes**
+  (a473fa38). `inter_me_arm::run_frame_me` hard-coded all four HME flags to 1
+  (C's level 2 is `sc_class5 && enc_mode <= M2`) and passed the qp-based
+  search-area scaling as OFF (C sets it for every preset above `ENC_MR`), so
+  the port searched C's UNSCALED ME/HME areas at every preset and qp; and
+  `num_of_list_to_search = 1` left out the LIST-1 search, whose ZERO HME
+  centre — `set_final_search_centre_sb` skips HME for list 1 at temporal layer
+  0 — is where C's `me_64x64_distortion = 0` actually comes from. C's own
+  list-0 search does NOT find the match (`p_sb_best_sad` 18816 / 13312).
+  Consumers now read the `me_mv_array` slot named by the ME CANDIDATE's own
+  direction, as `inject_new_candidates` does. The port's per-b64 ME output is
+  now an exact join with C's, and `SVTAV1_PD0DBG`'s `PD0DR` line joins
+  `SVT_PD0CFG_OUT` field for field. 96-cell grid unchanged at BOTH 36 /
+  F1DIFF 59 / F0DIFF 1; two cells stopped passing for the WRONG reason (HME
+  level 2 wrongly enabled had been refining list 0 onto the MV C reaches
+  through list 1). Full record: `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³.
+
+- **bd10 DIRECTIONAL intra prediction still crossed tile boundaries after the
+  first fix — issue #18 round 2, the half that real photographs actually hit.**
+  `intra_edge::dr_predict_hbd` took a `DrGeom` carrying the correct tile and
+  derived every availability predicate from the FRAME anyway (`have_top` /
+  `have_left` from `g.mi_row > 0`, `right_available` / `bottom_available`
+  against `mi_cols` / `mi_rows`), while its u8 twin `dr_predict` scoped all
+  four to `g.tile`. Round 1's note that *"the DIRECTIONAL arm was already
+  correct — it passed `tile: geom.tile`"* was the error: **passing a tile is
+  not using one.** The failing band is presets **0-5**, exactly where the intra
+  candidate set still offers directional modes — and round 1's tests pinned
+  presets 6 and 9, the two that pass, so four green tests sat over a live bug.
+  MEASURED at 256x256 / 2 tile rows / bd10: p0,p2,p3,p4,p5 differ from `aomdec`
+  on `gradient` AND `diag` at every qp in {6,12,20,40} (12,480-24,901 of
+  98,304); p6..p9 clean; `uniform` clean everywhere — so it is the PRESET axis,
+  not content, qp, tile axis or orientation. On the reported cell itself, the
+  real 3000x4000 photograph at `AvifEncoder` quality 90 / speed 4 (= qp 6,
+  preset 4): **6,468,452 of 18,000,000 samples differ, first at Y r2048** = the
+  32-SB tile-row boundary, **0 after**. Forced-by-AREA portrait control
+  `gradient 2920x3270` (9.55 MP, 46x52 = 2392 SB, partial SB both axes):
+  4,185,160 of 14,322,600, first Y r1664 = 26 SB x 64, **0 after**. The whole
+  60-cell {gradient,diag,uniform} x preset {0,2,4,6,9} x qp {6,12,20,40} sweep
+  is clean after at 2 tile rows and at 2x2 tiles; **bd8 was clean before and
+  after** (its directional path was always tile-scoped). Byte-INERT elsewhere:
+  **30 of 32** A/B cells emit identical OBUs — every single-tile cell at both
+  depths across presets 0/2/3/4/5/6/9/10/13 including partial-SB and `screen`,
+  and every bd8 multi-tile cell. Gates extended: `issue18_repro.rs` grew a
+  preset-BAND sweep, a directional forced-tile-column cell, a single-tile band
+  control, and a forced-by-area PORTRAIT cell at the reported shape
+  (`2920x3270`, ~6.4 s, partial SB on both axes); `regression_spotcheck.sh`
+  grew 5 `bd10ReconEq` cells. The stale "a single tile spanning the frame"
+  premise in `intra_edge`'s module doc is retracted in place.
+
+- **bd10 intra prediction crossed TILE boundaries, so every forced-multi-tile
+  10-bit encode produced wrong pixels (issue #18).** AV1 forces a multi-tile
+  grid once a frame exceeds `MAX_TILE_AREA` (4096*2304 = 9,437,184 px of
+  SB-aligned area) or `MAX_TILE_WIDTH` (4096 px) — `TileGrid::resolve`, C
+  `svt_av1_get_tile_limits` — so an AVIF caller that never requests a tile
+  still gets two above ~9.44 MP. Intra prediction is tile-scoped in AV1; the
+  u8 path honoured that (`extract_neighbors_tiled`), two bd10 sites did not:
+  `predict_unit_hbd`'s non-directional arm called `extract_neighbors_hbd` with
+  frame-absolute availability (preset <= 8, the full-RD funnel), and
+  `bd10_reencode_{luma,chroma}_node` hardcoded `TileMi::whole_frame`
+  (preset >= 9, the level re-encode post-pass). The encoder read real pixels
+  across the tile edge while a conforming decoder used the unavailable-edge
+  fills, so everything from the boundary onward drifted. Reported as an
+  "8-12 MP size cliff" (mean SSIMULACRA2 **-57.05** at 3000x4000 q90 where the
+  8-bit control read **86.57**); the size threshold is a proxy for the forced
+  tile grid, and the same defect reproduces at **0.27 MP** on a 4160x64 frame.
+  MEASURED, encoder final 10-bit recon vs `aomdec`: `gradient 4160x64 q20 p6`
+  65,054 of 399,360 samples differ before / 0 after; `gradient 256x256 q20`
+  with 2 tile rows 24,169 (p6) and 49,606 (p9/p10/p13) before / 0 after;
+  `gradient 2944x3264` (9.61 MP, 2346 SB > the 2304 SB limit) 3,448,059 of
+  14,413,824 before / 0 after, while `2944x3200` (9.42 MP, 2300 SB, single
+  tile) was and is clean. Byte-INERT outside the broken configuration: 26 of 28
+  A/B cells emit identical OBUs, including every single-tile cell at both
+  depths and every bd8 multi-tile cell; only bd10 x multi-tile moved. New
+  `TileGrid::tile_mi_for_sb` is the single owner of "which tile is this SB in".
+  Gates: `svtav1/tests/issue18_repro.rs` (4 cells + a single-tile control) and
+  four `bd10ReconEq` cells in `tools/regression_spotcheck.sh`. Scope correction
+  recorded in `rust/docs/coverage-combos-map.md` — the 2026-07-22 note that
+  threading this was "byte-inert" was true on the C-byte oracle and blind to
+  this class.
+
+- **`inter_decode_gate.sh` could not report PASS on macOS.** Its `OPEN_CELLS`
+  array emptied when the last open cell was promoted, and `"${arr[@]}"` on an
+  EMPTY array under `set -u` is an "unbound variable" error on bash < 4.4 —
+  `/bin/bash` on every macOS is 3.2.57. The gate printed five green required
+  cells and then aborted nonzero, which reads as a gate failure. Both inter
+  gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
+  `rust/docs/WORKING-ON-THIS.md` §5.
+
+- **An unsigned underflow in C's NSQ shape gate — the last `diag` video-KEY
+  cluster.** `product_coding_loop.c:9732` computes
+  `MAX(1, nsq_split_cost_th - rate_th_offset_lte16)` in `uint32_t`
+  (md_process.h:565/576). `set_nsq_search_ctrls`'s tail rescales the threshold
+  by `MAX(10, qp) / 63` below CLI qp 46 and does NOT rescale the offset, so at
+  low quantizers the subtraction WRAPS to ~4.29e9 and the gate that reads as
+  "skip this shape when its split rate is significant" skips nothing. The port
+  had `saturating_sub(..).max(1)` = 1, the opposite extreme. MEASURED on
+  `diag 64x64 q20 p6` mi=(8,12): C evaluates and CHOOSES `PART_H` (449905 summed
+  against the square's 514776) where the port printed
+  `NSQDBG SKIP ... shape=1 gate=1`; reproducing the underflow makes all three
+  `diag {64,72,128} q20 p6` key frames byte-identical and leaves q40/q55
+  unchanged. Video key frames 4 F0DIFF -> 1. Not reachable on the still
+  envelope (`nsq_qp_based_th_scaling` is 0 through M3 on the allintra arm, the
+  only band that reaches the tail) — `identity_full_8bit` 1100/1100. Recorded
+  as `rust/docs/SUSPECTED-C-BUGS.md` #28, plan §1z⁷.
+
+- **PD0_LVL_5 was unreachable on the pred-depth-only path, and C's
+  `pd0_detector` runs on every inter frame.** Two defects that had to be fixed
+  together: (A) `pipeline.rs`'s pred-depth-only branch took its PD0 model from
+  `part_arm::refined_pd0_model`, which carries levels 3 and 4 and falls back to
+  `Pd0Mode::Lvl1` otherwise — so a CLI-qp-20 M8 video key frame, whose
+  `set_pic_pd0_lvl_default` row is `3 + ldp0_lvl_offset[qp_band]` = 5, ran
+  PD0_LVL_1's block cost against C's PD0_LVL_5, and the port's p8 output was
+  byte-identical to its own p6 output where C's differed. (B) `pd0_detector`
+  (enc_dec_process.c:2406) gates every test on `slice_type != I_SLICE`, so on a
+  KEY frame the picture level IS the SB level, but on an INTER frame whose L0
+  reference is a key frame the `use_ref_info` arms walk 5 -> 4 -> 3 without
+  reading any ME threshold — every inter frame in this envelope runs PD0_LVL_3.
+  New `port_pd0_detector::pd0_ctrls_for_level` (C `set_pd0_ctrls`) plus
+  `part_arm::VideoPic` give the already-ported detector its first caller.
+  Video key frames 6 F0DIFF -> 4 (`gradient {64,72} q20 p8` byte-identical at
+  2044 and 2747 B); nothing regressed. `identity_full_8bit` 1100/1100,
+  `regression_spotcheck` 65/65, `video_key_matrix` 58/60, `fctx_gate` 96/96,
+  `inter_byte_gate` 31 required PASS. Full record in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z⁶.
+
+- **`fixed_partition` is a TWO-term predicate and the port had one term — 27
+  of 96 cells becomes 31.** C: `fixed_partition = pred_depth_only &&
+  md_disallow_nsq_search` (enc_dec_process.c:3054), where
+  `md_disallow_nsq_search = !nsq_geom_ctrls.enabled || !nsq_search_ctrls.enabled`
+  (:7846). `pipeline.rs`'s `refined = dr.adaptive && use_funnel` had only the
+  first conjunct, so a picture that is pred-depth-only but still SEARCHES NSQ
+  shapes coded squares where C codes an H/V/4-way shape at the same depth. The
+  allintra arm never separated the two terms (`get_nsq_search_level_allintra`
+  is 0 from M4 up), which is why the still envelope never saw it; the video
+  arm's search level saturates to 0 only at CLI qp <= 43, so the whole
+  `{gradient,diag} x {64,72,128} q55 p8` F0DIFF cluster was one cause. Video
+  key frames 12 F0DIFF -> 6, BOTH 27 -> 31, nothing regressed.
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. The SAME defect is
+  still live in the `preset >= 9` PD0 branch, measured and named in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z''''' rather than fixed.
+
+- **The INTER arm was dropped by one of three leaf paths — 19 of 96 cells
+  becomes 27.** `pipeline.rs` builds `leaf_funnel::FunnelCtx` at three sites;
+  the PD0 FIXED-TREE one hardcoded `inter: None`. That path is taken whenever
+  `DrCtrls::for_arm` reports a non-adaptive depth-refinement level, which on
+  the VIDEO arm is `pic_block_based_depth_refinement_level == 10`, i.e. **M8
+  and above** — so every preset-8 inter frame in the campaign's grid decided
+  its blocks from an intra-only candidate set and emitted an intra block with
+  a full residual where C emits a 22-byte skip frame. MEASURED with the new
+  `NSQDBG PINTER` line: 2 inter candidates offered at p6, ZERO at p8, on
+  `gradient 64x64 q40 frames=2`. Byte-inert on the still envelope by
+  construction (`inter_md` is `None` on every key frame) and measured so:
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. Full record in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z'''.
+
+- **The frame-CDF shim needed RTCD setup — SIGSEGV on x86-64 only** (4c2e61bb).
+  `svt_aom_init_mode_probs` / `svt_av1_default_coef_probs` copy through
+  `svt_memcpy`, an RTCD pointer that is NULL until
+  `svt_aom_setup_common_rtcd_internal` runs and that NEON devirtualization turns
+  into a direct call on aarch64. Two of the four new tier-1 tests crashed on
+  x86-64 and passed on aarch64; the two that use only the PAINTED shim modes
+  (which call neither initializer) passed on both, which is the fingerprint of a
+  NULL RTCD pointer rather than a buffer bug. `entropy_inter_shims.c:107-118`
+  had already solved and commented this exact trap.
+
+- **`tools/fh_fields.py` was GUESSING `skipModeAllowed`** and got it wrong on
+  the campaign's own first inter cell: C writes no `skip_mode_present` bit
+  there, the tool read one, and every field after it was off by one bit with no
+  sign in the printout (it reported `allow_warped_motion = 0` where the stream
+  says 1). It now implements the real `skip_mode_params()` and threads the
+  decoder's `RefOrderHint[]` across the frames of the stream to do it.
 
 - **`pd0_use_src_samples` on the fixed-tree PD0 path — a REJECTED experiment,
   re-run over a fixed premise, closes every open video-key scoreboard cell.**
@@ -3629,157 +3774,6 @@ Crates are not published to crates.io yet — depend by git.
   8-bit gate's dims tier — no earlier gate encoded anything below 60x60 with
   the screen-content tools armed.
 
-### Changed
-
-- **Doc debt from the 2026-07-25 publication audit, second pass (issue #8).**
-  The HDR-fork verification bar no longer contradicts itself between
-  `README.md` and `rust/README.md`: fork mode IS byte-gated vs a
-  `SVT_HDR_MODE=ON` C build at 10-bit (`hdr_bd10_gate.sh` 64/64, standing);
-  the 8-bit 48/48 is a 2026-07-19 measurement (`docs/HDR-ON-4.2.md`) with no
-  standing gate script, and `hdr_fork_e2e` is named for what it is (liveness +
-  decode witnesses, 36/36). `identity_matrix` is described as its 54-cell
-  default grid, with the 132/132 figure dated to the 2026-07-16 wider sweep it
-  came from (`rust/README.md`, `C-TEST-PORTING-AUDIT.md`). `screen_ibc_gate`
-  20/100 -> 22/100 (the script's `BYTE_EXACT` list has 22 entries; 78 open).
-  `bd10_photo_gate` is 191 cells (counted from the script's groups A-H:
-  30+64+18+18+12+15+1+32+1); the 154 and 187 figures in `STATUS.md` are dated
-  records and now say so. Every test-count tally the audit listed (669/669,
-  873/873, 902/902, 915/915 x2, 864) carries `(as of <commit>)`, found with
-  `git log -S`. `finishing-survey.md`, `bd10-port-map.md` and `ibc-port-map.md`
-  open with a "line numbers as of <creation commit>; re-locate by symbol"
-  header. The fresh-box README lists `cargo-nextest`, `just`, `aomdec`/`dav1d`
-  and `tools/decode_diff` as the prerequisites cargo does not install.
-  Still open from #8: whether to commit `rust/Cargo.lock` (a decision, not a
-  doc fix), per-gate wall-clock budgets (unmeasured), the "landed work
-  described as open" sections of the port maps, and the CI runner matrix
-  (tracked under #4).
-- **Encode speed: the port-vs-C per-pixel slope gap closes to 2.89x at presets
-  10 and 13, 3.27x at preset 6, and — for the first time this campaign — 3.93x
-  at preset 2** (from 3.06x / 3.07x / 3.39x / 4.14x). All 24 campaign cells
-  byte-identical to C (`rust/benchmarks/perf_gap_2026-08-13-r1r2.meta`). Two
-  byte-identical changes, and unlike everything before them these remove work
-  whose result was **discarded**, not duplicated — the two top findings of
-  `rust/docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`:
-  - **R1: the inverse transform + reconstruction ran even where the
-    reconstruction is thrown away.** C gates both on `mds_do_spatial_sse ||
-    (!is_inter && tx_depth)` (product_coding_loop.c:4783-4784) and the all-intra
-    derivation pins `spatial_sse_full_loop_level = 3`, so C inverts nothing at
-    MDS1/MDS2; the port inverted unconditionally. A census measured the
-    discarded share of inverse-transform pixel work at 40-50% (p10/p13), 36-50%
-    (p8), 43-51% (p7), 28-53% (p6) and 24-44% (p2). Three call sites (MDS1
-    luma, the CfL alpha search, the non-CfL chroma re-cost) now pass an explicit
-    `need_recon = false`, each with an exhaustive-scan proof that the
-    reconstruction is unread in its whole binding scope. 56d19efe1 — A/B 12/12
-    cells 1.021-1.053x at qp40, and 28 of 28 cells below 1.0 across 6 presets x
-    3 sizes x 2 qps against a control arm that split 13/15 (sign test
-    p = 3.7e-9).
-  - **R2: the exact coefficient rate was computed and then overwritten**
-    wherever C's closed forms apply. C's rate tiers are an `if / else if /
-    else` and the estimator is never reached on those arms
-    (product_coding_loop.c:4914-4934, :5540-5564); the port called
-    `cost_coeffs_txb` first and discarded it. Now evaluated in C's order.
-    8179a7d94 — 1.038-1.060x at p10/p13 **qp20**, null at qp40/512+; the wall
-    clock tracks the census share of replaced coefficient work (51-54% at qp20,
-    16-38% at qp40, zero at qp55), which is what identifies the win as the
-    mechanism rather than code placement.
-  - the census instrument behind both, `leaf_funnel::txcensus` (cargo feature
-    `__txcensus`, off by default, zero cost when off). 7dec5f24e.
-- Preceding this, four byte-identical changes that took p10/p13 from 3.53x to
-  3.06x, every one of them removing a duplicated COPY of something already
-  computed rather than making an allocation cheaper:
-  - the frame's block-decision set was materialised **four** times per frame —
-    a leaf-level clone so the partition tree and a parallel `decisions` list
-    could both own it, an aggregation of that list up the tree, a deep clone
-    into a `per_tile_decisions` that was **written and never read**, and a deep
-    clone of each superblock tree into its raster slot. Only the tree survives;
-    `PartitionResult::decisions` is now populated by the legacy
-    `partition_search` path alone and `num_blocks` comes from the new
-    `PartitionTree::count_leaves` (29847e5d3, A/B 1.07-1.11x at p10).
-  - `LeafEval::to_choice` deep-cloned seven of the winning candidate's buffers
-    only because it ran *before* `commit_leaf`; both callers now commit first
-    and `into_choice` moves (6ad044d00, A/B 1.02-1.03x at p10).
-  - `funnel_block_decision`'s depth-0 qcoeff "unpack" was a byte-for-byte copy
-    on every block without a 64-dim transform side, and
-    `DecodedPictureBuffer::refresh` deep-cloned the whole picture once per set
-    bit of `refresh_frame_flags` — eight full Y planes per KEY frame, into
-    slots only ever read as `&ReferenceFrame` (now `Arc`-shared; the field is
-    private and `store`/`get`/`refresh` keep their signatures, so no API
-    change). 81a1bb111, A/B 1.01-1.02x at p10.
-  - the per-SB reconstruction staging buffer (an allocation, a zero-fill and a
-    second pass over every pixel of every superblock) is gone; **measured
-    null**, kept only because it is strictly less work.
-- **Measured negative, recorded so it is not retried**: a thread-local `Vec`
-  pool for the mode-decision buffers removed a whole class of allocations from
-  the profile (`drop_glue::<Cand>` 7.1% of malloc samples -> 0) and measured
-  **null** at n=31 against an in-grid identity control. On macOS's xzone
-  allocator the pool's machinery costs about what `malloc`/`free` costs at
-  these sizes. `rust/benchmarks/alloc_bufpool_null_2026-08-13.meta` names the
-  shape that is still unpriced (one construction-time arena the buffers are
-  slices into, which is what the C reference does).
-- **CI gates four more 8-bit surfaces**: partial-SB / odd dimensions (104
-  cells), tiles across rows AND columns (29), SB128 (22), and panic-freedom on
-  gradient AND screen (80). All four already failed loudly — they were simply
-  never in the workflow.
-- **`identity_run` reports a REFUSAL distinctly from a crash** (exit 3). It
-  called the infallible `encode_frame*` wrappers, whose `.expect()` turned every
-  deliberate out-of-envelope refusal into a panic; `arbitrary_size_robustness.sh`
-  therefore reported 48 correct bd10 refusals as PANIC, unable to tell the
-  port's best behaviour from its worst. That gate now reads 80/80 + 48 refused
-  where it read 80/128, on identical encoder behaviour.
-- **`tools/arbitrary_size_robustness.sh` now sweeps `screen` content as well as
-  `gradient`, and adds sub-64 cells.** It previously ran gradient only, which
-  never arms the screen-content detector — so palette and IntraBC were off in
-  every cell and the gate could not reach the code paths they use. It ran
-  straight past the `intrabc_hash` panics above. A panic-freedom gate that
-  cannot arm half the encoder's tools is not a panic-freedom gate.
-
-### Added
-
-- **A comprehensive 8-bit byte-parity gate, and CI coverage for it**
-  (`tools/identity_full_8bit.sh`). Until now there was **no 8-bit
-  byte-vs-C identity gate in CI at any preset**: `identity_matrix.sh` is a
-  scoreboard whose own header says "Exit 0 always", and it was not in the
-  workflow either — so every 8-bit byte-identity claim, on the port's primary
-  product surface, rested on hand-run measurements that nothing re-checked.
-  The new gate exits nonzero, sweeps **every preset 0..13** (C clamps all-intra
-  above M9 to M9 but the port does not, so 10..13 are distinct configurations
-  here), carries low-q density where structural problems hide, covers
-  partial-SB / odd / tiny / large geometry and four content classes including
-  screen, pins divergences **self-promotingly** (a pinned cell that starts
-  matching fails until promoted), and fails on harness errors so a cell that
-  could not run can never look like a pass. `identity_matrix.sh` keeps its
-  scoreboard role and gains `IM_STRICT=1` for gate use.
-
-
-- **Native 10-bit input** (#6). `EncodePipeline::try_encode_frame_420_hbd` /
-  `try_encode_frame_hbd` take real `u16` planes. The low 2 bits reach the mode
-  decision, the coded levels, and the deblock / CDEF / Wiener searches — the
-  port no longer widens an 8-bit source internally (35743ebd5, f319ec298).
-  Gate: `tools/bd10_hbd_src_gate.sh`, 100/100 cells byte-identical to C.
-- **Super-resolution**, opt-in via `EncodePipeline::with_superres(denom)` with
-  `denom` in 9..=16, off by default exactly as in C (5c69edcb2, f4a1b7516,
-  2f4d24cba, f319ec298, 174b0f184). Gate: `tools/superres_gate.sh`, 128/128
-  cells checked three ways — byte-parity vs C, decodability at the upscaled
-  size under the reference decoder, and anti-vacuity vs the non-superres stream.
-  - `svtav1-dsp::superres` — the normative 64-phase upscale (was a 16-phase
-    stub); `svtav1-dsp::resize` — the source downscale (new).
-  - Sequence-header `enable_superres` + frame-header `superres_params()`.
-  - C's stale full-resolution variance array, read through coded-grid indices,
-    is reproduced deliberately (chunk B.4) — matching C requires it.
-- `tools/bd10_hbd_src_gate.sh` and `tools/superres_gate.sh`, both wired into CI.
-- `CONTEXT-HANDOFF.md` — build-from-scratch, gate, and open-work guide.
-
-### Changed
-
-- The test runner is `cargo nextest run` (CI and `just test`); each test gets
-  its own process, which prevents archmage's process-wide dispatch-tier state
-  from leaking between tests (d807fa0fe).
-- Out-of-envelope configurations are REFUSED with
-  `EncodeError::UnsupportedConfig` rather than silently encoding truncated or
-  mis-scaled content (`hbd_source_consumed`, `superres_config_error`).
-
-### Fixed
-
 - **Partial-superblock RD mis-pricing: the cropped-TX distortion bound is now
   wired** (#95 chunk 2 (b)+(c)). On a frame whose aligned dims are not a
   multiple of 64, a coded TX block can straddle the frame edge; C prices only
@@ -3809,28 +3803,6 @@ Crates are not published to crates.io yet — depend by git.
   below `eob`.
 - `perf_report` example declared `required-features = ["std"]`; a bare
   `cargo test -p zenav1-svt-dsp` previously failed to build it (f319ec298).
-
-### Removed
-
-- `svtav1_dsp::superres::{superres_upscale, superres_upscale_row}` — the
-  non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
-
-### Changed
-
-- **`AvifEncoder::encode_y8` no longer pre-pads to a multiple of 64, and now
-  REFUSES the case it used to paper over.** It padded the gray plane up to 64
-  and built the pipeline AT THE PADDED SIZE while still returning
-  `EncodedAvif::{width, height}` = the caller's TRUE size, so for every
-  non-64-multiple gray image the AV1 frame and the announced frame disagreed —
-  a 100x100 alpha plane came back as a 128x128 stream labelled 100x100. It now
-  hands the pipeline the true dimensions. The residual is that below preset 6
-  (speeds 1-4) the mono pipeline still refuses a PARTIAL superblock, which is
-  now a typed `UnsupportedConfig` instead of a padded encode:
-  `examples/decode_conformance.rs`'s avif corpus already had the `Err` arm and
-  a comment saying refusing is the correct behaviour, and the pre-pad was what
-  kept that arm dead. 16 of its 240 mono cells now refuse (the four
-  non-64-multiple sizes at speed 1); 224 encode and all 224 decode.
-
 
 ## Earlier history
 
