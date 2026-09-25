@@ -27,7 +27,9 @@ pub enum ZenEnhancement {
     /// level above it, IntraBC the M9 level). libaom does not gate these
     /// tools on a speed ladder at all — it enables them whenever screen
     /// content is detected and lets the search decide. Zen extension —
-    /// decoder-verified and RD-measured, never byte-claimed against C;
+    /// decoder-verified and RD-measured (`benchmarks/aom_keep_or_drop_2026-09-25.meta`:
+    /// screen content -23% ssim2 BD-rate at preset 8, -29% at 10/12; inert
+    /// below preset 8 and under tune IQ), never byte-claimed against C;
     /// the frame header gains `allow_screen_content_tools`/`allow_intrabc`
     /// bits a C-parity stream at the same preset would not carry.
     AomScreenTools,

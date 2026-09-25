@@ -2551,7 +2551,8 @@ Crates are not published to crates.io yet — depend by git.
   cells). The intra-edge filter was a small net ssim2 BD loss on photos (median
   +0.12% / +0.51% at tune 1 / 3); the restoration-unit search was RD-neutral
   (median 0.000) at 2-9% more encode time. `AomScreenTools` stays: -23% ssim2
-  BD on screen content at preset 8. `identity_run` now refuses the two
+  BD on screen content at preset 8, -29% at 10/12 (ef2f014a).
+  `identity_run` now refuses the two
   removed `SVTAV1_ZEN_*` variables instead of ignoring them.
 
 - **Legacy homegrown temporal filter** (9409e9f6): `temporal_filter::{temporal_filter,
