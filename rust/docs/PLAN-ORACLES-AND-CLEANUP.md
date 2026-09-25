@@ -526,9 +526,11 @@ Order, by expected size:
      old loop's, serial and at `--jobs 4`. Next: the 44 other scripts.
   2. `identity_run`'s 41 environment variables become `CellSpec` fields
      parsed in one place, so a cell cannot differ in how it is invoked.
-  3. Convert the ledger gates CI does not run (`bd10_photo_gate.sh`,
-     `bd10_nonflat_gate.sh`, `identity_full_8bit.sh`) and add them to CI.
-     Re-verified by hand 2026-09-25: 191/191 and 309/309.
+  3. Run the ledger gates in CI. `bd10_nonflat_gate.sh` and the synthetic
+     tier of `identity_full_8bit.sh` already ran there; `bd10_photo_gate.sh`
+     joins shard 4 (this change; its 14 CID22 photos join the sparse corpus
+     fetch). Re-verified by hand 2026-09-25: 191/191, 309/309 and 1100/1100.
+     Open: identity_full_8bit's real tier (gb82 + CID22, ~45 min).
 - [ ] T4 stage-boundary differentials.
 - [ ] T6 no_std, tier and dead-code gates.
   - Done: no_std. `just nostd-check` (and a CI step in shard 3) checks
