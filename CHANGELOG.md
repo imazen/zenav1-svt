@@ -2543,7 +2543,7 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Removed
 
-- **Legacy homegrown temporal filter** (this change): `temporal_filter::{temporal_filter,
+- **Legacy homegrown temporal filter** (9409e9f6): `temporal_filter::{temporal_filter,
   TfConfig, TfResult, estimate_noise}`. None was a port of C or called by the
   encoder; the ported filter is `port_temporal_filtering`. The module keeps
   `estimate_noise_fp16`, the exact C port.

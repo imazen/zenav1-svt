@@ -62,7 +62,7 @@ It was done when:
   `enable_qmpsnr`, `luminance_qp_bias`, `hbd_mds`. Plus a typed facade
   builder (`AvifEncoder::with_fork(ForkConfig)`) exposing the fork knobs by
   their C names, instead of the raw `EncodePipeline.hdr` field.
-  - Done (this change):
+  - Done (`7df9a27f`):
     - `HdrForkConfig` carries `luminance_qp_bias`, `hbd_mds`,
       `enable_qmpsnr` and `max_hierarchical_levels` at C's defaults.
       `validate_hdr_config` refuses every value the port does not implement,
@@ -266,7 +266,7 @@ Order, by expected size:
      gone from the pipeline (`092c7e27`).
    - Open: the third symbol-writing walk (`recon_only`), and the per-leaf
      `FunnelFrame` deep clones under TPL/SSIM lambdas.
-   - Done (this change): `temporal_filter::temporal_filter`, `TfConfig`,
+   - Done (`9409e9f6`): `temporal_filter::temporal_filter`, `TfConfig`,
      `TfResult` and the f64 `estimate_noise` are deleted. The
      `fallible-alloc` test now calls `try_vec!` inside the encoder crate
      directly, which is what it was testing;
@@ -278,7 +278,7 @@ Order, by expected size:
   Added/Changed/Fixed blocks appended per campaign, with QUEUED BREAKING
   CHANGES buried at line ~280. Fold it into one set of categories, and cut a
   dated section per released version.
-  - Done (this change): folded into one QUEUED BREAKING / Added / Changed /
+  - Done (`53107d71`): folded into one QUEUED BREAKING / Added / Changed /
     Removed / Fixed set, with the queued breaks first. Every entry is
     preserved verbatim (the line multiset was checked).
   - Open: cut a dated section at the next release.
