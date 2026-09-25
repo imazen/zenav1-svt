@@ -185,11 +185,18 @@ In dependency order:
     of all of `self`. Moved to `pipeline/{walk_driver, bd10_post,
     inter_md_stage}.rs`. `pipeline.rs` is 4,950 lines; `encode_frame_impl` is
     4,055.
-  - Done (this change): 18 more stages, with the comments above each range
+  - Done (`493ad07a`): 18 more stages, with the comments above each range
     moving along with it. The three constants local to `encode_frame_impl`
     that they share (`DLF_FAST_DECODE`, `SEQ_CDEF_LEVEL`, `CDEF_FAST_DECODE`)
     are now module-level. `pipeline.rs` is 4,509 lines; `encode_frame_impl`
     is 3,595.
+  - Done (this change): the state types (`EncodePipeline` and its private
+    helper structs), the plane helpers and the three constants move to
+    `pipeline/state.rs`; `palette_cache` moves to its own file.
+    `pipeline.rs` is 3,792 lines, nearly all of it `encode_frame_impl`.
+    Next: split `encode_frame_impl` into phase functions
+    (setup -> mode decision and tiles -> filters and bitstream), which needs
+    a plan struct for the values that cross the phases.
   - Next: `encode_frame_impl` is ONE 7,646-line function, and
     `tile_walk::encode_tile_rows` is 3,500. Only stage extraction gets them
     under target; moves cannot. Then the other 21 files over 3 kloc, starting
