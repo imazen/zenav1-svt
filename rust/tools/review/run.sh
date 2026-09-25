@@ -51,4 +51,7 @@ echo "== exact copies (jscpd)"
 
 echo "== functions no product code reaches (transitive, comments + tests stripped)"
 "${nice_[@]}" "$py" "$here/deadfns.py" --src drop/mirror --transitive > dead.tsv
-echo "outputs in $out: drop/bundle/*.rs (read these), cmp/*.tsv + cmp.txt, clones-{rs,c}/*.tsv, jscpd-rs/, dead.tsv"
+echo "== incant! sites missing an x86 (v3/v4) or neon tier"
+"$py" "$here/incant_tiers.py" --root "$rust_root" --missing > incant_missing.tsv
+
+echo "outputs in $out: drop/bundle/*.rs (read these), cmp/*.tsv + cmp.txt, clones-{rs,c}/*.tsv, jscpd-rs/, dead.tsv, incant_missing.tsv"
