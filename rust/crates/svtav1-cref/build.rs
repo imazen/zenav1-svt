@@ -71,7 +71,17 @@ fn main() {
 
     // The C reference tree is the `reference/svt-av1` submodule
     // (imazen/svt-av1-ref: SVT-AV1 v4.2.0 + gated SVT_HDR_MODE).
-    let c_root = repo_root.join("reference/svt-av1");
+    let mut c_root = repo_root.join("reference/svt-av1");
+    // `SVT_ORACLE=<pinned oracle>` (rust/oracles/oracles.tsv, docs/ORACLES.md)
+    // links the shims against that oracle instead of the live submodule, so
+    // the `c_parity_*` suites can run per target (plan 2.2). The oracle tool
+    // builds it if needed; its `driver_defs` bridge the API differences the
+    // shims see. Live oracles keep the legacy paths below.
+    println!("cargo:rerun-if-env-changed=SVT_ORACLE");
+    let pinned = pinned_oracle(&repo_root);
+    if let Some(o) = &pinned {
+        c_root = o.src.clone();
+    }
     if !c_root.join("Source").exists() {
         panic!(
             "C reference submodule missing at {}.\n\
@@ -119,7 +129,13 @@ fn main() {
         println!("cargo:rerun-if-changed={}", submodule_head.display());
     }
 
-    let lib_dir = match env::var_os("SVT_CREF_LIB_DIR") {
+    let build_dir = pinned
+        .as_ref()
+        .map(|o| o.build.clone())
+        .unwrap_or_else(|| repo_root.join("cbuild-static"));
+    let lib_dir = match (pinned.as_ref(), env::var_os("SVT_CREF_LIB_DIR")) {
+        (Some(o), _) => o.lib.clone(),
+        (None, dir) => match dir {
         Some(dir) => {
             // The caller's own artifact: link it, never build into it.
             let dir = PathBuf::from(dir);
@@ -167,6 +183,7 @@ fn main() {
             }
             mainline.lib_dir
         }
+        },
     };
 
     // Promote three `static` pd_process.c functions to linkable symbols so the
@@ -174,13 +191,21 @@ fn main() {
     // the shim compile because the shim's tier-1 entry points are behind the
     // define this returns. See the function for the whole rationale and the
     // failure modes it deliberately tolerates.
-    let picstruct_statics = link_globalized_pd_statics(&repo_root, &out_dir_path());
+    let picstruct_statics = link_globalized_pd_statics(&build_dir, &out_dir_path());
     // Same mechanism for `rc_vbr_cbr.c`'s five surviving statics (lane wx-rc).
-    let rc_vbr_statics = link_globalized_rc_vbr_statics(&repo_root, &out_dir_path());
+    let rc_vbr_statics = link_globalized_rc_vbr_statics(&build_dir, &out_dir_path());
     // Same mechanism again for `enc_dec_process.c`'s two SSIM walkers.
-    let enc_dec_statics = link_globalized_enc_dec_statics(&repo_root, &out_dir_path());
+    let enc_dec_statics = link_globalized_enc_dec_statics(&build_dir, &out_dir_path());
 
     let mut shims = cc::Build::new();
+    if let Some(o) = &pinned {
+        for def in &o.defs {
+            match def.split_once('=') {
+                Some((k, v)) => shims.define(k, v),
+                None => shims.define(def, None),
+            };
+        }
+    }
     if picstruct_statics {
         shims.define("SVTAV1_CREF_PICSTRUCT_STATICS", "1");
     }
@@ -361,7 +386,7 @@ fn globalized_symbols_present(objcopy: &Path, obj: &Path, syms: &[&str]) -> Resu
 }
 
 #[must_use]
-fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
+fn link_globalized_pd_statics(build_dir: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-check-cfg=cfg(picstruct_statics)");
     println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_PICSTRUCT_STATICS");
     println!("cargo:rerun-if-env-changed=LLVM_OBJCOPY");
@@ -375,7 +400,7 @@ fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
     // a name here (see shims/picstruct_shims.c for the two checks that passed).
     const SYMS: [&str; 2] = ["set_ref_list_counts", "set_all_ref_frame_type"];
 
-    let src = repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/pd_process.c.o");
+    let src = build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/pd_process.c.o");
     println!("cargo:rerun-if-changed={}", src.display());
     if !src.exists() {
         println!(
@@ -481,7 +506,7 @@ fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
 /// decision the CALLER makes: `SVT_CREF_REQUIRE_RC_VBR_STATICS=1` makes
 /// `rc_vbr_statics_oracle_is_available` fail loudly instead.
 #[must_use]
-fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
+fn link_globalized_rc_vbr_statics(build_dir: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-check-cfg=cfg(rc_vbr_statics)");
     println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_RC_VBR_STATICS");
 
@@ -513,7 +538,7 @@ fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
         "clamp_qindex",
     ];
 
-    let src = repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/rc_vbr_cbr.c.o");
+    let src = build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/rc_vbr_cbr.c.o");
     println!("cargo:rerun-if-changed={}", src.display());
     if !src.exists() {
         println!(
@@ -620,14 +645,14 @@ fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
 /// function pays for again: a matching REGISTER argument does not prove a
 /// matching ABI. Check the constants the body materialises too.
 #[must_use]
-fn link_globalized_enc_dec_statics(repo_root: &Path, out_dir: &Path) -> bool {
+fn link_globalized_enc_dec_statics(build_dir: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-check-cfg=cfg(enc_dec_statics)");
     println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_ENC_DEC_STATICS");
 
     const SYMS: [&str; 1] = ["aom_ssim2"];
 
     let src =
-        repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o");
+        build_dir.join("Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o");
     println!("cargo:rerun-if-changed={}", src.display());
     if !src.exists() {
         println!(
@@ -910,4 +935,44 @@ fn run_logged(mut cmd: Command, log_path: &Path, what: &str, v: &Variant) {
             log_path.display()
         );
     }
+}
+
+/// A `pinned` oracle selected by `SVT_ORACLE`, resolved through `tools/oracle`.
+struct PinnedOracle {
+    src: PathBuf,
+    build: PathBuf,
+    lib: PathBuf,
+    defs: Vec<String>,
+}
+
+fn pinned_oracle(repo_root: &Path) -> Option<PinnedOracle> {
+    let name = env::var("SVT_ORACLE").ok().filter(|n| !n.is_empty())?;
+    let tool = repo_root.join("rust/tools/oracle");
+    let run = |args: &[&str]| -> String {
+        let out = Command::new(&tool)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("run {}: {e}", tool.display()));
+        if !out.status.success() {
+            panic!(
+                "tools/oracle {} failed:\n{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    if run(&["field", &name, "mode"]) != "pinned" {
+        return None; // live oracles use the legacy paths
+    }
+    let lib = PathBuf::from(run(&["build", &name]));
+    Some(PinnedOracle {
+        src: PathBuf::from(run(&["srcdir", &name])),
+        build: PathBuf::from(run(&["builddir", &name])),
+        lib,
+        defs: run(&["field", &name, "driver_defs"])
+            .split_whitespace()
+            .map(|d| d.trim_start_matches("-D").to_string())
+            .collect(),
+    })
 }

@@ -7,6 +7,7 @@
 #   tools/oracle build  [NAME]        build it if needed (idempotent); prints libdir
 #   tools/oracle libdir [NAME]        dir holding libSvtAv1Enc.a (no build)
 #   tools/oracle srcdir [NAME]        C source root used for headers (no build)
+#   tools/oracle builddir [NAME]      cmake build tree (object files; no build)
 #   tools/oracle field  NAME COLUMN   one registry column
 #
 # NAME defaults to the active oracle: $SVT_ORACLE if set; otherwise the legacy
@@ -82,6 +83,9 @@ srcdir() {
 libdir() {
     if [[ "$(field "$1" mode)" == "live" ]]; then live_libdir "$1"; else echo "$(pinned_dir "$1")/lib"; fi
 }
+builddir() {
+    if [[ "$(field "$1" mode)" == "live" ]]; then live_builddir "$1"; else echo "$(pinned_dir "$1")/build"; fi
+}
 
 cmake_build() { # cmake_build SRC BUILD LIB FLAGS...
     local src=$1 build=$2 lib=$3
@@ -143,6 +147,7 @@ case "$cmd" in
     build) build "${1:-$(resolve)}" ;;
     libdir) libdir "${1:-$(resolve)}" ;;
     srcdir) srcdir "${1:-$(resolve)}" ;;
+    builddir) builddir "${1:-$(resolve)}" ;;
     field) [[ $# -eq 2 ]] || die "usage: oracle field NAME COLUMN"; field "$1" "$2" ;;
-    *) die "unknown command '$cmd' (list|resolve|build|libdir|srcdir|field)" ;;
+    *) die "unknown command '$cmd' (list|resolve|build|libdir|srcdir|builddir|field)" ;;
 esac

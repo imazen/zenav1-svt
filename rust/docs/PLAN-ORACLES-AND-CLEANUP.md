@@ -102,6 +102,22 @@ typed facade setter or an explicit refusal that names it.
   to reach a `static` with `#include` of the owning `.c` file.
 - [ ] 2.2 `svtav1-cref` builds against any registry oracle
   (`SVT_ORACLE`), so `c_parity_*` runs per target.
+  - Done (this change): `build.rs` honours `SVT_ORACLE=<pinned oracle>`.
+    It builds the oracle through `tools/oracle` (new `builddir` command),
+    compiles the shims against that oracle's headers with its `driver_defs`,
+    links its library, and globalizes statics from its build tree. Live
+    oracles and the default are unchanged.
+  - Open: the shims themselves do not compile yet against `ghost-robot` or
+    `mainline-4.2.0`; so far every error is in `ref_shims.c`, about 20
+    distinct ones per oracle. Ghost Robot changes: `Mv` passed by value
+    (`mv_err_cost`, `full_pixel_search`, `intrabc_hash_search`,
+    `set_mv_search_range`), `is_dv_valid` gained an argument,
+    `svt_psy_distortion` changed kind, `SvtVarType` removed and the variance
+    buffers retyped. mainline-4.2.0 lacks the fork config fields and
+    `svt_spatial_full_distortion_kernel_facade`. Bridge them with
+    `driver_defs` macros, as the capture driver does. Fork-only oracles
+    must be selected by the caller (a per-oracle test list), never skipped
+    inside a test.
 - [ ] 2.3 Wrap-fired check in `capture_c_trace`: report every `--wrap`
   interposer that never fired on a cell known to reach it.
 - [x] 2.4 (`2169f16f`) Citation remap: `tools/citations.py remap --to <oracle>`
