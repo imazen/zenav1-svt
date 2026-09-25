@@ -143,17 +143,7 @@ pub const MV_COST_WEIGHT: i32 = 108;
 /// C `MV_COST_WEIGHT_SUB` (md_rate_estimation.h:24).
 pub const MV_COST_WEIGHT_SUB: i32 = 120;
 
-/// C `RDCOST(RM, R, D)` (rd_cost.h:36).
-///
-/// `ROUND_POWER_OF_TWO(R * RM, 9) + (D << 7)`. C evaluates the product in
-/// `int64_t`; every caller in this file passes a non-negative rate and
-/// distortion, so the port uses `u64` and the arithmetic is identical over
-/// the reachable domain.
-#[inline]
-pub fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << (AV1_PROB_COST_SHIFT - 1))) >> AV1_PROB_COST_SHIFT)
-        + (dist << RDDIV_BITS)
-}
+pub use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// C `av1_cost_literal(n)` (md_rate_estimation.h:31): `n << 9`.
 #[inline]

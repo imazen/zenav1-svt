@@ -58,7 +58,7 @@ use svtav1_types::math::shift_u32::round_power_of_two_i64;
 
 /// `RDCOST(RM, R, D)` (rd_cost.h:36).
 pub fn rdcost(rate_mult: u32, rate: i64, dist: i64) -> i64 {
-    round_power_of_two_i64(rate * rate_mult as i64, AV1_PROB_COST_SHIFT) + (dist << RDDIV_BITS)
+    svtav1_types::math::rd::rdcost_i64(i64::from(rate_mult), rate, dist)
 }
 
 /// `sse_norm_curvfit_model_cat_lookup` (enc_inter_prediction.c:200) — one

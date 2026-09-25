@@ -1545,11 +1545,7 @@ impl FunnelCfg {
     }
 }
 
-/// C `RDCOST` (rd_cost.h:36).
-#[inline]
-pub(super) fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + 256) >> 9) + (dist << 7)
-}
+pub(super) use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// C `DIVIDE_AND_ROUND`.
 #[inline]

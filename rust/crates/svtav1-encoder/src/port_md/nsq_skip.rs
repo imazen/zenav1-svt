@@ -143,11 +143,7 @@ pub const CONSERVATIVE_OFFSET_0: i32 = 5;
 /// `sq_weight` to `int32_t` before adding it.
 pub const AGGRESSIVE_OFFSET_1: i32 = -10;
 
-/// C `RDCOST` (rd_cost.h:36).
-#[inline]
-fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 // ---------------------------------------------------------------------------
 // update_skip_nsq_based_on_split_rate (:9710-9845)

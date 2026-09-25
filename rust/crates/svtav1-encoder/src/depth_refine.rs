@@ -51,11 +51,7 @@ use crate::partition::{PartitionTree, PartitionType};
 use crate::pd0::{M6Pd0Tables, Pd0Eval};
 use crate::port_enc_mode_config::encdec::SkipSubDepthCtrls;
 
-/// C `RDCOST` (rd_cost.h:36).
-#[inline]
-fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + 256) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 // ---------------------------------------------------------------------------
 // Depth refinement controls (C DepthRefinementCtrls)

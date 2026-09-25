@@ -299,11 +299,7 @@ pub(crate) fn qp_th_scaling_factors(qp: u32) -> (u32, u32) {
     }
 }
 
-/// C `RDCOST(RM, R, D)` (rd_cost.h:36): `ROUND_POWER_OF_TWO(R*RM, 9) +
-/// (D << 7)` (AV1_PROB_COST_SHIFT = 9, RDDIV_BITS = 7).
-fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + 256) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// PD0 full lambda for an allintra key frame at 8-bit: C
 /// `av1_lambda_assign_md` (md_process.c:744-770) =

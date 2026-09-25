@@ -149,14 +149,7 @@ pub const RDDIV_BITS: u32 = 7;
 
 pub use svtav1_types::math::shift_u32::round_power_of_two_i64 as round_power_of_two;
 
-/// C `RDCOST(RM, R, D)` (`rd_cost.h:36`).
-///
-/// `ROUND_POWER_OF_TWO(R * RM, AV1_PROB_COST_SHIFT) + (D << RDDIV_BITS)`, all
-/// in `int64_t`.
-#[must_use]
-pub const fn rdcost(rate_mult: i64, rate: i64, dist: i64) -> i64 {
-    round_power_of_two(rate * rate_mult, AV1_PROB_COST_SHIFT) + (dist << RDDIV_BITS)
-}
+pub use svtav1_types::math::rd::rdcost_i64 as rdcost;
 
 /// C `compute_intra_pd0_th` (`enc_mode_config.c:6279`). static — tier 4.
 ///

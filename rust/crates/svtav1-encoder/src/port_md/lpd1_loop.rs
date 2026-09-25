@@ -137,11 +137,7 @@ impl FastLoopOutcome {
     }
 }
 
-/// C `RDCOST` (rd_cost.h:36).
-#[inline]
-fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// C `fast_loop_core_light_pd1` (`:1009-1066`).
 ///

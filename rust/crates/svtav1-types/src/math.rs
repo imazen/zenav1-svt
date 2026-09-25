@@ -135,6 +135,30 @@ pub mod shift_i32 {
     }
 }
 
+/// The encoder's RD cost, `RDCOST(RM, R, D)` =
+/// `ROUND_POWER_OF_TWO((R) * (RM), AV1_PROB_COST_SHIFT) + ((D) << RDDIV_BITS)`.
+/// Defined once; the port had 13 private copies in two integer widths.
+pub mod rd {
+    /// `AV1_PROB_COST_SHIFT`: rates are in 1/512 bits.
+    pub const AV1_PROB_COST_SHIFT: u32 = 9;
+    /// `RDDIV_BITS`: distortion is scaled by 128.
+    pub const RDDIV_BITS: u32 = 7;
+
+    /// `RDCOST` on unsigned 64-bit operands (lambda first, as C calls it).
+    #[inline]
+    pub const fn rdcost_u64(lambda: u64, rate: u64, dist: u64) -> u64 {
+        ((rate * lambda + (1 << (AV1_PROB_COST_SHIFT - 1))) >> AV1_PROB_COST_SHIFT)
+            + (dist << RDDIV_BITS)
+    }
+
+    /// `RDCOST` on signed 64-bit operands (the rate multiplier first).
+    #[inline]
+    pub const fn rdcost_i64(rate_mult: i64, rate: i64, dist: i64) -> i64 {
+        super::shift_u32::round_power_of_two_i64(rate * rate_mult, AV1_PROB_COST_SHIFT)
+            + (dist << RDDIV_BITS)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::shift_u32::*;
@@ -151,6 +175,8 @@ mod tests {
         assert_eq!(divide_and_round_u64(10, 4), 3);
         assert_eq!(clip3_i32(0, 10, -5), 0);
         assert_eq!(clip3_i64(0, 10, 50), 10);
+        assert_eq!(super::rd::rdcost_u64(512, 3, 2), 3 + 256);
+        assert_eq!(super::rd::rdcost_i64(512, 3, 2), 3 + 256);
         // Every n > 0 agrees with the `1 << (n - 1)` spelling, up to the top
         // shift.
         // A negative half would give -1 here.

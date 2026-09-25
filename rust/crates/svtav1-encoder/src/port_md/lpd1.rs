@@ -109,13 +109,7 @@ pub struct ChromaState {
     pub cfl_complexity: ComponentType,
 }
 
-/// C `RDCOST` (rd_cost.h:36):
-/// `ROUND_POWER_OF_TWO(R * RM, AV1_PROB_COST_SHIFT) + D * (1 << RDDIV_BITS)`
-/// with `AV1_PROB_COST_SHIFT == 9` and `RDDIV_BITS == 7`.
-#[inline]
-fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 use svtav1_types::math::shift_u32::round_power_of_two_u32 as round_power_of_two;
 

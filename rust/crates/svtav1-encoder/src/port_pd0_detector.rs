@@ -425,12 +425,7 @@ pub fn pd0_detector(ctrls: &Pd0Ctrls, sb: &Pd0SbInput) -> Pd0Level {
 // lpd1_detector_* — the light-PD1 analogues
 // ---------------------------------------------------------------------------
 
-/// C `RDCOST` (rd_cost.h:36) as the lpd1 detectors evaluate their
-/// `low_th` bound — `ROUND_POWER_OF_TWO(rate * lambda, 9) + dist << 7`.
-#[inline]
-fn rdcost_lpd1(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_u64 as rdcost_lpd1;
 
 /// C `lpd1_detector_post_pd0` (`enc_dec_process.c:2105`) — the light-PD1
 /// classifier used when PD0 ran a real transform, i.e. `cnt_nz_coeff` and the

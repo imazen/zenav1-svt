@@ -617,12 +617,7 @@ pub fn build_coeff_cost_tables_from_fc(
 // RDOQ trellis (svt_av1_optimize_b)
 // ---------------------------------------------------------------------------
 
-/// C `RDCOST(RM, R, D)` (rd_cost.h:36): `ROUND_POWER_OF_TWO(R*RM, 9) +
-/// (D << RDDIV_BITS=7)`.
-#[inline]
-fn rdcost(rdmult: i64, rate: i64, dist: i64) -> i64 {
-    ((rate * rdmult + 256) >> 9) + (dist << 7)
-}
+use svtav1_types::math::rd::rdcost_i64 as rdcost;
 
 #[inline]
 fn get_coeff_dist(tcoeff: i32, dqcoeff: i32, shift: i32) -> i64 {
@@ -1151,7 +1146,8 @@ fn update_coeff_simple<const TC: usize>(
         if crate::dbgenv::trellis() {
             std::eprintln!(
                 "TSMP si={si} ci={ci} qc={qc} tqc={abs_tqc} dqc={abs_dqc} ctx={coeff_ctx} rate={rate} ratel={rate_low} dist={dist} distl={dist_low} rd={rd} rdlow={rd_low} dqv={dqv} sh={shift} rm={} bc={:?}",
-                o.rdmult, o.txb_costs.base_cost[coeff_ctx]
+                o.rdmult,
+                o.txb_costs.base_cost[coeff_ctx]
             );
         }
         if rd_low < rd {

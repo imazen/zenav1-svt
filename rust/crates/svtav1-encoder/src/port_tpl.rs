@@ -1809,12 +1809,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_y == 0 {
                         eprintln!(
                             "  NDBG x={} y={} after-openloop corner={} a0={} l0={} l1={}",
-                            mb_origin_x,
-                            mb_origin_y,
-                            above0[0],
-                            above0[1],
-                            left0[0],
-                            left0[1]
+                            mb_origin_x, mb_origin_y, above0[0], above0[1], left0[0], left0[1]
                         );
                     }
                 }
@@ -1885,8 +1880,7 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                 );
             }
 
-            if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_x < 32 && mb_origin_y == 0
-            {
+            if std::env::var_os("SVTAV1_BLKDBG").is_some() && mb_origin_x < 32 && mb_origin_y == 0 {
                 let mut psum = 0u64;
                 for r in 0..size {
                     for c in 0..size {
@@ -2053,10 +2047,7 @@ const RDDIV_BITS: u32 = 7;
 /// C `AV1_PROB_COST_SHIFT`.
 const AV1_PROB_COST_SHIFT: u32 = 9;
 
-/// C `RDCOST(RM, R, D)` (rd_cost.h:36).
-pub fn rdcost_tpl(rm: i64, r: i64, d: i64) -> i64 {
-    ((r * rm + (1 << (AV1_PROB_COST_SHIFT - 1))) >> AV1_PROB_COST_SHIFT) + (d << RDDIV_BITS)
-}
+pub use svtav1_types::math::rd::rdcost_i64 as rdcost_tpl;
 
 /// The fields one `pcs->tpl_group[i]` picture contributes to
 /// [`tpl_prep_info`]/[`tpl_regular_setup_me_refs`].
@@ -2943,7 +2934,10 @@ pub fn tpl_mc_flow<'a>(
             let (_, right) = window.split_at_mut(frame_idx);
             let frame = &mut right[0];
             if std::env::var_os("SVTAV1_BLKDBG").is_some() {
-                eprintln!("RUN poc={} tl={}", frame.picture_number, frame.tpl_data.tpl_temporal_layer_index);
+                eprintln!(
+                    "RUN poc={} tl={}",
+                    frame.picture_number, frame.tpl_data.tpl_temporal_layer_index
+                );
             }
             dispense(TplDispenseArgs {
                 frame_idx,

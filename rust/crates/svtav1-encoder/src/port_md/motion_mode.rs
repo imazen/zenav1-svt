@@ -393,11 +393,7 @@ pub fn obmc_trans_face_off_applies(
         && !cand_is_interintra_used
 }
 
-/// C `RDCOST(RM, R, D)` (rd_cost.h:36).
-#[inline]
-pub fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
-    ((rate * lambda + (1 << 8)) >> 9) + (dist << 7)
-}
+pub use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// C's full-lambda selection inside `obmc_trans_face_off`
 /// (product_coding_loop.c:1074).
