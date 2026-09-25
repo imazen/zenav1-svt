@@ -635,7 +635,8 @@ fn oversized_dims_return_alloc_failed_not_abort() {
     fn alloc_plane(len: usize) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
         Ok(svtav1_types::try_vec![0u16; len]?)
     }
-    let err = alloc_plane(usize::MAX).expect_err("an unsatisfiable reservation must be Err, not an abort");
+    let err = alloc_plane(usize::MAX)
+        .expect_err("an unsatisfiable reservation must be Err, not an abort");
     assert!(
         matches!(err.error(), EncodeError::AllocFailed { .. }),
         "expected EncodeError::AllocFailed, got {err:?}"

@@ -629,10 +629,7 @@ impl EncodePipeline {
     }
 
     #[inline(always)]
-    pub(super) fn derive_seq_tools(
-        &self,
-        is_single_frame: bool,
-    ) -> crate::entropy::obu::SeqTools {
+    pub(super) fn derive_seq_tools(&self, is_single_frame: bool) -> crate::entropy::obu::SeqTools {
         let seq_tools = {
             let mut t = crate::speed_config::seq_tools_for_preset(
                 self.speed_config.preset,

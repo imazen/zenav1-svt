@@ -85,8 +85,7 @@ impl ZenEnhancements {
 
     /// Whether every experiment is disabled.
     pub const fn is_empty(self) -> bool {
-        !self.screen_tools
-            && !self.deep_search
+        !self.screen_tools && !self.deep_search
     }
 
     /// Per-member envelopes, each measured for the scope it names.

@@ -187,10 +187,7 @@ fn cases() -> Vec<Case> {
         }
     }
     // Every Zen enhancement at a legal and at an illegal preset.
-    for e in [
-        ZenEnhancement::AomScreenTools,
-        ZenEnhancement::DeepSearch,
-    ] {
+    for e in [ZenEnhancement::AomScreenTools, ZenEnhancement::DeepSearch] {
         for (preset, frames) in [(-1i8, 1usize), (6, 1), (6, 3)] {
             out.push(Case {
                 preset,

@@ -68,7 +68,10 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 fn apply_enhancement_env(pipeline: &mut EncodePipeline) {
     // Removed 2026-09-25 on measurement (benchmarks/aom_keep_or_drop_2026-09-25.meta).
     // Refuse rather than silently encode without them.
-    for gone in ["SVTAV1_ZEN_INTRA_EDGE_FILTER", "SVTAV1_ZEN_RESTORATION_UNIT_SEARCH"] {
+    for gone in [
+        "SVTAV1_ZEN_INTRA_EDGE_FILTER",
+        "SVTAV1_ZEN_RESTORATION_UNIT_SEARCH",
+    ] {
         if std::env::var(gone).is_ok_and(|v| v != "0") {
             panic!("{gone}: this Zen enhancement was removed on 2026-09-25 (no RD gain)");
         }

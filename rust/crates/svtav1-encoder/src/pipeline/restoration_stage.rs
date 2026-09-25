@@ -257,25 +257,23 @@ impl EncodePipeline {
                                 self.reference,
                             )?
                         }
-                        None => {
-                            crate::restoration::search_restoration_still_bd_with_stop::<u8>(
-                                &ctrls,
-                                &sg_ctrls,
-                                &lr_src_y,
-                                &lr_src_u,
-                                &lr_src_v,
-                                &lr_rec_y,
-                                &lr_rec_u,
-                                &lr_rec_v,
-                                lr_true_w,
-                                lr_true_h,
-                                filter_chroma,
-                                rdmult,
-                                8,
-                                stop,
-                                self.reference,
-                            )?
-                        }
+                        None => crate::restoration::search_restoration_still_bd_with_stop::<u8>(
+                            &ctrls,
+                            &sg_ctrls,
+                            &lr_src_y,
+                            &lr_src_u,
+                            &lr_src_v,
+                            &lr_rec_y,
+                            &lr_rec_u,
+                            &lr_rec_v,
+                            lr_true_w,
+                            lr_true_h,
+                            filter_chroma,
+                            rdmult,
+                            8,
+                            stop,
+                            self.reference,
+                        )?,
                     };
                     #[cfg(feature = "std")]
                     if crate::dbgenv::dump_lr() {
