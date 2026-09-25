@@ -7070,6 +7070,18 @@ impl EncodePipeline {
         if coded_lossless && let Some(why) = self.lossless_config_error(is_key) {
             return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(why)));
         }
+        // The fork's tune-SSIM parallel full cost (`FunnelFrame::tune_ssim`,
+        // armed by `alt_ssim_tuning`) has no INTER skip arm in the port
+        // (leaf_funnel/mds3.rs asserts it away). Refuse the inter frame instead
+        // of reaching that assert. MEASURED 2026-09-25 on i265: identity_run
+        // `gradient 128 128 40 5` with SVT_HDR_MODE=1 SVT_FORK_ALT_SSIM_TUNING=1
+        // SVTAV1_FRAMES=4 panicked in release on an inter frame.
+        if !is_key && self.hdr.is_fork() && self.hdr.alt_ssim_tuning {
+            return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(
+                "alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no \
+                 inter skip arm) [C: accepts]"
+            )));
+        }
         // The header omits delta-q at base_q_idx 0. C's full_loop.c selects
         // the frame qindex whenever delta_q_present is false, even if the
         // variance planner produced positive per-SB indices. Preserve that

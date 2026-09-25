@@ -579,6 +579,17 @@ fn output_pins_video() {
         mode: SvtHdrMode::HdrFork,
         ..Cell::still(Content::Photo, 64, 64, 8, 35)
     });
+    // alt_ssim_tuning has no inter arm: refused on the inter frame. It used to
+    // panic in release (leaf_funnel/mds3.rs), measured 2026-09-25.
+    for (preset, qp) in [(5i8, 40u8), (8, 35)] {
+        cells.push(Cell {
+            frames: 4,
+            reference: SvtReference::Hybrid3115,
+            mode: SvtHdrMode::HdrFork,
+            knob: Some(("altssim", |h| h.alt_ssim_tuning = true)),
+            ..Cell::still(Content::Gradient, 128, 128, preset, qp)
+        });
+    }
     check_group("video", cells);
 }
 

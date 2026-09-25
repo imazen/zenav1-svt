@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **71
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **72
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **8** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -103,6 +103,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | tx_bias must be 0..=3 (C verify_settings, enc_settings.c:960) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `crates/svtav1-encoder/src/pipeline.rs` | alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no inter skip arm) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame reached header signalling without a picture decision — unreachable since run_picture_decision covers every intra_period != 1 config (defensive; remove the caller's is_key guard instead of emitting a header that disagrees with the encode) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0 or 2: 2 is C's default TPL-gated per-SB deltaq (rc_aq.c:899), ported and live under random access; 1 (variance AQ) and 3 (complexity AQ) are different C derivations that are not ported |

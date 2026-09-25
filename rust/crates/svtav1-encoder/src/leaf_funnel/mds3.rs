@@ -3581,8 +3581,9 @@ fn eval_candidate(
         // The tune-SSIM parallel cost below this writeback has no inter arm:
         // it would need the block-SSIM distortion of a prediction-only recon.
         // REFUSE rather than leave `mds3_cost_ssim` at MAX and let the winner
-        // scan compare a real cost against a sentinel. The fork refuses inter
-        // frames today, so this is unreachable — and an `assert!`, not a
+        // scan compare a real cost against a sentinel. The pipeline refuses
+        // inter frames under `alt_ssim_tuning` (encode_frame_impl), so this is
+        // unreachable — and an `assert!`, not a
         // `debug_assert!`, because `identity_run` builds RELEASE and
         // `docs/INTER-ENCODE-PLAN.md` §1x records a defect a debug-only check
         // hid for exactly that reason.

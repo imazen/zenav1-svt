@@ -1,5 +1,7 @@
 # output pins, group video: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
 # Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
+grad-128x128-b8-p5-q40-f4-ld-Hybrid3115-HdrFork-altssim	REFUSED:unsupported config: alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no inter skip arm) [C: accepts]
+grad-128x128-b8-p8-q35-f4-ld-Hybrid3115-HdrFork-altssim	REFUSED:unsupported config: alt_ssim_tuning on inter frames is not ported (the tune-SSIM full cost has no inter skip arm) [C: accepts]
 grad-64x64-b10-p8-q35-f4-ld-Hybrid3115-Mainline	1593:fa64a3310f9297a31b5bc674bbb44367
 grad-64x64-b8-p10-q45-f4-ld-Hybrid3115-Mainline	915:751d7830839a28a264c5b9bc3334a534
 grad-64x64-b8-p4-q25-f4-ld-Hybrid3115-Mainline	2324:ebf5832dadf01a5f41e717c3ef52284c

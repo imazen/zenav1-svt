@@ -77,6 +77,13 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Release panic on fork alt-SSIM video** (this change): with the HDR fork
+  and `alt_ssim_tuning`, an inter frame reached an `assert!` in
+  `leaf_funnel/mds3.rs` ("the tune-SSIM parallel full cost has no INTER skip
+  arm") and panicked in release (reproduced on `i265`: `gradient 128x128 q40
+  p5`, 4 frames). Such inter frames are now refused with an explicit error;
+  pinned by two `output_pins` video cells.
+
 - **Film-grain tune numbering** (`50c683a4`): the port numbered film grain 5
   while every C oracle uses 6 (5 is VMAF), so one raw `SVT_FORK_TUNE` value
   meant different tunes on the two sides of a comparison.
