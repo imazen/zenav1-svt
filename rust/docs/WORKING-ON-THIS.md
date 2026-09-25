@@ -62,6 +62,18 @@ null arm through `tools/perf_ab.sh` is what tells you whether a wall-clock
 delta is real (measured null spread on that host: ratio 0.9996, p25/p75
 0.9970/1.0017).
 
+## Code-review tooling
+
+`tools/review/run.sh [OUT_DIR]` (default `~/tmp/zenav1-review`) builds the
+inputs for a whole-codebase review: test- and comment-stripped reading bundles
+(`prep.py`), Rust-vs-C size and complexity per C file (`c_compare.py`,
+`cmp/c_modules.tsv`), near-duplicate detection on both sides (`clones.py`,
+`jscpd`), transitively unreachable functions (`deadfns.py`, which still reports
+`Deref`/`Index` impls as dead), and `incant!` sites missing an x86 or neon tier
+(`incant_tiers.py --missing`). It refuses to run with a tool missing; each
+script's header says how to install it. The last review built from these is
+[CODE-REVIEW-2026-09-25.md](CODE-REVIEW-2026-09-25.md).
+
 ## Build and corpus prerequisites
 
 Product dependencies need Rust, not C. Test oracles require the

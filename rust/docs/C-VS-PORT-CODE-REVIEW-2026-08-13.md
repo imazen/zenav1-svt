@@ -3,6 +3,8 @@
 > [IDENTITY-STATUS.md](IDENTITY-STATUS.md), and current refusals in
 > [REFUSED-CONFIGS.md](REFUSED-CONFIGS.md). Re-derive anything here against
 > source before acting on it.
+>
+> The later whole-codebase review is [CODE-REVIEW-2026-09-25.md](CODE-REVIEW-2026-09-25.md).
 
 > **Historical source/campaign reference, classified at handoff `0cbd1279`.**
 > Use [the current handoff](../../CONTEXT-HANDOFF.md) and

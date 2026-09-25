@@ -285,6 +285,8 @@ is outside this cleanup.
 | [rust/docs/ANIMATED-AVIF-PLAN.md](ANIMATED-AVIF-PLAN.md) | Current |
 | [rust/docs/API-SUPPORT-AUDIT-2026-09-08.md](API-SUPPORT-AUDIT-2026-09-08.md) | Current |
 | [rust/docs/C-TEST-PORTING-AUDIT.md](C-TEST-PORTING-AUDIT.md) | Historical reference |
+| [rust/docs/CODE-REVIEW-2026-09-25-ledger.md](CODE-REVIEW-2026-09-25-ledger.md) | Historical reference |
+| [rust/docs/CODE-REVIEW-2026-09-25.md](CODE-REVIEW-2026-09-25.md) | Historical reference |
 | [rust/docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md](C-VS-PORT-CODE-REVIEW-2026-08-13.md) | Historical reference |
 | [rust/docs/DOCUMENTATION-INDEX.md](DOCUMENTATION-INDEX.md) | Current |
 | [rust/docs/ENCODER-POLICY-API.md](ENCODER-POLICY-API.md) | Current |

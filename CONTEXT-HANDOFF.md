@@ -19,6 +19,7 @@ somewhere useful, and it answers exactly one question — *where do I look?*
 | How do I work in this repo — gates, heavy jobs, hosts, measurement rules? | [rust/CLAUDE.md](rust/CLAUDE.md) and [rust/docs/WORKING-ON-THIS.md](rust/docs/WORKING-ON-THIS.md) |
 | What configuration is refused, and why? | [rust/docs/REFUSED-CONFIGS.md](rust/docs/REFUSED-CONFIGS.md) — generated from the refusal strings, so it cannot drift from them |
 | What did the inter campaign try, in what order? | [rust/docs/INTER-ENCODE-PLAN.md](rust/docs/INTER-ENCODE-PLAN.md) — a chronology, NOT a status document |
+| What needs cleanup or restructuring, and how big is each subsystem against C? | [rust/docs/CODE-REVIEW-2026-09-25.md](rust/docs/CODE-REVIEW-2026-09-25.md) — a dated review; regenerate its inputs with `rust/tools/review/run.sh` |
 | What was measured, when, on which host? | `rust/benchmarks/*.meta` and `*.md`, each carrying its own date and host |
 
 The original text is preserved verbatim at
