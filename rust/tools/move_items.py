@@ -20,6 +20,10 @@ module makes its private items private to the child:
   - fields of moved structs with no visibility get `pub(super)`;
   - `fn`s inside moved `impl` blocks with no visibility get `pub(super)`.
 
+`mod x;` declarations and `use` imports inside the run stay in the parent
+(with their attributes): moving a `mod` would orphan its file, and children
+see the parent's imports through `use super::*` anyway.
+
 `pub(super)` from the child is exactly "visible to the parent and its other
 children", which is what the item had before the move. Nothing else changes,
 so the output pins must stay byte-identical (`just pins`).
@@ -60,6 +64,20 @@ def main():
     while stop > start and lines[stop - 1].startswith(("///", "#[", "//")):
         stop -= 1  # docs, attrs and comments of the item at `end` stay with it
     body = lines[start:stop]
+    # `mod x;` declarations and `use` imports stay in the parent: moving a
+    # `mod` would change the submodule's path and orphan its file, and a moved
+    # `use` would vanish from the parent (children see the parent's imports
+    # through `use super::*`). Their attributes stay with them.
+    kept_mods, filtered = [], []
+    for l in body:
+        if re.match(r"^(pub(\([^)]*\))? )?(mod \w+;|use )", l):
+            attrs = []
+            while filtered and filtered[-1].startswith(("#[", "///", "//")):
+                attrs.insert(0, filtered.pop())
+            kept_mods += attrs + [l]
+        else:
+            filtered.append(l)
+    body = filtered
 
     out_lines = []
     in_struct = in_impl = False
@@ -69,7 +87,8 @@ def main():
         if re.match(r"^(pub(\([^)]*\))? )?struct \w+.*\{\s*$", l):
             in_struct = True
         elif re.match(r"^impl\b", l):
-            in_impl = True
+            # Only inherent impls: a trait impl's methods take no visibility.
+            in_impl = not re.search(r"\bfor\b", l.split("{")[0])
         elif l.startswith("}"):
             in_struct = in_impl = False
         elif in_struct and re.match(r"^    [a-z_][a-z0-9_]*\s*:", l):
@@ -89,7 +108,7 @@ def main():
     if subprocess.run(["rustfmt", "--edition", "2024", str(out)]).returncode != 0:
         out.unlink()
         sys.exit(f"move_items: {out} does not parse; parent left unchanged")
-    rest = lines[:start] + lines[stop:]
+    rest = lines[:start] + kept_mods + lines[stop:]
     while rest and rest[-1] == "":
         rest.pop()
     # `pub use` only when the child has a `pub` item, else rustc warns that
