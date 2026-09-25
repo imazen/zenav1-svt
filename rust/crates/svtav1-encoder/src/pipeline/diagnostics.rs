@@ -1,5 +1,6 @@
 use super::*;
 
+#[inline(always)]
 pub(super) fn dump_gm(
     display_order: u64,
     frame_me: &Option<crate::inter_me_arm::FrameMe>,
@@ -49,6 +50,7 @@ pub(super) fn dump_gm(
     }
 }
 
+#[inline(always)]
 pub(super) fn dump_refstats(
     display_order: u64,
     is_key: bool,
@@ -97,6 +99,7 @@ pub(super) fn dump_refstats(
     }
 }
 
+#[inline(always)]
 pub(super) fn dump_mvs(ref_frame: &ReferenceFrame) {
     #[cfg(feature = "std")]
     if let Some(path) = std::env::var_os("SVTAV1_MVS_OUT") {
@@ -137,6 +140,7 @@ pub(super) fn dump_mvs(ref_frame: &ReferenceFrame) {
 }
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn dump_recon10_bin(&self) {
         #[cfg(feature = "std")]
         if let Ok(prefix) = std::env::var("SVTAV1_RECON10_BIN") {

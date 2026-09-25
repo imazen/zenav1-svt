@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn build_inter_syntax_state(
         &self,
         display_order: u64,
@@ -116,6 +117,7 @@ impl EncodePipeline {
         inter_syntax_state
     }
 
+    #[inline(always)]
     pub(super) fn build_inter_mvp_env(
         &self,
         display_order: u64,
@@ -343,6 +345,7 @@ impl EncodePipeline {
         inter_mvp_env
     }
 
+    #[inline(always)]
     pub(super) fn derive_sb_inter_lambda(
         &self,
         stop: &almost_enough::StopToken,
@@ -515,6 +518,7 @@ impl EncodePipeline {
         Ok(sb_inter_lambda)
     }
 
+    #[inline(always)]
     pub(super) fn derive_pd0_min_sq(
         &self,
         display_order: u64,
@@ -700,6 +704,7 @@ impl EncodePipeline {
 }
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn derive_ref_gm_field(
         &self,
         pic_decision: &Option<crate::port_picstruct::PicParams>,
@@ -727,6 +732,7 @@ impl EncodePipeline {
         ref_gm_field
     }
 
+    #[inline(always)]
     pub(super) fn build_lpd1_frame(
         &self,
         sc_arm: crate::sc_detect::ScArm,
@@ -766,6 +772,7 @@ impl EncodePipeline {
         lpd1_frame
     }
 
+    #[inline(always)]
     pub(super) fn derive_ref_min_max_sq(
         &self,
         pic_decision: &Option<crate::port_picstruct::PicParams>,

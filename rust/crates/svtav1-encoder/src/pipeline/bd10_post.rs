@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn bd10_post_pass(
         bit_depth: u8,
         preset: i8,

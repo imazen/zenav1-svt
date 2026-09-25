@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn build_inter_md_frame<'a>(
         preset: i8,
         bit_depth: u8,

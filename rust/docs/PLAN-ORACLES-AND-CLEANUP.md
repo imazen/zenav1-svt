@@ -205,6 +205,16 @@ In dependency order:
     tiles, bd10 post-pass); `pack_phase::filter_and_pack_frame` (entropy
     walk, deblock/CDEF/LR, bitstream, recon outputs, reference). `pipeline.rs`
     is 2,286 lines; `encode_frame_impl` is 2,085.
+  - Done (this change): `tile_walk::encode_tile_rows` (the per-tile closure,
+    then the per-coding-unit body) and `mds3::eval_candidate` (intra chroma,
+    inter chroma, chroma detector, tx-depth search) are split too; neither file
+    is over 1.8 kloc now. The 56 extracted single-call-site stages are
+    `#[inline(always)]`, which puts their code back inline.
+  - Perf cost, measured (`benchmarks/perf_s2_split_2026-09-25.meta`): output
+    byte-identical; +0.10% to +0.39% instructions on small frames (callgrind)
+    and neutral on large ones. The remainder is extra memcpy of values that the
+    stage boundaries move or return by value. The FramePlan bundling below should
+    remove it; re-measure with callgrind when it lands.
   - Next: the phase calls pass 67 and 69 parameters (rust-analyzer's
     explicit data flow). Bundle them into a `FramePlan` struct that setup
     returns, so each phase reads named fields. Then `tile_walk.rs` (3,501,

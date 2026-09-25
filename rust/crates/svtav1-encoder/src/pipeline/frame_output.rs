@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn derive_inter_signal(
         &self,
         display_order: u64,
@@ -193,6 +194,7 @@ impl EncodePipeline {
         Ok(inter_signal)
     }
 
+    #[inline(always)]
     pub(super) fn assemble_bitstream(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -383,6 +385,7 @@ impl EncodePipeline {
         bitstream
     }
 
+    #[inline(always)]
     pub(super) fn superres_upscale_stage(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -499,6 +502,7 @@ impl EncodePipeline {
         })
     }
 
+    #[inline(always)]
     pub(super) fn build_reference_frame(
         &self,
         chroma: Option<(&[u8], &[u8])>,

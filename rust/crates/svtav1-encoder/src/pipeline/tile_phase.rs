@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn decide_and_encode_tiles(
         hdr: &crate::hdr_mode::HdrForkConfig,
         speed_config: &SpeedConfig,

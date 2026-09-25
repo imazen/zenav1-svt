@@ -1,5 +1,6 @@
 use super::*;
 
+#[inline(always)]
 pub(super) fn derive_stale_vars(
     stats_src: Option<(Vec<u8>, usize, usize)>,
 ) -> Option<Vec<crate::pd0::SbVariance>> {
@@ -41,6 +42,7 @@ pub(super) fn derive_stale_vars(
     stale_vars
 }
 
+#[inline(always)]
 pub(super) fn build_sb_chroma(
     chroma: Option<(&[u8], &[u8])>,
     fmt: svtav1_types::chroma::ChromaFormat,
@@ -82,6 +84,7 @@ pub(super) fn build_sb_chroma(
     Ok(sb_chroma_owned)
 }
 
+#[inline(always)]
 pub(super) fn build_hbd_sb(
     hbd_source: &Option<HbdSource>,
     w: usize,
@@ -121,6 +124,7 @@ pub(super) fn build_hbd_sb(
     Ok(hbd_sb_owned)
 }
 
+#[inline(always)]
 pub(super) fn fill_canvas10(
     w: usize,
     h: usize,
@@ -159,6 +163,7 @@ pub(super) fn fill_canvas10(
     }
 }
 
+#[inline(always)]
 pub(super) fn derive_dlf_level(
     is_single_frame: bool,
     dlf_enc_mode: i8,

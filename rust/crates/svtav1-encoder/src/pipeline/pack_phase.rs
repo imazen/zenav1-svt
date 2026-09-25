@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn filter_and_pack_frame(
         &mut self,
         chroma: Option<(&[u8], &[u8])>,

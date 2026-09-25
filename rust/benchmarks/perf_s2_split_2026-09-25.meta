@@ -1,0 +1,40 @@
+Snapshot 2026-09-25 (i265): cost of the S2 structure work (pipeline.rs split,
+stage extraction, tile_walk/mds3 splits) against 30fa9a3a, the commit just
+before it. Current status lives in docs/PLAN-ORACLES-AND-CLEANUP.md (S2).
+
+host      i265 (Intel Core Ultra 7 265K), release profile (fat LTO, cgu=1)
+baseline  30fa9a3a  perf_encode (examples/perf_encode.rs)
+output    every cell byte-identical to the baseline (perf_ab ident=Y, 36/36)
+
+1. Wall clock, tools/perf_ab.sh (interleaved, 7 rounds, gradient qp40),
+   candidate = S2 work WITHOUT #[inline(always)]:
+   perf_ab_s2_split_2026-09-25.tsv. Large frames within +-0.3%; small fast
+   frames 1.4-2.6% slower on the median, but p25..p75 straddles 1.0 in most
+   small cells: 0.13 ms frames are too noisy to settle this by wall clock.
+
+2. Instructions, valgrind --tool=callgrind, 20 frames per run (deterministic;
+   valgrind runs the AVX2 tier on both sides):
+
+   cell       394ebdb5  cd862116  493ad07a  7988f2a4  0b131ac1  wip    wip+inline(always)
+   64  p6     -0.000%   +0.059%   +0.104%   +0.093%   +0.094%   +0.167%  +0.100%
+   64  p10    -0.000%   +0.206%   +0.386%   +0.418%   +0.423%   +0.595%  +0.364%
+   256 p6     +0.000%   +0.089%   +0.066%   +0.055%   +0.055%   +0.240%  +0.156%
+   256 p10    +0.000%   +0.038%   +0.073%   +0.033%   +0.034%   +0.616%  +0.394%
+
+   Pure moves (394ebdb5) cost exactly nothing. Stage extraction costs 0.03-0.4%;
+   the per-candidate and per-coding-unit splits (mds3, tile_walk) raised it to
+   0.24-0.62%. #[inline(always)] on the 56 extracted single-call-site stages
+   inlines every one (no stage symbol survives in the binary) and brings the
+   cost to +0.10..+0.39%.
+
+   The remainder is not call overhead. At 64 p10 it is ~5.7k extra memcpy
+   instructions per frame (callgrind self cost of __memcpy_avx_unaligned_erms
+   +115k over 20 frames), plus ~1.3k in encode_frame_impl and ~0.7k in
+   eval_candidate: values that the stage boundaries now move or return by value
+   where the inline code built them in place. Recovery plan: bundle the phase
+   parameters into a FramePlan that stages borrow (plan S2 "Next").
+
+commands
+  CARGO_TARGET_DIR=... cargo build --release --example perf_encode --locked
+  tools/perf_ab.sh <base> <cand> out.tsv
+  valgrind --tool=callgrind <bin> gradient <sz> <sz> 40 <preset> <out> 20

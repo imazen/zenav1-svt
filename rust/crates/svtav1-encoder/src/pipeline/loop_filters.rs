@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn collect_dlf_refs(
         &self,
         is_key: bool,
@@ -35,6 +36,7 @@ impl EncodePipeline {
         dlf_refs
     }
 
+    #[inline(always)]
     pub(super) fn pick_lf_levels(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -151,6 +153,7 @@ impl EncodePipeline {
         Ok(lf_levels)
     }
 
+    #[inline(always)]
     pub(super) fn pick_cdef(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -364,6 +367,7 @@ impl EncodePipeline {
 }
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn build_dlf_pick_inputs<'a>(
         &self,
         is_key: bool,
@@ -404,6 +408,7 @@ impl EncodePipeline {
         dlf_pick_inputs
     }
 
+    #[inline(always)]
     pub(super) fn derive_cdef_level(
         &self,
         sc_derivation: crate::sc_detect::ScDerivation,

@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn emit_recon_output(
         &mut self,
         display_order: u64,
@@ -77,6 +78,7 @@ impl EncodePipeline {
         }
     }
 
+    #[inline(always)]
     pub(super) fn build_padded_ref(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -134,6 +136,7 @@ impl EncodePipeline {
 }
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn take_recon10(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -170,6 +173,7 @@ impl EncodePipeline {
         recon10
     }
 
+    #[inline(always)]
     pub(super) fn decoder_chroma_recon_stage(
         &self,
         w: usize,
@@ -227,6 +231,7 @@ impl EncodePipeline {
         }
     }
 
+    #[inline(always)]
     pub(super) fn build_padded_ref_hbd(
         &self,
         chroma: Option<(&[u8], &[u8])>,
@@ -265,6 +270,7 @@ impl EncodePipeline {
         padded_ref_hbd
     }
 
+    #[inline(always)]
     pub(super) fn stash_pa_picture(
         &mut self,
         pcs: &PictureControlSet,

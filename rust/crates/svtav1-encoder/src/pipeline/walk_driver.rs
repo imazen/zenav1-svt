@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn entropy_walk(
         preset: i8,
         superres_denom: Option<u8>,

@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn resolve_frame_me(
         &mut self,
         display_order: u64,
@@ -127,6 +128,7 @@ impl EncodePipeline {
         frame_me
     }
 
+    #[inline(always)]
     pub(super) fn plan_sb_qindex(
         &self,
         w: usize,
@@ -227,6 +229,7 @@ impl EncodePipeline {
         Ok(sb_plan)
     }
 
+    #[inline(always)]
     pub(super) fn resolve_gm_models(
         &self,
         display_order: u64,
@@ -422,6 +425,7 @@ impl EncodePipeline {
         gm_models
     }
 
+    #[inline(always)]
     pub(super) fn build_coding_quant(
         &self,
         stale_vars: &Option<Vec<crate::pd0::SbVariance>>,
@@ -615,6 +619,7 @@ impl EncodePipeline {
         c_quant
     }
 
+    #[inline(always)]
     pub(super) fn derive_seq_tools(
         &self,
         zen_intra_edge_filter: bool,
@@ -700,6 +705,7 @@ impl EncodePipeline {
 }
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn derive_screen_content(
         &self,
         sc_arm: crate::sc_detect::ScArm,
@@ -738,6 +744,7 @@ impl EncodePipeline {
         sc_derivation
     }
 
+    #[inline(always)]
     pub(super) fn derive_base_qindex(
         &mut self,
         display_order: u64,
@@ -772,6 +779,7 @@ impl EncodePipeline {
         Ok(base_qindex)
     }
 
+    #[inline(always)]
     pub(super) fn derive_qm_levels(
         &self,
         base_qindex: u8,

@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn apply_tpl_qp(
         &self,
         is_key: bool,
@@ -150,6 +151,7 @@ impl EncodePipeline {
         }
     }
 
+    #[inline(always)]
     pub(super) fn resolve_primary_ref_cdfs(
         &self,
         is_key: bool,
@@ -202,6 +204,7 @@ impl EncodePipeline {
         Ok((primary_ref_frame_for_cdf, primary_ref_cdfs))
     }
 
+    #[inline(always)]
     pub(super) fn estimate_gm(
         &self,
         is_key: bool,
@@ -244,6 +247,7 @@ impl EncodePipeline {
         gm_estimation
     }
 
+    #[inline(always)]
     pub(super) fn derive_ssim_rdmult(
         &self,
         is_key: bool,
@@ -312,6 +316,7 @@ impl EncodePipeline {
         ssim_rdmult
     }
 
+    #[inline(always)]
     pub(super) fn build_md_inputs(
         &self,
         is_key: bool,

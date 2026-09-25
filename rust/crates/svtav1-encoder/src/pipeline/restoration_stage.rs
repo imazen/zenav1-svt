@@ -1,6 +1,7 @@
 use super::*;
 
 impl EncodePipeline {
+    #[inline(always)]
     pub(super) fn search_restoration(
         &self,
         chroma: Option<(&[u8], &[u8])>,
