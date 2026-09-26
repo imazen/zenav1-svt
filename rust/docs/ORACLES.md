@@ -67,7 +67,7 @@ the change that moves it.
 | oracle | still grid, 288 cells (`tools/oracle_still_grid.sh`) | function-level C parity (`just cparity-oracle`) |
 |---|---|---|
 | `mainline-4.2.0` | 288/288 (re-measured 2026-09-26); also `identity_full_8bit` 1100/1100, `bd10_photo_gate` 191/191, `bd10_nonflat_gate` 309/309 under `SVT_ORACLE=mainline-4.2.0` | 867/867, 8 fork-only tests excluded by the caller |
-| `ghost-robot` | 41/288 (re-measured 2026-09-26 at `2848742f`) | 869/873 on main at `35252c34` (2026-09-26, re-measured in the main checkout); the 4 open divergences are pinned in `oracles/divergent/ghost-robot.txt` and checked by `tools/cparity_ratchet.sh` in CI shard 1 |
+| `ghost-robot` | 41/288 (re-measured 2026-09-26 at `2848742f`; every cell's verdict pinned by `tools/still_grid_gate.sh` in CI shard 1) | 869/873 on main at `35252c34` (2026-09-26, re-measured in the main checkout); the 4 open divergences are pinned in `oracles/divergent/ghost-robot.txt` and checked by `tools/cparity_ratchet.sh` in CI shard 1 |
 | `hybrid-3115` | not run | 875/875 |
 
 ## How an oracle is built
