@@ -2622,7 +2622,7 @@ Crates are not published to crates.io yet — depend by git.
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
 
 ### Fixed
-- Video key frames now take the video arm's settings where C does: the independent-chroma search level at preset 1 (801d103f), and at preset -1 the qp-based threshold scaling C turns off for NIC counts, NIC pruning and the transform-type search (b0e7cbe5). At preset 7 the PD1 split walk takes the video arm's `depth_early_exit` and `parent_cost_bias` (aae52a01). Every preset -1, 1 and 7 key frame of the real-video census now matches C (census 244 -> 260 of 540 cells identical through 8 frames).
+- Video key frames now take the video arm's settings where C does: the independent-chroma search level at preset 1 (801d103f), and at preset -1 the qp-based threshold scaling C turns off for NIC counts, NIC pruning and the transform-type search (b0e7cbe5). At preset 7 the PD1 split walk takes the video arm's `depth_early_exit` and `parent_cost_bias` (aae52a01), and frames coded with `TX_MODE_LARGEST` (the video arm at M10+, and non-base frames at M8/M9) no longer price a tx-size symbol C never codes (77d4d3ce; this changes the bytes of such frames). Every key frame of the real-video census now matches C (census 244 -> 284 of 540 cells identical through 8 frames).
 
 - Random access with TPL (`aq_mode` 2) panicked at frame sizes whose TPL block is 16 wide (e.g. 130x98 at presets 9 and 12): a subsampled-row copy staged 16 samples through a 32-sample array (8fd42f7e).
 - Preset -1 video panicked in debug-assertion builds: a `debug_assert!` claimed the MDS0-2 interpolation-filter levels unreachable; they are reached at preset -1, where the search is not yet modelled (8fd42f7e).
