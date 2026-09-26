@@ -1,4 +1,5 @@
 use super::*;
+use crate::port_md_lambda::superres_mi_cols;
 
 /// C `generate_lambda_scaling_factor` — per-16x16 (or 32x32) grid, combine
 /// `recrf_dist` against the MC-dependency delta into `c = 1.2 + rk/r0`.
@@ -25,7 +26,7 @@ pub fn generate_lambda_scaling_factor(
         3
     };
     let step = 1i32 << tpl_synth_size_offset;
-    let mi_cols_sr = ((enhanced_unscaled_width as i32 + 15) / 16) << 2;
+    let mi_cols_sr = superres_mi_cols(enhanced_unscaled_width as i32);
     // BLOCK_32X32 at synth 32 else BLOCK_16X16 — 8x8 shares the 16 grid.
     let (num_mi_w, num_mi_h) = if synth_blk_size == 32 { (8, 8) } else { (4, 4) };
     let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
@@ -315,7 +316,7 @@ pub(super) fn tpl_model_update_b(
     } else {
         3
     };
-    let mi_cols_sr = ((ref_pic.aligned_width as i32 + 15) / 16) << 2;
+    let mi_cols_sr = superres_mi_cols(ref_pic.aligned_width as i32);
 
     let grid_pos_row_base = round_floor(ref_pos_row, bh) * bh;
     let grid_pos_col_base = round_floor(ref_pos_col, bw) * bw;
@@ -406,7 +407,7 @@ pub(super) fn tpl_model_update(
         3
     };
     let step = 1i32 << shift;
-    let mi_cols_sr = ((pics[frame_idx].aligned_width as i32 + 15) / 16) << 2;
+    let mi_cols_sr = superres_mi_cols(pics[frame_idx].aligned_width as i32);
 
     // Copy the cells out first so the per-ref mutable borrows don't alias the
     // current picture's grid.
@@ -533,8 +534,8 @@ pub fn generate_r0beta(
     let step = 1i32 << shift;
     let col_step_sr = coded_to_superres_mi(step, superres_denom);
     // Super-res UPSCALED size.
-    let mi_cols_sr = ((enhanced_unscaled_width as i32 + 15) / 16) << 2;
-    let mi_rows = ((enhanced_unscaled_height as i32 + 15) / 16) << 2;
+    let mi_cols_sr = superres_mi_cols(enhanced_unscaled_width as i32);
+    let mi_rows = superres_mi_cols(enhanced_unscaled_height as i32);
 
     let mut recrf_dist_base_sum: i64 = 0;
     let mut mc_dep_delta_base_sum: i64 = 0;

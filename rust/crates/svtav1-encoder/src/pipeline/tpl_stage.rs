@@ -318,7 +318,7 @@ impl EncodePipeline {
         };
         let factor_grid_len = |synth_blk_32: bool, mi_rows: i32| -> usize {
             let n = if synth_blk_32 { 8 } else { 4 };
-            let mi_cols_sr = ((aw as i32 + 15) / 16) << 2;
+            let mi_cols_sr = crate::port_md_lambda::superres_mi_cols(aw as i32);
             let cols = (mi_cols_sr + n - 1) / n;
             let rows = (mi_rows + n - 1) / n;
             (rows * cols) as usize

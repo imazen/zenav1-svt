@@ -460,7 +460,7 @@ pub fn sb_setup_lambda(
     let mi_row = (sb_org_y / 4) as i32;
 
     let mi_col_sr = crate::port_md_lambda::coded_to_superres_mi(mi_col, i32::from(superres_denom));
-    let mi_cols_sr = ((enhanced_unscaled_width as i32 + 15) / 16) << 2;
+    let mi_cols_sr = crate::port_md_lambda::superres_mi_cols(enhanced_unscaled_width as i32);
     let sb_mi_width_sr = crate::port_md_lambda::coded_to_superres_mi(
         if sb_size_is_128 { 32 } else { 16 },
         i32::from(superres_denom),

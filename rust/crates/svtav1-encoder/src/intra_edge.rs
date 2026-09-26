@@ -584,8 +584,8 @@ pub fn build_directional_edges(
     // spare superblock allocation beyond the decoded frame.
     debug_assert_eq!(recon.len() % stride, 0);
     debug_assert!(frame_w.is_multiple_of(8) && frame_h.is_multiple_of(8));
-    let mi_cols = 2 * ((frame_w + 7) >> 3);
-    let mi_rows = 2 * ((frame_h + 7) >> 3);
+    let mi_cols = crate::frame_geom::mi_units(frame_w);
+    let mi_rows = crate::frame_geom::mi_units(frame_h);
     let mi_row = abs_y >> 2;
     let mi_col = abs_x >> 2;
     let txwpx = width;
@@ -886,9 +886,9 @@ impl TileMi {
     pub fn whole_frame(frame_w: usize, frame_h: usize) -> Self {
         Self {
             mi_row_start: 0,
-            mi_row_end: 2 * ((frame_h + 7) >> 3),
+            mi_row_end: crate::frame_geom::mi_units(frame_h),
             mi_col_start: 0,
-            mi_col_end: 2 * ((frame_w + 7) >> 3),
+            mi_col_end: crate::frame_geom::mi_units(frame_w),
         }
     }
 
@@ -935,8 +935,8 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     // equal C `av1_cm->mi_cols/rows` for either. (The old `% 8 == 0` assert
     // wrongly rejected the legitimate odd-true-dim input.)
     debug_assert!(g.frame_w > 0 && g.frame_h > 0);
-    let mi_cols = 2 * ((g.frame_w + 7) >> 3);
-    let mi_rows = 2 * ((g.frame_h + 7) >> 3);
+    let mi_cols = crate::frame_geom::mi_units(g.frame_w);
+    let mi_rows = crate::frame_geom::mi_units(g.frame_h);
     let txwpx = g.txw as i64;
     let txhpx = g.txh as i64;
     let wpx = (g.bw_px >> g.ss) as i64;
@@ -1206,8 +1206,8 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     // wrongly rejected the legitimate odd-true-dim input.)
     debug_assert!(g.frame_w > 0 && g.frame_h > 0);
     let base: i32 = 128 << (bd - 8);
-    let mi_cols = 2 * ((g.frame_w + 7) >> 3);
-    let mi_rows = 2 * ((g.frame_h + 7) >> 3);
+    let mi_cols = crate::frame_geom::mi_units(g.frame_w);
+    let mi_rows = crate::frame_geom::mi_units(g.frame_h);
     let txwpx = g.txw as i64;
     let txhpx = g.txh as i64;
     let wpx = (g.bw_px >> g.ss) as i64;

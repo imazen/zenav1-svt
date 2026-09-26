@@ -139,6 +139,13 @@ pub fn filter_intra_allowed_bsize(bsize: BlockSize) -> bool {
     BLOCK_SIZE_WIDE[i] <= 32 && BLOCK_SIZE_HIGH[i] <= 32
 }
 
+/// C `((width + 15) / 16) << 2` (mode_decision.c:4114, and inline at every
+/// other superres-aware site): the picture's column (or row) bound in mi
+/// units, from the UPSCALED width, rounded up to a 16-pixel grid.
+pub(crate) fn superres_mi_cols(unscaled: i32) -> i32 {
+    ((unscaled + 15) / 16) << 2
+}
+
 /// C `coded_to_superres_mi` (resize.h:71).
 #[inline]
 pub fn coded_to_superres_mi(mi_col: i32, denom: i32) -> i32 {
@@ -289,7 +296,7 @@ pub fn tpl_scale_for_block(
 ) -> Option<f64> {
     let mi_col_sr = coded_to_superres_mi(mi_col, superres_denom);
     // C `((width + 15) / 16) << 2` — the picture's column bound in mi units.
-    let mi_cols_sr = ((unscaled_width + 15) / 16) << 2;
+    let mi_cols_sr = superres_mi_cols(unscaled_width);
     let block_mi_width_sr = coded_to_superres_mi(bw_mi, superres_denom);
     // C `bsize_base` is BLOCK_32X32 or BLOCK_16X16 -> 8 or 4 mi units.
     let num_mi_w = if synth_blk_32 { 8 } else { 4 };

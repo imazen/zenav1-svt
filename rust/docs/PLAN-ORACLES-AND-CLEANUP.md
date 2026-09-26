@@ -110,9 +110,15 @@ It was done when:
     build once an item is used, so the annotation cannot outlive the gap.
     Triage list (wire or delete): `port_enc_dec_cdf` (C SB CDF selection and
     averaging, `cdf_ctrl`, 11 items), `port_pd0_detector` (allintra detector,
-    9), `frame_geom` (13), `port_rc_driver` (4), the compound predictors in
+    9), `port_rc_driver` (4), the compound predictors in
     `inter_pred_arm` (3), `run_frame_me`, `picture::PictureControlSet`
-    fields, `port_tf_driver` counters.
+    fields, `port_tf_driver` counters. `frame_geom`'s 13 are resolved:
+    `sb_geom`, `lr_units_in_dim` and `seq_size_bits` duplicated live code
+    (`port_pcs_geom::sb_geom`, `count_units_in_tile`, `entropy::obu`) and
+    are deleted with their one test; the trivial accessors are deleted; the
+    spec MiCols rule is one `frame_geom::mi_units` (intra_edge's three
+    copies) and C's `((w + 15) / 16) << 2` one
+    `port_md_lambda::superres_mi_cols` (seven copies).
   - Open: the other 85 modules are used by integration tests; T2 moves those
     tests in-crate first.
 
