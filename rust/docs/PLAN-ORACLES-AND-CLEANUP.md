@@ -760,5 +760,7 @@ Order, by expected size:
   - Done (this change): 38 inline `#[cfg(test)]` modules in the 23 files
     over 2 kloc moved to sibling files (`<file>/tests.rs` and so on) with
     `tools/split_inline_mod.py`. The test count is unchanged (2770).
-  - Open: the smaller files, and `crates/*/tests/` binaries that test
-    private internals, which belong in-crate (T2).
+  - Done (2026-09-26): the 40 remaining inline test modules of 150+ lines
+    (11,731 lines) moved out the same way; 2764 tests before and after.
+  - Open: `crates/*/tests/` binaries that test private internals, which
+    belong in-crate (T2).
