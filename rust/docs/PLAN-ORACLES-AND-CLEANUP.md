@@ -341,6 +341,64 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     6. Scratch artifacts (not in the repo): instrumented GR lib + probe
        at `~/tmp/gr-probe/` (PFL_IN/PFL_OUT/ENC_LF prints);
        recon dumps at `~/tmp/recon-cmp/`.
+  - Session findings, second pass (2026-09-27, same workspace — chased the
+    upstream divergence on `photo_64_q20_p2_b8`; investigation only, all
+    temp instrumentation reverted, nothing landed):
+    7. **Two wrap dumps read the wrong offset — treat their diffs as
+       artifacts.** `SVT_CCOEF_OUT`/`SVT_QLEVELS_OUT` (wrap_recon.c) index
+       `coeff_buffer_sb` by `txb_origin_index`, which is NOT the
+       `coded_area_sb` offset the encode pass writes. The "C committed
+       pos3=1 vs port 2" coefficient divergence at block (0,0) was such
+       an artifact: reading `quantized_coeff` at `coded_area_sb_update`
+       inside `update_coeff_cdf` shows C's packed nz list is
+       byte-identical to the port's `PCOEF` for block (0,0). Same class
+       of artifact in `CFAST` `pred0/pred1/predS` — `cand_bf->pred` is
+       SB-offset, index 0 is another block's data.
+    8. **First real divergence is leaf (16,0)px = mi (0,4), the 3rd
+       coded leaf** (16x16). C `MDSTATS`: `mode=2 uv=13 ady=3 txd=0`;
+       port `PTREE`: `mode=0 uv=13 ady=0 txd=0`. Verified: coded coeffs
+       of (0,0) match exactly; the pre-DLF recon (dumped from
+       `svt_aom_get_recon_pic` in instrumented C vs `SVTAV1_DLF_TRY_BIN`
+       level-0 in the port) is byte-identical over x<16 and diverges at
+       (16,0) onward — the partition trees and everything upstream are
+       in lockstep.
+    9. **Predictions for that leaf are byte-identical on both sides.**
+       Instrumented `svt_av1_predict_intra_block` (build_intra_predictors
+       output `dst`) vs port `predict_unit` `dst` for mode=2, angle
+       deltas -3..3: dst[0], dst[stride], and block mean match on all
+       seven (`90/97/112.00`, `90/98/112.87`, `90/98/113.64`,
+       `90/99/114.06`, `90/100/114.56`, `91/102/115.11`,
+       `91/104/115.24` both sides). Left border identical
+       (`[90,99,130,112,128,106,112,100,...]` from the same recon
+       column). Input identical (`enhanced_pic` == raw input, 0 diff
+       pixels). So the residual the fast loop scores is identical — yet
+       the per-candidate distortion differs: C `luma_fast_dist` (CFAST
+       `rawsatd`) vs port `satd` at (16,0) 16x16 mode=2 by angle:
+       C `21798/21584/20878/22502/20196/20088/19732` vs port
+       `22428/21904/21008/22572/20042/19836/19674` — mixed-sign deltas
+       of ~0.3-3%, enough to reorder candidates.
+    10. **Next concrete step:** dump the residual `hadamard_path`
+        actually consumes (the per-`stepr/stepc` tile residual inside
+        `product_coding_loop.c:1223-1290`, or `cand_bf->residual` at the
+        block's real offset) for (16,0) mode=2 ang=3, and compute the
+        aom hadamard/SATD offline vs `svt_av1_hadamard_satd_16x16`. If
+        residuals are identical, the divergence is inside the *fused*
+        AVX2 kernel `svt_av1_hadamard_satd_16x16` (GR's
+        `ASM_AVX2/hadamard_path_avx2.c`) vs the port's split
+        `residual_i16 -> aom_hadamard_16x16 -> aom_satd`
+        (crates/svtav1-encoder/src/leaf_funnel/predict.rs
+        `hadamard_satd_into`) — diff GR's kernel against mainline
+        `9292ec8e3` (any GR tuning commit touching
+        `hadamard_path*`/`satd*`/`pic_operators_intrin*` is the arm to
+        port behind `SvtReference::GhostRobot`).
+    11. Variance-boost (`f354a3224` double-precision `ppcs->variance`,
+        the dead `port_pd0_detector.rs` fork arm) is NOT the first
+        divergence on this cell: single-SB 64x64, `base_q_idx=80` on
+        both sides and the streams match through bit 63 — the frame QP
+        was not readjusted differently. It remains a live suspect for
+        multi-SB cells; the port still needs the double-variance arm for
+        `pd0_detector_allintra`/`lvl6_cost`/`var_boost` correctness in
+        general.
 
 - [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
   MDS0/1/2 there, and the port does not model those IFS arms (it skips the
