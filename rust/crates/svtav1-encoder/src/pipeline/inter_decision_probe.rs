@@ -357,26 +357,29 @@ fn the_ports_own_svt_motion_search_finds_cs_mv_on_the_reference_cell() {
     // pin from a dump, so BOTH values are swept: the answer must not
     // depend on a guess.
     for &boosted in &[false, true] {
-        let signals = sig_deriv_me(MeDerivInputs {
-            enc_mode: 6,
-            sc_class5: 0,
-            input_resolution: ResolutionRange::R240p,
-            rtc_tune: false,
-            is_base: boosted,
-            hierarchical_levels: 0,
-            // `enc_mode_config.c:1987-1999` sets all three
-            // unconditionally (quoted in `port_preanalysis`).
-            enable_hme_flag: 1,
-            enable_hme_level0_flag: 1,
-            enable_hme_level1_flag: 1,
-            enable_hme_level2_flag: 1,
-            use_best_me_unipred_cand_only: 0,
-            me_qp_based_th_scaling: false,
-            hme_qp_based_th_scaling: false,
-            qp: 40,
-            safe_limit_nref: 0,
-            safe_limit_zz_th: 0,
-        });
+        let signals = sig_deriv_me(
+            MeDerivInputs {
+                enc_mode: 6,
+                sc_class5: 0,
+                input_resolution: ResolutionRange::R240p,
+                rtc_tune: false,
+                is_base: boosted,
+                hierarchical_levels: 0,
+                // `enc_mode_config.c:1987-1999` sets all three
+                // unconditionally (quoted in `port_preanalysis`).
+                enable_hme_flag: 1,
+                enable_hme_level0_flag: 1,
+                enable_hme_level1_flag: 1,
+                enable_hme_level2_flag: 1,
+                use_best_me_unipred_cand_only: 0,
+                me_qp_based_th_scaling: false,
+                hme_qp_based_th_scaling: false,
+                qp: 40,
+                safe_limit_nref: 0,
+                safe_limit_zz_th: 0,
+            },
+            crate::reference::SvtReference::Hybrid3115,
+        );
         let mut me = MeContext::default();
         apply_me_signals(&mut me, &signals);
         // POSITIVE CONTROL that the bridge wrote something: a default

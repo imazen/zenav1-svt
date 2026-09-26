@@ -232,6 +232,7 @@ pub(super) fn encode_one_tile_body(
         matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
             || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
         temporal_layer == 0,
+        reference,
     );
     // `pcs->nic_level` -> `svt_aom_set_nic_controls`, for THIS arm
     // (`crate::nic_arm`). At M6 the video arm is level 8 against the still
@@ -239,7 +240,13 @@ pub(super) fn encode_one_tile_body(
     // thresholds 300/3/3 instead of 1200/15/15. Byte-neutral on the still
     // path except for one baked-table correction the pin names
     // (`nic_arm::allintra_flattening_matches_the_ladder`).
-    crate::nic_arm::apply(&mut funnel_cfg, sc_arm, md_eff_mode, temporal_layer == 0);
+    crate::nic_arm::apply(
+        &mut funnel_cfg,
+        sc_arm,
+        md_eff_mode,
+        temporal_layer == 0,
+        reference,
+    );
     // `uv_mode_nfl_count`'s base (product_coding_loop.c:7693-7696), for
     // THIS arm and picture: 32 on an allintra still, 64 on a video KEY
     // frame, 32 / 16 on a non-highest / highest-layer inter picture.

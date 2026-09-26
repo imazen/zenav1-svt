@@ -130,8 +130,12 @@ pub mod dlf_out {
     pub const ZERO_FILT_STRENGTH: usize = 6;
     /// `prev_dlf_dist_th`
     pub const PREV_DIST_TH: usize = 7;
+    /// Ghost Robot `f9100ab22`'s `pick_method` (`LPF_PICK_FROM_*` =
+    /// FULL_IMAGE 0 / SUBIMAGE 1 / Q 2); on oracles without the field the
+    /// shim emits `sb_based_dlf ? Q : FULL_IMAGE` — the same mapping.
+    pub const PICK_METHOD: usize = 8;
     /// Slot count; cross-checked against the shim.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
 }
 
 fn check_slots() {

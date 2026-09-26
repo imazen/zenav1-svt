@@ -47,6 +47,15 @@ pub(crate) struct Lpd1FrameIn {
     /// `ppcs->ref_list0_count_try` / `ref_list1_count_try`.
     pub ref_list0_count_try: u32,
     pub ref_list1_count_try: u32,
+    /// The `SvtReference` the frame is being encoded against — selects the
+    /// fork arms inside `set_lpd1_ctrls` (`!subsampling_x` forces level 0 on
+    /// Ghost Robot's `f67a0f747`).
+    pub reference: crate::reference::SvtReference,
+    /// `pcs->mimic_only_tx_4x4` — C's `frm_hdr.coded_lossless` post-step
+    /// (`md_config_process.c:1086`). Ghost Robot's `a74cfb9ec` reads it to
+    /// force `lpd1_lvl`/`pd1_lvl_refinement` to 0; on the older references
+    /// it is unread here.
+    pub coded_lossless: bool,
     /// `pcs->ref_skip_percentage`.
     pub ref_skip_percentage: u8,
     /// `ppcs->use_best_me_unipred_cand_only`.
@@ -94,6 +103,13 @@ pub(crate) fn resolve_sb_lpd1(
     // (enc_mode_config.c:7163-7175): `pic_lpd1_lvl` through M10, an ME bump
     // above it.
     let mut lpd1_lvl = i32::from(i.pic_lpd1_lvl);
+    // Ghost Robot `a74cfb9ec` (`enc_mode_config.c:7241`): `mimic_only_tx_4x4`
+    // takes the WHOLE ladder off before it runs — "SB-level adaptation must
+    // not re-enable the light path". Collapsed here to `lpd1_lvl = 0`, which
+    // `set_lpd1_ctrls` maps to REGULAR_PD1 → the `None` return below.
+    if i.reference == crate::reference::SvtReference::GhostRobot && i.coded_lossless {
+        lpd1_lvl = 0;
+    }
     if i.enc_mode > em::M10 && !sb.slice_type_is_intra {
         let me_8x8 = sb.me_8x8_cost_variance;
         // `3 * ctx->qp_index` at <= M8, a flat 3000 above — and this arm only
@@ -116,15 +132,27 @@ pub(crate) fn resolve_sb_lpd1(
     if dbg {
         eprintln!("RLPD1 sb={sb_index} lvl={lpd1_lvl} pic={}", i.pic_lpd1_lvl);
     }
-    let mut ctrls = set_lpd1_ctrls(u8::try_from(lpd1_lvl).ok()?)?;
+    // `ctx->subsampling_x` is always 1 on this path — the port's envelope is
+    // 4:2:0, and a monochrome frame never reaches the LPD1 detector — so the
+    // fork's `!subsampling_x` collapse cannot fire here regardless.
+    let mut ctrls = set_lpd1_ctrls(u8::try_from(lpd1_lvl).ok()?, 1, i.reference)?;
     // A level that resolves to `REGULAR_PD1` (-1) cannot be raised by the
     // detector — it only demotes — so the regular path wins by construction.
     if ctrls.pd1_level <= REGULAR_PD1 {
         return None;
     }
     // Non-rtc `pd1_lvl_refinement` (enc_mode_config.c:7179-7183): 0 through
-    // M10, 2 above.
-    let pd1_lvl_refinement = if i.enc_mode <= em::M10 { 0 } else { 2 };
+    // M10, 2 above. Ghost Robot `a74cfb9ec` then collapses it to 0 when
+    // `!ctx->subsampling_x || pcs->mimic_only_tx_4x4` (`:7288`) — the
+    // `subsampling_x` half cannot fire here (4:2:0 envelope, always 1), the
+    // `coded_lossless` half can.
+    let pd1_lvl_refinement = if i.enc_mode <= em::M10
+        || (i.reference == crate::reference::SvtReference::GhostRobot && i.coded_lossless)
+    {
+        0
+    } else {
+        2
+    };
     // `skip_pd_pass_0` (enc_dec_process.c:2959): `disallow_below_64x64 &&
     // (sb_size==64 || max_block_size==64) || (disallow_below_32x32 &&
     // max_block_size==32)`. On the 64x64 video arm `max_block_size` is 64, so

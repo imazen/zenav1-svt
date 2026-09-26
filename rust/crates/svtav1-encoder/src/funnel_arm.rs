@@ -58,12 +58,20 @@ use crate::sc_detect::ScArm;
 
 /// `pcs->txt_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
+///
+/// `reference` selects the `85842c43c` research-preset arms on the video
+/// ladder under `GhostRobot`.
 #[must_use]
-pub(crate) fn txt_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
+pub(crate) fn txt_level(
+    arm: ScArm,
+    enc_mode: i8,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     let m = enc_mode;
     match arm {
         ScArm::Allintra => md_config::txt_level_allintra(m),
-        ScArm::Video { .. } => md_config::txt_level_default(m, is_base),
+        ScArm::Video { .. } => md_config::txt_level_default(m, is_base, reference),
     }
 }
 
@@ -152,9 +160,16 @@ pub(crate) fn cfl_ctrls(level: u8) -> (bool, Option<(u8, u32)>) {
 
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_islice: bool, is_base: bool) {
+pub(crate) fn apply(
+    cfg: &mut FunnelCfg,
+    arm: ScArm,
+    enc_mode: i8,
+    is_islice: bool,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) {
     let (txt_on, lt16, ge16, ilt16, ige16, satd_th, satd_th_inter, rate_th) =
-        txt_ctrls(txt_level(arm, enc_mode, is_base));
+        txt_ctrls(txt_level(arm, enc_mode, is_base, reference));
     cfg.txt_on = txt_on;
     cfg.txt_group_lt16 = lt16;
     cfg.txt_group_ge16 = ge16;
@@ -204,7 +219,14 @@ mod tests {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
-            apply(&mut walked, ScArm::Allintra, eff, true, true);
+            apply(
+                &mut walked,
+                ScArm::Allintra,
+                eff,
+                true,
+                true,
+                crate::reference::SvtReference::Hybrid3115,
+            );
             assert_eq!(baked.txt_on, walked.txt_on, "txt enabled at M{preset}");
             if baked.txt_on {
                 assert_eq!(
@@ -247,7 +269,10 @@ mod tests {
     #[test]
     fn video_m6_key_frame_widens_txt_and_unconditionalizes_cfl() {
         let arm = ScArm::Video { is_islice: true };
-        assert_eq!(txt_level(arm, 6, true), 7);
+        assert_eq!(
+            txt_level(arm, 6, true, crate::reference::SvtReference::Hybrid3115),
+            7
+        );
         assert_eq!(txt_ctrls(7), (true, 6, 6, 5, 5, 10, 5, 100));
         assert_eq!(cfl_level(arm, 6, true, true), 2);
         assert_eq!(cfl_ctrls(2), (true, Some((1, 0))));

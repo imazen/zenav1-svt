@@ -1182,8 +1182,15 @@ pub mod cm_in {
     pub const CAP_QP_SCALING: usize = 32;
     /// `scs->static_config.qp`
     pub const STATIC_QP: usize = 33;
+    /// `pcs->mimic_only_tx_4x4` — Ghost Robot `a74cfb9ec` reads it to keep
+    /// coded-lossless SBs off the light-PD1 path. Inert on other oracles.
+    pub const MIMIC_TX_4X4: usize = 34;
+    /// `ctx->subsampling_x` — Ghost Robot `f67a0f747` reads it (the field
+    /// exists only on the fork's `ModeDecisionContext`; the shim writes it
+    /// under `ZEN_ORACLE_CTX_SUBSAMP`). Inert on other oracles.
+    pub const SUBSAMP_X: usize = 35;
     /// Number of input slots.
-    pub const COUNT: usize = 34;
+    pub const COUNT: usize = 36;
 }
 
 /// Output slot indices for [`sig_deriv_enc_dec_common`], mirroring `CM_O_*`.
@@ -1594,8 +1601,15 @@ pub mod md_in {
     pub const PICTURE_QP: usize = 36;
     /// `scs->static_config.extended_crf_qindex_offset`
     pub const EXT_CRF_OFFSET: usize = 37;
+    /// `scs->static_config.complex_hvs` — fork-only field (the shim writes
+    /// it under `#ifndef ZEN_ORACLE_MAINLINE_API`); Ghost Robot's
+    /// `70877799`/`d705ef50` mds0 arm reads it.
+    pub const COMPLEX_HVS: usize = 38;
+    /// `scs->static_config.encoder_color_format` (`EbColorFormat`,
+    /// `EB_YUV444 == 3`) — read by Ghost Robot's `f67a0f747` `tx_mode` OR.
+    pub const COLOR_FORMAT: usize = 39;
     /// Number of input slots.
-    pub const COUNT: usize = 38;
+    pub const COUNT: usize = 40;
 }
 
 /// Number of output slots the md-config dump uses.

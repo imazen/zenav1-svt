@@ -828,6 +828,7 @@ mod nic_class_prune_tests {
             crate::sc_detect::ScArm::Video { is_islice: false },
             6,
             true,
+            crate::reference::SvtReference::Hybrid3115,
         );
         assert_eq!(cfg.mds2_class_th, 10, "nic level 8 mds2_class_th");
         assert_eq!(cfg.mds1_class_th, 200, "nic level 8 mds1_class_th");

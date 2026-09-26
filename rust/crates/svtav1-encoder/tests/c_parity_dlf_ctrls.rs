@@ -126,6 +126,7 @@ fn c_ctrls(out: &[i64; dlf_out::COUNT]) -> DlfCtrls {
         early_exit_convergence: out[dlf_out::EARLY_EXIT] as u8,
         zero_filter_strength_lvl: out[dlf_out::ZERO_FILT_STRENGTH] as u8,
         prev_dlf_dist_th: out[dlf_out::PREV_DIST_TH] as u16,
+        pick_method: out[dlf_out::PICK_METHOD] as u8,
     }
 }
 
@@ -151,6 +152,7 @@ fn port_level_default(c: &Case) -> u8 {
         c.pcs_temporal_layer == 0,
         c.coeff_lvl,
         c.ref_skip_perc,
+        reference(),
     )
 }
 
@@ -192,6 +194,21 @@ fn check(c: &Case, video: bool) {
 }
 
 const ENC_MODES: [i8; 15] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+/// Ghost Robot's `85842c43c` extended `EncMode` to MRS (-3)/MRP (-2).
+const ENC_MODES_GR: [i8; 17] = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+/// The `SvtReference` matching the linked C oracle.
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
+fn enc_modes() -> &'static [i8] {
+    if reference() == svtav1_encoder::reference::SvtReference::GhostRobot {
+        &ENC_MODES_GR
+    } else {
+        &ENC_MODES
+    }
+}
 
 const RESOLUTIONS: [ResolutionRange; 7] = [
     ResolutionRange::R240p,
@@ -208,7 +225,7 @@ const RESOLUTIONS: [ResolutionRange; 7] = [
 /// run).
 #[test]
 fn dlf_ctrls_default_ladder_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &fd in &[0u8, 1, 2] {
             for &res in &RESOLUTIONS {
                 for &highest in &[false, true] {
@@ -242,7 +259,7 @@ fn dlf_ctrls_default_ladder_matches_c() {
 /// (25, 50, 75, 95).
 #[test]
 fn dlf_ctrls_default_modulation_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &fd in &[0u8, 2] {
             for &skip in &[0u8, 24, 25, 26, 49, 50, 51, 74, 75, 76, 94, 95, 96, 100] {
                 for &highest in &[false, true] {
@@ -270,7 +287,7 @@ fn dlf_ctrls_default_modulation_matches_c() {
 /// The STILL ladder — the arm the 280/280 still envelope rides on.
 #[test]
 fn dlf_ctrls_allintra_ladder_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &fd in &[0u8, 1, 2] {
             for &res in &RESOLUTIONS {
                 for &islice in &[false, true] {
@@ -294,7 +311,7 @@ fn dlf_ctrls_allintra_ladder_matches_c() {
 /// presets lower) and `frm_hdr->allow_intrabc`.
 #[test]
 fn dlf_ctrls_call_site_guards_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &flag in &[0u8, 1, 2] {
             for &ibc in &[false, true] {
                 for &video in &[false, true] {

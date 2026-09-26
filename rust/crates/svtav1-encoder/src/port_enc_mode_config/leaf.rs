@@ -60,9 +60,17 @@ pub fn get_enable_me_16x16(_enc_mode: i8) -> u8 {
 
 /// C `svt_aom_get_gm_core_level` (`enc_mode_config.c:180`). EXPORTED.
 #[must_use]
-pub fn get_gm_core_level(enc_mode: i8, super_res_off: bool) -> u8 {
+pub fn get_gm_core_level(
+    enc_mode: i8,
+    super_res_off: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     if !super_res_off {
         return 0;
+    }
+    // Ghost Robot 85842c43c: `<= ENC_MRP -> 1` ahead of `<= ENC_MR -> 2`.
+    if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRP {
+        return 1;
     }
     if enc_mode <= MR {
         2
@@ -77,11 +85,16 @@ pub fn get_gm_core_level(enc_mode: i8, super_res_off: bool) -> u8 {
 ///
 /// GM is off on every I-slice, so this returns 0 for the whole still envelope.
 #[must_use]
-pub fn derive_gm_level(enc_mode: i8, is_islice: bool, super_res_off: bool) -> u8 {
+pub fn derive_gm_level(
+    enc_mode: i8,
+    is_islice: bool,
+    super_res_off: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     if is_islice {
         0
     } else {
-        get_gm_core_level(enc_mode, super_res_off)
+        get_gm_core_level(enc_mode, super_res_off, reference)
     }
 }
 
@@ -96,7 +109,15 @@ pub fn derive_gm_level(enc_mode: i8, is_islice: bool, super_res_off: bool) -> u8
 /// inter injection can actually reach 1225/1000/720 — it truncates the
 /// candidate list and is bit-affecting.
 #[must_use]
-pub fn get_max_can_count(enc_mode: i8, rtc: bool) -> u16 {
+pub fn get_max_can_count(
+    enc_mode: i8,
+    rtc: bool,
+    reference: crate::reference::SvtReference,
+) -> u16 {
+    // Ghost Robot 85842c43c: `<= ENC_MRS -> 2500` ahead of the rtc split.
+    if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+        return 2500;
+    }
     if rtc {
         if enc_mode <= M7 {
             150
@@ -200,8 +221,39 @@ pub fn get_disallow_8x8_allintra() -> bool {
 // ---------------------------------------------------------------------------
 
 /// C `svt_aom_get_nsq_geom_level_default` (`enc_mode_config.c:8216`). EXPORTED.
+///
+/// Ghost Robot's `85842c43c` (research presets -3/-2) prepends an
+/// `enc_mode <= ENC_MRP -> 1` arm and gives M1/M2 a flat `2` where mainline
+/// ran them through the `<= M5` coeff_lvl arm.
 #[must_use]
-pub fn get_nsq_geom_level_default(enc_mode: i8, coeff_lvl: InputCoeffLvl) -> u8 {
+pub fn get_nsq_geom_level_default(
+    enc_mode: i8,
+    coeff_lvl: InputCoeffLvl,
+    reference: crate::reference::SvtReference,
+) -> u8 {
+    if reference == crate::reference::SvtReference::GhostRobot {
+        if enc_mode <= MRP {
+            return 1;
+        }
+        if enc_mode <= M0 {
+            return if coeff_lvl == InputCoeffLvl::High {
+                2
+            } else {
+                1
+            };
+        }
+        if enc_mode <= M2 {
+            return 2;
+        }
+        if enc_mode <= M5 {
+            return if coeff_lvl == InputCoeffLvl::High {
+                3
+            } else {
+                2
+            };
+        }
+        return 3;
+    }
     if enc_mode <= M0 {
         if coeff_lvl == InputCoeffLvl::High {
             2
@@ -263,8 +315,34 @@ pub fn get_nsq_search_level_default(
     is_islice: bool,
     temporal_layer_index: u8,
     seq_qp_mod: u8,
+    reference: crate::reference::SvtReference,
 ) -> u8 {
-    let mut nsq_search_level: i32 = if enc_mode <= M0 {
+    // Ghost Robot's `85842c43c` (research presets -3/-2) prepends MRS/MRP
+    // arms and re-bands M1 (6) and M2 (7 — mainline reached 7 via `<= M2`
+    // without the M1 split).
+    let mut nsq_search_level: i32 = if reference == crate::reference::SvtReference::GhostRobot {
+        if enc_mode <= MRS {
+            1
+        } else if enc_mode <= MRP {
+            2
+        } else if enc_mode <= M0 {
+            if ppcs_temporal_layer_index == 0 { 2 } else { 3 }
+        } else if enc_mode <= M1 {
+            6
+        } else if enc_mode <= M2 {
+            7
+        } else if enc_mode <= M3 {
+            9
+        } else if enc_mode <= M4 {
+            12
+        } else if enc_mode <= M6 {
+            15
+        } else if enc_mode <= M7 {
+            18
+        } else {
+            19
+        }
+    } else if enc_mode <= M0 {
         let is_base = ppcs_temporal_layer_index == 0;
         if is_base { 2 } else { 3 }
     } else if enc_mode <= M2 {
@@ -487,7 +565,20 @@ pub fn get_nsq_search_level_allintra(
 
 /// C `svt_aom_get_nic_level_default` (`enc_mode_config.c:4451`). EXPORTED.
 #[must_use]
-pub fn get_nic_level_default(enc_mode: i8, is_base: bool) -> u8 {
+pub fn get_nic_level_default(
+    enc_mode: i8,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
+    // Ghost Robot 85842c43c: `<= ENC_MRS -> 0`, `<= ENC_MRP -> 1`.
+    if reference == crate::reference::SvtReference::GhostRobot {
+        if enc_mode <= MRS {
+            return 0;
+        }
+        if enc_mode <= MRP {
+            return 1;
+        }
+    }
     if enc_mode <= MR {
         if is_base { 1 } else { 2 }
     } else if enc_mode <= M0 {
@@ -807,13 +898,19 @@ pub fn get_enable_sg_allintra(enc_mode: i8) -> u8 {
 /// C `dlf_level_modulation` (`enc_mode_config.c:1442`). static — tier 4.
 ///
 /// Applied on NON-BASE pictures only, so it is inert on a key frame.
+///
+/// Ghost Robot `b4c85f8f5` rewrote the speed-direction arms: a >95%-skip
+/// reference set now LANDS on 7 rather than wrapping to 0 (`>= 6 ? 0 : +2`
+/// became `= 7`), and the >75% arm saturates at 7 instead of zeroing at 7.
 #[must_use]
 pub fn dlf_level_modulation(
     default_dlf_level: u8,
     modulation_mode: u8,
     ref_skip_percentage: u8,
+    reference: crate::reference::SvtReference,
 ) -> u8 {
     let mut dlf_level = default_dlf_level;
+    let gr = reference == crate::reference::SvtReference::GhostRobot;
 
     if modulation_mode == 1 || modulation_mode == 2 {
         if ref_skip_percentage < 25 {
@@ -837,9 +934,21 @@ pub fn dlf_level_modulation(
 
     if (modulation_mode == 2 || modulation_mode == 3) && dlf_level > 4 {
         if ref_skip_percentage > 95 {
-            dlf_level = if dlf_level >= 6 { 0 } else { dlf_level + 2 };
+            dlf_level = if gr {
+                7
+            } else if dlf_level >= 6 {
+                0
+            } else {
+                dlf_level + 2
+            };
         } else if ref_skip_percentage > 75 {
-            dlf_level = if dlf_level == 7 { 0 } else { dlf_level + 1 };
+            dlf_level = if gr {
+                7.min(dlf_level + 1)
+            } else if dlf_level == 7 {
+                0
+            } else {
+                dlf_level + 1
+            };
         }
     }
 
@@ -850,6 +959,11 @@ pub fn dlf_level_modulation(
 ///
 /// Differs from `get_dlf_level_allintra` at nearly every preset and feeds the
 /// frame header's `loop_filter_level` directly.
+/// Ghost Robot `b4c85f8f5` ("Fix severe blocking with >=P8 in high CRFs")
+/// rewrote the video ladder: `<= M2 -> 1` (was `<= M0`), a new
+/// `<= M5 -> 3` band, `<= M9`'s last-layer arm 0 -> 7, the `<= M11` arm's
+/// `coeff_lvl`/`is_not_last_layer` detail collapsed to `is_base ? 6 : 7`,
+/// and the > M11 tail 0 -> 7.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn get_dlf_level_default(
@@ -860,26 +974,40 @@ pub fn get_dlf_level_default(
     is_base: bool,
     coeff_lvl: InputCoeffLvl,
     ref_skip_percentage: u8,
+    reference: crate::reference::SvtReference,
 ) -> u8 {
     let mut dlf_level: u8;
     // 0: off, 1: only towards bd-rate, 2: both sides, 3: only towards speed.
     let mut modulation_mode: u8 = 0;
+    let gr = reference == crate::reference::SvtReference::GhostRobot;
 
     if fast_decode <= 1 || resolution <= ResolutionRange::R360p {
-        if enc_mode <= M0 {
+        if (gr && enc_mode <= M2) || (!gr && enc_mode <= M0) {
             dlf_level = 1;
         } else if enc_mode <= M3 {
             dlf_level = 2;
+        } else if gr && enc_mode <= M5 {
+            dlf_level = 3;
         } else if enc_mode <= M6 {
             dlf_level = if is_not_last_layer != 0 { 3 } else { 6 };
         } else if enc_mode <= M7 {
             dlf_level = if is_not_last_layer != 0 { 3 } else { 6 };
             modulation_mode = 3;
         } else if enc_mode <= M9 {
-            dlf_level = if is_not_last_layer != 0 { 6 } else { 0 };
+            dlf_level = if is_not_last_layer != 0 {
+                6
+            } else if gr {
+                7
+            } else {
+                0
+            };
             modulation_mode = 3;
         } else if enc_mode <= M11 {
-            dlf_level = if coeff_lvl == InputCoeffLvl::High {
+            dlf_level = if gr {
+                // b4c85f8f5 dropped the `coeff_lvl`/`is_not_last_layer`
+                // split: `is_base ? 6 : 7`.
+                if is_base { 6 } else { 7 }
+            } else if coeff_lvl == InputCoeffLvl::High {
                 if is_base { 6 } else { 0 }
             } else if is_base {
                 6
@@ -890,7 +1018,7 @@ pub fn get_dlf_level_default(
             };
             modulation_mode = 3;
         } else {
-            dlf_level = 0;
+            dlf_level = if gr { 7 } else { 0 };
             modulation_mode = 3;
         }
     } else if enc_mode <= M6 {
@@ -907,14 +1035,21 @@ pub fn get_dlf_level_default(
     }
 
     if !is_base {
-        dlf_level = dlf_level_modulation(dlf_level, modulation_mode, ref_skip_percentage);
+        dlf_level =
+            dlf_level_modulation(dlf_level, modulation_mode, ref_skip_percentage, reference);
     }
     dlf_level
 }
 
 /// C `get_dlf_level_rtc` (`enc_mode_config.c:1512`). static — tier 4.
 #[must_use]
-pub fn get_dlf_level_rtc(enc_mode: i8, is_base: bool, ref_skip_percentage: u8) -> u8 {
+pub fn get_dlf_level_rtc(
+    enc_mode: i8,
+    is_base: bool,
+    ref_skip_percentage: u8,
+    hierarchical_levels: u32,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     let mut dlf_level: u8;
     let modulation_mode: u8;
     if enc_mode <= M7 {
@@ -927,11 +1062,20 @@ pub fn get_dlf_level_rtc(enc_mode: i8, is_base: bool, ref_skip_percentage: u8) -
         dlf_level = 7;
         modulation_mode = 3;
     } else {
-        dlf_level = 0;
+        // Ghost Robot b4c85f8f5: a flat (hierarchical_levels == 0) GOP still
+        // kills DLF, but a real hierarchy takes 7 — mainline tails to 0.
+        dlf_level = if reference == crate::reference::SvtReference::GhostRobot
+            && hierarchical_levels != 0
+        {
+            7
+        } else {
+            0
+        };
         modulation_mode = 3;
     }
     if !is_base {
-        dlf_level = dlf_level_modulation(dlf_level, modulation_mode, ref_skip_percentage);
+        dlf_level =
+            dlf_level_modulation(dlf_level, modulation_mode, ref_skip_percentage, reference);
     }
     dlf_level
 }
@@ -1202,7 +1346,11 @@ pub fn set_pic_pd0_lvl_allintra(enc_mode: i8, super_block_size: u16) -> u8 {
 /// Drives the sequence-header bits `enable_jnt_comp` / `enable_masked_compound`
 /// (`svt_aom_sig_deriv_pre_analysis_scs`).
 #[must_use]
-pub fn get_inter_compound_level(enc_mode: i8) -> u8 {
+pub fn get_inter_compound_level(enc_mode: i8, reference: crate::reference::SvtReference) -> u8 {
+    // Ghost Robot 85842c43c: `<= ENC_MRS -> 1` ahead of `<= M0 -> 3`.
+    if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+        return 1;
+    }
     if enc_mode <= M0 {
         3
     } else if enc_mode <= M2 {
@@ -1341,7 +1489,15 @@ pub fn sig_deriv_pre_analysis_pcs(
 /// Read by the LPD1 arms. The port's envelope has reference scaling and
 /// super-res OFF, so `ppcs->is_not_scaled` is true and this short-circuits —
 /// but the whole predicate is translated rather than assumed.
+///
+/// Ghost Robot's `507025f65` ("Fix switch between PD1 and LPD1",
+/// `enc_mode_config.c:2942` at `9dabe3ca`) removes the `is_not_scaled`
+/// shortcut entirely and gates on the list's `ref_list*_count_try`, the
+/// `ref_pic_ptr_array` → `EbReferenceObject` → `reference_picture` chain and
+/// `slice_type == B_SLICE`. `ref_present` models that whole availability
+/// chain; `is_not_scaled` is read by neither arm of the fork.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn is_ref_same_size(
     is_not_scaled: bool,
     is_b_slice: bool,
@@ -1350,7 +1506,11 @@ pub fn is_ref_same_size(
     ref_height: u16,
     frame_width: u16,
     frame_height: u16,
+    reference: crate::reference::SvtReference,
 ) -> bool {
+    if reference == crate::reference::SvtReference::GhostRobot {
+        return is_b_slice && ref_present && ref_width == frame_width && ref_height == frame_height;
+    }
     if is_not_scaled {
         return true;
     }

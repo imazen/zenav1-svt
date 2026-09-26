@@ -5,6 +5,9 @@ impl EncodePipeline {
     pub(super) fn build_inter_md_frame<'a>(
         preset: i8,
         bit_depth: u8,
+        // `self.reference` on the pipeline — selects the Ghost Robot
+        // `7c4ada2e5` `hbd_md` bands.
+        reference: crate::reference::SvtReference,
         rc_qp: u8,
         use_best_references: u8,
         tx_bias: u8,
@@ -225,14 +228,29 @@ impl EncodePipeline {
                         .as_ref()
                         .map_or(0, |sigs| sigs.inter_intra_level),
                     // C `pcs->hbd_md` (`sig_deriv_multi_processes_default`,
-                    // enc_mode_config.c:2151-2164): bd10 && preset<=MR → 1,
-                    // bd10 && preset<=M5 → 2 (`is_base` — a flat GOP makes
-                    // every frame base), else 0 on an inter frame. The
-                    // `hbd_mds` CLI override has no port input — it is
-                    // DEFAULT here. This is the depth the inter-intra and
-                    // masked-compound searches run at; the u16 arms are
+                    // enc_mode_config.c:2151-2164): mainline/hybrid are
+                    // bd10 && preset<=MR → 1, bd10 && preset<=M5 → 2
+                    // (`is_base` — a flat GOP makes every frame base), else
+                    // 0 on an inter frame. Ghost Robot's `7c4ada2e5`
+                    // re-banded it: full 10-bit MD through preset 5, then a
+                    // temporal-layer ladder (<=M8 needs TL<=2, <=M9 needs
+                    // TL<=1). The `hbd_mds` CLI override has no port input —
+                    // it is DEFAULT here. This is the depth the inter-intra
+                    // and masked-compound searches run at; the u16 arms are
                     // live wherever the ladder returns non-zero.
                     hbd_md: match bit_depth {
+                        10 if reference == crate::reference::SvtReference::GhostRobot => {
+                            let tl = pic_decision.as_ref().map_or(0, |p| p.temporal_layer_index);
+                            if preset <= 5 {
+                                1
+                            } else if preset <= 8 && tl <= 2 {
+                                1
+                            } else if preset <= 9 && tl <= 1 {
+                                1
+                            } else {
+                                0
+                            }
+                        }
                         10 if preset <= -1 => 1,
                         10 if preset <= 5 => 2,
                         _ => 0,
@@ -290,6 +308,7 @@ impl EncodePipeline {
                     max_can_count: crate::port_enc_mode_config::leaf::get_max_can_count(
                         i8::try_from(preset).unwrap_or(i8::MAX),
                         false,
+                        reference,
                     ),
                 })
             }

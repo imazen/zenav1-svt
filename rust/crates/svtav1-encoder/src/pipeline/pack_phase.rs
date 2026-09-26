@@ -343,6 +343,7 @@ impl EncodePipeline {
             dlf_is_base,
             dlf_is_not_last_layer,
             dlf_ref_skip_percentage,
+            self.reference,
         );
         // C's `default:` arm is `assert(0)`; the port refuses rather than
         // inventing a control set.
@@ -617,6 +618,7 @@ impl EncodePipeline {
             cdef_level,
             cdef_frame_is_boosted,
             cdef_is_not_highest_layer,
+            self.reference,
         )
         .ok_or(EncodeError::UnsupportedConfig(
             "cdef search level outside set_cdef_search_controls' 0..=10",

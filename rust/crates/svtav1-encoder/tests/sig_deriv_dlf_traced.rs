@@ -24,7 +24,16 @@ use svtav1_encoder::port_enc_mode_config::{InputCoeffLvl, ResolutionRange};
 #[test]
 fn dlf_level_default_base_ladder_traced() {
     let probe = |m: i8, not_last: u8, coeff: InputCoeffLvl| {
-        leaf::get_dlf_level_default(m, not_last, 0, ResolutionRange::R1080p, true, coeff, 0)
+        leaf::get_dlf_level_default(
+            m,
+            not_last,
+            0,
+            ResolutionRange::R1080p,
+            true,
+            coeff,
+            0,
+            svtav1_encoder::reference::SvtReference::Hybrid3115,
+        )
     };
     // <= M0: 1. <= M3: 2. <= M6: 3 / 6 by layer.
     assert_eq!(probe(-1, 1, InputCoeffLvl::Normal), 1);
@@ -56,7 +65,16 @@ fn dlf_level_default_non_base_m10_m11_traced() {
     // ref_skip_percentage 0 makes modulation_mode 3 inert (it only acts above
     // 75), so this isolates the ladder itself.
     let probe = |m: i8, not_last: u8, coeff: InputCoeffLvl| {
-        leaf::get_dlf_level_default(m, not_last, 0, ResolutionRange::R1080p, false, coeff, 0)
+        leaf::get_dlf_level_default(
+            m,
+            not_last,
+            0,
+            ResolutionRange::R1080p,
+            false,
+            coeff,
+            0,
+            svtav1_encoder::reference::SvtReference::Hybrid3115,
+        )
     };
     assert_eq!(
         probe(10, 1, InputCoeffLvl::High),
@@ -73,7 +91,16 @@ fn dlf_level_default_non_base_m10_m11_traced() {
 #[test]
 fn dlf_level_default_fast_decode_arm_traced() {
     let fd2 = |m: i8, not_last: u8, res: ResolutionRange| {
-        leaf::get_dlf_level_default(m, not_last, 2, res, true, InputCoeffLvl::Normal, 0)
+        leaf::get_dlf_level_default(
+            m,
+            not_last,
+            2,
+            res,
+            true,
+            InputCoeffLvl::Normal,
+            0,
+            svtav1_encoder::reference::SvtReference::Hybrid3115,
+        )
     };
     assert_eq!(fd2(0, 1, ResolutionRange::R1080p), 4, "<= M6 is a flat 4");
     assert_eq!(fd2(6, 1, ResolutionRange::R1080p), 4);
@@ -98,47 +125,241 @@ fn dlf_level_modulation_traced() {
     // modulation_mode 0: never changes anything.
     for lvl in 0u8..=7 {
         for perc in [0u8, 20, 30, 60, 80, 100] {
-            assert_eq!(leaf::dlf_level_modulation(lvl, 0, perc), lvl);
+            assert_eq!(
+                leaf::dlf_level_modulation(
+                    lvl,
+                    0,
+                    perc,
+                    svtav1_encoder::reference::SvtReference::Hybrid3115
+                ),
+                lvl
+            );
         }
     }
     // modulation_mode 1 (towards bd-rate) below 25%: 0 -> 6, > 5 drops by 2
     // but never below 5, else unchanged.
-    assert_eq!(leaf::dlf_level_modulation(0, 1, 24), 6);
-    assert_eq!(leaf::dlf_level_modulation(6, 1, 24), 5);
-    assert_eq!(leaf::dlf_level_modulation(7, 1, 24), 5);
-    assert_eq!(leaf::dlf_level_modulation(5, 1, 24), 5);
-    assert_eq!(leaf::dlf_level_modulation(3, 1, 24), 3);
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            0,
+            1,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            6,
+            1,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        5
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            1,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        5
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            5,
+            1,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        5
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            3,
+            1,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        3
+    );
     // 25..49: 0 -> 7, > 5 drops by 1.
-    assert_eq!(leaf::dlf_level_modulation(0, 1, 25), 7);
-    assert_eq!(leaf::dlf_level_modulation(0, 1, 49), 7);
-    assert_eq!(leaf::dlf_level_modulation(7, 1, 30), 6);
-    assert_eq!(leaf::dlf_level_modulation(6, 1, 30), 5);
-    assert_eq!(leaf::dlf_level_modulation(5, 1, 30), 5);
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            0,
+            1,
+            25,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            0,
+            1,
+            49,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            1,
+            30,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            6,
+            1,
+            30,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        5
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            5,
+            1,
+            30,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        5
+    );
     // >= 50: mode 1 does nothing.
-    assert_eq!(leaf::dlf_level_modulation(0, 1, 50), 0);
-    assert_eq!(leaf::dlf_level_modulation(7, 1, 50), 7);
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            0,
+            1,
+            50,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            1,
+            50,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
 
     // modulation_mode 3 (towards speed) acts only when the level is > 4.
     assert_eq!(
-        leaf::dlf_level_modulation(4, 3, 96),
+        leaf::dlf_level_modulation(
+            4,
+            3,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
         4,
         "level 4 is untouched"
     );
-    assert_eq!(leaf::dlf_level_modulation(5, 3, 96), 7, "> 95: +2 below 6");
-    assert_eq!(leaf::dlf_level_modulation(6, 3, 96), 0, ">= 6 goes to 0");
-    assert_eq!(leaf::dlf_level_modulation(7, 3, 96), 0);
-    assert_eq!(leaf::dlf_level_modulation(5, 3, 76), 6, "> 75: +1");
-    assert_eq!(leaf::dlf_level_modulation(6, 3, 76), 7);
-    assert_eq!(leaf::dlf_level_modulation(7, 3, 76), 0, "7 goes to 0");
-    assert_eq!(leaf::dlf_level_modulation(7, 3, 75), 7, "75 is not > 75");
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            5,
+            3,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7,
+        "> 95: +2 below 6"
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            6,
+            3,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0,
+        ">= 6 goes to 0"
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            3,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            5,
+            3,
+            76,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6,
+        "> 75: +1"
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            6,
+            3,
+            76,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            3,
+            76,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0,
+        "7 goes to 0"
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            7,
+            3,
+            75,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7,
+        "75 is not > 75"
+    );
 
     // modulation_mode 2 runs BOTH halves, in order: the bd-rate half first,
     // then the speed half on its RESULT. At 24% the first half takes 0 -> 6,
     // and the second half then sees 6 with 24 <= 75, so nothing more happens.
-    assert_eq!(leaf::dlf_level_modulation(0, 2, 24), 6);
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            0,
+            2,
+            24,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6
+    );
     // At 96% the first half does nothing (96 >= 50) and the second takes over.
-    assert_eq!(leaf::dlf_level_modulation(5, 2, 96), 7);
-    assert_eq!(leaf::dlf_level_modulation(6, 2, 96), 0);
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            5,
+            2,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::dlf_level_modulation(
+            6,
+            2,
+            96,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0
+    );
 }
 
 /// TIER 4. `get_dlf_level_allintra` (`enc_mode_config.c:1535`), for the
@@ -157,6 +378,7 @@ fn dlf_level_allintra_differs_from_default_at_most_presets() {
             true,
             InputCoeffLvl::Normal,
             0,
+            svtav1_encoder::reference::SvtReference::Hybrid3115,
         );
         if ai != df {
             differing += 1;
@@ -198,15 +420,87 @@ fn dlf_level_allintra_differs_from_default_at_most_presets() {
 #[test]
 fn dlf_level_rtc_traced() {
     // Base: the modulation does not run.
-    assert_eq!(leaf::get_dlf_level_rtc(7, true, 0), 3);
-    assert_eq!(leaf::get_dlf_level_rtc(9, true, 0), 6);
-    assert_eq!(leaf::get_dlf_level_rtc(10, true, 0), 7);
-    assert_eq!(leaf::get_dlf_level_rtc(11, true, 0), 0);
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            7,
+            true,
+            0,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        3
+    );
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            9,
+            true,
+            0,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6
+    );
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            10,
+            true,
+            0,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            11,
+            true,
+            0,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0
+    );
     // Non-base at <= M7 uses modulation_mode 1: below 25% level 3 is
     // unchanged (it is not > 5).
-    assert_eq!(leaf::get_dlf_level_rtc(7, false, 10), 3);
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            7,
+            false,
+            10,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        3
+    );
     // Non-base at M8..M9 uses mode 3: level 6 above 95% goes to 0.
-    assert_eq!(leaf::get_dlf_level_rtc(9, false, 96), 0);
-    assert_eq!(leaf::get_dlf_level_rtc(9, false, 76), 7);
-    assert_eq!(leaf::get_dlf_level_rtc(9, false, 10), 6);
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            9,
+            false,
+            96,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        0
+    );
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            9,
+            false,
+            76,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        7
+    );
+    assert_eq!(
+        leaf::get_dlf_level_rtc(
+            9,
+            false,
+            10,
+            4,
+            svtav1_encoder::reference::SvtReference::Hybrid3115
+        ),
+        6
+    );
 }

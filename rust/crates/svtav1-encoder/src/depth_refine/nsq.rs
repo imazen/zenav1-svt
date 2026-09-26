@@ -159,7 +159,14 @@ impl NsqCfg {
     /// only ones it emits.
     #[cfg(test)]
     pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, cli_qp: u32) -> Self {
-        Self::for_arm_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal, 0)
+        Self::for_arm_with_coeff(
+            arm,
+            preset,
+            cli_qp,
+            crate::quant::CoeffLvl::Normal,
+            0,
+            crate::reference::SvtReference::Hybrid3115,
+        )
     }
 
     pub(crate) fn for_arm_with_coeff(
@@ -170,6 +177,7 @@ impl NsqCfg {
         // C `pcs->temporal_layer_index` — the nsq_search_level ladder reads it
         // (`get_nsq_search_level_default`, enc_mode_config.c:8258).
         temporal_layer: u8,
+        reference: crate::reference::SvtReference,
     ) -> Self {
         Self::for_levels(
             crate::part_arm::nsq_search_level_with_coeff(
@@ -178,8 +186,9 @@ impl NsqCfg {
                 cli_qp,
                 coeff_level,
                 temporal_layer,
+                reference,
             ),
-            crate::part_arm::nsq_geom_level(arm, preset),
+            crate::part_arm::nsq_geom_level(arm, preset, reference),
             crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
             cli_qp,
         )
@@ -207,6 +216,7 @@ impl NsqCfg {
         temporal_layer: u8,
         sb_size: usize,
         me_stats: Option<(u32, u32)>,
+        reference: crate::reference::SvtReference,
     ) -> Self {
         let mut level = crate::part_arm::nsq_search_level_with_coeff(
             arm,
@@ -214,6 +224,7 @@ impl NsqCfg {
             cli_qp,
             coeff_level,
             temporal_layer,
+            reference,
         );
         if let Some((dist_8, cost_var)) = me_stats {
             if level != 0
@@ -225,7 +236,7 @@ impl NsqCfg {
         }
         Self::for_levels(
             level,
-            crate::part_arm::nsq_geom_level(arm, preset),
+            crate::part_arm::nsq_geom_level(arm, preset, reference),
             crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
             cli_qp,
         )

@@ -182,6 +182,7 @@ pub(super) fn encode_coding_unit(
                         .as_ref()
                         .map_or(crate::quant::CoeffLvl::Normal, |q| q.input_coeff_level),
                     temporal_layer,
+                    reference,
                 )
                 .enabled);
         // C `ed_ctx->md_ctx->rdoq_ctrls->enabled` for the encode
@@ -309,7 +310,7 @@ pub(super) fn encode_coding_unit(
                         pic_pd0_lvl,
                         pd0_coeff_rate_est_lvl,
                         accurate_part_ctx,
-                        crate::part_arm::nsq_geom_enabled(sc_arm, md_preset),
+                        crate::part_arm::nsq_geom_enabled(sc_arm, md_preset, reference),
                         // This branch IS C's `pic_pred_depth_only`
                         // case: `depth_refinement_ctrls.mode ==
                         // PD0_DEPTH_PRED_PART_ONLY` is what makes
@@ -564,11 +565,12 @@ pub(super) fn encode_coding_unit(
                         .as_ref()
                         .map_or(crate::quant::CoeffLvl::Normal, |q| q.input_coeff_level),
                     temporal_layer,
+                    reference,
                 )
                 .enabled;
                 let mut refined = use_funnel && (dr.adaptive || nsq_search_on);
-                let nsq_geom_enabled =
-                    !coded_lossless && crate::part_arm::nsq_geom_enabled(sc_arm, md_preset);
+                let nsq_geom_enabled = !coded_lossless
+                    && crate::part_arm::nsq_geom_enabled(sc_arm, md_preset, reference);
                 // C md_config_process.c forces lossless PD0 level 0,
                 // but its resolved cost model uses QP offset 0 and
                 // fast coefficient estimation 2: Rust's Lvl1 model.
@@ -1175,6 +1177,7 @@ pub(super) fn encode_coding_unit(
                             temporal_layer,
                             sb_size,
                             nsq_me_stats,
+                            reference,
                         )
                     };
                     crate::depth_refine::decide_sb_refined(
@@ -1305,7 +1308,11 @@ pub(super) fn encode_coding_unit(
                                 pic_pd0_lvl,
                                 pd0_coeff_rate_est_lvl,
                                 accurate_part_ctx,
-                                crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
+                                crate::part_arm::nsq_geom_enabled(
+                                    sc_arm,
+                                    speed_config.preset,
+                                    reference,
+                                ),
                                 // C `pd0_level <= PD0_LVL_1 ||
                                 // ctx->pic_pred_depth_only` — this branch
                                 // IS the pred-depth-only one.
@@ -1378,7 +1385,11 @@ pub(super) fn encode_coding_unit(
                                 // (`svt_aom_get_nsq_geom_level_default`,
                                 // :8216) never returns 0, so geometry stays
                                 // on at every preset there.
-                                crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
+                                crate::part_arm::nsq_geom_enabled(
+                                    sc_arm,
+                                    speed_config.preset,
+                                    reference,
+                                ),
                                 // ALIGNED dims — the spec-5.11.4 edge grid.
                                 w,
                                 h,

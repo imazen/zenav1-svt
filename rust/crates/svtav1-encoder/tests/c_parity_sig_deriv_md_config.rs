@@ -115,6 +115,12 @@ struct Case {
     tune: u8,
     picture_qp: u32,
     ext_crf_offset: u8,
+    /// `scs->static_config.complex_hvs` — fork-only field; read under
+    /// Ghost Robot (`70877799`/`d705ef50`) only.
+    complex_hvs: u8,
+    /// `scs->static_config.encoder_color_format` (`EbColorFormat`) — read
+    /// by Ghost Robot's `f67a0f747` `tx_mode` OR.
+    color_format: i32,
 }
 
 impl Default for Case {
@@ -158,6 +164,8 @@ impl Default for Case {
             tune: 0,
             picture_qp: 35,
             ext_crf_offset: 0,
+            complex_hvs: 0,
+            color_format: 1, // EB_YUV420 — what the port encodes
         }
     }
 }
@@ -203,6 +211,8 @@ fn build_input(c: &Case) -> [i32; md_in::COUNT] {
     i[md_in::TUNE] = i32::from(c.tune);
     i[md_in::PICTURE_QP] = c.picture_qp as i32;
     i[md_in::EXT_CRF_OFFSET] = i32::from(c.ext_crf_offset);
+    i[md_in::COMPLEX_HVS] = i32::from(c.complex_hvs);
+    i[md_in::COLOR_FORMAT] = c.color_format;
     i
 }
 
@@ -246,7 +256,13 @@ fn to_port(c: &Case) -> MdConfigInputs {
         tune: c.tune,
         picture_qp: c.picture_qp,
         extended_crf_qindex_offset: c.ext_crf_offset,
+        complex_hvs: c.complex_hvs,
+        encoder_color_format: u8::try_from(c.color_format).unwrap_or(u8::MAX),
     }
+}
+
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
 }
 
 fn flatten(s: &md::MdConfigSignals, mfmv_bit: i64) -> [i64; MD_OUT_SLOTS] {
@@ -307,7 +323,8 @@ fn flatten(s: &md::MdConfigSignals, mfmv_bit: i64) -> [i64; MD_OUT_SLOTS] {
 }
 
 fn assert_case(c: &Case, msg: &str) {
-    let ours = md::sig_deriv_mode_decision_config_default(to_port(c)).expect("levels in range");
+    let ours = md::sig_deriv_mode_decision_config_default(to_port(c), reference())
+        .expect("levels in range");
     let theirs = cref::sig_deriv_md_config_default(&build_input(c));
     // The mfmv frame-header BIT is produced by mfmv_controls (ported in
     // `tail`); the level this function derives is fed through it here.
@@ -907,7 +924,7 @@ fn txt_and_cfl_ladders_match_c_on_both_arms() {
                 let d = cref::sig_deriv_md_config_default(&build_input(&c));
                 let a = cref::sig_deriv_md_config_allintra(&build_input(&c));
                 assert_eq!(
-                    i64::from(md::txt_level_default(enc_mode, is_base)),
+                    i64::from(md::txt_level_default(enc_mode, is_base, reference())),
                     d[TXT],
                     "video txt_level M{enc_mode} base={is_base}"
                 );

@@ -53,6 +53,21 @@ impl SvtReference {
         }
     }
 
+    /// The reference paired with an `oracles.tsv` registry name — the inverse
+    /// of [`Self::oracle_name`]'s target half. `c_parity_*` tests call this on
+    /// `svtav1_cref::ORACLE_NAME` so the port arm and the linked C library can
+    /// never silently disagree about the target. Anything the registry does
+    /// not name — the legacy default, a caller's `SVT_CREF_LIB_DIR` artifact —
+    /// is the hybrid, whose `Bin/Release` build is what an unnamed link
+    /// resolves to.
+    pub fn for_oracle_name(name: &str) -> Self {
+        match name {
+            "mainline-4.2.0" => Self::Mainline420,
+            "ghost-robot" => Self::GhostRobot,
+            _ => Self::Hybrid3115,
+        }
+    }
+
     /// Reject controls that cannot belong to the selected mainline source.
     /// Mainline-owned tuning, QM, variance boost and grain remain available.
     pub fn validate_hdr_config(self, hdr: &HdrForkConfig) -> Result<(), &'static str> {

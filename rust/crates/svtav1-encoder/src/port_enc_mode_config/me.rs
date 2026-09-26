@@ -96,6 +96,9 @@ pub struct HmeSearchParams {
 
 /// C `set_hme_search_params` (`enc_mode_config.c:216`). static — tier 4
 /// directly, reached at tier 1 through `svt_aom_sig_deriv_me`.
+///
+/// Ghost Robot's `85842c43c` prepends an `enc_mode <= ENC_MRS` arm with a
+/// wider level-0 area (128/256 below 4K).
 #[must_use]
 pub fn set_hme_search_params(
     enc_mode: i8,
@@ -103,6 +106,7 @@ pub fn set_hme_search_params(
     rtc_tune: bool,
     hme_qp_based_th_scaling: bool,
     qp: u32,
+    reference: crate::reference::SvtReference,
 ) -> HmeSearchParams {
     let mut p = HmeSearchParams {
         num_hme_sa_w: 2,
@@ -110,7 +114,15 @@ pub fn set_hme_search_params(
         ..HmeSearchParams::default()
     };
 
-    if enc_mode <= M1 {
+    if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+        if input_resolution < ResolutionRange::R4k {
+            p.hme_l0_sa.sa_min = SearchArea::new(128, 128);
+            p.hme_l0_sa.sa_max = SearchArea::new(256, 256);
+        } else {
+            p.hme_l0_sa.sa_min = SearchArea::new(240, 240);
+            p.hme_l0_sa.sa_max = SearchArea::new(480, 480);
+        }
+    } else if enc_mode <= M1 {
         if input_resolution < ResolutionRange::R4k {
             p.hme_l0_sa.sa_min = SearchArea::new(32, 32);
             p.hme_l0_sa.sa_max = SearchArea::new(192, 192);
@@ -162,6 +174,10 @@ pub fn set_hme_search_params(
 
 /// C `set_me_search_params` (`enc_mode_config.c:281`). static — tier 4
 /// directly, reached at tier 1 through `svt_aom_sig_deriv_me`.
+///
+/// Ghost Robot's `85842c43c` widened the rtc arm's `<= ENC_M10` to
+/// `<= ENC_M10 || (enc_mode == ENC_M11 && !use_flat_ipp)` — `use_flat_ipp`
+/// is `rtc && hierarchical_levels == 0`.
 #[must_use]
 pub fn set_me_search_params(
     enc_mode: i8,
@@ -169,10 +185,16 @@ pub fn set_me_search_params(
     rtc_tune: bool,
     me_qp_based_th_scaling: bool,
     qp: u32,
+    use_flat_ipp: bool,
+    reference: crate::reference::SvtReference,
 ) -> SearchAreaMinMax {
     let mut sa = SearchAreaMinMax::default();
     if rtc_tune {
-        if enc_mode <= M10 {
+        if enc_mode <= M10
+            || (reference == crate::reference::SvtReference::GhostRobot
+                && enc_mode == M11
+                && !use_flat_ipp)
+        {
             if input_resolution < ResolutionRange::R1080p {
                 sa.sa_min = SearchArea::new(24, 16);
                 sa.sa_max = SearchArea::new(32, 16);
@@ -587,8 +609,14 @@ pub struct MeDerivInputs {
 }
 
 /// C `svt_aom_sig_deriv_me` (`enc_mode_config.c:700`). EXPORTED.
+///
+/// Ghost Robot's `85842c43c` (research presets -3/-2) arms are selected by
+/// `reference`: `ENC_MRS` pins `prehme_level = 1`, `me_ref_prune_level = 0`
+/// and `mv_sa_adj_level = 1` ahead of the rtc/default ladders, and the rtc
+/// `prehme_level = 4` band widens to `<= ENC_M10 || (== ENC_M11 &&
+/// !use_flat_ipp)`.
 #[must_use]
-pub fn sig_deriv_me(i: MeDerivInputs) -> MeSignals {
+pub fn sig_deriv_me(i: MeDerivInputs, reference: crate::reference::SvtReference) -> MeSignals {
     let enc_mode = i.enc_mode;
     let rtc_tune = i.rtc_tune;
     let use_flat_ipp = rtc_tune && i.hierarchical_levels == 0;
@@ -600,6 +628,8 @@ pub fn sig_deriv_me(i: MeDerivInputs) -> MeSignals {
             rtc_tune,
             i.me_qp_based_th_scaling,
             i.qp,
+            use_flat_ipp,
+            reference,
         ),
         hme: set_hme_search_params(
             enc_mode,
@@ -607,6 +637,7 @@ pub fn sig_deriv_me(i: MeDerivInputs) -> MeSignals {
             rtc_tune,
             i.hme_qp_based_th_scaling,
             i.qp,
+            reference,
         ),
         enable_hme_flag: i.enable_hme_flag,
         enable_hme_level0_flag: i.enable_hme_level0_flag,
@@ -620,46 +651,58 @@ pub fn sig_deriv_me(i: MeDerivInputs) -> MeSignals {
     };
 
     // Pre-HME level.
-    let mut prehme_level = if rtc_tune {
-        if enc_mode <= M8 {
+    let mut prehme_level =
+        if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+            1
+        } else if rtc_tune {
+            if enc_mode <= M8 {
+                2
+            // Ghost Robot 85842c43c: the `4` arm widened to `== ENC_M11 &&
+            // !use_flat_ipp`; mainline/hybrid stop at `<= ENC_M10`.
+            } else if enc_mode <= M10
+                || (reference == crate::reference::SvtReference::GhostRobot
+                    && enc_mode == M11
+                    && !use_flat_ipp)
+            {
+                4
+            } else {
+                0
+            }
+        } else if enc_mode <= M7 {
             2
-        } else if enc_mode <= M10 {
+        } else if enc_mode <= M11 {
             4
         } else {
             0
-        }
-    } else if enc_mode <= M7 {
-        2
-    } else if enc_mode <= M11 {
-        4
-    } else {
-        0
-    };
+        };
     if i.enable_hme_level1_flag == 0 {
         prehme_level = 0;
     }
     s.prehme_ctrl = set_prehme_ctrls(prehme_level).expect("prehme level in range");
 
     // HME/ME reference pruning level.
-    let me_ref_prune_level = if rtc_tune {
-        if use_flat_ipp {
-            6
-        } else if enc_mode <= M7 {
+    let me_ref_prune_level =
+        if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+            0
+        } else if rtc_tune {
+            if use_flat_ipp {
+                6
+            } else if enc_mode <= M7 {
+                if i.is_base { 1 } else { 6 }
+            } else {
+                6
+            }
+        } else if enc_mode <= MR {
+            0
+        } else if enc_mode <= M0 {
+            if i.is_base { 1 } else { 4 }
+        } else if enc_mode <= M4 {
+            if i.is_base { 1 } else { 5 }
+        } else if enc_mode <= M8 {
             if i.is_base { 1 } else { 6 }
         } else {
             6
-        }
-    } else if enc_mode <= MR {
-        0
-    } else if enc_mode <= M0 {
-        if i.is_base { 1 } else { 4 }
-    } else if enc_mode <= M4 {
-        if i.is_base { 1 } else { 5 }
-    } else if enc_mode <= M8 {
-        if i.is_base { 1 } else { 6 }
-    } else {
-        6
-    };
+        };
     s.me_hme_prune_ctrls =
         set_me_hme_ref_prune_ctrls(me_ref_prune_level).expect("prune level in range");
 
@@ -677,7 +720,14 @@ pub fn sig_deriv_me(i: MeDerivInputs) -> MeSignals {
     )
     .expect("sr level in range");
 
-    let mv_sa_adj_level = if enc_mode <= M0 { 2 } else { 0 };
+    let mv_sa_adj_level =
+        if reference == crate::reference::SvtReference::GhostRobot && enc_mode <= MRS {
+            1
+        } else if enc_mode <= M0 {
+            2
+        } else {
+            0
+        };
     s.mv_based_sa_adj = set_mv_based_sa_ctrls(mv_sa_adj_level).expect("mv sa level in range");
 
     s.me_8x8_var_ctrls = set_me_8x8_var_ctrls(2).expect("me 8x8 var level 2");

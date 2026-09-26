@@ -290,6 +290,81 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     PD0 predicts from 16-bit recon; its `hbd_md` ladder now resolves
     PD0_LVL_0 but still prices the 8-bit LVL_1 model) and the HBD inter
     PD0 arm (`product_prediction_fun_table_pd0[1]` at `EB_TEN_BIT`).
+- [ ] 3.3a Function-level c-parity ladder (45 genuine divergences at
+  `830/875`; **now 851/873 — 22 remain**):
+  - Oracle identity plumbing (this batch): `svtav1-cref` emits the
+    build-time oracle name as `ORACLE_NAME` (build.rs `rustc-env`), and
+    `SvtReference::for_oracle_name` maps it to the matching reference —
+    every `c_parity_sig_deriv_*` test now drives the port with the C
+    oracle's own reference instead of a hard-coded one.
+  - `507025f65` ("Fix switch between PD1 and LPD1"): `is_ref_same_size`
+    drops the `is_not_scaled` shortcut and requires
+    `ref_list{0,1}_count_try > 0` + a live `reference_picture`. Pipeline
+    twins at `pipeline/inter_setup.rs` (depth-removal ref stats) and
+    `pipeline.rs` `pd0_ref_sb` got the same arms — note the dims-only arm
+    is unreachable on inter frames today (superres-inter is refused), so
+    only the count_try guard can fire there.
+  - `f67a0f747` + `a74cfb9ec` (`sig_deriv_enc_dec_common`): GR arms for
+    `subsampling_x == 0` (`set_lpd1_ctrls` level 0 + `pd1_lvl_refinement`
+    0) and `mimic_only_tx_4x4` (lpd1 off + pd1 refinement 0); new
+    `CM_I_MIMIC_TX_4X4`/`CM_I_SUBSAMP_X` shim slots under
+    `ZEN_ORACLE_CTX_SUBSAMP`. Pipeline twin: `resolve_sb_lpd1` in
+    `pipeline/lpd1.rs` (S3: dual-derived signal — `pic_lpd1_lvl` /
+    `pd1_lvl_refinement` appear in BOTH `sig_deriv_enc_dec_common` and
+    the hand-assembled per-SB path; the `subsampling_x` half is inert on
+    the port's 4:2:0 envelope).
+  - `85842c43c` (research presets ENC_MRS=-3/ENC_MRP=-2): GR arms in
+    `get_nsq_geom_level_default`, `get_nsq_search_level_default`,
+    `txt_level_default`, the interpolation-search ladder and TXS ladder
+    in `md_config`, `set_me_search_params` (rtc arm widened at M11 for
+    `!use_flat_ipp`), `get_gm_core_level` (`<=MRP -> 1`),
+    `get_max_can_count` (`<=MRS -> 2500`), `get_nic_level_default`
+    (MRS->0/MRP->1), `get_inter_compound_level` (`<=MRS -> 1`), plus the
+    GhostRobot-only `enc_mode > ENC_MRP` QP-band gate in the TXS ladder.
+    Threaded `reference` through `funnel_arm::{txt_level,apply}`,
+    `nic_arm::{nic_level,apply}`, `part_arm` nsq helpers,
+    `depth_refine/nsq.rs`, `pipeline/tile_walk/{cu,tile_body}.rs` —
+    every leaf the pipeline calls now carries its own reference arm, not
+    just the dead orchestrator.
+  - `b183a1256`: `mfmv_level` 1 arm widened through `ENC_M5`.
+  - `7c4ada2e5`: `hbd_md` GR ladder (`<=M5 -> 1`; `<=M8`/`<=M9` temporal
+    -layer banded; I-slice -> 2; else 0) ported in
+    `sig_deriv_multi_processes_default` AND its live pipeline twin
+    `build_inter_md_frame` in `pipeline/inter_md_stage.rs` (S3 dual
+    derivation).
+  - `70877799`/`d705ef50`: `complex_hvs == 1` forces `mds0_level = 3` —
+    `PipelineMdInputs`/`MdConfigInputs` gained `complex_hvs`, wired from
+    `hdr.complex_hvs`; inert by default (GR ships `complex_hvs = 0`).
+  - `ccdfdb099`: `lambda_weight` initializes to 128 when the extended-CRF
+    offset is active and the ladder left 0 (matches the earlier
+    `pipeline.rs` `lw_bump` port in 3.2).
+  - `f67a0f747` (444): `encoder_color_format == 3` forces
+    `TX_MODE_SELECT`; carried on `MdConfigInputs::encoder_color_format`,
+    pinned 4:2:0 in production (port's only chroma).
+  - `e6ff85f0d` (cdef): `use_qp_strength` bool became
+    `qp_strength_level` (OFF/UV/YUV) — levels 7/8/9 take UV and a flat
+    `skip_th = 0`, level 10 takes YUV; `CdefSearchControls` carries the
+    level field under every reference (old refs normalize
+    `use_qp_strength ? YUV : OFF`), shim emits the level domain via
+    `ZEN_ORACLE_CDEF_QP_LEVEL`. Production twin `pack_phase.rs` calls
+    `set_cdef_search_controls` with `self.reference`.
+  - `b4c85f8f5` (dlf): `get_dlf_level_default` rewrote the video ladder
+    (`<=M2 -> 1`, new `<=M5 -> 3`, `<=M9` last-layer arm 0 -> 7, `<=M11`
+    collapsed to `is_base ? 6 : 7`, tail 0 -> 7), `dlf_level_modulation`
+    >95%/`>75%` arms land on/saturate at 7 instead of wrapping to 0, and
+    `get_dlf_level_rtc` tails `hierarchical_levels == 0 ? 0 : 7`.
+    Pipeline twin `derive_dlf_level` in `pipeline/frame_prep.rs` carries
+    the reference.
+  - `f9100ab22` (dlf): `pick_method` control field (FULL_IMAGE levels
+    0-4, Q levels 5-7) — numerically identical to mainline's implicit
+    `sb_based_dlf` rule; ported as a normalized field, shim slot
+    `DLF_O_PICK_METHOD` under `ZEN_ORACLE_DLF_PICK_METHOD`.
+    `loop_filters.rs` keeps reading `sb_based_dlf`, which coincides with
+    `pick_method == Q` at every level.
+  - Remaining 22: `md_subpel` (10), `md_pme` (2), `rd_cost` (3),
+    `rc_vbr_cbr_qpick`, `noise_gen` tables, `inter_mvp` setup,
+    `intrabc_search` diamond, `dist_facade`, `enc_make_pred` masked-warp
+    subsampling.
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0
   ac-bias dampening (`c65c2bfa`), chroma noise `pow(luma, 0.75)`
   (`9f54af57`), delta-q all-skip (`2f08c8e8`), lossless across tunes

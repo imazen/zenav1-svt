@@ -585,6 +585,10 @@ pub struct FrameMeParams {
     /// C `frame_is_leaf(pcs)` — `update_type == SVT_AV1_LF_UPDATE`
     /// (`enc_mode_config.h:113`); gates the same safe-limit arm.
     pub frame_is_leaf: bool,
+    /// The `SvtReference` the pipeline is encoding against — selects the
+    /// `85842c43c` research-preset arms inside `sig_deriv_me` /
+    /// `set_hme_search_params` under `GhostRobot`.
+    pub reference: crate::reference::SvtReference,
 }
 
 /// The `svt_aom_sig_deriv_me` INPUT set for one frame, split out of
@@ -684,7 +688,7 @@ pub fn run_frame_me_into(
     // C `svt_aom_sig_deriv_me` (enc_mode_config.c) — this is what installs the
     // HME/ME search areas. A default `MeContext` has a ZERO search area, so
     // skipping it would silently pin every MV to (0, 0).
-    let signals = sig_deriv_me(me_deriv_inputs(p, input_resolution));
+    let signals = sig_deriv_me(me_deriv_inputs(p, input_resolution), p.reference);
 
     let pic = MePicParams {
         picture_number: p.picture_number,
@@ -738,6 +742,7 @@ pub fn run_frame_me_into(
                 i8::try_from(p.enc_mode).unwrap_or(i8::MAX),
                 /*is_islice=*/ false,
                 /*super_res_off=*/ true,
+                p.reference,
             ),
             input_resolution,
         )
@@ -951,6 +956,7 @@ mod tests {
                 safe_limit_zz_th: 60_000,
                 similar_brightness_refs: false,
                 frame_is_leaf: false,
+                reference: crate::reference::SvtReference::Hybrid3115,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (1, 1));
@@ -997,6 +1003,7 @@ mod tests {
                 safe_limit_zz_th: 60_000,
                 similar_brightness_refs: false,
                 frame_is_leaf: false,
+                reference: crate::reference::SvtReference::Hybrid3115,
             },
         );
         assert_eq!(
@@ -1077,6 +1084,7 @@ mod tests {
                 safe_limit_zz_th: 60_000,
                 similar_brightness_refs: false,
                 frame_is_leaf: false,
+                reference: crate::reference::SvtReference::Hybrid3115,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (3, 3));
@@ -1174,6 +1182,7 @@ mod tests {
                 safe_limit_zz_th: 60_000,
                 similar_brightness_refs: false,
                 frame_is_leaf: false,
+                reference: crate::reference::SvtReference::Hybrid3115,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (2, 2));
@@ -1242,6 +1251,7 @@ mod tests {
             safe_limit_zz_th: 60_000,
             similar_brightness_refs: false,
             frame_is_leaf: false,
+            reference: crate::reference::SvtReference::Hybrid3115,
         };
         for (qp, sa_min, sa_max, l0sa) in [
             (
@@ -1252,7 +1262,10 @@ mod tests {
             ),
             (55, (15, 5), (22, 11), (15, 15, 176, 176)),
         ] {
-            let s = sig_deriv_me(me_deriv_inputs(params(qp), res));
+            let s = sig_deriv_me(
+                me_deriv_inputs(params(qp), res),
+                crate::reference::SvtReference::Hybrid3115,
+            );
             assert_eq!(
                 (s.me_sa.sa_min.width, s.me_sa.sa_min.height),
                 sa_min,
@@ -1557,6 +1570,7 @@ mod recycle_tests {
             safe_limit_zz_th: 60_000,
             similar_brightness_refs: false,
             frame_is_leaf: false,
+            reference: crate::reference::SvtReference::Hybrid3115,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
@@ -1670,6 +1684,7 @@ mod recycle_tests {
             safe_limit_zz_th: 60_000,
             similar_brightness_refs: false,
             frame_is_leaf: false,
+            reference: crate::reference::SvtReference::Hybrid3115,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);

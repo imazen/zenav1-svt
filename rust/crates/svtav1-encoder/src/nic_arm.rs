@@ -133,11 +133,16 @@ pub(crate) struct NicRow {
 /// `pcs->nic_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn nic_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
+pub(crate) fn nic_level(
+    arm: ScArm,
+    enc_mode: i8,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     let m = enc_mode;
     match arm {
         ScArm::Allintra => leaf::get_nic_level_allintra(m),
-        ScArm::Video { .. } => leaf::get_nic_level_default(m, is_base),
+        ScArm::Video { .. } => leaf::get_nic_level_default(m, is_base, reference),
     }
 }
 
@@ -227,8 +232,14 @@ pub(crate) fn nic_ctrls(level: u8) -> NicRow {
 
 /// Stamp the row onto a [`FunnelCfg`], replacing what
 /// `FunnelCfg::for_preset` baked from the allintra arm.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool) {
-    let r = nic_ctrls(nic_level(arm, enc_mode, is_base));
+pub(crate) fn apply(
+    cfg: &mut FunnelCfg,
+    arm: ScArm,
+    enc_mode: i8,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) {
+    let r = nic_ctrls(nic_level(arm, enc_mode, is_base, reference));
     cfg.nic_num = r.nic_num;
     cfg.mds1_cand_base_th = r.mds1_cand_base_th;
     cfg.mds1_cand_base_th_inter = r.mds1_cand_base_th_inter;
@@ -273,7 +284,13 @@ mod tests {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
-            apply(&mut walked, ScArm::Allintra, eff, true);
+            apply(
+                &mut walked,
+                ScArm::Allintra,
+                eff,
+                true,
+                crate::reference::SvtReference::Hybrid3115,
+            );
             // A NAMED list rather than a tuple: it names the offender on a
             // failure, and a tuple wide enough for every NIC field is past
             // the arity `Debug`/`PartialEq` are implemented at.
@@ -394,7 +411,10 @@ mod tests {
     #[test]
     fn video_m6_key_frame_tightens_every_nic_stage() {
         let arm = ScArm::Video { is_islice: true };
-        assert_eq!(nic_level(arm, 6, true), 8);
+        assert_eq!(
+            nic_level(arm, 6, true, crate::reference::SvtReference::Hybrid3115),
+            8
+        );
         let r = nic_ctrls(8);
         assert_eq!(r.nic_num, (2, 1, 1));
         assert_eq!(

@@ -171,6 +171,9 @@ pub(super) fn derive_dlf_level(
     dlf_is_base: bool,
     dlf_is_not_last_layer: u8,
     dlf_ref_skip_percentage: u8,
+    // `self.reference` on the pipeline — selects Ghost Robot `b4c85f8f5`'s
+    // video-arm ladder (`<= M2 -> 1`, `<= M5 -> 3`, `<= M9`/tail 7s).
+    reference: crate::reference::SvtReference,
 ) -> u8 {
     let dlf_level = if is_single_frame {
         // `get_dlf_level_allintra(dlf_enc_mode, fast_decode, resolution)`.
@@ -199,6 +202,7 @@ pub(super) fn derive_dlf_level(
             dlf_is_base,
             crate::port_enc_mode_config::InputCoeffLvl::Normal,
             dlf_ref_skip_percentage,
+            reference,
         )
     };
     dlf_level

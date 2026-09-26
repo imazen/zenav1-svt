@@ -1581,9 +1581,12 @@ impl EncodePipeline {
         let md_config_signals = pipeline_md_inputs
             .clone()
             .and_then(crate::inter_hdr_arm::md_config_inputs)
-            .and_then(
-                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
-            );
+            .and_then(|i| {
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default(
+                    i,
+                    self.reference,
+                )
+            });
         // C `set_global_motion_field` (md_config_process.c:37): the frame's
         // `global_motion[LAST..ALTREF]`, built from the search's own verdict.
         // It lives HERE, after the mode-decision signal derivation, because the
@@ -1779,6 +1782,7 @@ impl EncodePipeline {
         let inter_md_frame = Self::build_inter_md_frame(
             self.speed_config.preset,
             self.bit_depth,
+            self.reference,
             self.rc_config.qp,
             self.mrp_ctrls.use_best_references,
             self.hdr.tx_bias,
@@ -1929,7 +1933,13 @@ impl EncodePipeline {
             let Some(rf) = self.dpb.get(pic.rps.ref_dpb_index[rps_idx] as usize) else {
                 return Default::default();
             };
-            let same_size = self.superres_denom.is_none()
+            // `is_ref_same_size`: `is_not_scaled || dims match` on the older
+            // references; Ghost Robot `507025f65` checks the dims outright.
+            // `superres_denom` is `None` on every inter frame the port
+            // accepts (superres-inter is refused), so the two spellings can
+            // never disagree here — the GR arm is for the parallel shape.
+            let same_size = (self.superres_denom.is_none()
+                && self.reference != crate::reference::SvtReference::GhostRobot)
                 || (rf.width == self.width as u32 && rf.height == self.height as u32);
             if !(same_size && rf.temporal_layer <= temporal_layer) {
                 return Default::default();
@@ -1981,6 +1991,7 @@ impl EncodePipeline {
             &pic_decision,
             &pipeline_md_inputs,
             md_config_signals,
+            coded_lossless,
         );
 
         let ref_min_max_sq = self.derive_ref_min_max_sq(&pic_decision, &last_ref);

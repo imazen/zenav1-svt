@@ -79,6 +79,15 @@ fn main() {
     // shims see. Live oracles keep the legacy paths below.
     println!("cargo:rerun-if-env-changed=SVT_ORACLE");
     let pinned = pinned_oracle(&repo_root);
+    // Bake the oracle registry name into the crate so `c_parity_*` tests can
+    // select the matching `SvtReference` arm in the port (plan 3.3+). A live
+    // oracle or an `SVT_CREF_LIB_DIR` caller artifact links the hybrid's
+    // `Bin/Release` build, so both report `hybrid-3115`.
+    let oracle_name = pinned
+        .as_ref()
+        .map(|o| o.name.as_str())
+        .unwrap_or("hybrid-3115");
+    println!("cargo:rustc-env=ZEN_CREF_ORACLE={oracle_name}");
     if let Some(o) = &pinned {
         c_root = o.src.clone();
     }
@@ -1107,6 +1116,7 @@ fn run_logged(mut cmd: Command, log_path: &Path, what: &str, v: &Variant) {
 
 /// A `pinned` oracle selected by `SVT_ORACLE`, resolved through `tools/oracle`.
 struct PinnedOracle {
+    name: String,
     src: PathBuf,
     build: PathBuf,
     lib: PathBuf,
@@ -1135,6 +1145,7 @@ fn pinned_oracle(repo_root: &Path) -> Option<PinnedOracle> {
     }
     let lib = PathBuf::from(run(&["build", &name]));
     Some(PinnedOracle {
+        name: name.clone(),
         src: PathBuf::from(run(&["srcdir", &name])),
         build: PathBuf::from(run(&["builddir", &name])),
         lib,

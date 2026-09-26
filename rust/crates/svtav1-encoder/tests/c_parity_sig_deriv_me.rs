@@ -22,6 +22,21 @@ use svtav1_encoder::port_enc_mode_config::ResolutionRange;
 use svtav1_encoder::port_enc_mode_config::me;
 
 const ENC_MODES: [i8; 15] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+/// Ghost Robot's `85842c43c` extended `EncMode` to MRS (-3)/MRP (-2).
+const ENC_MODES_GR: [i8; 17] = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+/// The `SvtReference` matching the linked C oracle.
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
+fn enc_modes() -> &'static [i8] {
+    if reference() == svtav1_encoder::reference::SvtReference::GhostRobot {
+        &ENC_MODES_GR
+    } else {
+        &ENC_MODES
+    }
+}
 
 const RESOLUTIONS: [ResolutionRange; 7] = [
     ResolutionRange::R240p,
@@ -216,7 +231,7 @@ fn qp_based_th_scaling_factors_are_the_c_formula() {
 
 #[test]
 fn sig_deriv_me_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &r in &RESOLUTIONS {
             for &rtc in &[false, true] {
                 for &is_base in &[false, true] {
@@ -242,24 +257,27 @@ fn sig_deriv_me_matches_c() {
                                         safe_limit_nref: 1,
                                         safe_limit_zz_th: 4242,
                                     };
-                                    let ours = me::sig_deriv_me(me::MeDerivInputs {
-                                        enc_mode: m,
-                                        sc_class5: 1,
-                                        input_resolution: r,
-                                        rtc_tune: rtc,
-                                        is_base,
-                                        hierarchical_levels: hl,
-                                        enable_hme_flag: 1,
-                                        enable_hme_level0_flag: 1,
-                                        enable_hme_level1_flag: l1,
-                                        enable_hme_level2_flag: l2,
-                                        use_best_me_unipred_cand_only: 1,
-                                        me_qp_based_th_scaling: scaling,
-                                        hme_qp_based_th_scaling: scaling,
-                                        qp,
-                                        safe_limit_nref: 1,
-                                        safe_limit_zz_th: 4242,
-                                    });
+                                    let ours = me::sig_deriv_me(
+                                        me::MeDerivInputs {
+                                            enc_mode: m,
+                                            sc_class5: 1,
+                                            input_resolution: r,
+                                            rtc_tune: rtc,
+                                            is_base,
+                                            hierarchical_levels: hl,
+                                            enable_hme_flag: 1,
+                                            enable_hme_level0_flag: 1,
+                                            enable_hme_level1_flag: l1,
+                                            enable_hme_level2_flag: l2,
+                                            use_best_me_unipred_cand_only: 1,
+                                            me_qp_based_th_scaling: scaling,
+                                            hme_qp_based_th_scaling: scaling,
+                                            qp,
+                                            safe_limit_nref: 1,
+                                            safe_limit_zz_th: 4242,
+                                        },
+                                        reference(),
+                                    );
                                     assert_eq!(
                                         flatten(&ours),
                                         cref::sig_deriv_me(args),
@@ -281,7 +299,7 @@ fn sig_deriv_me_matches_c() {
 /// neither branch is left unmeasured.
 #[test]
 fn sig_deriv_me_other_arms_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &sc5 in &[0u8, 1] {
             for &nref in &[0u8, 1, 2] {
                 for &ubu in &[0u8, 1] {
@@ -303,24 +321,27 @@ fn sig_deriv_me_other_arms_match_c() {
                         safe_limit_nref: nref,
                         safe_limit_zz_th: 777,
                     };
-                    let ours = me::sig_deriv_me(me::MeDerivInputs {
-                        enc_mode: m,
-                        sc_class5: sc5,
-                        input_resolution: ResolutionRange::R1080p,
-                        rtc_tune: false,
-                        is_base: true,
-                        hierarchical_levels: 4,
-                        enable_hme_flag: 1,
-                        enable_hme_level0_flag: 1,
-                        enable_hme_level1_flag: 1,
-                        enable_hme_level2_flag: 1,
-                        use_best_me_unipred_cand_only: ubu,
-                        me_qp_based_th_scaling: false,
-                        hme_qp_based_th_scaling: false,
-                        qp: 35,
-                        safe_limit_nref: nref,
-                        safe_limit_zz_th: 777,
-                    });
+                    let ours = me::sig_deriv_me(
+                        me::MeDerivInputs {
+                            enc_mode: m,
+                            sc_class5: sc5,
+                            input_resolution: ResolutionRange::R1080p,
+                            rtc_tune: false,
+                            is_base: true,
+                            hierarchical_levels: 4,
+                            enable_hme_flag: 1,
+                            enable_hme_level0_flag: 1,
+                            enable_hme_level1_flag: 1,
+                            enable_hme_level2_flag: 1,
+                            use_best_me_unipred_cand_only: ubu,
+                            me_qp_based_th_scaling: false,
+                            hme_qp_based_th_scaling: false,
+                            qp: 35,
+                            safe_limit_nref: nref,
+                            safe_limit_zz_th: 777,
+                        },
+                        reference(),
+                    );
                     assert_eq!(
                         flatten(&ours),
                         cref::sig_deriv_me(args),

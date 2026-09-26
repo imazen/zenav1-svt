@@ -483,6 +483,14 @@ pub struct CommonInputs {
     pub static_qp: u32,
     /// `ppcs->variance[sb_index][ME_TIER_ZERO_PU_64x64]`
     pub sb_variance: u16,
+    /// `pcs->mimic_only_tx_4x4` — Ghost Robot `a74cfb9ec` reads it to pin
+    /// lossless SBs off the light-PD1 path. Inert on the other references:
+    /// their `svt_aom_sig_deriv_enc_dec_common` never reads the field.
+    pub mimic_only_tx_4x4: bool,
+    /// `ctx->subsampling_x` — a Ghost Robot `f67a0f747` field (the fork keeps
+    /// it on `ModeDecisionContext`; mainline/hybrid keep it on `xd`). Read
+    /// under `GhostRobot` only; the other references have no such ctx field.
+    pub subsampling_x: u8,
     /// The inputs of the nested `set_depth_removal_level_controls` call.
     pub depth_removal: DepthRemovalInputs,
 }
@@ -523,8 +531,17 @@ pub struct CommonSignals {
 }
 
 /// C `svt_aom_sig_deriv_enc_dec_common` (`enc_mode_config.c:7086`). EXPORTED.
+///
+/// `reference` selects the fork arms: Ghost Robot's `a74cfb9ec` adds the
+/// `mimic_only_tx_4x4` first arm (a coded-lossless frame must not re-enable
+/// the light path — it assumes one luma transform and cannot split an 8x8
+/// into 4x4 TUs) and its `f67a0f747` forces `pd1_lvl_refinement = 0` when
+/// `!ctx->subsampling_x` or `mimic_only_tx_4x4`.
 #[must_use]
-pub fn sig_deriv_enc_dec_common(i: CommonInputs) -> Option<CommonSignals> {
+pub fn sig_deriv_enc_dec_common(
+    i: CommonInputs,
+    reference: crate::reference::SvtReference,
+) -> Option<CommonSignals> {
     let mode = depth_refinement_mode(i.pic_block_based_depth_refinement_level)?;
     let pred_depth_only = mode == PD0_DEPTH_PRED_PART_ONLY;
 
@@ -576,7 +593,12 @@ pub fn sig_deriv_enc_dec_common(i: CommonInputs) -> Option<CommonSignals> {
     let dr = set_depth_removal_level_controls(dr_in)?;
 
     // LPD1 level.
-    let lpd1_lvl = if i.rtc_tune {
+    let lpd1_lvl = if reference == crate::reference::SvtReference::GhostRobot && i.mimic_only_tx_4x4
+    {
+        // Ghost Robot a74cfb9ec: `set_lpd1_ctrls(ctx, 0)` — the whole ladder
+        // is skipped, rtc arm included.
+        0
+    } else if i.rtc_tune {
         let mut l = i.pic_lpd1_lvl;
         // For cyclic-refresh SBs signalled by a negative delta-QP, be
         // conservative.
@@ -622,12 +644,24 @@ pub fn sig_deriv_enc_dec_common(i: CommonInputs) -> Option<CommonSignals> {
     } else {
         2
     };
+    // Ghost Robot f67a0f747 (!subsampling_x, 4:4:4) and a74cfb9ec
+    // (mimic_only_tx_4x4, coded lossless) both pin the refinement off —
+    // applied AFTER the ladder on every arm.
+    let pd1_lvl_refinement = if reference == crate::reference::SvtReference::GhostRobot
+        && (i.subsampling_x == 0 || i.mimic_only_tx_4x4)
+    {
+        0
+    } else {
+        pd1_lvl_refinement
+    };
 
     let mut depth_removal = dr.ctrls;
     // Ensure at least 32x32 transforms remain available.
     if i.max_tx_size == 32 {
         depth_removal.disallow_below_64x64 = 0;
     }
+
+    let lpd1 = set_lpd1_ctrls(u8::try_from(lpd1_lvl).ok()?, i.subsampling_x, reference)?;
 
     Some(CommonSignals {
         depth_refinement_mode: mode,
@@ -637,8 +671,10 @@ pub fn sig_deriv_enc_dec_common(i: CommonInputs) -> Option<CommonSignals> {
         disallow_4x4: dr.disallow_4x4,
         max_block_size,
         lpd1_lvl,
-        lpd1_pd1_level: lpd1_pd1_level(u8::try_from(lpd1_lvl).ok()?)?,
-        lpd1: set_lpd1_ctrls(u8::try_from(lpd1_lvl).ok()?)?,
+        // `pd1_level` is what `set_lpd1_ctrls` stored — post the fork's
+        // `!subsampling_x` level collapse, not the pre-gate ladder level.
+        lpd1_pd1_level: lpd1.pd1_level,
+        lpd1,
         pd1_lvl_refinement,
     })
 }
@@ -730,9 +766,25 @@ const fn row(
 /// comments beside each row (`256 << 10`, `6000 + 8192 * 500`) so an upstream
 /// edit is easy to diff; and level 8's rows 0..5 are IDENTICAL to level 7's —
 /// it only adds row 6.
+///
+/// Ghost Robot's `f67a0f747` (High Profile support, `enc_mode_config.c:5624`
+/// at `9dabe3ca`) forces `lpd1_lvl = 0` on entry when `!ctx->subsampling_x`:
+/// the light path assumes one chroma transform, so full-resolution chroma
+/// uses the regular traversal even on 64-pixel blocks. `subsampling_x` is
+/// inert on the other references.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn set_lpd1_ctrls(lpd1_lvl: u8) -> Option<Lpd1Ctrls> {
+pub fn set_lpd1_ctrls(
+    lpd1_lvl: u8,
+    subsampling_x: u8,
+    reference: crate::reference::SvtReference,
+) -> Option<Lpd1Ctrls> {
+    let lpd1_lvl = if reference == crate::reference::SvtReference::GhostRobot && subsampling_x == 0
+    {
+        0
+    } else {
+        lpd1_lvl
+    };
     // Frequently repeated row shapes.
     // cost_th_dist 256<<10 = 262144, cost_th_rate 6000 + 8192*500 = 4_102_000.
     const D10: u32 = 256 << 10;

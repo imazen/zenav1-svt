@@ -121,6 +121,12 @@ pub enum InputCoeffLvl {
 
 /// C `EncMode` values used as `<=` bounds. `ENC_MR` is `-1`.
 pub mod enc_mode {
+    /// `ENC_MRS = -3` — Ghost Robot's highest-quality research preset,
+    /// fork-only (`85842c43c`; `EbSvtAv1Enc.h:45` at `9dabe3ca`). Under the
+    /// mainline/hybrid enum it compares `<= ENC_MR`.
+    pub const MRS: i8 = -3;
+    /// `ENC_MRP = -2` — fork-only research preset (`85842c43c`).
+    pub const MRP: i8 = -2;
     /// `ENC_MR = -1` — research mode, above M0 in quality.
     pub const MR: i8 = -1;
     /// `ENC_M0`

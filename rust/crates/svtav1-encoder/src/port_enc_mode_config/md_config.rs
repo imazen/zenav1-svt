@@ -82,7 +82,20 @@ pub fn get_disallow_4x4_allintra(enc_mode: i8) -> bool {
 /// dispatch (`crate::funnel_arm`) can call the SAME code the tier-1
 /// differential already covers, instead of re-transcribing the ladder.
 #[must_use]
-pub fn txt_level_default(enc_mode: i8, is_base: bool) -> u8 {
+pub fn txt_level_default(
+    enc_mode: i8,
+    is_base: bool,
+    reference: crate::reference::SvtReference,
+) -> u8 {
+    // Ghost Robot 85842c43c: `ENC_MRS -> 1`, `ENC_MRP -> 2`.
+    if reference == crate::reference::SvtReference::GhostRobot {
+        if enc_mode <= MRS {
+            return 1;
+        }
+        if enc_mode <= MRP {
+            return 2;
+        }
+    }
     if enc_mode <= MR {
         if is_base { 2 } else { 3 }
     } else if enc_mode <= M2 {
@@ -339,6 +352,15 @@ pub struct MdConfigInputs {
     pub picture_qp: u32,
     /// `scs->static_config.extended_crf_qindex_offset`
     pub extended_crf_qindex_offset: u8,
+    /// `scs->static_config.complex_hvs` — a fork config knob
+    /// (`70877799` added the `complex_hvs == 1 -> mds0_level = 3` arm);
+    /// the field does not exist on `mainline-4.2.0`'s config and `0` is
+    /// every build's default. Read under `GhostRobot` only.
+    pub complex_hvs: u8,
+    /// `scs->static_config.encoder_color_format` (`EbColorFormat` —
+    /// `EB_YUV444 == 3`, `EB_YUV420 == 1`). Ghost Robot's `f67a0f747`
+    /// ORs it into `frm_hdr->tx_mode`; inert elsewhere.
+    pub encoder_color_format: u8,
 }
 
 /// The picture-level levels `svt_aom_sig_deriv_mode_decision_config_default`
@@ -457,6 +479,13 @@ pub struct MdConfigSignals {
 
 /// C `svt_aom_sig_deriv_mode_decision_config_default`
 /// (`enc_mode_config.c:8900`). EXPORTED.
+///
+/// `reference` selects the fork arms: Ghost Robot's `85842c43c` research
+/// presets re-band `mfmv_level`/`txt_level`/`interpolation_search_level`/
+/// `txs_level` at `ENC_MRS`/`ENC_MRP`, `f67a0f747` ORs `EB_YUV444` into
+/// `tx_mode`, `70877799`/`d705ef50` add the `complex_hvs` mds0 arm, and
+/// `ccdfdb099` initializes `lambda_weight` to `LAMBDA_WEIGHT_NEUTRAL` inside
+/// the extended-CRF arm.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 // Several of C's ladders have two arms that happen to coincide in v4.2.0 —
@@ -465,7 +494,10 @@ pub struct MdConfigSignals {
 // arms so the Rust diffs one-to-one against the C and an upstream retune lands
 // in the right place; collapsing them would hide which arm moved.
 #[allow(clippy::if_same_then_else)]
-pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdConfigSignals> {
+pub fn sig_deriv_mode_decision_config_default(
+    i: MdConfigInputs,
+    reference: crate::reference::SvtReference,
+) -> Option<MdConfigSignals> {
     let m = i.enc_mode;
     let is_base = i.temporal_layer_index == 0;
     let is_layer1 = i.temporal_layer_index == 1;
@@ -478,7 +510,13 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
     let mfmv_level = if i.is_islice || i.mfmv_enabled == 0 || i.error_resilient_mode {
         0
     } else if i.fast_decode == 0 || res <= ResolutionRange::R360p {
-        if m <= MR {
+        // Ghost Robot's `b183a1256` widened the `mfmv_level = 1` band from
+        // `<= ENC_MR` to `<= ENC_M5`.
+        if m <= if reference == crate::reference::SvtReference::GhostRobot {
+            M5
+        } else {
+            MR
+        } {
             1
         } else if m <= M8 {
             if res <= ResolutionRange::R360p { 1 } else { 2 }
@@ -589,7 +627,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         cand_reduction_level = 6;
     }
 
-    let txt_level = txt_level_default(m, is_base);
+    let txt_level = txt_level_default(m, is_base, reference);
 
     let tx_shortcut_level = if m <= M2 {
         0
@@ -603,13 +641,18 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
 
     let pd0_cost_bias_weight = 0u32;
 
-    let mut interpolation_search_level = if m <= MR {
-        2
-    } else if m <= M8 {
-        4
-    } else {
-        4
-    };
+    // Ghost Robot 85842c43c: `<= ENC_MRS -> 1` ahead of the `<= MR -> 2`
+    // arm.
+    let mut interpolation_search_level =
+        if reference == crate::reference::SvtReference::GhostRobot && m <= MRS {
+            1
+        } else if m <= MR {
+            2
+        } else if m <= M8 {
+            4
+        } else {
+            4
+        };
     if m > M8 && !is_base {
         // C indexes this by the RESOLUTION enum value.
         const TH: [u8; 7] = [100, 100, 85, 50, 30, 30, 30];
@@ -642,7 +685,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
     } else {
         0
     };
-    let inter_compound_mode = get_inter_compound_level(m);
+    let inter_compound_mode = get_inter_compound_level(m, reference);
 
     let dist_based_ref_pruning = if i.ref_list0_count_try > 1 || i.ref_list1_count_try > 1 {
         if m <= MR {
@@ -661,7 +704,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
 
     let spatial_sse_full_loop_level = if m <= M2 { 1 } else { 3 };
 
-    let nsq_geom_level = get_nsq_geom_level_default(m, i.coeff_lvl);
+    let nsq_geom_level = get_nsq_geom_level_default(m, i.coeff_lvl, reference);
     let nsq_search_level = get_nsq_search_level_default(
         m,
         i.coeff_lvl,
@@ -672,6 +715,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         i.is_islice,
         i.pcs_temporal_layer_index,
         i.seq_qp_mod,
+        reference,
     );
 
     let inter_intra_level = if !i.is_islice && i.enable_interintra_compound {
@@ -680,7 +724,25 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         0
     };
 
-    let mut txs_level = if m <= M1 {
+    // Ghost Robot 85842c43c: `<= ENC_MRP -> 1`, `<= ENC_M1 -> 2` keeps the
+    // same value, and a new `<= ENC_M2 -> is_not_last_layer ? 2 : 3` arm
+    // ahead of the `<= M8`/`M9` bands (mainline's `<= M1 -> 2` subsumes
+    // M2 there).
+    let mut txs_level = if reference == crate::reference::SvtReference::GhostRobot {
+        if m <= MRP {
+            1
+        } else if m <= M1 {
+            2
+        } else if m <= M2 {
+            if i.is_not_last_layer { 2 } else { 3 }
+        } else if m <= M8 {
+            if is_base { 3 } else { 0 }
+        } else if m <= M9 {
+            if is_base { 4 } else { 0 }
+        } else {
+            0
+        }
+    } else if m <= M1 {
         2
     } else if m <= M8 {
         if is_base { 3 } else { 0 }
@@ -689,7 +751,10 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
     } else {
         0
     };
+    // The QP-banding fixup gained an `enc_mode > ENC_MRP` gate on Ghost
+    // Robot (85842c43c); mainline has no enc_mode condition here.
     if txs_level != 0
+        && (reference != crate::reference::SvtReference::GhostRobot || m > MRP)
         && i.seq_qp_mod != 0
         && i.sq_qp > 58
         && (i.seq_qp_mod == 1 || i.seq_qp_mod == 2)
@@ -700,13 +765,17 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
             txs_level - 1
         };
     }
-    let tx_mode = if txs_level != 0 {
+    // Ghost Robot `f67a0f747` (High Profile): 4:4:4 gets TX_MODE_SELECT
+    // regardless of txs_level — `EB_YUV444 == 3`.
+    let tx_mode = if txs_level != 0
+        || (reference == crate::reference::SvtReference::GhostRobot && i.encoder_color_format == 3)
+    {
         TX_MODE_SELECT
     } else {
         TX_MODE_LARGEST
     };
 
-    let nic_level = get_nic_level_default(m, is_base);
+    let nic_level = get_nic_level_default(m, is_base, reference);
     let md_sq_mv_search_level = 0u8;
     let md_nsq_mv_search_level = 2u8;
     let md_pme_level = if m <= MR {
@@ -731,10 +800,19 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
     };
     let pme_subpel_level = if m <= MR { 1 } else { 2 };
 
-    // NOTE the `#if SVT_HDR_MODE` arm above this ladder is NOT compiled in
-    // mainline (Source/API/EbDebugMacros.h), so the ladder below is the live
-    // one.
-    let mds0_level = mds0_level_default(m, is_base, i.is_islice);
+    // Ghost Robot `70877799`/`d705ef50`: `complex_hvs == 1` pins
+    // `mds0_level = 3` ahead of the ladder — on the fork the knob is a
+    // plain `static_config` field, not the hybrid's `#if SVT_HDR_MODE`
+    // arm (which stays compiled out on `hybrid-3115`, HDR off).
+    let mds0_level =
+        if reference == crate::reference::SvtReference::GhostRobot && i.complex_hvs == 1 {
+            3
+        } else {
+            // NOTE the `#if SVT_HDR_MODE` arm above this ladder is NOT compiled
+            // in mainline (Source/API/EbDebugMacros.h), so the ladder below is
+            // the live one.
+            mds0_level_default(m, is_base, i.is_islice)
+        };
 
     let pic_disallow_4x4 = get_disallow_4x4_default(m);
     let pic_bypass_encdec = if i.segmentation_enabled {
@@ -937,6 +1015,12 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         }
     }
     if i.sq_qp == MAX_QP_VALUE && i.extended_crf_qindex_offset != 0 {
+        // Ghost Robot `ccdfdb099`: start from LAMBDA_WEIGHT_NEUTRAL (128)
+        // when no earlier arm set a value — mainline adds the offset on
+        // top of whatever the tune ladder left.
+        if reference == crate::reference::SvtReference::GhostRobot && lambda_weight == 0 {
+            lambda_weight = 128;
+        }
         lambda_weight += i64::from(i.extended_crf_qindex_offset) * 28;
     }
 

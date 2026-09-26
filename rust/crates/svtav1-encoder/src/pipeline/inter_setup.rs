@@ -564,12 +564,27 @@ impl EncodePipeline {
                 // (`ref_dpb_index[BWD]`) exist, on ITS OWN POC adjacency —
                 // unreachable on low-delay, which never populates list 1.
                 // `svt_aom_is_ref_same_size` (enc_mode_config.c:2857) gates
-                // each list: `is_not_scaled` short-circuits true.
+                // each list: `is_not_scaled` short-circuits true on the
+                // older references. Ghost Robot `507025f65` dropped the
+                // shortcut — it checks the dims unconditionally AND requires
+                // `ref_list{0,1}_count_try > 0`. `superres_denom` is `None`
+                // on every inter frame the port accepts (superres-inter is
+                // refused), so under the older references the shortcut is
+                // the dims check anyway.
+                let gr = self.reference == crate::reference::SvtReference::GhostRobot;
                 let ref_same_size = |rf: &crate::picture::ReferenceFrame| {
-                    self.superres_denom.is_none()
+                    (!gr && self.superres_denom.is_none())
                         || (rf.width == self.width as u32 && rf.height == self.height as u32)
                 };
                 let ref_l0_adj = last_ref_slot
+                    .filter(|_| {
+                        // Ghost Robot `507025f65`: the L0 read requires
+                        // `ref_list0_count_try > 0` inside `is_ref_same_size`
+                        // itself; the older references only need the ref.
+                        !gr || pic_decision
+                            .as_ref()
+                            .is_some_and(|p| p.ref_list0_count_try > 0)
+                    })
                     .and_then(|slot| self.dpb.get(slot))
                     .filter(|rf| ref_same_size(rf))
                     .filter(|rf| display_order.abs_diff(rf.display_order) <= 1);
@@ -739,6 +754,8 @@ impl EncodePipeline {
         pic_decision: &Option<crate::port_picstruct::PicParams>,
         pipeline_md_inputs: &Option<crate::inter_hdr_arm::PipelineMdInputs>,
         md_config_signals: Option<crate::port_enc_mode_config::md_config::MdConfigSignals>,
+        // `frm_hdr.coded_lossless` — C's `mimic_only_tx_4x4` input.
+        coded_lossless: bool,
     ) -> Option<Lpd1FrameIn> {
         let lpd1_frame = md_config_signals
             .as_ref()
@@ -747,6 +764,11 @@ impl EncodePipeline {
                 let enc_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
                 Lpd1FrameIn {
                     pic_lpd1_lvl: mc.pic_lpd1_lvl,
+                    // C's `coded_lossless` post-step already zeroes
+                    // `pic_lpd1_lvl` in `md_config_process`; the field here
+                    // feeds Ghost Robot's `a74cfb9ec` per-SB `lpd1_lvl` /
+                    // `pd1_lvl_refinement` gates in `resolve_sb_lpd1`.
+                    coded_lossless,
                     enc_mode,
                     is_b_slice: pic_decision
                         .as_ref()
@@ -755,6 +777,7 @@ impl EncodePipeline {
                     picture_qp: p.picture_qp,
                     ref_list0_count_try: p.ref_list0_count_try,
                     ref_list1_count_try: p.ref_list1_count_try,
+                    reference: self.reference,
                     ref_skip_percentage: crate::inter_hdr_arm::ref_skip_percentage(p),
                     use_best_me_unipred_cand_only: u8::from(
                         enc_mode > crate::port_enc_mode_config::enc_mode::M1,

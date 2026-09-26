@@ -53,7 +53,13 @@ fn allintra_flattening_matches_the_ladder() {
             false,
             CONFIG_DEFAULT,
         );
-        let ctrls = set_cdef_search_controls(level, true, true).unwrap();
+        let ctrls = set_cdef_search_controls(
+            level,
+            true,
+            true,
+            crate::reference::SvtReference::Hybrid3115,
+        )
+        .unwrap();
         assert!(!ctrls.use_qp_strength, "preset {preset} level {level}");
         let got = cdef_search_cfg_from_ctrls(&ctrls, 0);
         let want = allintra_cfg_for_preset_flattened(preset);
@@ -77,9 +83,14 @@ fn allintra_flattening_matches_the_ladder() {
         );
         assert_eq!(level, 10, "preset {preset}");
         assert!(
-            set_cdef_search_controls(level, true, true)
-                .unwrap()
-                .use_qp_strength
+            set_cdef_search_controls(
+                level,
+                true,
+                true,
+                crate::reference::SvtReference::Hybrid3115
+            )
+            .unwrap()
+            .use_qp_strength
         );
         assert!(!allintra_preset_uses_cdef_search(preset));
     }
@@ -95,7 +106,13 @@ fn key_frame_ref_fields_are_inert() {
     // Levels a KEY frame can reach: allintra 1/2/3/5/7/10, video
     // 1/2/5/7. Levels 8/9 are RTC-only and are NOT asserted inert.
     for level in [1u8, 2, 3, 5, 7, 10] {
-        let c = set_cdef_search_controls(level, true, true).unwrap();
+        let c = set_cdef_search_controls(
+            level,
+            true,
+            true,
+            crate::reference::SvtReference::Hybrid3115,
+        )
+        .unwrap();
         assert_eq!(c.use_reference_cdef_fs, 0, "level {level}");
         assert_eq!(c.search_best_ref_fs, 0, "level {level}");
         assert_eq!(c.skip_th, 0, "level {level}");

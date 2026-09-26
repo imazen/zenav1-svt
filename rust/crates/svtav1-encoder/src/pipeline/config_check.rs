@@ -151,6 +151,7 @@ impl EncodePipeline {
             i8::try_from(self.speed_config.preset).unwrap_or(i8::MAX),
             is_key,
             /*super_res_off=*/ true,
+            self.reference,
         )
     }
 

@@ -15,8 +15,26 @@ use svtav1_cref::sig_deriv as cref;
 use svtav1_encoder::port_enc_mode_config::leaf;
 use svtav1_encoder::port_enc_mode_config::{InputCoeffLvl, ResolutionRange};
 
-/// Every `EncMode` the C enum spans, MR (-1) included.
+/// The `SvtReference` matching the C library these tests were linked
+/// against (`SVT_ORACLE` at build time) — selects the per-oracle arm inside
+/// ported functions that diverge between v4.2.0 and Ghost Robot.
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
+/// Every `EncMode` the mainline enum spans, MR (-1) included.
 const ENC_MODES: [i8; 15] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+/// Ghost Robot's `85842c43c` extended the enum to ENC_MRS (-3) and ENC_MRP
+/// (-2); sweep those too when the linked oracle is the fork.
+const ENC_MODES_GR: [i8; 17] = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+fn enc_modes() -> &'static [i8] {
+    if reference() == svtav1_encoder::reference::SvtReference::GhostRobot {
+        &ENC_MODES_GR
+    } else {
+        &ENC_MODES
+    }
+}
 
 const RESOLUTIONS: [ResolutionRange; 7] = [
     ResolutionRange::R240p,
@@ -37,7 +55,7 @@ const COEFF_LVLS: [InputCoeffLvl; 4] = [
 
 #[test]
 fn enable_me_8x8_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &r in &RESOLUTIONS {
             for &rtc in &[false, true] {
                 assert_eq!(
@@ -52,7 +70,7 @@ fn enable_me_8x8_matches_c() {
 
 #[test]
 fn enable_me_16x16_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_enable_me_16x16(m),
             cref::get_enable_me_16x16(m),
@@ -63,16 +81,16 @@ fn enable_me_16x16_matches_c() {
 
 #[test]
 fn gm_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &sro in &[false, true] {
             assert_eq!(
-                leaf::get_gm_core_level(m, sro),
+                leaf::get_gm_core_level(m, sro, reference()),
                 cref::get_gm_core_level(m, sro),
                 "core enc_mode={m} super_res_off={sro}"
             );
             for &isl in &[false, true] {
                 assert_eq!(
-                    leaf::derive_gm_level(m, isl, sro),
+                    leaf::derive_gm_level(m, isl, sro, reference()),
                     cref::derive_gm_level(m, isl, sro),
                     "derive enc_mode={m} is_islice={isl} super_res_off={sro}"
                 );
@@ -83,10 +101,10 @@ fn gm_levels_match_c() {
 
 #[test]
 fn max_can_count_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &rtc in &[false, true] {
             assert_eq!(
-                leaf::get_max_can_count(m, rtc),
+                leaf::get_max_can_count(m, rtc, reference()),
                 cref::get_max_can_count(m, rtc),
                 "enc_mode={m} rtc={rtc}"
             );
@@ -100,7 +118,7 @@ fn max_can_count_matches_c() {
 /// symbols so the fork cannot be re-flattened.
 #[test]
 fn disallow_4x4_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_disallow_4x4_default(m),
             cref::get_disallow_4x4_default(m),
@@ -133,7 +151,7 @@ fn disallow_8x8_matches_c() {
     // 32/16/8 leftovers is the part a transcription can get wrong; sweep every
     // 8-aligned dimension pair through two SB periods plus the odd sizes in
     // between.
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for w in (0u16..=256).step_by(8) {
             for h in [
                 0u16, 8, 16, 24, 40, 48, 56, 64, 72, 96, 120, 128, 136, 192, 200,
@@ -150,7 +168,7 @@ fn disallow_8x8_matches_c() {
 
 #[test]
 fn nsq_geom_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_nsq_geom_level_allintra(m),
             cref::get_nsq_geom_level_allintra(m),
@@ -158,7 +176,7 @@ fn nsq_geom_levels_match_c() {
         );
         for &c in &COEFF_LVLS {
             assert_eq!(
-                leaf::get_nsq_geom_level_default(m, c),
+                leaf::get_nsq_geom_level_default(m, c, reference()),
                 cref::get_nsq_geom_level_default(m, c as u8),
                 "default enc_mode={m} coeff={c:?}"
             );
@@ -178,7 +196,7 @@ const QPS: [u32; 16] = [
 
 #[test]
 fn nsq_search_level_default_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &c in &COEFF_LVLS {
             for &qp in &QPS {
                 for &sqm in &[0u8, 1, 2, 3] {
@@ -186,7 +204,16 @@ fn nsq_search_level_default_matches_c() {
                         for &(r0_gen, r0) in &[(false, 0.0f64), (true, 0.01), (true, 0.9)] {
                             for &isl in &[false, true] {
                                 let ours = leaf::get_nsq_search_level_default(
-                                    m, c, qp, tli, r0_gen, r0, isl, tli, sqm,
+                                    m,
+                                    c,
+                                    qp,
+                                    tli,
+                                    r0_gen,
+                                    r0,
+                                    isl,
+                                    tli,
+                                    sqm,
+                                    reference(),
                                 );
                                 let theirs = cref::get_nsq_search_level_default(
                                     m, c as u8, qp, tli, r0_gen, r0, isl, tli, sqm,
@@ -215,7 +242,7 @@ fn nsq_search_level_rtc_and_allintra_match_c() {
                     cref::get_nsq_search_level_rtc(c as u8, qp, sqm),
                     "rtc coeff={c:?} qp={qp} seq_qp_mod={sqm}"
                 );
-                for &m in &ENC_MODES {
+                for &m in enc_modes() {
                     assert_eq!(
                         leaf::get_nsq_search_level_allintra(m, qp, c, sqm),
                         cref::get_nsq_search_level_allintra(m, qp, c as u8, sqm),
@@ -229,7 +256,7 @@ fn nsq_search_level_rtc_and_allintra_match_c() {
 
 #[test]
 fn nic_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_nic_level_rtc(m),
             cref::get_nic_level_rtc(m),
@@ -242,7 +269,7 @@ fn nic_levels_match_c() {
         );
         for &b in &[false, true] {
             assert_eq!(
-                leaf::get_nic_level_default(m, b),
+                leaf::get_nic_level_default(m, b, reference()),
                 cref::get_nic_level_default(m, b),
                 "default enc_mode={m} is_base={b}"
             );
@@ -252,7 +279,7 @@ fn nic_levels_match_c() {
 
 #[test]
 fn intra_mode_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_intra_mode_levels_allintra(m),
             cref::get_intra_mode_levels_allintra(m),
@@ -281,7 +308,7 @@ fn intra_mode_levels_match_c() {
 
 #[test]
 fn bypass_encdec_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_bypass_encdec_allintra(m),
             cref::get_bypass_encdec_allintra(m),
@@ -304,7 +331,7 @@ fn bypass_encdec_matches_c() {
 
 #[test]
 fn update_cdf_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_update_cdf_level_allintra(m),
             cref::get_update_cdf_level_allintra(m),
@@ -329,7 +356,7 @@ fn update_cdf_levels_match_c() {
 
 #[test]
 fn chroma_levels_match_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_chroma_level_rtc(m),
             cref::get_chroma_level_rtc(m),
@@ -359,7 +386,7 @@ fn chroma_levels_match_c() {
 /// 0..3 — `rust/CLAUDE.md` envelope guard 5 is an allintra-only statement.
 #[test]
 fn enable_sg_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
             leaf::get_enable_sg_allintra(m),
             cref::get_enable_sg_allintra(m),
@@ -408,9 +435,9 @@ fn sg_is_live_in_video_mode_at_low_presets() {
 
 #[test]
 fn inter_compound_level_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         assert_eq!(
-            leaf::get_inter_compound_level(m),
+            leaf::get_inter_compound_level(m, reference()),
             cref::inter_compound_level(m),
             "enc_mode={m}"
         );
@@ -419,7 +446,7 @@ fn inter_compound_level_matches_c() {
 
 #[test]
 fn obmc_level_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for qp in 0u32..=63 {
             for &sqm in &[0u8, 1, 2, 3] {
                 assert_eq!(
@@ -434,7 +461,7 @@ fn obmc_level_matches_c() {
 
 #[test]
 fn mfmv_config_matches_c() {
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &rtc in &[false, true] {
             for &cfg in &[-1i32, 0, 1] {
                 assert_eq!(
@@ -472,7 +499,7 @@ fn pre_analysis_pcs_matches_c() {
         (512, 41040), // 21012480 == INPUT_SIZE_4K_TH
         (512, 41039), // one bucket below it
     ];
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &(w, h) in &dims {
             for &rtc in &[false, true] {
                 let ours = leaf::sig_deriv_pre_analysis_pcs(m, w, h, rtc);
@@ -504,7 +531,7 @@ fn is_ref_same_size_matches_c() {
         for &b in &[false, true] {
             for &present in &[false, true] {
                 for &(rw, rh) in &[(64u16, 64u16), (32, 64), (64, 32)] {
-                    let ours = leaf::is_ref_same_size(ins, b, present, rw, rh, 64, 64);
+                    let ours = leaf::is_ref_same_size(ins, b, present, rw, rh, 64, 64, reference());
                     let theirs = cref::is_ref_same_size(ins, b, present, rw, rh, 64, 64);
                     assert_eq!(
                         ours, theirs,
@@ -544,7 +571,7 @@ fn is_ref_same_size_positive_control() {
 #[test]
 fn nsq_levels_treat_invalid_coeff_lvl_as_normal() {
     let normal = InputCoeffLvl::Normal as u8;
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         let invalid = cref::get_nsq_geom_level_default_raw(m, cref::INVALID_COEFF_LVL);
         assert_eq!(
             invalid,
@@ -554,11 +581,11 @@ fn nsq_levels_treat_invalid_coeff_lvl_as_normal() {
         // ... and the port's own arm helper reproduces it.
         assert_eq!(
             invalid,
-            leaf::get_nsq_geom_level_default(m, InputCoeffLvl::Normal),
+            leaf::get_nsq_geom_level_default(m, InputCoeffLvl::Normal, reference()),
             "geom enc_mode={m}: port vs C at INVALID_LVL"
         );
     }
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         for &qp in &QPS {
             for &sqm in &[0u8, 1, 2, 3] {
                 for &isl in &[false, true] {
@@ -593,6 +620,7 @@ fn nsq_levels_treat_invalid_coeff_lvl_as_normal() {
                             isl,
                             0,
                             sqm,
+                            reference(),
                         ),
                         "search enc_mode={m} qp={qp} sqm={sqm} isl={isl}: port vs C at INVALID_LVL"
                     );
@@ -609,7 +637,7 @@ fn nsq_levels_treat_invalid_coeff_lvl_as_normal() {
 fn invalid_coeff_lvl_probe_has_a_positive_control() {
     let mut geom_differs = false;
     let mut search_differs = false;
-    for &m in &ENC_MODES {
+    for &m in enc_modes() {
         if cref::get_nsq_geom_level_default(m, InputCoeffLvl::High as u8)
             != cref::get_nsq_geom_level_default(m, InputCoeffLvl::Normal as u8)
         {

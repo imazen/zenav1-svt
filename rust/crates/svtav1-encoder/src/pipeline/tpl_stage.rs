@@ -294,6 +294,7 @@ impl EncodePipeline {
                     // arm (`motion_estimation.c:2231`).
                     similar_brightness_refs: pic.similar_brightness_refs,
                     frame_is_leaf: pp::frame_is_leaf(pic.update_type),
+                    reference: self.reference,
                 },
             );
             frame_mes[i] = Some(out);

@@ -400,6 +400,10 @@ impl EncodePipeline {
                     .map_or(crate::port_enc_mode_config::InputCoeffLvl::Normal, |q| {
                         crate::part_arm::input_coeff_lvl(q.input_coeff_level)
                     }),
+                // `scs->static_config.complex_hvs` — Ghost Robot's
+                // `70877799`/`d705ef50` mds0 arm reads it; inert under the
+                // other references (and non-fork HDR modes refuse the knob).
+                complex_hvs: self.hdr.complex_hvs,
             })
         };
         pipeline_md_inputs

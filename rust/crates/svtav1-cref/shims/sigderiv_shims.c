@@ -127,12 +127,16 @@ uint8_t ref_set_mfmv_config(int8_t enc_mode, uint8_t rtc, int32_t config_enable_
 }
 
 /* ---- svt_aom_is_ref_same_size (enc_mode_config.c:2857) ----
- * Reads: pcs->ppcs->is_not_scaled, pcs->slice_type,
+ * Reads: pcs->ppcs->is_not_scaled (mainline/hybrid only — Ghost Robot's
+ *        507025f65 dropped the short-circuit), pcs->slice_type,
+ *        pcs->ppcs->ref_list*_count_try (Ghost Robot — a zero count fails
+ *        before the pointer is dereferenced),
  *        pcs->ref_pic_ptr_array[list][idx] (and, when non-NULL, the
  *        EbReferenceObject's reference_picture width/height),
  *        pcs->ppcs->frame_width/height.
- * `ref_present == 0` leaves the wrapper pointer NULL, which is the branch the
- * port models as "reference absent". */
+ * `ref_present == 0` leaves the wrapper pointer NULL and the try counts at
+ * zero, which is the branch the port models as "reference absent" on every
+ * oracle. */
 uint8_t ref_is_ref_same_size(uint8_t is_not_scaled, uint8_t is_b_slice, uint8_t ref_present, uint16_t ref_w,
                              uint16_t ref_h, uint16_t frame_w, uint16_t frame_h) {
     SequenceControlSet*      scs    = (SequenceControlSet*)calloc(1, sizeof(*scs));
@@ -142,9 +146,11 @@ uint8_t ref_is_ref_same_size(uint8_t is_not_scaled, uint8_t is_b_slice, uint8_t 
     EbReferenceObject*       refobj = (EbReferenceObject*)calloc(1, sizeof(*refobj));
     EbPictureBufferDesc*     refpic = (EbPictureBufferDesc*)calloc(1, sizeof(*refpic));
 
-    ppcs->is_not_scaled = is_not_scaled;
-    ppcs->frame_width   = frame_w;
-    ppcs->frame_height  = frame_h;
+    ppcs->is_not_scaled        = is_not_scaled;
+    ppcs->ref_list0_count_try  = ref_present;
+    ppcs->ref_list1_count_try  = ref_present;
+    ppcs->frame_width          = frame_w;
+    ppcs->frame_height         = frame_h;
     pcs->ppcs           = ppcs;
     pcs->scs            = scs;
     /* SliceType has only B_SLICE and I_SLICE (definitions.h:1890); the C
@@ -943,6 +949,11 @@ enum {
     CM_I_REF_AVAIL, CM_I_REF_MIN_SQ_SIZE,
     /* get_max_block_size_{allintra,rtc} read these three. */
     CM_I_SB_VARIANCE, CM_I_CAP_QP_SCALING, CM_I_STATIC_QP,
+    /* Ghost Robot reads: pcs->mimic_only_tx_4x4 (a74cfb9ec, lossless must not
+       re-enable light PD1) and ctx->subsampling_x (f67a0f747, a field only
+       the fork carries — under other oracles the C body reads neither, so
+       the inputs are inert there). */
+    CM_I_MIMIC_TX_4X4, CM_I_SUBSAMP_X,
     CM_I_COUNT
 };
 
@@ -977,6 +988,8 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     EbObjectWrapper*   wrap1 = (EbObjectWrapper*)calloc(1, sizeof(*wrap1));
     EbReferenceObject* ref0  = (EbReferenceObject*)calloc(1, sizeof(*ref0));
     EbReferenceObject* ref1  = (EbReferenceObject*)calloc(1, sizeof(*ref1));
+    EbPictureBufferDesc* pic0 = (EbPictureBufferDesc*)calloc(1, sizeof(*pic0));
+    EbPictureBufferDesc* pic1 = (EbPictureBufferDesc*)calloc(1, sizeof(*pic1));
     uint8_t* minsq0 = (uint8_t*)calloc(1, sizeof(uint8_t));
     uint8_t* minsq1 = (uint8_t*)calloc(1, sizeof(uint8_t));
     /* ppcs->variance is ZEN_VAR_TYPE** indexed [sb_index][ME_TIER_ZERO_PU_*];
@@ -1016,7 +1029,21 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     var_row[ME_TIER_ZERO_PU_64x64] = (ZEN_VAR_TYPE)in[CM_I_SB_VARIANCE];
     var_rows[0]                = var_row;
     ppcs->variance             = var_rows;
+    ppcs->ref_list0_count_try  = 1;
     ppcs->ref_list1_count_try  = 1;
+    /* Ghost Robot's svt_aom_is_ref_same_size (507025f65) compares the
+       reference's reconstructed dims against ppcs->frame_width/height and
+       bails when reference_picture is NULL — both must be populated for the
+       depth-removal ref arm to reach its sb_min_sq_size read. Under the
+       other oracles is_not_scaled short-circuits before either is read. */
+    ppcs->frame_width          = 64;
+    ppcs->frame_height         = 64;
+    pic0->width                = 64;
+    pic0->height               = 64;
+    pic1->width                = 64;
+    pic1->height               = 64;
+    ref0->reference_picture    = pic0;
+    ref1->reference_picture    = pic1;
     ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[CM_I_BASE_Q];
     ppcs->frm_hdr.delta_q_params.delta_q_present = (uint8_t)in[CM_I_DELTA_Q_PRESENT];
     /* frame_is_boosted: KEY_FRAME or an ARF/GF update. */
@@ -1033,12 +1060,16 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     pcs->pic_lpd1_lvl         = (uint8_t)in[CM_I_PIC_LPD1_LVL];
     pcs->pic_pd0_lvl          = 0;
     pcs->nsq_geom_level       = 0;
-    /* The reference wrappers must ALWAYS be non-NULL. ppcs->is_not_scaled is
-       1, so svt_aom_is_ref_same_size returns true without looking at the
-       pointer, and set_depth_removal_level_controls then dereferences
-       ref_pic_ptr_array[0][0] unconditionally on a non-I-slice. (Not a live C
-       bug -- an inter picture in the real encoder always has that pointer --
-       but it means "no reference" cannot be modelled with a NULL here.)
+    pcs->mimic_only_tx_4x4    = (bool)in[CM_I_MIMIC_TX_4X4];
+    /* The reference wrappers must ALWAYS be non-NULL. On the old oracles
+       ppcs->is_not_scaled makes svt_aom_is_ref_same_size return true without
+       looking at the pointer; on Ghost Robot the same result needs the
+       count_try/pointer/reference_picture chain populated above, because
+       507025f65 dropped the is_not_scaled short-circuit. Either way
+       set_depth_removal_level_controls then dereferences
+       ref_pic_ptr_array[0][0] on a non-I-slice. (Not a live C bug -- an
+       inter picture in the real encoder always has that pointer -- but it
+       means "no reference" cannot be modelled with a NULL here.)
        "Not available" is modelled the way C actually tests it: a ref_poc more
        than one away from picture_number, which leaves sb_min_sq_size at its
        (uint8_t)~0 sentinel and skips the threshold bump. */
@@ -1057,6 +1088,11 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     sb->qindex    = (uint32_t)in[CM_I_SB_QINDEX];
     ctx->qp_index = (uint8_t)in[CM_I_QP_INDEX];
     ctx->fast_lambda_md[EB_8_BIT_MD] = (uint32_t)in[CM_I_LAMBDA8];
+#ifdef ZEN_ORACLE_CTX_SUBSAMP
+    /* f67a0f747 added ModeDecisionContext::subsampling_x on the fork; the
+       other oracles' ModeDecisionContext has no such field. */
+    ctx->subsampling_x = (uint8_t)in[CM_I_SUBSAMP_X];
+#endif
 
     svt_aom_sig_deriv_enc_dec_common(scs, pcs, ctx);
 
@@ -1088,6 +1124,7 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
 
     free(var_rows); free(var_row);
     free(minsq1); free(minsq0);
+    free(pic1); free(pic0);
     free(ref1); free(ref0); free(wrap1); free(wrap0);
     free(mv); free(d8); free(d16); free(d32); free(d64);
     free(sbg); free(b64); free(sb);
@@ -1435,6 +1472,11 @@ enum {
     MD_I_BIT_DEPTH, MD_I_SEGMENTATION, MD_I_SB_SIZE, MD_I_HBD_MD,
     MD_I_R0_GEN, MD_I_R0_MILLI, MD_I_PCS_TEMPORAL_LAYER, MD_I_TUNE,
     MD_I_PICTURE_QP, MD_I_EXT_CRF_OFFSET,
+    /* Ghost Robot reads: scs->static_config.complex_hvs (70877799/d705ef50,
+       a field mainline's EbSvtAv1EncConfiguration lacks entirely) and
+       scs->static_config.encoder_color_format (f67a0f747 — exists on every
+       build). Inert under the other oracles, which read neither slot. */
+    MD_I_COMPLEX_HVS, MD_I_COLOR_FORMAT,
     MD_I_COUNT
 };
 
@@ -1471,6 +1513,11 @@ void ref_sig_deriv_md_config_default(const int32_t* in, int64_t* out) {
     scs->static_config.enable_dlf_flag   = 0; /* dlf ctrls are not compared */
     scs->static_config.tune              = (uint8_t)in[MD_I_TUNE];
     scs->static_config.extended_crf_qindex_offset = (uint8_t)in[MD_I_EXT_CRF_OFFSET];
+    scs->static_config.encoder_color_format = (EbColorFormat)in[MD_I_COLOR_FORMAT];
+#ifndef ZEN_ORACLE_MAINLINE_API
+    /* f9100ab22/70877799 fork field — absent on mainline-4.2.0's config. */
+    scs->static_config.complex_hvs = (uint8_t)in[MD_I_COMPLEX_HVS];
+#endif
     scs->seq_qp_mod            = (uint8_t)in[MD_I_SEQ_QP_MOD];
     scs->mfmv_enabled          = (uint8_t)in[MD_I_MFMV_ENABLED];
     scs->rc_stat_gen_pass_mode = (uint8_t)in[MD_I_RC_STAT_GEN];
@@ -1631,6 +1678,11 @@ void ref_sig_deriv_md_config_allintra(const int32_t* in, int64_t* out) {
     scs->static_config.enable_dlf_flag   = 0; /* dlf ctrls are not compared */
     scs->static_config.tune              = (uint8_t)in[MD_I_TUNE];
     scs->static_config.extended_crf_qindex_offset = (uint8_t)in[MD_I_EXT_CRF_OFFSET];
+    scs->static_config.encoder_color_format = (EbColorFormat)in[MD_I_COLOR_FORMAT];
+#ifndef ZEN_ORACLE_MAINLINE_API
+    /* f9100ab22/70877799 fork field — absent on mainline-4.2.0's config. */
+    scs->static_config.complex_hvs = (uint8_t)in[MD_I_COMPLEX_HVS];
+#endif
     scs->seq_qp_mod            = (uint8_t)in[MD_I_SEQ_QP_MOD];
     scs->mfmv_enabled          = (uint8_t)in[MD_I_MFMV_ENABLED];
     scs->rc_stat_gen_pass_mode = (uint8_t)in[MD_I_RC_STAT_GEN];

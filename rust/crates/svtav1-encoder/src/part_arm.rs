@@ -105,11 +105,17 @@ pub(crate) fn disallow_4x4(arm: ScArm, preset: i8) -> bool {
 /// `pcs->nsq_geom_level` for this arm — the level itself, so callers that
 /// need `allow_HV4` / `min_nsq_block_size` (not just `enabled`) can ask.
 #[must_use]
-pub(crate) fn nsq_geom_level(arm: ScArm, preset: i8) -> u8 {
+pub(crate) fn nsq_geom_level(
+    arm: ScArm,
+    preset: i8,
+    reference: crate::reference::SvtReference,
+) -> u8 {
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
     match arm {
         ScArm::Allintra => leaf::get_nsq_geom_level_allintra(m),
-        ScArm::Video { .. } => leaf::get_nsq_geom_level_default(m, VIDEO_ISLICE_COEFF_LVL),
+        ScArm::Video { .. } => {
+            leaf::get_nsq_geom_level_default(m, VIDEO_ISLICE_COEFF_LVL, reference)
+        }
     }
 }
 
@@ -118,8 +124,12 @@ pub(crate) fn nsq_geom_level(arm: ScArm, preset: i8) -> u8 {
 /// This is the predicate a ONE-FALSE boundary node consults: with geometry on
 /// it keeps its single injected edge shape, with geometry off it force-splits.
 #[must_use]
-pub(crate) fn nsq_geom_enabled(arm: ScArm, preset: i8) -> bool {
-    nsq_geom_level(arm, preset) != 0
+pub(crate) fn nsq_geom_enabled(
+    arm: ScArm,
+    preset: i8,
+    reference: crate::reference::SvtReference,
+) -> bool {
+    nsq_geom_level(arm, preset, reference) != 0
 }
 
 /// `svt_aom_set_nsq_geom_ctrls` (`:8180`) — the `(allow_HV4, min_nsq_block_size)`
@@ -170,7 +180,14 @@ pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: i8) -> bool {
 #[must_use]
 #[cfg(test)]
 pub(crate) fn nsq_search_level(arm: ScArm, preset: i8, cli_qp: u32) -> u8 {
-    nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal, 0)
+    nsq_search_level_with_coeff(
+        arm,
+        preset,
+        cli_qp,
+        crate::quant::CoeffLvl::Normal,
+        0,
+        crate::reference::SvtReference::Hybrid3115,
+    )
 }
 
 /// The `quant::CoeffLvl` -> `InputCoeffLvl` bridge — the `InputCoeffLvl`
@@ -193,6 +210,7 @@ pub(crate) fn nsq_search_level_with_coeff(
     // for the M0 `is_base` row and the r0 modulation table
     // (enc_mode_config.c:8258-8290). 0 on a flat GOP's every picture.
     temporal_layer: u8,
+    reference: crate::reference::SvtReference,
 ) -> u8 {
     let coeff = input_coeff_lvl(coeff_level);
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
@@ -218,6 +236,7 @@ pub(crate) fn nsq_search_level_with_coeff(
             is_islice,
             temporal_layer,
             SEQ_QP_MOD,
+            reference,
         ),
     }
 }
@@ -274,7 +293,11 @@ mod tests {
                 );
             }
             assert_eq!(
-                nsq_geom_enabled(ScArm::Allintra, preset),
+                nsq_geom_enabled(
+                    ScArm::Allintra,
+                    preset,
+                    crate::reference::SvtReference::Hybrid3115
+                ),
                 old_flattened_geom_enabled(preset),
                 "nsq geom p{preset}"
             );
@@ -305,14 +328,35 @@ mod tests {
     #[test]
     fn allintra_geom_ctrls_match_the_hardcoded_pair() {
         for preset in 0i8..=3 {
-            assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 2);
+            assert_eq!(
+                nsq_geom_level(
+                    ScArm::Allintra,
+                    preset,
+                    crate::reference::SvtReference::Hybrid3115
+                ),
+                2
+            );
             assert_eq!(nsq_geom_shape_ctrls(2), (true, 0));
         }
         for preset in 4i8..=6 {
-            assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 3);
+            assert_eq!(
+                nsq_geom_level(
+                    ScArm::Allintra,
+                    preset,
+                    crate::reference::SvtReference::Hybrid3115
+                ),
+                3
+            );
         }
         for preset in 7i8..=13 {
-            assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 0);
+            assert_eq!(
+                nsq_geom_level(
+                    ScArm::Allintra,
+                    preset,
+                    crate::reference::SvtReference::Hybrid3115
+                ),
+                0
+            );
         }
     }
 
@@ -334,9 +378,16 @@ mod tests {
         // NSQ geometry: the still arm switches OFF above M6, the video arm
         // never does (`get_nsq_geom_level_default` returns 1/2/3 only).
         for preset in 0i8..=13 {
-            assert!(nsq_geom_enabled(v, preset), "video geom p{preset}");
+            assert!(
+                nsq_geom_enabled(v, preset, crate::reference::SvtReference::Hybrid3115),
+                "video geom p{preset}"
+            );
         }
-        assert!(!nsq_geom_enabled(ScArm::Allintra, 7));
+        assert!(!nsq_geom_enabled(
+            ScArm::Allintra,
+            7,
+            crate::reference::SvtReference::Hybrid3115
+        ));
 
         // NSQ search: the still arm is OFF from M4 up at EVERY qp (the
         // allintra base table is 0 there and the offsets short-circuit on 0),

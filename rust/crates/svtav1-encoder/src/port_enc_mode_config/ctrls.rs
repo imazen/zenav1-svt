@@ -898,6 +898,13 @@ pub struct DlfCtrls {
     pub zero_filter_strength_lvl: u8,
     /// `prev_dlf_dist_th`
     pub prev_dlf_dist_th: u16,
+    /// Ghost Robot `f9100ab22` made the pick method a per-level control field
+    /// (`LPF_PICK_FROM_*`: FULL_IMAGE=0, SUBIMAGE=1, Q=2) — levels 0..=4 take
+    /// FULL_IMAGE, 5..=7 take Q. The older references have no such field; the
+    /// same rule is implicit in `sb_based_dlf` (the per-SB path hardcodes
+    /// `LPF_PICK_FROM_Q`), so the port normalizes them to
+    /// `sb_based_dlf ? Q : FULL_IMAGE` — identical numbers on every level.
+    pub pick_method: u8,
 }
 
 /// C `svt_aom_set_dlf_controls` (`enc_mode_config.c:1561`).
@@ -994,5 +1001,10 @@ pub fn set_dlf_controls(dlf_level: u8) -> Option<DlfCtrls> {
         }
         _ => return None,
     }
+    // Ghost Robot f9100ab22 writes `pick_method` per level
+    // (LPF_PICK_FROM_FULL_IMAGE on 0..=4, LPF_PICK_FROM_Q on 5..=7); on the
+    // older references the same rule is implicit in `sb_based_dlf`, so the
+    // field below is reference-independent.
+    c.pick_method = if c.sb_based_dlf != 0 { 2 } else { 0 };
     Some(c)
 }

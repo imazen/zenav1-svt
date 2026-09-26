@@ -106,11 +106,17 @@ fn to_port(c: &Case) -> MultiProcessesInputs {
         encoder_bit_depth: c.encoder_bit_depth,
         config_hbd_mds: c.cfg_hbd_mds,
         gm_super_res_off: true,
+        temporal_layer_index: c.temporal_layer,
     }
 }
 
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
 fn assert_case(c: &Case, msg: &str) {
-    let o = mp::sig_deriv_multi_processes_default(to_port(c)).expect("levels in range");
+    let o =
+        mp::sig_deriv_multi_processes_default(to_port(c), reference()).expect("levels in range");
     let t = cref::sig_deriv_multi_processes_default(&build_input(c));
 
     let g = &o.gm;
@@ -356,7 +362,7 @@ fn multi_processes_tf_hme_levels_match_c() {
         tf_hme_level: 5,
         ..Case::default()
     };
-    assert!(mp::sig_deriv_multi_processes_default(to_port(&bad)).is_none());
+    assert!(mp::sig_deriv_multi_processes_default(to_port(&bad), reference()).is_none());
 }
 
 /// Positive controls, so the sweeps cannot pass on two constant dumps.

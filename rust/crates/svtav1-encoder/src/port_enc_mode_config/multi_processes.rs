@@ -163,6 +163,10 @@ pub struct MultiProcessesInputs {
     /// [`Self::is_islice`], kept separate because C reads it through a
     /// different helper).
     pub gm_super_res_off: bool,
+    /// `pcs->temporal_layer_index` — read by Ghost Robot's `7c4ada2e5`
+    /// `hbd_md` arms (`<= ENC_M8` needs TL<=2, `<= ENC_M9` TL<=1). Inert on
+    /// the other references, whose ladder keys only on `is_base`.
+    pub temporal_layer_index: u8,
 }
 
 /// What `svt_aom_sig_deriv_multi_processes_default` writes, restricted to the
@@ -230,14 +234,21 @@ pub struct MultiProcessesSignals {
 
 /// C `svt_aom_sig_deriv_multi_processes_default` (`enc_mode_config.c:1973`).
 /// EXPORTED.
+///
+/// `reference` selects the `hbd_md` ladder: Ghost Robot's `7c4ada2e5`
+/// re-banded it onto `pcs->temporal_layer_index` (full 10-bit MD through
+/// M5, `<= M8` needs TL<=2, `<= M9` TL<=1).
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<MultiProcessesSignals> {
+pub fn sig_deriv_multi_processes_default(
+    i: MultiProcessesInputs,
+    reference: crate::reference::SvtReference,
+) -> Option<MultiProcessesSignals> {
     let enc_mode = i.enc_mode;
     let sc5 = i.sc_class5 != 0;
 
     // GM controls are set assuming super-res is OFF, for the gm-pp need.
-    let gm_level = derive_gm_level(enc_mode, i.is_islice, true);
+    let gm_level = derive_gm_level(enc_mode, i.is_islice, true, reference);
     let gm = set_gm_controls(gm_level, i.input_resolution)?;
 
     // HME flags. Level 2 is on ONLY for screen content at <= M2.
@@ -301,6 +312,21 @@ pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<Mult
         0
     } else if i.config_hbd_mds != CONFIG_DEFAULT {
         i.config_hbd_mds as u8
+    } else if reference == crate::reference::SvtReference::GhostRobot {
+        // Ghost Robot 7c4ada2e5: full 10-bit MD through M5, then a
+        // temporal-layer ladder — the light PD0 pass keeps its 8-bit
+        // buffers either way.
+        if enc_mode <= M5 {
+            1
+        } else if enc_mode <= M8 {
+            u8::from(i.temporal_layer_index <= 2)
+        } else if enc_mode <= M9 {
+            u8::from(i.temporal_layer_index <= 1)
+        } else if i.is_islice {
+            2
+        } else {
+            0
+        }
     } else if enc_mode <= MR {
         1
     } else if enc_mode <= M5 {
@@ -335,7 +361,7 @@ pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<Mult
         enable_restoration,
         frame_end_cdf_update_mode: 1,
         hbd_md,
-        max_can_count: get_max_can_count(enc_mode, false),
+        max_can_count: get_max_can_count(enc_mode, false, reference),
         use_best_me_unipred_cand_only: u8::from(enc_mode > M1),
     })
 }

@@ -33,6 +33,13 @@ pub const TOTAL_STRENGTHS: usize = 64;
 /// i.e. `pri_strength_index * CDEF_SEC_STRENGTHS` (sec code 0).
 pub const PF_GI: [u8; 16] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60];
 
+/// C `CDEF_QP_STRENGTH_UV` — chroma takes the qp-derived strength while luma
+/// is searched (Ghost Robot `e6ff85f0d`, `pcs.h:556`).
+const CDEF_QP_STRENGTH_UV: u8 = 1;
+/// C `CDEF_QP_STRENGTH_YUV` — luma and chroma both take the qp-derived
+/// strength (the `use_qp_strength` bool's equivalent).
+const CDEF_QP_STRENGTH_YUV: u8 = 2;
+
 /// C `DEFAULT` — the `static_config` "not overridden, derive it" sentinel.
 pub const CONFIG_DEFAULT: i32 = -1;
 
@@ -71,8 +78,19 @@ pub struct CdefSearchControls {
     /// `uv_from_y`
     pub uv_from_y: bool,
     /// `use_qp_strength` — bypass the search and take
-    /// `svt_pick_cdef_from_qp`.
+    /// `svt_pick_cdef_from_qp`. On Ghost Robot this field is DERIVED: C's
+    /// `e6ff85f0d` replaced it with `qp_strength_level` (OFF/UV/YUV), and
+    /// the port stores that enum on [`Self::qp_strength_level`]; the bool
+    /// then reads `level == CDEF_QP_STRENGTH_YUV`, preserving the old "the
+    /// whole block takes the qp strength" meaning the search paths consult.
+    /// The UV level — chroma-only qp strength under a real luma search — has
+    /// no bool spelling and is only observable through the level.
     pub use_qp_strength: bool,
+    /// Ghost Robot's `qp_strength_level` (`e6ff85f0d`): `CDEF_QP_STRENGTH_*
+    /// ` = 0/1/2 (OFF/UV/YUV). Under the other references C has no such
+    /// field; the port normalizes it to `use_qp_strength ? YUV : OFF` so
+    /// the slot means the same thing in every compare.
+    pub qp_strength_level: u8,
     /// `pred_y_f` — the packed luma strength to USE without searching, set by
     /// [`update_cdef_filters_on_ref_info`] when it takes the
     /// `use_reference_cdef_fs` arm. Only meaningful while
@@ -100,6 +118,7 @@ impl Default for CdefSearchControls {
             pred_y_f: 0,
             pred_uv_f: 0,
             use_qp_strength: false,
+            qp_strength_level: 0,
         }
     }
 }
@@ -114,13 +133,20 @@ impl Default for CdefSearchControls {
 /// LF_UPDATE` (`:113`). Both are TRUE for a KEY frame.
 ///
 /// Returns `None` where C asserts (`default: assert(0)`), i.e. level > 10.
+///
+/// Ghost Robot's `e6ff85f0d` replaced the `use_qp_strength` bool with the
+/// `qp_strength_level` enum (OFF/UV/YUV) and zeroed `skip_th` on levels
+/// 7..=10 — levels 7/8/9 now take `UV` (chroma-only qp strength) and 10
+/// `YUV`.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn set_cdef_search_controls(
     cdef_search_level: u8,
     is_base: bool,
     is_not_highest_layer: bool,
+    reference: crate::reference::SvtReference,
 ) -> Option<CdefSearchControls> {
+    let gr = reference == crate::reference::SvtReference::GhostRobot;
     let mut c = CdefSearchControls::default();
     // C's shared tail for levels 1..=9: build the second-pass list by walking
     // the first-pass list outer and the deltas inner, mirror the first-pass
@@ -250,9 +276,14 @@ pub fn set_cdef_search_controls(
             c.use_reference_cdef_fs = i8::from(!is_not_highest_layer);
             c.search_best_ref_fs = u8::from(!is_base);
             c.subsampling_factor = 4;
-            c.skip_th = if is_base { 0 } else { 80 };
+            // Ghost Robot e6ff85f0d: UV qp strength, skip_th flat 0.
+            c.skip_th = if gr || is_base { 0 } else { 80 };
             c.uv_from_y = false;
-            c.use_qp_strength = false;
+            if gr {
+                c.qp_strength_level = CDEF_QP_STRENGTH_UV;
+            } else {
+                c.use_qp_strength = false;
+            }
         }
         // pf {0,15}, sf {+2}, chroma copied from luma.
         8 => {
@@ -261,9 +292,13 @@ pub fn set_cdef_search_controls(
             c.use_reference_cdef_fs = i8::from(!is_base);
             c.search_best_ref_fs = u8::from(!is_base);
             c.subsampling_factor = 4;
-            c.skip_th = if is_base { 0 } else { 80 };
+            c.skip_th = if gr || is_base { 0 } else { 80 };
             c.uv_from_y = true;
-            c.use_qp_strength = false;
+            if gr {
+                c.qp_strength_level = CDEF_QP_STRENGTH_UV;
+            } else {
+                c.use_qp_strength = false;
+            }
         }
         // Primary-only: no secondary candidates at all.
         9 => {
@@ -274,26 +309,53 @@ pub fn set_cdef_search_controls(
             c.use_reference_cdef_fs = i8::from(!is_base);
             c.search_best_ref_fs = u8::from(!is_base);
             c.subsampling_factor = 4;
-            c.skip_th = if is_base { 0 } else { 80 };
+            c.skip_th = if gr || is_base { 0 } else { 80 };
             c.uv_from_y = true;
-            c.use_qp_strength = false;
+            if gr {
+                c.qp_strength_level = CDEF_QP_STRENGTH_UV;
+            } else {
+                c.use_qp_strength = false;
+            }
         }
         // The qp fast path (`svt_pick_cdef_from_qp`): no candidate arrays are
         // written at all, so they keep the control set's prior contents.
         10 => {
             c.enabled = 1;
             c.use_reference_cdef_fs = 0;
-            c.use_qp_strength = true;
-            c.skip_th = if is_base { 0 } else { 80 };
+            c.skip_th = if gr || is_base { 0 } else { 80 };
+            if gr {
+                c.qp_strength_level = CDEF_QP_STRENGTH_YUV;
+            } else {
+                c.use_qp_strength = true;
+            }
         }
         // C: `default: assert(0)`.
         _ => return None,
     }
 
+    // Normalize the two field spellings: Ghost Robot stores
+    // `qp_strength_level`; the older references store `use_qp_strength`.
+    if gr {
+        c.use_qp_strength = c.qp_strength_level == CDEF_QP_STRENGTH_YUV;
+    } else {
+        c.qp_strength_level = if c.use_qp_strength {
+            CDEF_QP_STRENGTH_YUV
+        } else {
+            0
+        };
+    }
+
     // "If chroma filters will be copied from luma, set chroma filters to -1 to
     // avoid testing" (enc_mode_config.c:1188-1196). Levels 8/9 already wrote
     // -1, so this is a no-op there; it exists for a config-forced level.
-    if c.uv_from_y && !c.use_qp_strength {
+    // Ghost Robot e6ff85f0d reads the LEVEL (`< YUV` — a UV-strength row
+    // still copies luma's list).
+    let below_yuv = if gr {
+        c.qp_strength_level < CDEF_QP_STRENGTH_YUV
+    } else {
+        !c.use_qp_strength
+    };
+    if c.uv_from_y && below_yuv {
         for slot in 0..c.first_pass_fs_num as usize {
             c.default_first_pass_fs_uv[slot] = -1;
         }
@@ -919,7 +981,9 @@ mod tests {
     fn video_key_frame_p6_is_level_5() {
         let lvl = cdef_search_level_default(6, true, 1, false, CONFIG_DEFAULT);
         assert_eq!(lvl, 5);
-        let c = set_cdef_search_controls(lvl, true, true).unwrap();
+        let c =
+            set_cdef_search_controls(lvl, true, true, crate::reference::SvtReference::Hybrid3115)
+                .unwrap();
         assert_eq!(c.enabled, 1);
         assert!(!c.use_qp_strength);
         assert_eq!(c.first_pass_fs_num, 3);
@@ -936,11 +1000,20 @@ mod tests {
     fn level_domain_is_zero_through_ten() {
         for lvl in 0..=10u8 {
             assert!(
-                set_cdef_search_controls(lvl, true, true).is_some(),
+                set_cdef_search_controls(
+                    lvl,
+                    true,
+                    true,
+                    crate::reference::SvtReference::Hybrid3115
+                )
+                .is_some(),
                 "level {lvl}"
             );
         }
-        assert!(set_cdef_search_controls(11, true, true).is_none());
+        assert!(
+            set_cdef_search_controls(11, true, true, crate::reference::SvtReference::Hybrid3115)
+                .is_none()
+        );
     }
 
     /// Level 1 is the only one whose chroma second pass carries real
@@ -948,7 +1021,13 @@ mod tests {
     #[test]
     fn only_level_one_keeps_a_real_chroma_second_pass() {
         for lvl in 1..=9u8 {
-            let c = set_cdef_search_controls(lvl, true, true).unwrap();
+            let c = set_cdef_search_controls(
+                lvl,
+                true,
+                true,
+                crate::reference::SvtReference::Hybrid3115,
+            )
+            .unwrap();
             let n = c.default_second_pass_fs_num as usize;
             let real = (0..n).any(|i| c.default_second_pass_fs_uv[i] >= 0);
             assert_eq!(real, lvl == 1, "level {lvl}");
@@ -973,7 +1052,10 @@ mod tests {
     #[test]
     fn ref_info_takes_the_use_reference_arm_when_both_lists_agree() {
         let mut c = set_cdef_search_controls(
-            5, /*is_base=*/ false, /*is_not_highest_layer=*/ false,
+            5,
+            /*is_base=*/ false,
+            /*is_not_highest_layer=*/ false,
+            crate::reference::SvtReference::Hybrid3115,
         )
         .expect("level 5");
         assert_eq!(c.search_best_ref_fs, 1, "level 5 on a non-leaf-layer frame");
@@ -1000,7 +1082,10 @@ mod tests {
     fn a_key_frame_never_asks_for_a_reference_derived_set() {
         for lvl in 0..=10u8 {
             let c = set_cdef_search_controls(
-                lvl, /*is_base=*/ true, /*is_not_highest_layer=*/ true,
+                lvl,
+                /*is_base=*/ true,
+                /*is_not_highest_layer=*/ true,
+                crate::reference::SvtReference::Hybrid3115,
             )
             .unwrap_or_else(|| panic!("level {lvl}"));
             assert_eq!(c.search_best_ref_fs, 0, "level {lvl}");
@@ -1013,7 +1098,9 @@ mod tests {
     /// `use_reference_cdef_fs` stays off.
     #[test]
     fn ref_info_grows_the_candidate_list_when_the_lists_disagree() {
-        let mut c = set_cdef_search_controls(5, false, false).expect("level 5");
+        let mut c =
+            set_cdef_search_controls(5, false, false, crate::reference::SvtReference::Hybrid3115)
+                .expect("level 5");
         let default0 = c.default_first_pass_fs[0];
         let a = RefCdefStrengths {
             y0: default0.wrapping_add(1),
@@ -1041,7 +1128,9 @@ mod tests {
     /// test is on the candidate COUNT, not on a strength value.
     #[test]
     fn ref_info_forces_cdef_off_when_only_the_default_survives() {
-        let mut c = set_cdef_search_controls(5, false, false).expect("level 5");
+        let mut c =
+            set_cdef_search_controls(5, false, false, crate::reference::SvtReference::Hybrid3115)
+                .expect("level 5");
         let same = RefCdefStrengths {
             y0: c.default_first_pass_fs[0],
             uv0: 3,

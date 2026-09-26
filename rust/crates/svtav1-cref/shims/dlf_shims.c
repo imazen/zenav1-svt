@@ -57,6 +57,7 @@ enum {
     DLF_O_ENABLED = 0, DLF_O_SB_BASED, DLF_O_AVG, DLF_O_USE_REF_AVG_Y,
     DLF_O_USE_REF_AVG_UV, DLF_O_EARLY_EXIT, DLF_O_ZERO_FILT_STRENGTH,
     DLF_O_PREV_DIST_TH,
+    DLF_O_PICK_METHOD,
     DLF_O_COUNT
 };
 
@@ -69,6 +70,16 @@ static void dlf_read_out(PictureParentControlSet* ppcs, int64_t* out) {
     out[DLF_O_EARLY_EXIT]           = ppcs->dlf_ctrls.early_exit_convergence;
     out[DLF_O_ZERO_FILT_STRENGTH]   = ppcs->dlf_ctrls.zero_filter_strength_lvl;
     out[DLF_O_PREV_DIST_TH]         = ppcs->dlf_ctrls.prev_dlf_dist_th;
+#ifdef ZEN_ORACLE_DLF_PICK_METHOD
+    /* Ghost Robot f9100ab22: pick_method is a per-level field —
+     * LPF_PICK_FROM_* = FULL_IMAGE 0, SUBIMAGE 1, Q 2. */
+    out[DLF_O_PICK_METHOD]          = ppcs->dlf_ctrls.pick_method;
+#else
+    /* Older oracles infer the pick method from sb_based_dlf (the per-SB
+     * arm hardcodes LPF_PICK_FROM_Q) — same 0/2 numbers in the level
+     * domain. */
+    out[DLF_O_PICK_METHOD]          = ppcs->dlf_ctrls.sb_based_dlf ? 2 : 0;
+#endif
 }
 
 /* The VIDEO arm: svt_aom_sig_deriv_mode_decision_config_default

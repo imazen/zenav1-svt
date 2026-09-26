@@ -50,6 +50,15 @@
  *   od_ec_ensure_capacity through the parent — a hand-malloc'd buffer with
  *   neither field set drops every byte and enc_done returns NULL. Shims wrap
  *   their owned buffer in an OutputBitstreamUnit (ZEN_ORACLE_REFS-style).
+ * ZEN_ORACLE_CTX_SUBSAMP (ghost-robot): ModeDecisionContext carries
+ *   `subsampling_x` (f67a0f747, High Profile support). Mainline/hybrid keep
+ *   subsampling on `xd` only, so writes to the ctx field compile out.
+ * ZEN_ORACLE_DLF_PICK_METHOD (ghost-robot): DlfCtrls gained `pick_method`
+ *   (f9100ab22, "low-delay DLF: honor per-level pick_method on tiled frame
+ *   path" — LPF_PICK_FROM_FULL_IMAGE on levels 0-4, LPF_PICK_FROM_Q on
+ *   5-7). On oracles without the field the shims emit the implicit rule,
+ *   `sb_based_dlf ? LPF_PICK_FROM_Q : LPF_PICK_FROM_FULL_IMAGE` — the same
+ *   numbers, so the slot compares like-for-like across oracles.
  * ZEN_ORACLE_INIT_SCAN (ghost-robot): eb_av1_scan_orders was made WRITABLE
  *   upstream and is filled at runtime by svt_aom_init_iscan(); hybrid and
  *   mainline keep it const. Without the init call every get_scan_order()

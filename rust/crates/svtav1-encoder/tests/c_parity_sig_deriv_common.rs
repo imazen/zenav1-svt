@@ -64,6 +64,11 @@ struct Case {
     sb_variance: u16,
     cap_qp_scaling: bool,
     static_qp: u32,
+    /// `pcs->mimic_only_tx_4x4` — read by Ghost Robot only (`a74cfb9ec`).
+    mimic_only_tx_4x4: bool,
+    /// `ctx->subsampling_x` — a Ghost-Robot-only ctx field (`f67a0f747`);
+    /// the port and C both ignore it on the other references.
+    subsampling_x: i32,
 }
 
 impl Default for Case {
@@ -101,6 +106,8 @@ impl Default for Case {
             sb_variance: 5000,
             cap_qp_scaling: false,
             static_qp: 35,
+            mimic_only_tx_4x4: false,
+            subsampling_x: 1,
         }
     }
 }
@@ -141,6 +148,8 @@ fn build_input(c: &Case) -> [i32; cm_in::COUNT] {
     i[cm_in::SB_VARIANCE] = i32::from(c.sb_variance);
     i[cm_in::CAP_QP_SCALING] = i32::from(c.cap_qp_scaling);
     i[cm_in::STATIC_QP] = c.static_qp as i32;
+    i[cm_in::MIMIC_TX_4X4] = i32::from(c.mimic_only_tx_4x4);
+    i[cm_in::SUBSAMP_X] = c.subsampling_x;
     i
 }
 
@@ -168,6 +177,8 @@ fn to_port(c: &Case) -> CommonInputs {
         cap_max_size_qp_based_th_scaling: c.cap_qp_scaling,
         static_qp: c.static_qp,
         sb_variance: c.sb_variance,
+        mimic_only_tx_4x4: c.mimic_only_tx_4x4,
+        subsampling_x: u8::try_from(c.subsampling_x).unwrap_or(0),
         depth_removal: DepthRemovalInputs {
             level: c.dr_level,
             is_islice: c.is_islice,
@@ -197,8 +208,12 @@ fn to_port(c: &Case) -> CommonInputs {
     }
 }
 
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
 fn assert_case(c: &Case, msg: &str) {
-    let ours = common::sig_deriv_enc_dec_common(to_port(c)).expect("levels in range");
+    let ours = common::sig_deriv_enc_dec_common(to_port(c), reference()).expect("levels in range");
     let theirs = cref::sig_deriv_enc_dec_common(&build_input(c));
     let got = [
         i64::from(ours.depth_refinement_mode),
@@ -274,25 +289,32 @@ fn common_matches_c_over_the_arm_and_flag_product() {
                         for &is_islice in &[false, true] {
                             for &max_tx in &[32u32, 64] {
                                 for &d4 in &[false, true] {
-                                    let c = Case {
-                                        enc_mode: m,
-                                        rtc,
-                                        allintra,
-                                        is_leaf,
-                                        is_base,
-                                        is_islice,
-                                        max_tx_size: max_tx,
-                                        pic_disallow_4x4: d4,
-                                        ..Case::default()
-                                    };
-                                    assert_case(
-                                        &c,
-                                        &format!(
-                                            "m={m} rtc={rtc} allintra={allintra} leaf={is_leaf} \
-                                             base={is_base} islice={is_islice} maxtx={max_tx} \
-                                             d4={d4}"
-                                        ),
-                                    );
+                                    for &mimic in &[false, true] {
+                                        for &ss in &[1i32, 0] {
+                                            let c = Case {
+                                                enc_mode: m,
+                                                rtc,
+                                                allintra,
+                                                is_leaf,
+                                                is_base,
+                                                is_islice,
+                                                max_tx_size: max_tx,
+                                                pic_disallow_4x4: d4,
+                                                mimic_only_tx_4x4: mimic,
+                                                subsampling_x: ss,
+                                                ..Case::default()
+                                            };
+                                            assert_case(
+                                                &c,
+                                                &format!(
+                                                    "m={m} rtc={rtc} allintra={allintra} \
+                                                     leaf={is_leaf} base={is_base} \
+                                                     islice={is_islice} maxtx={max_tx} \
+                                                     d4={d4} mimic={mimic} ss={ss}"
+                                                ),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }

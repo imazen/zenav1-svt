@@ -103,10 +103,12 @@ static void cds_read_out(PictureParentControlSet* pcs, int64_t* out) {
     out[CDS_O_SKIP_TH]         = c->skip_th;
     out[CDS_O_UV_FROM_Y]       = c->uv_from_y;
 #ifdef ZEN_ORACLE_CDEF_QP_LEVEL
-    /* Ghost Robot: qp_strength_level enum; OFF maps to the bool's 0. */
-    out[CDS_O_USE_QP_STRENGTH] = c->qp_strength_level != CDEF_QP_STRENGTH_OFF;
+    /* Ghost Robot: qp_strength_level enum (OFF/UV/YUV = 0/1/2). */
+    out[CDS_O_USE_QP_STRENGTH] = c->qp_strength_level;
 #else
-    out[CDS_O_USE_QP_STRENGTH] = c->use_qp_strength;
+    /* Older oracles carry a bool; normalize it into the level domain —
+     * set is the YUV meaning on every oracle. */
+    out[CDS_O_USE_QP_STRENGTH] = c->use_qp_strength ? 2 : 0;
 #endif
     out[CDS_O_ALLOW_INTRABC]   = pcs->frm_hdr.allow_intrabc;
     out[CDS_O_PALETTE_LEVEL]   = pcs->palette_level;

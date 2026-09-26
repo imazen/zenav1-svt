@@ -378,6 +378,11 @@ pub struct PipelineMdInputs {
     /// function makes — so `Normal` is the right value there. This input is
     /// inter-only by construction (`is_key` produces no `PipelineMdInputs`).
     pub coeff_lvl: crate::port_enc_mode_config::InputCoeffLvl,
+    /// `scs->static_config.complex_hvs` — the HDR-fork knob
+    /// (`SVT_FORK_COMPLEX_HVS`); read by Ghost Robot's `mds0_level` arm
+    /// (`70877799`/`d705ef50`). 0 on mainline/hybrid semantics, where the
+    /// port's `MdConfigInputs` consumer ignores it.
+    pub complex_hvs: u8,
 }
 
 /// Build C's `MdConfigInputs` for an inter frame.
@@ -498,6 +503,12 @@ pub fn md_config_inputs(
         // arm — `pic_depth_removal_level` was the measured victim (`96x96
         // hier p8` diverged on poc1's partial-SB `min_sq`).
         coeff_lvl: p.coeff_lvl,
+        complex_hvs: p.complex_hvs,
+        // `scs->static_config.encoder_color_format` — the port encodes
+        // 4:2:0 only (`EB_YUV420 == 1`), so Ghost Robot's `f67a0f747`
+        // `tx_mode` OR is inert on this path; the differential sweep is
+        // what covers the 4:4:4 arm.
+        encoder_color_format: 1,
         ref_list0_count_try: p.ref_list0_count_try,
         ref_list1_count_try: p.ref_list1_count_try,
         enable_interintra_compound: p.enable_interintra_compound,
@@ -604,6 +615,7 @@ mod cand_reduction_tests {
             // `derive_inter_coeff_level`'s output — Normal keeps the fixture
             // on the same ladders it exercised before the field existed.
             coeff_lvl: crate::port_enc_mode_config::InputCoeffLvl::Normal,
+            complex_hvs: 0,
         }
     }
 
@@ -625,9 +637,12 @@ mod cand_reduction_tests {
         let mut seen = 0usize;
         for preset in 0i8..=13 {
             let mi = inputs(preset);
-            let Some(sigs) = md_config_inputs(mi.clone()).and_then(
-                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
-            ) else {
+            let Some(sigs) = md_config_inputs(mi.clone()).and_then(|i| {
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default(
+                    i,
+                    crate::reference::SvtReference::Hybrid3115,
+                )
+            }) else {
                 continue;
             };
             assert!(

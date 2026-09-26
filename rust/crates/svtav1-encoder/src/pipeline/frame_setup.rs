@@ -117,6 +117,7 @@ impl EncodePipeline {
                                 frame_is_leaf: crate::port_picstruct::frame_is_leaf(
                                     pic.update_type,
                                 ),
+                                reference: self.reference,
                             },
                         );
                         Some(out)

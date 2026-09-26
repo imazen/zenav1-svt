@@ -33,6 +33,12 @@ pub mod sig_deriv;
 pub mod temporal_filtering;
 pub mod txfm_pf;
 
+/// The `oracles.tsv` name of the C library this build links against —
+/// `SVT_ORACLE` at build time (`hybrid-3115` for the live default). Tests
+/// map it to the matching `SvtReference` arm so port and oracle can never
+/// silently disagree about the target.
+pub const ORACLE_NAME: &str = env!("ZEN_CREF_ORACLE");
+
 use std::ffi::c_void;
 
 unsafe extern "C" {

@@ -113,8 +113,13 @@ fn port_ctrls(c: &Case, level: u8) -> CdefSearchControls {
     let is_base = intra_only || c.update_type == ARF_UPDATE || c.update_type == GF_UPDATE;
     // `!frame_is_leaf` = update_type != LF_UPDATE.
     let is_not_highest_layer = c.update_type != LF_UPDATE;
-    set_cdef_search_controls(level, is_base, is_not_highest_layer)
-        .unwrap_or_else(|| panic!("port refused level {level} for {c:?}"))
+    set_cdef_search_controls(
+        level,
+        is_base,
+        is_not_highest_layer,
+        svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME),
+    )
+    .unwrap_or_else(|| panic!("port refused level {level} for {c:?}"))
 }
 
 fn compare(c: &Case, out: &[i64; cdef_out::COUNT], port: &CdefSearchControls, arm: &str) {
@@ -159,10 +164,12 @@ fn compare(c: &Case, out: &[i64; cdef_out::COUNT], port: &CdefSearchControls, ar
         i64::from(port.uv_from_y),
         "{arm} uv_from_y {c:?}"
     );
+    // The shim emits the LEVEL domain on every oracle (`qp_strength_level`
+    // on Ghost Robot, `use_qp_strength ? YUV : OFF` elsewhere).
     assert_eq!(
         g(cdef_out::USE_QP_STRENGTH),
-        i64::from(port.use_qp_strength),
-        "{arm} use_qp_strength {c:?}"
+        i64::from(port.qp_strength_level),
+        "{arm} qp_strength_level {c:?}"
     );
     // Verify the projection actually consumed by the 8/10-bit search, not
     // just the full translated control table. MR keeps the second UV pass.
