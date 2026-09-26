@@ -1,6 +1,7 @@
 > **Historical source/campaign reference, classified at handoff `0cbd1279`.**
-> Use [the current handoff](../../CONTEXT-HANDOFF.md) and
-> [support/identity audit](API-SUPPORT-AUDIT-2026-09-08.md) for live status.
+> For live status use [README.md](../../README.md) (support),
+> [IDENTITY-STATUS.md](IDENTITY-STATUS.md) (parity) and
+> [PLAN-ORACLES-AND-CLEANUP.md](PLAN-ORACLES-AND-CLEANUP.md) (open work).
 > “Current”, “next”, “unported”, line numbers and counts below belong to their
 > recorded revisions; they are not current completion claims. Where no source
 > or retained artifact was recorded, the measurement is unverified historical
