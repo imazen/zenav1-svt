@@ -2618,6 +2618,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- `EncodePipeline::recon_frames` queued each frame before film grain was synthesised, so the multi-frame `SVTAV1_FINAL_RECON` dump was the grain-free recon; `film_grain_gate.py`'s inter cells failed, unseen because the gate was not in CI (6369d24b).
+
 - **Monochrome inter at sizes that are not 8-aligned** decoded differently
   from the encoder's recon (since 561267534; e.g. 65x64, 64x67, 66x66 all
   diverged on the first inter frame). The DPB reference carried the coded
