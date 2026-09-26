@@ -213,9 +213,26 @@ def main():
     out = Path(a.out) if a.out else root / "result.tsv"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build both drivers once, up front, so parallel cells do not race cargo.
+    # Build both drivers once, up front, so parallel cells do not race cargo
+    # or the C relink: a cell that execs the driver while another cell's
+    # build.sh rewrites it fails with "Text file busy" (seen 2026-09-26 after
+    # an oracles.tsv change). One C build per oracle the cells resolve to.
     subprocess.run([str(HERE / "identity_run"), "--version"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    built = set()
+    for row in rows:
+        if "c" not in row["checks"]:
+            continue
+        env = cell_env(row)
+        oracle_name = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
+                                     capture_output=True, text=True).stdout.strip()
+        if oracle_name in built:
+            continue
+        built.add(oracle_name)
+        r = subprocess.run([str(HERE / "capture_c_trace" / "build.sh")], env=env,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"cellrun: C driver build failed for {oracle_name}:\n{r.stdout}{r.stderr}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
         results = list(ex.map(lambda r: run_cell(r, root, a.timeout, a.bytes_only), rows))
