@@ -17,6 +17,7 @@ somewhere useful, and it answers exactly one question — *where do I look?*
 | What does this encoder support, and what is only partly there? | [README.md](README.md) — the support tables, with the gate that backs each row |
 | What is byte-identical to C, what is verified against a decoder instead, and what is open? | [rust/docs/IDENTITY-STATUS.md](rust/docs/IDENTITY-STATUS.md) |
 | How do I work in this repo — gates, heavy jobs, hosts, measurement rules? | [rust/CLAUDE.md](rust/CLAUDE.md) and [rust/docs/WORKING-ON-THIS.md](rust/docs/WORKING-ON-THIS.md) |
+| How do I make the encoder target mainline or Ghost Robot? | [README.md](README.md) "Choosing the C target" — `with_reference(SvtReference::…)` on either API |
 | Which C build does a byte-identity claim target, and how do I switch it? | [rust/docs/ORACLES.md](rust/docs/ORACLES.md) — the oracle registry and the one `SVT_ORACLE` switch |
 | What is the plan to bit-match mainline and Ghost Robot and clean up? | [rust/docs/PLAN-ORACLES-AND-CLEANUP.md](rust/docs/PLAN-ORACLES-AND-CLEANUP.md) — live, ticked in the change that lands each item |
 | What configuration is refused, and why? | [rust/docs/REFUSED-CONFIGS.md](rust/docs/REFUSED-CONFIGS.md) — generated from the refusal strings, so it cannot drift from them |
