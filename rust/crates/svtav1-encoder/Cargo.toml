@@ -57,6 +57,10 @@ fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
 # `EncodePipeline::chroma_q_override` — fixed per-plane chroma delta-q for
 # decorrelated-plane research stimuli (chroma_q.rs `ChromaQOverride`).
 __expert = []
+# Lifts the per-module `allow(dead_code)` in lib.rs so
+# tools/dead_code_ledger.py can list the items only the parity tests call
+# (docs/DEAD-CODE.tsv, plan T2). Never enable it in a build that ships.
+__dead_code_audit = []
 
 [[test]]
 name = "c_parity_entropy"

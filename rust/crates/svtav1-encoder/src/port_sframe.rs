@@ -61,6 +61,10 @@ pub const NO_SFRAME: i32 = -1;
 /// C `EbSFrameMode` (`API/EbSvtAv1Enc.h:163-172`). There is no zero variant;
 /// C spells "off" as `sframe_dist == 0` with no position list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the variants mirror C's SFRAME_*_BASE constants"
+)]
 pub enum SFrameMode {
     /// C `SFRAME_STRICT_BASE = 1` — only a base-layer inter frame becomes one.
     StrictBase = 1,

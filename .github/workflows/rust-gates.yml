@@ -1246,6 +1246,12 @@ jobs:
       - name: clippy inventory has not drifted
         working-directory: rust
         run: ./tools/clippy_inventory.sh --check
+      - name: dead-code ledger is current (encoder items the pipeline never calls)
+        working-directory: rust
+        # docs/DEAD-CODE.tsv lists every item only the parity tests reach
+        # (tests=yes) or nothing reaches (tests=no); a new one, a removed one,
+        # or a module left annotated with nothing dead fails (plan T2).
+        run: python3 tools/dead_code_ledger.py
 
   # Animated AVIF, with a PINNED decoder. Parallel with the gates shards, so no
   # wall-time cost.

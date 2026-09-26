@@ -30,6 +30,7 @@ run "refusal ledger (REFUSED-CONFIGS)" bash tools/refusal_inventory.sh --check
 run "PORT-NOTE index"                  tools/portnote_index.sh --check
 run "test targets"                     python3 tools/test_targets_check.py
 run "SIMD tier ledger"                 python3 tools/review/incant_tiers.py --check docs/INCANT-TIER-GAPS.tsv
+run "dead-code ledger"                 python3 tools/dead_code_ledger.py
 run "file sizes (<= 3000 lines)"       python3 tools/file_size_check.py
 run "env names have readers"           python3 tools/env_names_check.py
 run "CI shard partition"               python3 tools/ci_shard_check.py

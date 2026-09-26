@@ -131,8 +131,17 @@ It was done when:
     `cdf_ctrl` is on); `avg_cdf_symbol`/`AvgCdfPlan` duplicated
     `entropy::cdf::avg_cdf_entries` and `copy_mv_rate` was a two-way
     `if`, all deleted with their 5 tests.
-  - Open: the other 85 modules are used by integration tests; T2 moves those
-    tests in-crate first.
+  - Done (2026-09-26, T2): the encoder's parity differentials compile into
+    the crate (`4caaf536`), and 59 more modules that only they used are
+    `pub(crate)`: 26 of the crate's `pub mod`s remain, each with a user
+    outside the crate. Doing so exposed 799 items the pipeline never calls
+    (655 reached only by the parity tests, 144 by nothing).
+    `docs/DEAD-CODE.tsv` lists them and CI keeps it current
+    (`tools/dead_code_ledger.py`); the 47 modules that hold them carry a
+    feature-gated `allow(dead_code)` on their `mod` line. Next: work the
+    ledger — the `tests=no` rows first (delete, or test), then each
+    `tests=yes` module (wire it, or delete the copy the pipeline does not
+    run).
 
 Done when every Ghost Robot `EbSvtAv1EncConfiguration` field has either a
 typed facade setter or an explicit refusal that names it.
@@ -868,6 +877,11 @@ Order, by expected size:
   3 s. Measured 2026-09-25: 453 Ok, 83 explicit refusals, 0 panics; it
   asserts an Ok floor of 440 against vacuity.
 - [ ] T2 in-crate differentials, shrinking the public API.
+  - Done (2026-09-26): the encoder's 103 aggregated parity modules compile
+    into the crate (see 1.4). Open: the same for `svtav1-dsp` (`dsp_parity`)
+    and the facade (`svtav1_suite`), and the encoder's four standalone
+    targets, which stay separate because they flip SIMD tiers
+    process-wide.
 - [ ] T3 one cell harness instead of 39 bash copies. 46 of the 100 shell
   tools drive the C side directly (survey 2026-09-25). Chunks, each landing
   with its gate's verdicts unchanged:
@@ -926,7 +940,8 @@ Order, by expected size:
     and returns `false` or `None` without std. OBMC's thread-local buffers
     fall back to fresh buffers on every call.
   - Done: the tier gate, as S8 (`deff9b73`).
-  - Open: a dead-code gate.
+  - Done (2026-09-26): the dead-code gate, as the ledger above
+    (`docs/DEAD-CODE.tsv`, a CI step after clippy).
 - [ ] T7 inline tests out of product files.
   - Done (this change): 38 inline `#[cfg(test)]` modules in the 23 files
     over 2 kloc moved to sibling files (`<file>/tests.rs` and so on) with
