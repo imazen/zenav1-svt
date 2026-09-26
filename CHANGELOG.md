@@ -2619,6 +2619,9 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- Random access with TPL (`aq_mode` 2) panicked at frame sizes whose TPL block is 16 wide (e.g. 130x98 at presets 9 and 12): a subsampled-row copy staged 16 samples through a 32-sample array (8fd42f7e).
+- Preset -1 video panicked in debug-assertion builds: a `debug_assert!` claimed the MDS0-2 interpolation-filter levels unreachable; they are reached at preset -1, where the search is not yet modelled (8fd42f7e).
+
 - Random access with `aq_mode` 2 (TPL) panicked in the directional intra predictor (index out of bounds) on moving content, e.g. 128x128 at preset 2: TPL's open-loop intra passed a block-sized neighbour edge where the directional modes read `w + h` samples (251ce523).
 
 - `EncodePipeline::recon_frames` queued each frame before film grain was synthesised, so the multi-frame `SVTAV1_FINAL_RECON` dump was the grain-free recon; `film_grain_gate.py`'s inter cells failed, unseen because the gate was not in CI (6369d24b).
