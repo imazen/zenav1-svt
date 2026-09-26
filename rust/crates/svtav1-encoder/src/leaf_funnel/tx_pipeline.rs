@@ -1483,6 +1483,27 @@ pub(super) fn tx_unit_inner(
     // here is the identical arithmetic on the identical inputs (`eob`, `w*h`),
     // so the depth loop's own expression — left untouched — still computes the
     // same number it always did.
+    //
+    // `coeff_rate_est_lvl == 0` (eff-M9+ allintra; the video arm's
+    // rate_est_level is a flat 1 so level 0 is stills-only): C prices BOTH
+    // planes by closed form and never runs the estimator. LUMA splits by
+    // which `full_loop_core` path the caller is on: `perform_dct_dct_tx`
+    // (sq <= 64 && start == end == 0 && only_dct — `only_dct` holds at
+    // every level-0 preset because txt is off) is
+    // `eob < th ? 6000+eob*1000 : 6000+eob*400` (product_coding_loop.c:5883),
+    // while `perform_tx_partitioning`/`tx_type_search` is
+    // `eob < th ? 6000+eob*1000 : 3000+eob*100` (:4914). `RateMode::Exact`
+    // on luma at level 0 is only ever selected on the end_tx_depth == 0
+    // arm, so `w,h <= 64` (a block whose depth-0 txb covers it whole)
+    // distinguishes the two. CHROMA is `skip_chroma_rate_est`
+    // (full_loop.c:1787-1815), which writes the per-plane approximation
+    // into `*cb/cr_coeff_bits` directly and returns "skip" for the whole
+    // level-0 arm: `eob == 0 -> 0` (NOT the skip-txb rate — the port's
+    // `cost_skip_txb` call here was dead: the value is re-derived by the
+    // `skip_chroma_rate_est` replication in `mds3`), `eob < th ->
+    // 3000+500e`, else `1500+50e`, th = (txw_uv*txh_uv)>>6 = (w*h)>>6.
+    // Level >= 2 chroma stays exact because the `cr_eob >= th` leak arm of
+    // the replication consumes the RAW estimator value.
     let closed_lvl2 =
         plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 && (eob as usize) < ((w * h) >> 6);
     let bits = match rate_mode {
@@ -1526,19 +1547,52 @@ pub(super) fn tx_unit_inner(
                 cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
             }
         }
-        RateMode::Exact if closed_lvl2 => 6000 + eob as i32 * 1000,
-        RateMode::Exact if eob > 0 => cost_coeffs_txb(
-            qcoeff,
-            eob,
-            c_tx,
-            tx_type,
-            plane_type,
-            txb_skip_ctx,
-            dc_sign_ctx,
-            intra_dir,
-            rates,
-        ),
-        RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
+        RateMode::Exact => {
+            let th = (w * h) >> 6;
+            let lvl = frame.cfg.coeff_rate_est_lvl;
+            if closed_lvl2 {
+                6000 + eob as i32 * 1000
+            } else if plane_type == 1 && lvl == 0 {
+                // `skip_chroma_rate_est`'s level-0 arm (full_loop.c:1798):
+                // the per-plane approximation replaces the estimator
+                // entirely at level 0.
+                if eob == 0 {
+                    0
+                } else if (eob as usize) < th {
+                    3000 + eob as i32 * 500
+                } else {
+                    1500 + eob as i32 * 50
+                }
+            } else if plane_type == 0 && lvl == 0 {
+                // Level-0 luma closed forms (see the block comment above);
+                // `Exact` at level 0 is only selected on the
+                // end_tx_depth == 0 arm, so `w,h <= 64` selects
+                // `perform_dct_dct_tx`'s `6000+eob*400` second arm and the
+                // multi-txb / over-64 cases take `tx_type_search`'s
+                // `3000+eob*100`.
+                if (eob as usize) < th {
+                    6000 + eob as i32 * 1000
+                } else if w <= 64 && h <= 64 {
+                    6000 + eob as i32 * 400
+                } else {
+                    3000 + eob as i32 * 100
+                }
+            } else if eob > 0 {
+                cost_coeffs_txb(
+                    qcoeff,
+                    eob,
+                    c_tx,
+                    tx_type,
+                    plane_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    intra_dir,
+                    rates,
+                )
+            } else {
+                cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
+            }
+        }
     };
     // C `perform_dct_dct_tx_light_pd1` (product_coding_loop.c:5731-5735):
     // `*y_coeff_bits = svt_psy_adjust_rate_light(recon_coeff, *y_coeff_bits,
@@ -2421,32 +2475,45 @@ pub(super) fn tx_unit_hbd_screened(
                 };
                 (dist, dist_pred)
             };
-            let real_bits = if eob > 0 {
-                cost_coeffs_txb(
-                    &qcoeff,
-                    eob,
-                    c_tx,
-                    tx_type,
-                    plane_type,
-                    txb_skip_ctx,
-                    dc_sign_ctx,
-                    a.intra_dir,
-                    rates,
-                )
-            } else {
-                cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
-            };
-            // C `coeff_rate_est_lvl == 2` LUMA fast approximation — identical
-            // to the u8 site (see its comment); bit-depth-independent.
-            let bits = if plane_type == 0 && a.coeff_rate_est_lvl == 2 {
+            // C `skip_chroma_rate_est`'s level-0 arm (full_loop.c:1798) —
+            // identical to the u8 `RateMode::Exact` site, which see for the
+            // derivation. Level >= 2 chroma stays exact because the mds3
+            // replication's `cr_eob >= th` leak arm needs the raw value.
+            // Computing `bits` directly (rather than real-then-replace)
+            // skips the estimator entirely on the closed-form arms.
+            let bits = if plane_type == 1 && a.coeff_rate_est_lvl == 0 {
                 let th = (w * h) >> 6;
-                if (eob as usize) < th {
+                if eob == 0 {
+                    0
+                } else if (eob as usize) < th {
+                    3000 + eob as i32 * 500
+                } else {
+                    1500 + eob as i32 * 50
+                }
+            } else {
+                let real_bits = if eob > 0 {
+                    cost_coeffs_txb(
+                        &qcoeff,
+                        eob,
+                        c_tx,
+                        tx_type,
+                        plane_type,
+                        txb_skip_ctx,
+                        dc_sign_ctx,
+                        a.intra_dir,
+                        rates,
+                    )
+                } else {
+                    cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
+                };
+                // C `coeff_rate_est_lvl == 2` LUMA fast approximation —
+                // identical to the u8 site (see its comment); bit-depth-
+                // independent.
+                if plane_type == 0 && a.coeff_rate_est_lvl == 2 && (eob as usize) < ((w * h) >> 6) {
                     6000 + eob as i32 * 1000
                 } else {
                     real_bits
                 }
-            } else {
-                real_bits
             };
             (dist, dist_pred, bits)
         }

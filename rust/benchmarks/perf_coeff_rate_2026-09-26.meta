@@ -1,0 +1,46 @@
+Snapshot 2026-09-26 (lilith): level-0 coefficient-rate closed forms
+(Phase 5 item 7 — brief `coeff-rate-gap`).
+
+Cell: `perf_encode gradient 1024 1024 40 10 <prefix> 0` vs
+`tools/perf_c_encode` on the mainline-4.2.0 oracle.
+
+Finding (instrumented `tx_unit_inner`, all 6,792 calls attributed):
+classification (a) — the exact rate is dead or C-equivalent at every point
+`coeff_rate_est_lvl == 0` reaches. Level 0 is allintra-only (the video
+arm's rate_est_level is a flat 1), so there is no inter skip path, MDS3
+is single-candidate, MDS1 is skipped, CFL/ind-uv are gated below level 0,
+and NSQ/depth gates are off: no read of the rate feeds a decision there.
+
+- p10 call map (before): 1,312 luma `cost_coeffs_txb` from the
+  `end_tx_depth == 0` (`perform_dct_dct_tx`) arm + 4,160 chroma
+  `cost_skip_txb` (all eob==0) + 1,320 luma `Lvl0Closed` (unchanged).
+  C runs zero estimator calls at this cell.
+- After: zero `cost_coeffs_txb`/`cost_skip_txb` calls at p10; the
+  `RateMode::Exact` arm produces C's closed forms directly —
+  luma `eob<th ? 6000+1000e : (w,h<=64 ? 6000+400e : 3000+100e)`
+  (product_coding_loop.c:5883 / :4914), chroma `skip_chroma_rate_est`'s
+  per-plane arm `0 / 3000+500e / 1500+50e` (full_loop.c:1798).
+- mds1 `lossless_mds1_txbs` passes `Lvl0Closed` at level 0 (C's lossless
+  8x8 loop is the `perform_tx_partitioning` arm per 4x4 txb).
+- Same chroma level-0 arm added to the bd10 rate path (`tx_unit_hbd`);
+  hbd luma left exact (the dct-vs-partition distinction needs plumbing
+  through `TxRdArgs`, owned by files outside this change's scope).
+- Level >= 2 chroma stays exact: the mds3 `skip_chroma_rate_est`
+  replication's `cr_eob >= th` leak arm needs the raw estimator value.
+- Chroma MD reconstruction unchanged — C computes it too
+  (`picture_copy` on eob==0 under `mds_do_spatial_sse`).
+
+output: byte-identical (.obu cmp at the cell; perf_ab ident=Y at 1024
+        p6 and p10; nextest 2764/2764 pins unchanged;
+        regression_spotcheck 147/147; identity_full_8bit synthetic
+        560/560; bd10_photo 191/191 and bd10_nonflat 309/309 with
+        AOMDEC=/usr/bin/aomdec; fmt --check; clippy_inventory current)
+
+callgrind Ir, 1024x1024 gradient qp40 (tools/perf_profile/callcount_cells.sh,
+PE= before/after perf_encode, CE= perf_c_encode mainline; cg-run ident=Y):
+  p10: 313,885,583 -> 301,409,622  (-12,475,961, -3.97%; ratio 1.589x -> 1.526x C)
+  p6:  1,268,307,356 -> 1,268,875,719  (+568,363, +0.04%; level-1 arm,
+       two extra compares per Exact call — at noise level)
+
+wall clock, tools/perf_ab.sh (interleaved, 7 rounds, 1024 only):
+  p10 1.032 speedup (median cand/base 0.969), p6 0.992 (noise).

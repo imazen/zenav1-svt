@@ -525,7 +525,14 @@ fn lossless_mds1_txbs(
             false,               // freq-domain dist
             txb_crop,
             true, // the recon feeds the next txb's prediction
-            RateMode::Exact,
+            // This is C's `perform_tx_partitioning` arm (`tx_depth` 1 per
+            // 4x4 txb) — its level-0 tier is `3000+eob*100`, not the
+            // `RateMode::Exact` level-0 arm's depth-0 `6000+eob*400`.
+            if cfg.coeff_rate_est_lvl == 0 {
+                RateMode::Lvl0Closed
+            } else {
+                RateMode::Exact
+            },
         );
         eob_total += u32::from(out.eob);
         bits_total += i64::from(out.bits);

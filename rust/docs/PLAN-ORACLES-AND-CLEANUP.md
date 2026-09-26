@@ -598,15 +598,22 @@ Order, by expected size:
      30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
      (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma
      `eval_uv` overhead after the coefficient-rate findings below.
-   - Item 7 (coefficient rate, investigated 2026-09-25, cell `perf_encode
+   - Done (coefficient rate, landed 2026-09-26; cell `perf_encode
      gradient 1024 1024 40 10 <prefix> 0` vs `perf_c_encode` on the
-     mainline-4.2.0 oracle; byte-identical 18,906 B both ways; callgrind
-     port 313,858,011 Ir vs C 197,547,115 Ir, 1.589x —
-     `~/tmp/cg_coeff_before/`): classification is **(a)** — the exact rate
-     is dead or C-equivalent at every point this level reaches, not a
-     parity bug — but no code change has landed yet. Measured producer map
-     (`SVTAV1_RATEPROBE` instrumentation on `tx_unit_inner`, all 6,792
-     calls accounted for):
+     mainline-4.2.0 oracle; `benchmarks/perf_coeff_rate_2026-09-26.meta`):
+     classification was **(a)** — the exact rate is dead or C-equivalent
+     at every point `coeff_rate_est_lvl == 0` reaches. `RateMode::Exact`
+     now produces C's closed forms directly (luma `eob<th ? 6000+1000e :
+     (w,h<=64 ? 6000+400e : 3000+100e)`, product_coding_loop.c:5883/4914;
+     chroma `skip_chroma_rate_est`'s per-plane arm, full_loop.c:1798), the
+     lossless per-txb loop passes `Lvl0Closed` at level 0, and the bd10
+     path carries the same chroma arm. Byte-identical on every gate
+     (spotcheck 147/147, identity synthetic 560/560, bd10 191/191 +
+     309/309). Callgrind at the cell: 313,885,583 -> 301,409,622 Ir
+     (-3.97%; 1.589x -> 1.526x C); p6 flat (+0.04%). `cost_coeffs_txb` /
+     `cost_skip_txb` calls there went 1,312 + 4,160 -> 0. Measured
+     producer map (`SVTAV1_RATEPROBE` instrumentation on `tx_unit_inner`,
+     all 6,792 calls accounted for):
      * `txt.rs:464` via `search_tx_depths`, `end_depth == 0` (C's
        `perform_dct_dct_tx` arm): 1,312 luma calls, all `RateMode::Exact`,
        all `eob > 0` -> `cost_coeffs_txb` (the whole 1,312-call /
@@ -630,22 +637,14 @@ Order, by expected size:
        lvl 0), and NSQ/depth gates are off -> every read of the exact rate
        is dead on the whole lvl-0 envelope. Producing C's closed forms is
        therefore byte-inert AND value-correct.
-     * Next step (not landed): in `tx_pipeline.rs` `RateMode::Exact` arm
-       (~:1488-1541) add `plane_type==1 && lvl==0` -> per-plane
-       `skip_chroma_rate_est` form, and `plane_type==0 && lvl==0` ->
-       `eob<th ? 6000+eob*1000 : (w<=64&&h<=64 ? 6000+eob*400 :
-       3000+eob*100)` (the `w,h<=64` key reproduces the
-       sq<=64/only_dct/end==0 dct-path dispatch because txt is off at every
-       lvl-0 preset); change `mds1.rs` `lossless_mds1_txbs` to pass
-       `Lvl0Closed` at lvl 0 (C's lossless 8x8 runs the partitioning form
-       per 4x4 txb). Same chroma arm in the hbd rate section (`a.coeff_
-       rate_est_lvl`); hbd luma left exact (dct-vs-partition distinction
-       would need a TxRdArgs field touched in out-of-scope files).
-       Residuals to note: lvl-2 chroma keeps exact bits because the
-       `cb_leak + u_bits10` replication needs the raw estimator when
-       `cr_eob >= th`; the `end_depth` vs per-candidate `cand_end_depth`
-       selection at `mds3/tx_depth.rs:359` is a pre-existing video-arm
-       edge (`Lvl0Closed` vs `DctClosed` differ only at `eob >= th`).
+     * Residuals (documented, not landed): lvl-2 chroma keeps exact bits
+       because the `cb_leak + u_bits10` replication needs the raw
+       estimator when `cr_eob >= th`; bd10 luma stays exact at level 0
+       (the dct-vs-partition distinction would need a `TxRdArgs` field
+       whose other constructors sit in out-of-scope files); the
+       `end_depth` vs per-candidate `cand_end_depth` mode selection at
+       `mds3/tx_depth.rs:359` is a pre-existing video-arm edge (the two
+       forms differ only at `eob >= th`).
      * Chroma MD reconstruction is NOT removable: at this cell all 4,160
        chroma txbs are eob==0 -> pred copy, and C does the same
        `picture_copy` (`mds_do_spatial_sse` true at MDS3); C additionally
