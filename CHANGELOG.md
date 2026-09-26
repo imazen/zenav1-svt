@@ -2622,6 +2622,7 @@ Crates are not published to crates.io yet — depend by git.
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
 
 ### Fixed
+- Video key frames now take the video arm's settings where C does: the independent-chroma search level at preset 1 (801d103f), and at preset -1 the qp-based threshold scaling C turns off for NIC counts, NIC pruning and the transform-type search (b0e7cbe5). Every preset 1 and -1 key frame of the real-video census now matches C (census 244 -> 251 of 540 cells identical through 8 frames).
 
 - Random access with TPL (`aq_mode` 2) panicked at frame sizes whose TPL block is 16 wide (e.g. 130x98 at presets 9 and 12): a subsampled-row copy staged 16 samples through a 32-sample array (8fd42f7e).
 - Preset -1 video panicked in debug-assertion builds: a `debug_assert!` claimed the MDS0-2 interpolation-filter levels unreachable; they are reached at preset -1, where the search is not yet modelled (8fd42f7e).
