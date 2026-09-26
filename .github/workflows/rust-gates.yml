@@ -86,6 +86,11 @@ jobs:
       # FIRST, so this one variable is what makes every `corpus_dir
       # codec-corpus/gb82-sc` call in the gate scripts resolve on this runner.
       ZENAV1_CORPUS_ROOT: ${{ github.workspace }}/corpora
+      # The reference decoder, built (or restored) in every shard before any
+      # gate step. Set per step it was forgotten three times (imazen26, the
+      # bd10 video step, rc_tpl_gate on 2026-09-26), each a red "aomdec not
+      # found" on a gate that was green locally.
+      AOMDEC: ${{ github.workspace }}/aom-build/aomdec
     steps:
       - uses: actions/checkout@v7
         with:
