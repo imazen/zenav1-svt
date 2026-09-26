@@ -21,9 +21,11 @@ on:
 # bound (six runs queued on 2026-09-26); cancelling the RUNNING one instead
 # meant a steady stream of pushes never let any run finish. The tip carries
 # every earlier change, so the next run to start tests everything. The
-# nightly (coverage) run gets its own group.
+# nightly and a manual dispatch (both run the coverage floor, which pushes
+# skip) get their own groups: in the push group a dispatch was replaced by
+# the next push before it started (2026-09-26).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || github.ref }}
   cancel-in-progress: false
 
 env:
