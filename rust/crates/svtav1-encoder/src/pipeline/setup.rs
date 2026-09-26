@@ -254,6 +254,25 @@ impl EncodePipeline {
         self
     }
 
+    /// Target a C reference: sets [`Self::reference`] AND loads that
+    /// reference's fork defaults into [`Self::hdr`], so one call switches
+    /// the whole encoder. Ghost Robot has no mainline mode and implies
+    /// [`SvtHdrMode::HdrFork`](crate::hdr_mode::SvtHdrMode); every other
+    /// reference implies `Mainline` (the rule `svtav1::avif::AvifEncoder`
+    /// uses). Assigning the `reference` field alone leaves `hdr` at the
+    /// previous reference's defaults, which Ghost Robot refuses.
+    pub fn with_reference(mut self, reference: crate::reference::SvtReference) -> Self {
+        use crate::hdr_mode::{HdrForkConfig, SvtHdrMode};
+        use crate::reference::SvtReference;
+        let mode = match reference {
+            SvtReference::GhostRobot => SvtHdrMode::HdrFork,
+            _ => SvtHdrMode::Mainline,
+        };
+        self.reference = reference;
+        self.hdr = HdrForkConfig::defaults_for(reference, mode);
+        self
+    }
+
     /// Pin the superblock size instead of deriving it (`SVTAV1_SB`).
     /// `Some(128)` on a cell whose encode path is unsupported still falls
     /// back to 64 and sets [`Self::sb128_fallback`] — the override chooses

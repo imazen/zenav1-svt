@@ -346,3 +346,45 @@ fn mono_and_lossless_video_never_panic() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// `with_reference` switches the whole encoder: every reference encodes a
+/// still and a two-frame low-delay video through the public pipeline, and the
+/// Ghost Robot and mainline streams differ (the target really changed).
+#[test]
+fn with_reference_switches_the_target() {
+    use svtav1_encoder::reference::SvtReference;
+    let encode = |r: SvtReference| -> Vec<u8> {
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp: 40,
+            ..RcConfig::default()
+        };
+        let mut p = EncodePipeline::new_with_preset(
+            W as u32,
+            H as u32,
+            NativePreset::new(6).expect("preset"),
+            rc,
+            0,
+            64,
+        )
+        .with_chroma_420(true)
+        .with_reference(r);
+        let mut out = Vec::new();
+        for f in 0..2 {
+            let (y, u, v) = frame(f);
+            out.extend(
+                p.try_encode_frame_420(&y, &u, &v, W)
+                    .unwrap_or_else(|e| panic!("{r:?} frame {f}: {e}")),
+            );
+        }
+        out
+    };
+    let main = encode(SvtReference::Mainline420);
+    let gr = encode(SvtReference::GhostRobot);
+    let _hybrid = encode(SvtReference::Hybrid3115);
+    assert!(!main.is_empty() && !gr.is_empty());
+    assert!(
+        main != gr,
+        "Ghost Robot and mainline produced identical streams: the switch did nothing"
+    );
+}

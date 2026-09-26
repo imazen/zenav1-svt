@@ -13,6 +13,26 @@ alpha are Rust extensions beyond C's envelope.
 names the gate that backs it, and every gate runs in CI. Remaining work is
 tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
 
+## Choosing the C target
+
+The port targets two C encoders: pristine **SVT-AV1 v4.2.0** (the default)
+and the **svt-av1-hdr "Ghost Robot"** fork. One call selects either, on
+either API:
+
+```rust
+use svtav1::pipeline::{EncodePipeline, SvtReference};
+let p = EncodePipeline::new(w, h, 8, rc, 0, 1).with_reference(SvtReference::GhostRobot);
+// or: svtav1::avif::AvifEncoder::new().with_reference(SvtReference::GhostRobot)
+```
+
+`with_reference` also loads that target's fork defaults. The test tools
+switch the same way with one variable, `SVT_ORACLE=mainline-4.2.0` or
+`SVT_ORACLE=ghost-robot`, which drives both the port and the pinned C build
+([rust/docs/ORACLES.md](rust/docs/ORACLES.md)). Byte parity status differs:
+mainline is the byte-identical surface (below); Ghost Robot is in progress
+(function-level suite 869/873, still grid 41/288, ORACLES.md has the
+current numbers).
+
 ## References, policy and coverage
 
 - Constructors default to **Mainline420** (pristine v4.2.0) since 2026-09-25;
@@ -30,9 +50,10 @@ tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
   worse, 31-98% slower; byte-identical below preset 8 and under tune IQ;
   `benchmarks/aom_keep_or_drop_2026-09-25.meta`) and `DeepSearch`. Six others were removed on 2026-09-25 for showing no gain.
 - 4:4:4 chroma ships on a measured decoder-verified envelope (8-bit key AND
-  inter frames, SB64, no superres) as a Zen extension — C refuses it, so the
-  oracle is the decoder, never byte parity. 4:2:2 and 12-bit remain rejected,
-  matching C.
+  inter frames, SB64, no superres) as a Zen extension. Mainline C refuses
+  it; Ghost Robot accepts it (High profile), and `SVT_CHROMA=444` now drives
+  both encoders, so a byte oracle for it is in progress (plan 3.6). 4:2:2
+  and 12-bit remain rejected, matching C.
 
 Measured 2026-09-25 on `i265` at main `b4bc75ad`: the workspace nextest
 suite passed **2771/2771, zero skips**; `identity_full_8bit.sh` **1100/1100**,
