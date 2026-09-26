@@ -745,13 +745,13 @@ fn br_cost_with_diff(level: i32, coeff_lps: &[i32], diff: &mut i32) -> i32 {
     coeff_lps[base_range as usize] + golomb_bits
 }
 
-/// C `get_coeff_cost_general` (full_loop.c:627). `levels_buf` is the full
-/// padded buffer; `ci` a packed raster position.
-///
-/// `TC` is the transform class as a CONST — see [`optimize_b`] for why the
-/// whole trellis is monomorphised on it.
+/// C `get_coeff_cost_general` (full_loop.c:627). `br_ctx` is the caller's
+/// precomputed `get_br_ctx`/`get_br_ctx_eob` value — C recomputes it inside
+/// each call, but the trellis calls this twice per coefficient (the level and
+/// level-1 candidates) against a `levels` map that is not written in between,
+/// so one computation serves both. Only read when `abs_qc > NUM_BASE_LEVELS`.
 #[allow(clippy::too_many_arguments)]
-fn coeff_cost_general<const TC: usize>(
+fn coeff_cost_general(
     is_last: bool,
     ci: usize,
     abs_qc: i32,
@@ -759,8 +759,7 @@ fn coeff_cost_general<const TC: usize>(
     coeff_ctx: usize,
     dc_sign_ctx: usize,
     txb_costs: &TxbCosts,
-    bwl: usize,
-    levels_buf: &[u8],
+    br_ctx: usize,
 ) -> i32 {
     let mut cost = if is_last {
         txb_costs.base_eob_cost[coeff_ctx][(abs_qc.min(3) - 1) as usize]
@@ -774,27 +773,23 @@ fn coeff_cost_general<const TC: usize>(
             cost += cost_literal(1);
         }
         if abs_qc > NUM_BASE_LEVELS {
-            let br_ctx = if is_last {
-                coeff_c::br_ctx_eob_tc::<TC>(ci, bwl)
-            } else {
-                coeff_c::br_ctx_tc::<TC>(levels_buf, ci, bwl)
-            };
+            debug_assert!(br_ctx < LEVEL_CONTEXTS);
             cost += br_cost(abs_qc, &txb_costs.lps_cost[br_ctx]);
         }
     }
     cost
 }
 
-/// C `get_coeff_cost_eob` (full_loop.c:722).
-#[allow(clippy::too_many_arguments)]
-fn coeff_cost_eob<const TC: usize>(
+/// C `get_coeff_cost_eob` (full_loop.c:722). `br_ctx` is the caller's
+/// `get_br_ctx_eob` value — see [`coeff_cost_general`] for why it is hoisted.
+fn coeff_cost_eob(
     ci: usize,
     abs_qc: i32,
     sign: usize,
     coeff_ctx: usize,
     dc_sign_ctx: usize,
     txb_costs: &TxbCosts,
-    bwl: usize,
+    br_ctx: usize,
 ) -> i32 {
     let mut cost = txb_costs.base_eob_cost[coeff_ctx][(abs_qc.min(3) - 1) as usize];
     if abs_qc != 0 {
@@ -804,7 +799,7 @@ fn coeff_cost_eob<const TC: usize>(
             cost += cost_literal(1);
         }
         if abs_qc > NUM_BASE_LEVELS {
-            let br_ctx = coeff_c::br_ctx_eob_tc::<TC>(ci, bwl);
+            debug_assert!(br_ctx < LEVEL_CONTEXTS);
             cost += br_cost(abs_qc, &txb_costs.lps_cost[br_ctx]);
         }
     }
@@ -863,6 +858,21 @@ fn eob_cost_inner(eob: i32, eob_costs: &EobCosts, txb_costs: &TxbCosts, is_1d_cl
         cost += cost_literal(cnt as i32);
     }
     cost
+}
+
+/// C `get_dqv` (full_loop.c:741). The QM inverse-weight multiplies the
+/// dequant ONLY when `iqm_ptr` is non-NULL — with no matrix this is a single
+/// table read, not a `* (1 << AOM_QM_BITS)` round-trip (which is the same
+/// value but three extra instructions per trellis step).
+#[inline(always)]
+fn dqv(dequant: &[i32; 2], ci: usize, iwt: Option<&[u8]>) -> i32 {
+    let dqv = dequant[usize::from(ci != 0)];
+    match iwt {
+        Some(m) => {
+            (i32::from(m[ci]) * dqv + (1 << (crate::qm::AOM_QM_BITS - 1))) >> crate::qm::AOM_QM_BITS
+        }
+        None => dqv,
+    }
 }
 
 /// C `get_qc_dqc_low` (full_loop.c:659). `sign` is 1 for negative.
@@ -1034,12 +1044,17 @@ fn update_coeff_general<const TC: usize>(
     levels_buf: &mut [u8],
 ) {
     let ci = scan[si] as usize;
-    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
+    // A valid scan order only yields raster positions < n = w*h (the buffers
+    // are sliced to n by `optimize_b_tc`), so this assert folds every `ci`
+    // index below.
+    assert!(ci < qcoeff.len());
+    let dqv = dqv(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let is_last = si == (eob as usize - 1);
     let coeff_ctx = coeff_c::lower_levels_ctx_general_tc::<TC>(
         levels_buf, ci, bwl, height, si, is_last, o.tx_size,
     );
+    assert!(coeff_ctx < SIG_COEF_CONTEXTS);
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
     } else {
@@ -1049,7 +1064,19 @@ fn update_coeff_general<const TC: usize>(
         let dqc = dqcoeff[ci];
         let dist = get_coeff_dist(tqc, dqc, shift);
         let dist0 = get_coeff_dist(tqc, 0, shift);
-        let rate = coeff_cost_general::<TC>(
+        // Shared by the level and level-1 rate calls — the levels map is
+        // not written between them. `abs_qc_low > NUM_BASE_LEVELS` implies
+        // `abs_qc > NUM_BASE_LEVELS`, so one computation covers both.
+        let br_ctx = if abs_qc > NUM_BASE_LEVELS {
+            if is_last {
+                coeff_c::br_ctx_eob_tc::<TC>(ci, bwl)
+            } else {
+                coeff_c::br_ctx_tc::<TC>(levels_buf, ci, bwl)
+            }
+        } else {
+            0
+        };
+        let rate = coeff_cost_general(
             is_last,
             ci,
             abs_qc,
@@ -1057,8 +1084,7 @@ fn update_coeff_general<const TC: usize>(
             coeff_ctx,
             o.dc_sign_ctx,
             o.txb_costs,
-            bwl,
-            levels_buf,
+            br_ctx,
         );
         let rd = rdcost(o.rdmult, rate as i64, dist);
 
@@ -1075,7 +1101,7 @@ fn update_coeff_general<const TC: usize>(
             dqc_low = d;
             abs_qc_low = abs_qc - 1;
             dist_low = get_coeff_dist(tqc, dqc_low, shift);
-            rate_low = coeff_cost_general::<TC>(
+            rate_low = coeff_cost_general(
                 is_last,
                 ci,
                 abs_qc_low,
@@ -1083,8 +1109,7 @@ fn update_coeff_general<const TC: usize>(
                 coeff_ctx,
                 o.dc_sign_ctx,
                 o.txb_costs,
-                bwl,
-                levels_buf,
+                br_ctx,
             );
         }
 
@@ -1120,10 +1145,12 @@ fn update_coeff_simple<const TC: usize>(
 ) {
     debug_assert!(si > 0);
     let ci = scan[si] as usize;
-    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
+    assert!(ci < qcoeff.len()); // see update_coeff_general
+    let dqv = dqv(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general_tc::<TC>(levels_buf, ci, bwl, 0, si, false, o.tx_size);
+    assert!(coeff_ctx < SIG_COEF_CONTEXTS);
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
     } else {
@@ -1196,10 +1223,12 @@ fn update_coeff_eob<const TC: usize>(
 ) {
     debug_assert!(si != *eob as usize - 1);
     let ci = scan[si] as usize;
-    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
+    assert!(ci < qcoeff.len()); // see update_coeff_general
+    let dqv = dqv(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general_tc::<TC>(levels_buf, ci, bwl, 0, si, false, o.tx_size);
+    assert!(coeff_ctx < SIG_COEF_CONTEXTS);
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
     } else {
@@ -1210,7 +1239,14 @@ fn update_coeff_eob<const TC: usize>(
         let sign = usize::from(qc < 0);
         let dist0 = get_coeff_dist(tqc, 0, shift);
         let mut dist = get_coeff_dist(tqc, dqc, shift) - dist0;
-        let mut rate = coeff_cost_general::<TC>(
+        // One `get_br_ctx` serves both rate calls — the levels map is not
+        // written between them (see [`coeff_cost_general`]).
+        let br_ctx = if abs_qc > NUM_BASE_LEVELS {
+            coeff_c::br_ctx_tc::<TC>(levels_buf, ci, bwl)
+        } else {
+            0
+        };
+        let mut rate = coeff_cost_general(
             false,
             ci,
             abs_qc,
@@ -1218,8 +1254,7 @@ fn update_coeff_eob<const TC: usize>(
             coeff_ctx,
             o.dc_sign_ctx,
             o.txb_costs,
-            bwl,
-            levels_buf,
+            br_ctx,
         );
         let rd = rdcost(o.rdmult, (*accu_rate + rate) as i64, *accu_dist + dist);
 
@@ -1237,7 +1272,7 @@ fn update_coeff_eob<const TC: usize>(
             dqc_low = d;
             abs_qc_low = abs_qc - 1;
             dist_low = get_coeff_dist(tqc, dqc_low, shift) - dist0;
-            rate_low = coeff_cost_general::<TC>(
+            rate_low = coeff_cost_general(
                 false,
                 ci,
                 abs_qc_low,
@@ -1245,8 +1280,7 @@ fn update_coeff_eob<const TC: usize>(
                 coeff_ctx,
                 o.dc_sign_ctx,
                 o.txb_costs,
-                bwl,
-                levels_buf,
+                br_ctx,
             );
             rd_low = rdcost(
                 o.rdmult,
@@ -1261,29 +1295,38 @@ fn update_coeff_eob<const TC: usize>(
             levels_buf, ci, bwl, height, si, true, o.tx_size,
         );
         let new_eob_cost = eob_cost_tc::<TC>(new_eob as i32, o.eob_costs, o.txb_costs);
+        // Same sharing for the two `get_coeff_cost_eob` evaluations: both
+        // would read `get_br_ctx_eob(ci)` when their level exceeds
+        // NUM_BASE_LEVELS, and `abs_qc_low > NUM_BASE_LEVELS` implies
+        // `abs_qc > NUM_BASE_LEVELS`.
+        let br_ctx_eob = if abs_qc > NUM_BASE_LEVELS {
+            coeff_c::br_ctx_eob_tc::<TC>(ci, bwl)
+        } else {
+            0
+        };
         let mut rate_coeff_eob = new_eob_cost
-            + coeff_cost_eob::<TC>(
+            + coeff_cost_eob(
                 ci,
                 abs_qc,
                 sign,
                 coeff_ctx_new_eob,
                 o.dc_sign_ctx,
                 o.txb_costs,
-                bwl,
+                br_ctx_eob,
             );
         let mut dist_new_eob = dist;
         let mut rd_new_eob = rdcost(o.rdmult, rate_coeff_eob as i64, dist_new_eob);
 
         if abs_qc_low > 0 {
             let rate_coeff_eob_low = new_eob_cost
-                + coeff_cost_eob::<TC>(
+                + coeff_cost_eob(
                     ci,
                     abs_qc_low,
                     sign,
                     coeff_ctx_new_eob,
                     o.dc_sign_ctx,
                     o.txb_costs,
-                    bwl,
+                    br_ctx_eob,
                 );
             let dist_new_eob_low = dist_low;
             let rd_new_eob_low = rdcost(o.rdmult, rate_coeff_eob_low as i64, dist_new_eob_low);
@@ -1332,7 +1375,9 @@ fn update_coeff_eob<const TC: usize>(
             dqcoeff[ci] = dqc_low;
             levels_buf[levels_idx(ci, bwl)] = abs_qc_low.min(i8::MAX as i32) as u8;
         }
-        if qcoeff[ci] != 0 {
+        // `qcoeff[ci]` now holds `if lower_level { qc_low } else { qc }` —
+        // test the value, not a reload.
+        if (if lower_level { qc_low } else { qc }) != 0 {
             nz_ci[*nz_num] = ci;
             *nz_num += 1;
         }
@@ -1425,10 +1470,27 @@ fn optimize_b_tc<const TC: usize>(
     levels_buf: &mut [u8; coeff_c::LEVELS_SCRATCH_LEN],
 ) {
     debug_assert_eq!(TC, o.tx_class);
-    let shift = TX_SCALE_TAB[o.tx_size];
+    // The invariants the trellis relies on, stated once up front so LLVM
+    // folds them into the per-coefficient index checks: `tx_size` is a legal
+    // TxSize, the adjusted txb is at most 32 wide (bwl <= 5) and 32x32
+    // coefficients, and `scan`'s values are raster positions < w*h. Every
+    // one of them would panic an index anyway on a violating input — the
+    // asserts only move where the check happens.
+    assert!(o.tx_size < coeff_c::TX_SIZES_ALL);
     let bwl = coeff_c::txb_bwl(o.tx_size);
     let width = coeff_c::txb_wide(o.tx_size);
     let height = coeff_c::txb_high(o.tx_size);
+    let n = width * height;
+    assert!(bwl <= 5 && n <= coeff_c::MAX_TXB_COEFF_AREA);
+    assert!(o.dc_sign_ctx < DC_SIGN_CONTEXTS);
+    let shift = TX_SCALE_TAB[o.tx_size];
+    // `si` counts down from eob-1 and `eob` only shrinks inside the eob loop,
+    // so every `scan[si]` is < the entry eob; slicing once lets the fold land.
+    let eob0 = *eob as usize;
+    let scan = &scan[..eob0];
+    let tcoeffs = &tcoeffs[..n];
+    let qcoeff = &mut qcoeff[..n];
+    let dqcoeff = &mut dqcoeff[..n];
     let non_skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][0];
     let skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][1];
     let eob_cost_init = eob_cost_tc::<TC>(*eob as i32, o.eob_costs, o.txb_costs);
@@ -1448,6 +1510,7 @@ fn optimize_b_tc<const TC: usize>(
     let mut accu_dist = 0i64;
     let mut si = *eob as i32 - 1;
     let ci = scan[si as usize] as usize;
+    assert!(ci < n);
     let qc = qcoeff[ci];
     let abs_qc = qc.abs();
     let sign = usize::from(qc < 0);
@@ -1484,8 +1547,7 @@ fn optimize_b_tc<const TC: usize>(
             true,
             o.tx_size,
         );
-        accu_rate +=
-            coeff_cost_eob::<TC>(ci, abs_qc, sign, coeff_ctx, o.dc_sign_ctx, o.txb_costs, bwl);
+        accu_rate += coeff_cost_eob(ci, abs_qc, sign, coeff_ctx, o.dc_sign_ctx, o.txb_costs, 0);
         let tqc = tcoeffs[ci];
         let dqc = dqcoeff[ci];
         let dist = get_coeff_dist(tqc, dqc, shift);

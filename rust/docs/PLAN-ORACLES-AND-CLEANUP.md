@@ -1057,10 +1057,17 @@ Order, by expected size:
      memcpy struct moves unchanged: `frame.cfg`/`LeafGeom`/`Mds3Ctx`
      by-value copies in `eval_candidate`, `WarpRefineBlock` rebuilds,
      `into_choice`.
-   - Open, by excess over C at 1024 p10: `optimize_b` (38.3M vs
-     30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
-     (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma
-     `eval_uv` overhead after the coefficient-rate findings below.
+   - Done (this change): `optimize_b` per-call cost — `get_dqv`'s QM
+     multiply skipped when `iqm` is absent (C's shape), `get_br_ctx`/
+     `get_br_ctx_eob` shared across each pair of level candidates, and
+     the trellis's per-coefficient bounds checks folded into the
+     adjusted-txb invariants asserted once per call/iteration. 1024 p10:
+     38.3M -> 30.1M inclusive (C: 30.3M — now 0.991x); 256 p6: 16.0M ->
+     13.0M (C: 13.2M — 0.982x). Byte-identical everywhere
+     (`benchmarks/perf_optimize_b_2026-09-26.meta`).
+   - Open, by excess over C at 1024 p10: PD0 (48.6M vs 36.7M, spread),
+     memset (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual
+     chroma `eval_uv` overhead after the coefficient-rate findings below.
    - Done (coefficient rate, landed 2026-09-26; cell `perf_encode
      gradient 1024 1024 40 10 <prefix> 0` vs `perf_c_encode` on the
      mainline-4.2.0 oracle; `benchmarks/perf_coeff_rate_2026-09-26.meta`):

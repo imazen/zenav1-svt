@@ -1,0 +1,53 @@
+Snapshot 2026-09-26 (i265): RDOQ `optimize_b` per-call cost vs C
+(Phase 5 item 7 — brief `optimize-b`).
+
+Cell A: `perf_encode gradient 1024 1024 40 10 <prefix> 0` vs
+`tools/perf_c_encode/perf_c_encode 1024 1024 40 10 <prefix>.yuv c.obu 0`
+(mainline-4.2.0 oracle library). Cell B: 256x256 p6, same form.
+
+Change (all byte-identical; `quant.rs` + `entropy/coeff_c.rs` only):
+
+- `dqv`: the QM inverse-weight multiply ran unconditionally
+  (`(dqv * 32 + 16) >> 5`, an identity). Now matches C `get_dqv`
+  (full_loop.c:741): a single `dequant[!!ci]` read when `iwt` is None —
+  the whole measured cell runs no-QM.
+- `get_br_ctx`/`get_br_ctx_eob` hoisted out of `coeff_cost_general` /
+  `coeff_cost_eob`: the trellis calls each twice per coefficient (level
+  and level-1 candidates) against a `levels` map that is not written
+  between them, so one computation serves both. C recomputes per call.
+- Loop-invariant bounds stated once per `optimize_b` call
+  (`tx_size < 19`, `bwl <= 5`, `n <= 1024`, `dc_sign_ctx < 3`) and once
+  per coefficient (`ci < n`, buffers sliced to `n`, `scan` sliced to the
+  entry eob) plus `bwl <= 5` inside `nz_mag_tc`/`br_ctx_tc` and the
+  `eob_pos_token` group bound — LLVM then folds the per-tap and
+  per-table bounds checks into those asserts. Each assert restates an
+  invariant whose violation already panicked on an index today.
+- `update_coeff_eob` tests the tracked final `qc` instead of reloading
+  `qcoeff[ci]`.
+
+callgrind Ir (`tools/perf_profile/callcount_cells.sh`; valgrind 3.22):
+
+  1024 p10: port total 300,212,710 -> 291,937,543  (-8,275,167, -2.76%)
+            optimize_b incl. 38,347,572 -> 30,070,710  (-21.6%)
+            C svt_av1_optimize_b 30,333,183 — port now 0.991x C
+            (was 1.264x)
+  256 p6:   port total 131,632,427 -> 128,547,932  (-3,084,495, -2.34%)
+            optimize_b incl. 16,037,990 -> 13,006,621  (-18.9%)
+            C svt_av1_optimize_b 13,249,549 — port now 0.982x C
+            (was 1.210x)
+
+Both baseline callgrind runs used the pre-change `perf_encode` built from
+the same commit's @- parent (perf_encode.old); all four instrumented
+outputs byte-identical (port==C and pre==post on both cells).
+
+wall clock, `tools/perf_ab.sh` (interleaved paired, 7 rounds, i265,
+AB_SIZES="256 1024" AB_PRESETS="6 10"; speedup = base/cand):
+
+  256  p6   1.017   256  p10  1.010
+  1024 p6   1.032   1024 p10  1.041  (p25/p75 0.868/1.0018)
+
+All four cells ident=Y.
+
+gates: `just pins` 6/6; nextest 2756/2756; regression_spotcheck 147/147;
+identity_full_8bit 1100/1100; `cargo fmt --all --check` and
+`tools/clippy_inventory.sh --check` clean; `tools/precheck.sh` green.

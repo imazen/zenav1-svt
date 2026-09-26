@@ -486,6 +486,11 @@ fn clip_max3(v: u8) -> u32 {
 /// [`nz_mag`] for the runtime-dispatched wrapper.
 #[inline(always)]
 fn nz_mag_tc<const TC: usize>(levels: &[u8], base: usize, bwl: usize) -> u32 {
+    // `bwl` is the ADJUSTED txb width's log2 — at most 5 (32 wide). Stating
+    // it lets LLVM fold every `w[k * stride]` bounds check below: `stride`
+    // is provably in [5, 36], so `k * stride < span` is decided statically.
+    // A violating bwl would OOB-panic on the window slice anyway.
+    assert!(bwl <= 5);
     let stride = (1 << bwl) + TX_PAD_HOR;
     // One range check covers the whole tap window: the padded map is
     // bottom-anchored with a permanent tail, so `base + span` stays
@@ -824,6 +829,9 @@ pub fn br_ctx(levels_buf: &[u8], c: usize, bwl: usize, tx_class: usize) -> usize
 /// [`br_ctx`] with the transform class as a CONST.
 #[inline(always)]
 pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> usize {
+    // See `nz_mag_tc`: bwl <= 5 on every legal adjusted txb, and stating it
+    // lets LLVM fold the `w[k * stride]` checks below.
+    assert!(bwl <= 5);
     let row = c >> bwl;
     let col = c - (row << bwl);
     let stride = (1 << bwl) + TX_PAD_HOR;
@@ -899,6 +907,9 @@ pub fn eob_pos_token(eob: i32) -> (usize, i32) {
         let e = (((eob - 1) >> 5) as usize).min(16);
         EOB_TO_POS_LARGE[e] as usize
     };
+    // Both tables top out at 11 — the index into EOB_GROUP_START is always
+    // in-range; stating it folds the check at every caller.
+    assert!(t < EOB_GROUP_START.len());
     (t, eob - i32::from(EOB_GROUP_START[t]))
 }
 
