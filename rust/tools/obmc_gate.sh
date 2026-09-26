@@ -66,11 +66,18 @@ fi
 # on vidyo3-256; the path is decoder-verified, not byte-identical) — and the
 # port still spends a LARGER share of its blocks on OBMC than C does. The
 # load-bearing column, recon == dav1d, holds 2/2 on every cell.
+#
+# THE COUNTS MOVED AGAIN 2026-09-26 (138/76/62 -> 118/58/40 on the three
+# vidyo cells; owner-approved re-pin) when 606c4accd made WARPED_CAUSAL
+# reachable at preset 0. Before it the port coded NO warped block there,
+# where C codes warped on 6-26 % of blocks; now it codes 82/24/24, the OBMC
+# count fell by 20-22 per cell, and both mode shares moved toward C's
+# (benchmarks/obmc_gate_counts_2026-09-26.meta). Recon == dav1d holds 2/2.
 CELLS=(
-    "vidyo3 256x256 0 138"
-    "vidyo1 256x256 0 76"
+    "vidyo3 256x256 0 118"
+    "vidyo1 256x256 0 58"
     "johnny 256x256 0 12"
-    "vidyo3 128x128 0 62"
+    "vidyo3 128x128 0 40"
     "vidyo3 256x256 2 0"
     "vidyo1 256x256 2 0"
 )

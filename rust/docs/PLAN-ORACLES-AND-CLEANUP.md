@@ -655,8 +655,8 @@ Order, by expected size:
 
 ## Maintenance backlog
 
-- [ ] `obmc_gate.sh` is red in CI shard 3 (owner: leave red until
-  explained). It had never run in CI: `global_motion_gate.sh` stopped the
+- [x] `obmc_gate.sh` re-pinned 2026-09-26 (owner-approved, after the
+  explanation below; 6/6 locally). Was red in CI shard 3. It had never run in CI: `global_motion_gate.sh` stopped the
   step before it. Three p0 cells select fewer OBMC blocks than their
   2026-09-11 floors: vidyo3 256 118 (138), vidyo1 256 58 (76), vidyo3 128 40
   (62); recon == dav1d everywhere. Bisected to `606c4accd` (wm_level-1 warp
@@ -665,8 +665,8 @@ Order, by expected size:
   Explained 2026-09-26 (`benchmarks/obmc_gate_counts_2026-09-26.meta`):
   before `606c4accd` the port coded NO warped block at preset 0, where C
   codes WARPED_CAUSAL on 6-26 % of blocks; now it codes 82/24/24, the OBMC
-  count fell by 20-22 per cell, and both shares moved toward C's. Awaiting
-  the owner's decision on re-pinning the floors to 118/58/40.
+  count fell by 20-22 per cell, and both shares moved toward C's. Floors
+  re-pinned to 118/58/40.
 
 - [x] A red gate no longer hides the rest of its shard (2026-09-26). A
   step's default condition is `success()`, so from the day
