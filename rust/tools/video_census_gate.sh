@@ -15,8 +15,10 @@
 # and also fails until the pin moves with it (`VCG_WRITE=1` rewrites the
 # pins; say what moved in the commit). An ERROR cell always fails.
 #
-# Usage: tools/video_census_gate.sh     Env: VCG_JOBS (4), VCG_WRITE, AOMDEC n/a
-# ~320 s on i265 at 4 jobs.
+# Usage: tools/video_census_gate.sh
+# Env: VCG_JOBS (4), VCG_WRITE, VCG_PRESETS (a subset of -1..13: only those
+#      rows run and are checked; CI splits the census across two shards —
+#      the whole grid is ~17 min on a CI runner, 274 s on i265 at 4 jobs).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -28,7 +30,7 @@ trap 'rm -rf "$work"' EXIT
 
 IBM_CONTENT="fourpeople johnny kristenandsara vidyo1 vidyo3 vidyo4" \
 IBM_SIZES="128 256" IBM_QPS="20 40 55" \
-IBM_PRESETS="-1 0 1 2 3 4 5 6 7 8 9 10 11 12 13" IBM_FRAMES=8 \
+IBM_PRESETS="${VCG_PRESETS:--1 0 1 2 3 4 5 6 7 8 9 10 11 12 13}" IBM_FRAMES=8 \
 IBM_JOBS="${VCG_JOBS:-4}" \
     "$HERE/inter_byte_matrix.sh" "$work/cells" >"$work/now.tsv" 2>"$work/err.txt"
 rc=$?
@@ -37,12 +39,16 @@ if [ ! -s "$work/now.tsv" ]; then
     echo "video census gate: the sweep produced nothing (rc=$rc)" >&2
     exit 2
 fi
+if [ "${VCG_WRITE:-0}" = 1 ] && [ -n "${VCG_PRESETS:-}" ]; then
+    echo "video census gate: VCG_WRITE rewrites every pin; run it without VCG_PRESETS" >&2
+    exit 2
+fi
 if [ "${VCG_WRITE:-0}" = 1 ]; then
     grep -v '^#' "$work/now.tsv" | cut -f1-5,8 >"$PINS"
     echo "video census gate: wrote $(($(wc -l <"$PINS") - 1)) pins to $PINS"
     exit 0
 fi
-python3 - "$PINS" "$work/now.tsv" <<'PY'
+python3 - "$PINS" "$work/now.tsv" "${VCG_PRESETS:-}" <<'PY'
 import csv, sys
 def load(p):
     lines = [l for l in open(p) if not l.startswith("#")]
@@ -52,6 +58,9 @@ def load(p):
 def rank(v):  # later divergence is better; IDENTICAL best; ERROR worst
     return 1000 if v == "IDENTICAL" else (-1 if v == "ERROR" else int(v[2:]))
 pins, now = load(sys.argv[1]), load(sys.argv[2])
+subset = sys.argv[3].split()
+if subset:
+    pins = {k: v for k, v in pins.items() if k[3] in subset}
 worse, better, missing = [], [], sorted(set(pins) - set(now))
 for k, v in sorted(now.items()):
     p = pins.get(k)

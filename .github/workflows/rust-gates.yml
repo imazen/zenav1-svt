@@ -647,15 +647,20 @@ jobs:
         # does an improvement, which must land as a table update.
         run: ./tools/real_video_inter_gate.sh
 
-      - name: real-video byte-parity ratchet vs mainline C (540 cells)
+      - name: real-video byte-parity ratchet vs mainline C (presets -1..5)
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        working-directory: rust
+        # The census as a ratchet: each cell's first differing temporal unit is
+        # pinned in tools/pins/video_census.tsv. Earlier = regressed, later =
+        # promoted, both fail until the pin moves. The whole 540-cell grid took
+        # 17 min on a runner, so it is split by preset across shards 2 and 4
+        # (the low presets are the slow half).
+        run: VCG_PRESETS="-1 0 1 2 3 4 5" ./tools/video_census_gate.sh
+
+      - name: real-video byte-parity ratchet vs mainline C (presets 6..13)
         if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
-        # The 2026-09-26 census as a ratchet: each cell's first differing
-        # temporal unit is pinned in tools/pins/video_census.tsv (244/540
-        # identical through 8 frames). Earlier = regressed, later = promoted,
-        # both fail until the pin moves. 274 s locally at 4 jobs; shard 4 was
-        # among the lightest.
-        run: ./tools/video_census_gate.sh
+        run: VCG_PRESETS="6 7 8 9 10 11 12 13" ./tools/video_census_gate.sh
 
       - name: TPL (random access, aq_mode 2) and low-delay CBR vs C
         if: ${{ !cancelled() && matrix.shard == 3 }}
