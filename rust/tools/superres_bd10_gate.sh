@@ -30,6 +30,7 @@
 # observable in the output bytes (u8<<2 input would let a u8-resize pass as
 # "parity" — a vacuous gate).
 #
+# Presets 7..13 (7 re-measured 128/128 on 2026-09-26, as in the 8-bit gate).
 # Env: AOMDEC (path to aomdec; required — no graceful skip). SR_* filters
 # match the 8-bit gate's.
 set -uo pipefail
@@ -44,84 +45,46 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
 fi
 read -r -a SIZES <<<"${SR_SIZES:-64 128}"
 read -r -a QPS <<<"${SR_QPS:-20 32 40 55}"
-read -r -a PRESETS <<<"${SR_PRESETS:-8 9 10 13}"
+read -r -a PRESETS <<<"${SR_PRESETS:-7 8 9 10 13}"
 read -r -a DENOMS <<<"${SR_DENOMS:-9 10 11 12 13 14 15 16}"
 read -r -a CONTENTS <<<"${SR_CONTENTS:-uniform gradient}"
-OUT="${TMPDIR:-/tmp}/srgate10.$$"
+# The grid is a cell list for tools/cellrun.py (plan T3): each superres cell
+# checks C bytes and recon (aomdec's 10-bit output == the port's final
+# recon, which also pins the upscaled size), and names its no-superres
+# sibling as the stream it must differ from.
+OUT="${TMPDIR:-$HOME/tmp}/srgate10.$$"
 mkdir -p "$OUT"
-pass=0
-fail=0
-failed=()
-vac=()
+trap 'rm -rf "$OUT"' EXIT
+CELLS="$OUT/superres_bd10.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\tenv_c\tcheck\tdiffers_from\n' >"$CELLS"
 for content in "${CONTENTS[@]}"; do
   for sz in "${SIZES[@]}"; do
     for qp in "${QPS[@]}"; do
       for p in "${PRESETS[@]}"; do
-        # (4) anti-vacuity baseline: the same cell WITHOUT superres, still
-        # bd10 + native source.
-        ns_ok=1
-        if ! SVTAV1_BD=10 SVTAV1_HBD_SRC=1 "$HERE/identity_run" \
-             "$content" "$sz" "$sz" "$qp" "$p" "$OUT/ns" \
-             >/dev/null 2>&1; then
-          ns_ok=0
-        fi
+        base="${content}_${sz}_q${qp}_p${p}"
+        printf '%s_ns\t%s\t%s\t%s\t%s\t%s\t10\tSVTAV1_HBD_SRC=1\t\tnone\t\n' \
+          "$base" "$content" "$sz" "$sz" "$qp" "$p" >>"$CELLS"
         for d in "${DENOMS[@]}"; do
-          cell="${content}_${sz}_q${qp}_p${p}_d${d}"
-          if [ "$ns_ok" -eq 0 ]; then
-            fail=$((fail + 1)); failed+=("$cell[ns-err]"); continue
-          fi
-          if ! SVTAV1_BD=10 SVTAV1_HBD_SRC=1 SVTAV1_SUPERRES="$d" \
-               SVTAV1_FINAL_RECON="$OUT/rec.yuv" \
-               "$HERE/identity_run" \
-               "$content" "$sz" "$sz" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
-          fi
-          # C reads the SAME u16 .yuv identity_run wrote, at bit depth 10.
-          if ! SVT_SUPERRES_KF_DENOM="$d" SVT_TRACE_OUT=/dev/null \
-               "$HERE/capture_c_trace/capture_c_trace" \
-               "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 \
-               >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-          fi
-          if cmp -s "$OUT/rs.obu" "$OUT/ns.obu"; then
-            vac+=("$cell")
-          fi
-          # (2) decodability + output size on the PORT's stream. aomdec
-          # --rawvideo emits u16 LE at 10-bit: 2 bytes per I420 sample at
-          # the FULL (upscaled) width.
-          if ! "$aomdec" --rawvideo -o "$OUT/dec.yuv" "$OUT/rs.obu" \
-               >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[decode]"); continue
-          fi
-          want=$(( 2 * (sz * sz + 2 * (((sz + 1) / 2) * ((sz + 1) / 2))) ))
-          got=$(wc -c < "$OUT/dec.yuv" | tr -d ' ')
-          if [ "$got" -ne "$want" ]; then
-            fail=$((fail + 1))
-            failed+=("$cell[decoded ${got}B != upscaled ${want}B]")
-            continue
-          fi
-          # (3) recon parity: the port's 10-bit final recon must equal the
-          # decoder's output — the u16 normative upscale lands here.
-          if ! cmp -s "$OUT/rec.yuv" "$OUT/dec.yuv"; then
-            fail=$((fail + 1)); failed+=("$cell[recon!=dec]"); continue
-          fi
-          # (1) byte-parity.
-          if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-            pass=$((pass + 1))
-          else
-            fail=$((fail + 1)); failed+=("$cell")
-          fi
+          printf '%s_d%s\t%s\t%s\t%s\t%s\t%s\t10\tSVTAV1_HBD_SRC=1;SVTAV1_SUPERRES=%s\tSVT_SUPERRES_KF_DENOM=%s\tc,recon\t%s_ns\n' \
+            "$base" "$d" "$content" "$sz" "$sz" "$qp" "$p" "$d" "$d" "$base" >>"$CELLS"
         done
       done
     done
   done
 done
-echo "superres bd10 identity + conformance + recon: $pass / $((pass + fail)) cells"
-if [ "$fail" -gt 0 ]; then
-  printf '  FAILED: %s\n' "${failed[*]}"
-fi
-if [ "${#vac[@]}" -gt 0 ]; then
-  echo "  VACUOUS (superres stream == non-superres stream): ${vac[*]}"
-fi
-rm -rf "$OUT"
-[ "$fail" -eq 0 ] && [ "${#vac[@]}" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$CELLS" --out "$OUT/result.tsv" \
+  --bytes-only --jobs "${SR_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+allrows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+rows = [r for r in allrows if not r["name"].endswith("_ns")]
+bad = [r for r in rows if r["ok"] != "yes"]
+print(f"superres bd10 identity + conformance + recon: {len(rows) - len(bad)} / {len(rows)} cells")
+for r in bad:
+    print(f"  FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+for r in allrows:
+    if r["name"].endswith("_ns") and r["verdict"] == "ERROR":
+        print(f"  ERROR (sibling {r['name']}): {r['detail']}")
+PY
+exit "$rc"
