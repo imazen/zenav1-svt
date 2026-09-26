@@ -1,0 +1,19 @@
+# Ghost Robot stills investigation, grst2 workspace (brief gr-stills2.grst2.md): no grid movement — differential evidence only, 2026-09-26
+
+commit:  doc-only findings recorded in docs/PLAN-ORACLES-AND-CLEANUP.md 3.3s items 12-15
+host:    lilith (WSL2)
+tools:   instrumented GR oracle lib at ~/tmp/gr-probe (SVT_WINDBG winner dump,
+         CTXT per-tx-type dump with qcoeffs, BIPFULL all-modes pred dump);
+         port dumps via SVTAV1_TXT_XY / NSQDBG; still grid NOT re-run (no code change)
+
+- `9144140a4` fused AVX2/AVX-512 hadamard_satd + svt_psy_distortion: bit-exact
+  vs _c twins (20k samples/size, 0 diffs); target-cell SATDs match the port's
+  split path. Do not port it.
+- First real divergence: MDS3 winner at 16x16 (16,0) — C picks mode=10
+  (full_cost 19059420), port picks mode=0 (18949891); identical stage-3
+  candidate set. C then survives the sq-recon-dist NSQ gate and codes two
+  16x8 leaves; the port skips HORZ (SKIP gate=3) and codes one 16x16.
+- mode=0/txt=DCT_DCT residual path proven byte-identical (pred DC=114, fwd
+  coeffs, qcoeffs, eob=168 all match) yet C prices bits=171180/dist=68672 vs
+  port 172113/68112 — divergence is inside the coeff-rate estimator and/or
+  dist composition, not the data.

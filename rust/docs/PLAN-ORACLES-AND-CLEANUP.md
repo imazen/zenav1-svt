@@ -400,6 +400,79 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
         `pd0_detector_allintra`/`lvl6_cost`/`var_boost` correctness in
         general.
 
+  - Session findings, third pass (2026-09-26, `grst2` workspace — brief
+    `gr-stills2.grst2.md`, targeted commit `9144140a4`; investigation
+    only, all temp instrumentation reverted, nothing landed):
+    12. **`9144140a4` is exonerated.** The fused AVX2/AVX-512
+        `svt_av1_hadamard_satd_{4,8,16,32}x{4,8,16,32}` and
+        `svt_psy_distortion`/`_hbd` kernels produce bit-identical
+        results to their `_c` twins on the dispatched host tier (AVX2):
+        20,000 deterministic samples per Hadamard size, 5,000 per psy
+        shape, zero diffs, probe at `~/tmp/gr-hadamard-probe/probe.c`
+        (needs both `svt_aom_setup_rtcd_internal` AND
+        `svt_aom_setup_common_rtcd_internal`, else the `_c` fallbacks
+        null-call). The previous session's differing rawsatd numbers
+        (21798/… vs 22428/…) were the same wrong-offset wrap-dump
+        artifact as finding 7 — re-measured, C's fused 16x16 SATDs equal
+        the port's split path exactly for all seven mode-2 angle deltas
+        (22428/21904/21008/22572/20042/19836/19674 both sides), and the
+        per-candidate fast costs (SATD + luma/chroma rates + fast_cost)
+        are identical for all 15 stage-1 candidates at (16,0). The
+        brief's fused-kernel hypothesis is therefore disproven; do NOT
+        port `9144140a4`.
+    13. **The first real divergence is upstream of the leaf: the MDS3
+        winner pick on the 16x16 square at (16,0).** C's
+        `product_full_mode_decision` argmin picks `mode=10` (SMOOTH_V,
+        full_cost 19059420) over mode=0 (19093614), mode=7/ady=-2
+        (19259026), mode=2/ady=3 (19424133); the port picks mode=0
+        (18949891) over 7 (18985838), 10 (19108209), 2 (19307397). The
+        four stage-3 candidates and candidate admission are identical.
+        The SQ winner's `block_mi.mode` then feeds
+        `update_skip_nsq_based_on_sq_recon_dist` (identical text in both
+        trees): C's mode=10 arms `<<2` and survives (dev >= threshold),
+        the port's mode=0 arms `*2` and the port SKIPS the HORZ shape
+        (NSQDBG `SKIP gate=3`). C therefore evaluates and wins the
+        horizontal split — **C's coded leaves at (16,0) are two 16x8
+        blocks (mode=0, txd=2), not a 16x16** — while the port keeps the
+        16x16 with mode=0. (Finding 8's "C codes mode=2 ady=3 at
+        (16,0)" was wrong; that candidate loses the stage-3 argmin in C.
+        The visible outcome stands: C splits, port doesn't.)
+    14. **The winner flip lives inside the per-candidate MDS3 eval, not
+        the data.** For mode=0/txt=DCT_DCT at the (16,0) 16x16 txb the
+        port's residual path is proven byte-identical to C's: same
+        prediction (DC=114, verified byte-exact), same forward-transform
+        coefficients (first 40 raster coeffs identical), same quantized
+        coefficients (first 40 identical), same eob (168). Yet C's
+        `y_txb_coeff_bits` = 171180 vs the port's 172113 (+933, ~0.5%)
+        and C's `txb_full_distortion_txt[SSD][RESIDUAL]` = 68672 vs the
+        port's 68112 (−560). Mode=2/ady=3's txt=0 eval is bit-exact
+        (177297/67504 both sides); modes 0, 7/ady=−2, 10 all diverge by
+        ~0.3-3% in BOTH bits and dist. MDS1 shows the same small deltas.
+        With identical coeff data, the diff must sit in the rate
+        estimator (`svt_aom_txb_estimate_coeff_bits`/`coeff_costs`
+        ctx derivation — GR's `coefficients.c` lost 1343 lines and
+        `md_rate_estimation.c`/`rd_cost.c` were rewritten) or in the
+        dist composition (freq-SSE + `three_quad_energy` vs the
+        spatial-psy arm — `svt_use_qmpsnr` is OFF at this tune;
+        `effective_ac_bias`/`get_svt_psy_full_dist` placement is still
+        suspect but `SVT_FORK_AC_BIAS=0` on both sides does NOT close
+        the stream, so ac-bias is not sufficient on its own).
+    15. Next concrete step: for mode=0/txt=0 at (16,0) dump WHICH arm
+        produced C's 68672 — `ctx->mds_do_spatial_sse`, the
+        `txb_full_distortion_txt` decomposition (pred vs residual arms,
+        psy term, `<<4`/`mds_subres_step` shifts) — and the
+        `y_txb_coeff_bits` call path (which of
+        `svt_aom_txb_estimate_coeff_bits` / the lvl-0 approximations
+        fired, and the `coeff_costs`/`ec_ctx` CDF context ids) vs the
+        port's `out.bits`/`out.dist` producer in
+        `leaf_funnel/tx_pipeline.rs` (`tx_unit_inner` rate path,
+        `leaf_funnel/coeff_rate.rs`). Then port the divergent estimator
+        behind `SvtReference::GhostRobot`. Scratch artifacts (not in
+        repo): `~/tmp/gr-probe/` instrumented GR lib (SVT_WINDBG
+        full-mode-decision dump, CTXT/CTX per-tx-type dump with qcoeffs,
+        BIPFULL all-modes pred dump), `~/tmp/gr-cell/` captures,
+        `~/tmp/gr-hadamard-probe/` the fused-kernel differential.
+
 - [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
   MDS0/1/2 there, and the port does not model those IFS arms (it skips the
   search; `leaf_funnel/ifs.rs`). Streams are valid (decoder-verified), but
