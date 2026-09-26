@@ -50,8 +50,10 @@ detail, and they are regenerated or gated rather than narrated.
   recon == aomdec == dav1d, including the non-8-aligned legs added
   2026-09-25). Mono qp0 inter refuses — no inter WHT arm. A mono
   animation that hits that refusal is coded all-intra. qp0 coded-lossless
-  inter ships at 8-bit 4:2:0 only (`tools/qp0_inter_gate.sh`, 7/7). Do not
-  report video as either "working" or "missing".
+  inter ships at 8-bit 4:2:0 only (`tools/qp0_inter_gate.sh`, 7/7). Byte
+  parity with mainline C on real video is 244/540 low-delay cells through
+  8 frames (2026-09-26 census, plan 3.8; `tools/inter_byte_matrix.sh`).
+  Do not report video as either "working" or "missing".
 - **10-bit inter video is supported** (the `hbd_md` question is resolved).
   C derives `hbd_md = 2` at `bd10 && bypass_encdec && perform_md_recon`
   (product_coding_loop.c:9649 area — wraps all of MDS3 + winner select +
