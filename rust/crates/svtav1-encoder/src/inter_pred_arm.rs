@@ -31,13 +31,14 @@
 //! # Compound, warped and OBMC
 //!
 //! `av1_inter_prediction_light_pd1` takes an `mvs` SLICE and averages when it
-//! has two — [`predict_inter_yuv_compound`] is the two-reference entry.
-//! Warped motion routes through `enc_make_inter_predictor`'s `warp` arm:
-//! [`predict_inter_yuv_warped`] for the single-reference case and
-//! [`predict_inter_yuv_warped_compound`] for `GLOBAL_GLOBALMV`, where C's
+//! has two — [`predict_inter_yuv_compound_md`] (and its `_hbd` twin) is the
+//! two-reference entry mode decision uses. Warped motion routes through
+//! `enc_make_inter_predictor`'s `warp` arm: [`predict_inter_yuv_warped`] for
+//! the single-reference case, and at 10 bits
+//! [`predict_inter_yuv_warped_compound_hbd`] for `GLOBAL_GLOBALMV`, where C's
 //! `av1_inter_prediction` warps EACH reference by its own model and blends
-//! the two through one shared CONV_BUF. OBMC stays unwired — a candidate
-//! that sets an OBMC `motion_mode` still has no producer here.
+//! the two through one shared CONV_BUF. OBMC is `crate::inter_md_arm`'s
+//! (`tools/obmc_gate.sh`).
 
 use crate::picture::PaddedPlane;
 use svtav1_dsp::port_pd_pred::{
@@ -292,155 +293,7 @@ pub fn predict_inter_yuv(
     );
 }
 
-/// The COMPOUND (two-reference) form of [`predict_inter_luma`].
-///
-/// `av1_inter_prediction_light_pd1` averages the two per-reference
-/// predictors when `mvs` has two entries — C's `COMPOUND_AVERAGE` arm.
-/// `references[0]`/`mvs[0]` pair with `ref_frame[0]` (list-0 side) and
-/// `references[1]`/`mvs[1]` with `ref_frame[1]`.
-#[allow(clippy::too_many_arguments)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
-    )
-)]
-pub fn predict_inter_luma_compound(
-    references: [&PaddedPlane; 2],
-    org_x: usize,
-    org_y: usize,
-    bw: usize,
-    bh: usize,
-    mvs: [Mv; 2],
-    interp_filters: u32,
-    sb_size: usize,
-    frame_w: usize,
-    frame_h: usize,
-    out: &mut [u8],
-    out_stride: usize,
-) {
-    let sf = ScaleFactors::setup_for_frame(
-        frame_w as i32,
-        frame_h as i32,
-        frame_w as i32,
-        frame_h as i32,
-    );
-    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
-    let rps: [RefPlane<'_>; 2] = references.map(|p| RefPlane {
-        buf: &p.buf,
-        origin: p.origin,
-        stride: p.stride,
-        width: p.width as i32,
-        height: p.height as i32,
-    });
-    let mut u_scratch = [0u8; 1];
-    let mut v_scratch = [0u8; 1];
-    let mut pred = PredPlanes {
-        y: out,
-        y_stride: out_stride,
-        u: &mut u_scratch,
-        u_stride: 1,
-        v: &mut v_scratch,
-        v_stride: 1,
-    };
-    av1_inter_prediction_light_pd1(
-        &BlkGeom {
-            org_x: org_x as i32,
-            org_y: org_y as i32,
-            bwidth: bw,
-            bheight: bh,
-            bwidth_uv: bw / 2,
-            bheight_uv: bh / 2,
-            super_block_size: sb_size as i32,
-        },
-        &mvs.map(|mv| DspMv { x: mv.x, y: mv.y }),
-        &rps,
-        &[],
-        &[],
-        &[sf, sf],
-        &edges,
-        interp_filters,
-        &mut pred,
-        LUMA_MASK,
-    );
-}
 
-/// The COMPOUND (two-reference) form of [`predict_inter_yuv`]: each entry of
-/// `refs` is one reference picture's `(y, u, v)` planes, paired with `mvs`
-/// in `ref_frame` order.
-#[allow(clippy::too_many_arguments)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
-    )
-)]
-pub fn predict_inter_yuv_compound(
-    refs: [(&PaddedPlane, &PaddedPlane, &PaddedPlane); 2],
-    org_x: usize,
-    org_y: usize,
-    bw: usize,
-    bh: usize,
-    mvs: [Mv; 2],
-    interp_filters: u32,
-    sb_size: usize,
-    frame_w: usize,
-    frame_h: usize,
-    y_out: &mut [u8],
-    y_stride: usize,
-    u_out: &mut [u8],
-    v_out: &mut [u8],
-    uv_stride: usize,
-) {
-    let sf = ScaleFactors::setup_for_frame(
-        frame_w as i32,
-        frame_h as i32,
-        frame_w as i32,
-        frame_h as i32,
-    );
-    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
-    fn plane(p: &PaddedPlane) -> RefPlane<'_> {
-        RefPlane {
-            buf: &p.buf,
-            origin: p.origin,
-            stride: p.stride,
-            width: p.width as i32,
-            height: p.height as i32,
-        }
-    }
-    let mut pred = PredPlanes {
-        y: y_out,
-        y_stride,
-        u: u_out,
-        u_stride: uv_stride,
-        v: v_out,
-        v_stride: uv_stride,
-    };
-    av1_inter_prediction_light_pd1(
-        &BlkGeom {
-            org_x: org_x as i32,
-            org_y: org_y as i32,
-            bwidth: bw,
-            bheight: bh,
-            bwidth_uv: bw / 2,
-            bheight_uv: bh / 2,
-            super_block_size: sb_size as i32,
-        },
-        &mvs.map(|mv| DspMv { x: mv.x, y: mv.y }),
-        &[plane(refs[0].0), plane(refs[1].0)],
-        &[plane(refs[0].1), plane(refs[1].1)],
-        &[plane(refs[0].2), plane(refs[1].2)],
-        &[sf, sf],
-        &edges,
-        interp_filters,
-        &mut pred,
-        LUMA_MASK | CHROMA_MASK,
-    );
-}
 
 /// [`predict_inter_yuv`] against a TRUE 10-BIT reference.
 ///
@@ -720,7 +573,7 @@ pub fn predict_inter_yuv_warped(
     // `is_compound` is false and `sf` is the identity, so no convolve arm
     // (jnt or 2d-scale) ever reads the conv buffer; an empty Vec carries the
     // stride-only `ConvolveParams` and skips a 32 KiB calloc+memset per call.
-    // The compound form is [`predict_inter_yuv_warped_compound`].
+    // The 10-bit compound form is [`predict_inter_yuv_warped_compound_hbd`].
     let mut conv_buf = alloc::vec::Vec::<u16>::new();
     let cp_y = ConvolveParams::no_round(false, 128, false, 8);
     let cp_uv = ConvolveParams::no_round(false, 64, false, 8);
@@ -797,165 +650,6 @@ pub fn predict_inter_yuv_warped(
     }
 }
 
-/// The COMPOUND arm of C's `av1_inter_prediction` (enc_inter_prediction.c
-/// :3266-3480): a `GLOBAL_GLOBALMV` block warps EACH reference with that
-/// reference's own model and averages the two.
-///
-/// Two things C does that a single-ref shortcut cannot:
-///
-/// * **`is_wm` is evaluated PER REFERENCE** (:3276, :3382) — against
-///   `wm_params_0` for ref 0 and `wm_params_1` for ref 1. A ref whose model
-///   is TRANSLATION or IDENTITY does NOT warp; it takes the ordinary
-///   convolve leaf inside the same compound sequencing.
-/// * **The two refs share one CONV_BUF** — ref 0 runs with `do_average = 0`
-///   and leaves its prediction in the u16 buffer, ref 1 runs with
-///   `do_average = 1` and blends into the pixel destination. For
-///   `GLOBAL_GLOBALMV` `interinter_comp.type` is `COMPOUND_AVERAGE` and
-///   `compound_idx` is 1, so `use_dist_wtd_comp_avg` is 0 and the blend is
-///   the plain `(a + b) >> 1` (`use_jnt_comp_avg` follows it).
-///
-/// Chroma falls back to TRANSLATION below 8x8 on the SUBSAMPLED block,
-/// exactly like [`predict_inter_yuv_warped`] — but again per reference.
-#[allow(clippy::too_many_arguments)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
-    )
-)]
-pub fn predict_inter_yuv_warped_compound(
-    refs: [(&PaddedPlane, Option<(&PaddedPlane, &PaddedPlane)>); 2],
-    wm0: &mut svtav1_types::motion::WarpedMotionParams,
-    wm1: &mut svtav1_types::motion::WarpedMotionParams,
-    is_wm: [bool; 2],
-    org_x: usize,
-    org_y: usize,
-    bw: usize,
-    bh: usize,
-    mvs: [Mv; 2],
-    interp_filters: u32,
-    sb_size: usize,
-    frame_w: usize,
-    frame_h: usize,
-    y_out: &mut [u8],
-    y_stride: usize,
-    u_out: &mut [u8],
-    v_out: &mut [u8],
-    uv_stride: usize,
-) {
-    use svtav1_dsp::port_convolve::ConvolveParams;
-    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
-
-    let sf = ScaleFactors::setup_for_frame(
-        frame_w as i32,
-        frame_h as i32,
-        frame_w as i32,
-        frame_h as i32,
-    );
-    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
-    let geom = RefGeometry {
-        super_block_size: sb_size as i32,
-        frame_width: frame_w as i32,
-        frame_height: frame_h as i32,
-    };
-    // C `get_conv_params_no_round(0, tmp_dst_y, 128, 1, bit_depth)` — luma
-    // conv buffer at the 128 stride; chroma at 64. `is_compound` selects
-    // COMPOUND_ROUND1_BITS, which is what keeps ref 0's full precision in
-    // the u16 buffer for ref 1's blend.
-    let mut conv_buf = alloc::vec![0u16; 128 * 128];
-    let wms: [&mut svtav1_types::motion::WarpedMotionParams; 2] = [wm0, wm1];
-    for (i, &iw) in is_wm.iter().enumerate() {
-        let mut cp = ConvolveParams::no_round(false, 128, true, 8);
-        cp.do_average = i == 1;
-        enc_make_inter_predictor(
-            SrcPlanes::Lbd(&refs[i].0.buf),
-            refs[i].0.origin,
-            refs[i].0.stride,
-            DstPlane::Lbd(&mut *y_out),
-            y_stride,
-            &mut conv_buf,
-            org_y as i32,
-            org_x as i32,
-            DspMv {
-                x: mvs[i].x,
-                y: mvs[i].y,
-            },
-            &sf,
-            &cp,
-            interp_filters,
-            None,
-            Some(&mut *wms[i]),
-            geom,
-            bw,
-            bh,
-            &edges,
-            0,
-            0,
-            0,
-            8,
-            false,
-            iw,
-        )
-        .expect("the luma warp/compound leaf takes an 8-bit plane into an 8-bit destination");
-    }
-
-    // A compound block is never sub-8 (`allow_bipred` rejects width or
-    // height 4), so both references either carry chroma or neither does;
-    // leaving ref 0's CONV_BUF unwritten while ref 1 averages into it is
-    // the unreachable half-state the check excludes.
-    if !refs.iter().all(|(_, c)| c.is_some()) {
-        return;
-    }
-    let (cw, chh) = (bw / 2, bh / 2);
-    // Spec 7.11.3.1 / C :3382-3385 — the floor is on the SUBSAMPLED extent.
-    let uv_floor = cw >= 8 && chh >= 8;
-    // C `ROUND_UV(x) / 2` — the chroma origin of the block: the luma origin
-    // rounded down to a multiple of 8 (definitions.h:348), then halved. A
-    // compound block is never sub-8 and its origin is block-aligned, so the
-    // mask is a no-op on the reachable domain; it is kept literal so the
-    // function stays faithful if that domain ever widens.
-    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
-    for (plane, dst) in [(1usize, &mut *u_out), (2, &mut *v_out)] {
-        for (i, &iw) in is_wm.iter().enumerate() {
-            let (uref, vref) = refs[i].1.expect("the all-chroma check above");
-            let r = if plane == 1 { uref } else { vref };
-            let mut cp = ConvolveParams::no_round(false, 64, true, 8);
-            cp.do_average = i == 1;
-            enc_make_inter_predictor(
-                SrcPlanes::Lbd(&r.buf),
-                r.origin,
-                r.stride,
-                DstPlane::Lbd(&mut *dst),
-                uv_stride,
-                &mut conv_buf,
-                cy as i32,
-                cx as i32,
-                DspMv {
-                    x: mvs[i].x,
-                    y: mvs[i].y,
-                },
-                &sf,
-                &cp,
-                interp_filters,
-                None,
-                Some(&mut *wms[i]),
-                geom,
-                cw,
-                chh,
-                &edges,
-                plane,
-                1,
-                1,
-                8,
-                false,
-                iw && uv_floor,
-            )
-            .expect("the chroma warp/compound leaf takes an 8-bit plane into an 8-bit destination");
-        }
-    }
-}
 
 /// [`predict_inter_yuv_warped`] against a TRUE 10-BIT reference.
 ///
@@ -1077,8 +771,7 @@ pub fn predict_inter_yuv_warped_hbd(
     }
 }
 
-/// [`predict_inter_yuv_warped_compound`] at TRUE 10 BITS — the bd10 twin for
-/// the level re-encode. Same per-reference `is_wm` split, same shared
+/// The warped COMPOUND prediction at TRUE 10 BITS, for the level re-encode. Same per-reference `is_wm` split, same shared
 /// CONV_BUF sequencing (ref 0 fills, ref 1 averages), same spec-7.11.3.1
 /// chroma fallback; only the sample type and `ConvolveParams` depth differ.
 #[allow(clippy::too_many_arguments)]
@@ -2242,6 +1935,3 @@ pub(crate) fn mb_edges(
         to_bottom: (mi_rows - bh_mi - mi_row) * 4 * 8,
     }
 }
-
-#[cfg(test)]
-mod tests;
