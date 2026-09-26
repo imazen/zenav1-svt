@@ -958,6 +958,29 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     compound-mode rate terms for an identical winner — `drl_ctx`/
     `inter_mode_ctx` derivation against the stack contents, or the
     `comp_group`/`compound_idx` signalling cost.
+  - (b) next cell, same mechanism (2026-09-27): `johnny 128 q20 p0` is TU1.
+    poc=1 SB(0,0) diverges at leaf `(4,4)` b6 (16x16): both sides commit
+    NEWMV but C's winner is mv0=(-4,4) (iiu=1, cost 5760671) and the port's
+    is mv0=(2,4) (cost 5656738). Both candidate SETS are identical — C's
+    IFCOST and the port's ICAND both carry mv0=2,4 (sb_me_mv seed (0,8) +
+    fixed-stage refine, `me_mv_array` off=10 = (0,1) verified equal on both
+    sides via a temporary `svt_aom_is_me_data_present` wrap) AND the PME
+    mv0=-4,4 candidate (both sides' SPEL_PME pruned subpel return
+    best=(-4,4) byte-identical). The divergence is MDS3-stage residual
+    eval: C's st=3 rates the -4,4 iiu cand at ydist=26736/ycb=32223 while
+    the same port cand scores higher than its own 2,4 winner — i.e. the
+    port's tx/RDOQ residual coding produces systematically different
+    rate+dist for identical mode+MV candidates (port 2,4: rate=30072
+    dist=32144; C's 2,4 st3: ycb=26079 ydist=30416). This lands in the same
+    bucket as the vidyo3 (8,24) rate-ctx gap — both are "identical winner,
+    different price" — but here it is the RESIDUAL-coding terms, not the
+    inter signalling terms, that differ first. Temporary wraps on
+    `svt_aom_is_me_data_present`/`svt_aom_get_me_block_offset` verified the
+    offset mapping (off=10) and table contents ((0,1)) match; instrumentation
+    reverted. Next wedge: dump the MDS3 per-candidate rate/dist split for
+    the same mode+mv on both sides (`SVT_FULLCOST_OUT` st=3 vs the port's
+    CAND lines) and bisect which rate term (tx size / tx type / coeff
+    context) diverges.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.
