@@ -1420,9 +1420,13 @@ pub(super) fn encode_block_syntax(
             let coeffs: &[i32] = if aw == w && ah == h {
                 &decision.qcoeffs
             } else {
-                let mut v = alloc::vec![0i32; aw * ah];
+                // `with_capacity` + `extend_from_slice` rows, not
+                // `vec![0; aw*ah]` + `copy_from_slice`: the loop writes every
+                // one of the aw*ah elements, so the calloc's zero-fill was
+                // dead. Same packed raster, no memset.
+                let mut v = Vec::with_capacity(aw * ah);
                 for r in 0..ah {
-                    v[r * aw..r * aw + aw].copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
+                    v.extend_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
                 }
                 packed = v;
                 &packed
