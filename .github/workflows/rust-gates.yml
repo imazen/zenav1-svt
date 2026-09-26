@@ -740,12 +740,12 @@ jobs:
         # problems hide, and fails on harness errors too so a cell that could
         # not run can never look like a pass.
         #
-        # CI runs the synthetic tier at one size to stay inside the job budget;
-        # the dims tier (partial-SB / odd / tiny / large) and the real-corpus
-        # tier are local. See the script header.
+        # Since 2026-09-26 the cells run in parallel on cellrun, so CI runs
+        # the default tiers (synthetic at 64 and 128 + dims: 1100 cells, about
+        # a minute on i265) instead of synthetic at 64 alone. The real-corpus
+        # tier stays local (corpora not in the sparse fetch). See the header.
         run: |
-          IF_TIER=synthetic IF_SIZES=64 ./tools/identity_full_8bit.sh \
-            target/identity_full_8bit_ci.tsv
+          ./tools/identity_full_8bit.sh target/identity_full_8bit_ci.tsv
 
       - name: screen-content palette identity (bd8 AND bd10)
         if: ${{ !cancelled() && matrix.shard == 2 }}
