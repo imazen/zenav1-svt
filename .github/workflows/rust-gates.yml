@@ -870,8 +870,11 @@ jobs:
         # byte counts and the same 40/40 verdict from both sets.
         #
         # 61 s including the fetch, into shard 2 (the lightest at 578 s).
+        # AOMDEC: the gate's decodability assert used to be skipped here
+        # (no decoder passed); since 2026-09-26 a missing decoder fails it.
         run: |
           IM26_DIR="$GITHUB_WORKSPACE/corpora/imazen26-cache/K300" \
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/imazen26_gate.sh
 
       - name: Alignment / stride gate (true-vs-aligned x stride x bit depth)
