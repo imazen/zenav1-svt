@@ -1,31 +1,43 @@
-//! The `scs->allintra` fork for two more leaf-funnel ladders:
-//! `pcs->txt_level` (the transform-type search) and `pcs->cfl_level`
-//! (chroma-from-luma).
+//! The `scs->allintra` fork for three more leaf-funnel ladders:
+//! `pcs->txt_level` (the transform-type search), `pcs->cfl_level`
+//! (chroma-from-luma) and `pcs->chroma_level` (the independent-chroma
+//! search).
 //!
 //! Sibling of [`crate::rate_arm`] (the three RATE ladders),
 //! [`crate::part_arm`] (the three PARTITION ladders) and
 //! [`crate::intra_arm`] (`pic_filter_intra_level` + `intra_level`). Same
 //! shape: the ladder pair lives in
 //! `svt_aom_sig_deriv_mode_decision_config_{allintra,default}`
-//! (`enc_mode_config.c:9961`/`:9986` and `:9057`/`:9103`), each reaches the
-//! funnel through a control table (`svt_aom_set_txt_controls` `:3894`,
-//! `set_cfl_ctrls` `:6390`), and the still path stays byte-neutral by
-//! construction because the allintra arm reproduces what
-//! `FunnelCfg::for_preset` baked.
+//! (`enc_mode_config.c:9961`/`:9983`/`:9986` and `:9057`/`:9100`/`:9103`),
+//! each reaches the funnel through a control table
+//! (`svt_aom_set_txt_controls` `:3894`, `set_cfl_ctrls` `:6390`,
+//! `svt_aom_set_chroma_controls` `:4326` — applied to the mode-decision
+//! context inside `svt_aom_sig_deriv_enc_dec_{default,allintra}` `:7842`/
+//! `:8071`), and the still path stays byte-neutral by construction because
+//! the allintra arm reproduces what `FunnelCfg::for_preset` baked.
 //!
 //! What the arms disagree about on a KEY frame (`is_islice`, `is_base`):
 //!
-//! | preset | txt allintra | txt video | cfl allintra | cfl video |
-//! |---|---|---|---|---|
-//! | 0 | 2 | 2 | 1 | 1 |
-//! | 1 | 2 | 2 | 4 | 1 |
-//! | 2 | 2 | 2 | 4 | **2** |
-//! | 3 | 2 | **7** | 4 | 2 |
-//! | 4..=5 | 3 | 7 | 4 | 2 |
-//! | 6 | 8 | **7** | 4 | **2** |
-//! | 7..=8 | 10 | 7 | 0 | 2 |
-//! | 9 | 0 | 7 | 0 | 2 |
-//! | 10..=11 | 0 (clamped M9) | 7 / 10 | 0 | 2 / 0 |
+//! | preset | txt allintra | txt video | cfl allintra | cfl video | chroma allintra | chroma video |
+//! |---|---|---|---|---|---|---|
+//! | 0 | 2 | 2 | 1 | 1 | 1 | 1 |
+//! | 1 | 2 | 2 | 4 | 1 | 2 | **4** |
+//! | 2 | 2 | 2 | 4 | **2** | 4 | 4 |
+//! | 3 | 2 | **7** | 4 | 2 | 4 | 4 |
+//! | 4..=5 | 3 | 7 | 4 | 2 | 4 | 4 |
+//! | 6 | 8 | **7** | 4 | **2** | 5 | 5 |
+//! | 7..=8 | 10 | 7 | 0 | 2 | 5 | 5 |
+//! | 9 | 0 | 7 | 0 | 2 | 5 | 5 |
+//! | 10..=11 | 0 (clamped M9) | 7 / 10 | 0 | 2 / 0 | 5 (clamped M9) | 5 / 5 |
+//!
+//! `chroma_level` is the one the video-key census caught
+//! (`benchmarks/video_parity_census_2026-09-26.meta`): the arms differ on a
+//! key frame ONLY at M1, where the video arm keeps `chroma_level` 4 —
+//! `search_best_mds3_uv_mode` over the MDS3 survivors' uv-follows-luma
+//! modes — against the still arm's 2 (`search_best_independent_uv_mode`,
+//! `ind_uv_last_mds == 1`). On every other key frame the ladders agree
+//! (1 / 1 / 4 / 4 / 5 over MR / M0 / M2..M5 / M6+); on an INTER frame they
+//! also differ at M0 (`is_islice ? 1 : 4` at `enc_mode <= ENC_M0`).
 //!
 //! At the inter campaign's reference preset (M6) the video arm searches a
 //! WIDER tx-type set — `txt_level` 7 restores both intra groups to
@@ -53,7 +65,7 @@
 //! preset.
 
 use crate::leaf_funnel::FunnelCfg;
-use crate::port_enc_mode_config::md_config;
+use crate::port_enc_mode_config::{leaf, md_config};
 use crate::sc_detect::ScArm;
 
 /// `pcs->txt_level` for this arm. `enc_mode` must already be
@@ -127,6 +139,45 @@ pub(crate) fn cfl_level(arm: ScArm, enc_mode: i8, is_base: bool, is_islice: bool
     }
 }
 
+/// `pcs->chroma_level` for this arm. `enc_mode` must already be
+/// [`crate::rate_arm::eff_enc_mode`]-clamped.
+#[must_use]
+pub(crate) fn chroma_level(arm: ScArm, enc_mode: i8, is_islice: bool) -> u8 {
+    let m = enc_mode;
+    match arm {
+        ScArm::Allintra => leaf::get_chroma_level_allintra(m),
+        ScArm::Video { .. } => leaf::get_chroma_level_default(m, is_islice),
+    }
+}
+
+/// `svt_aom_set_chroma_controls` (`enc_mode_config.c:4326`) as the three
+/// [`FunnelCfg`] fields the port models the search split with:
+/// `(ind_uv_independent, ind_uv_last_mds1, ind_uv_mds3)`.
+///
+/// The `svt_aom_get_chroma_level_*` ladders only produce 1, 2, 4 and 5:
+/// CHROMA_MODE_0 with `ind_uv_last_mds` 0 / 1 / 2, then CHROMA_MODE_1 (uv
+/// follows luma). The two thresholds the table also sets —
+/// `inter_vs_intra_cost_th` and `skip_ind_uv_if_only_dc` — are baked into
+/// the `ind_uv_mds3` path at level 4's values (100 / 1,
+/// `leaf_funnel::mds3`); `uv_nic_scaling_num` (16 / 8 at levels 1 / 2)
+/// rides on `ind_uv_independent`. `uv_mode <= CHROMA_MODE_1` makes
+/// `blk_skip_decision` true at every one of these levels, so there is no
+/// fourth field.
+///
+/// # Panics
+/// On a level the ladders cannot assign (0 — CHROMA_MODE_2, chroma off —
+/// or 3), like the sibling tables.
+#[must_use]
+pub(crate) fn chroma_ctrls(level: u8) -> (Option<u16>, bool, bool) {
+    match level {
+        1 => (Some(16), false, false),
+        2 => (Some(8), true, false),
+        4 => (None, false, true),
+        5 => (None, false, false),
+        _ => panic!("chroma level {level} outside C's ladders"),
+    }
+}
+
 /// `set_cfl_ctrls` (`enc_mode_config.c:6390`) as
 /// `(enabled, Some((itr_th, cplx_th)))`.
 ///
@@ -185,6 +236,11 @@ pub(crate) fn apply(
         cfg.cfl_itr_th = itr_th;
         cfg.cfl_cplx_th = cplx_th;
     }
+
+    let (ind_indep, last_mds1, mds3) = chroma_ctrls(chroma_level(arm, enc_mode, is_islice));
+    cfg.ind_uv_independent = ind_indep;
+    cfg.ind_uv_last_mds1 = last_mds1;
+    cfg.ind_uv_mds3 = mds3;
 }
 
 #[cfg(test)]
@@ -262,6 +318,19 @@ mod tests {
                     "allintra cfl ladder vs FunnelCfg::for_preset at M{preset}"
                 );
             }
+            assert_eq!(
+                (
+                    baked.ind_uv_independent,
+                    baked.ind_uv_last_mds1,
+                    baked.ind_uv_mds3
+                ),
+                (
+                    walked.ind_uv_independent,
+                    walked.ind_uv_last_mds1,
+                    walked.ind_uv_mds3
+                ),
+                "allintra chroma ladder vs FunnelCfg::for_preset at M{preset}"
+            );
         }
     }
 

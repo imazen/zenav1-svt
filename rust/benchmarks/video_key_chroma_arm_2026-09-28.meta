@@ -1,0 +1,35 @@
+Snapshot, 2026-09-28: video-mode key-frame chroma-level arm, i265,
+vs mainline-4.2.0.
+
+Change under test: `funnel_arm::apply` now stamps
+`svt_aom_set_chroma_controls` (enc_mode_config.c:4326) per arm —
+`chroma_level` from `svt_aom_get_chroma_level_{allintra,default}` ->
+`(ind_uv_independent, ind_uv_last_mds1, ind_uv_mds3)`. The arms disagree
+on a key frame only at M1 (video 4 -> ind_uv_last_mds=2 vs still 2 ->
+ind_uv_last_mds=1) and on inter frames also at M0.
+
+Measured:
+
+- `tools/video_census_gate.sh` (VCG_JOBS=6, 540 cells, 8-frame low delay):
+  248/540 identical (was 244), 0 regressed, 36 promoted — the entire
+  preset-1 row moved off TU0; kristenandsara 128x128 qp40/qp55 and
+  256x256 qp40 reached IDENTICAL. Pins rewritten with VCG_WRITE=1 in the
+  same commit.
+- `tools/video_key_matrix.sh` default grid (5 classes x presets -1..13,
+  72x88 q40 synthetic key frames): 72/75 identical; the three diffs are
+  the remaining p-1 cells (gradient, diag, screenrep), unchanged by this
+  fix.
+- Localized before the fix: `vidyo3 128x128 q40 p1` first differing
+  symbol at tile op 4933 — C `CDF14:s0` (UV_DC_PRED) vs port `s=2`,
+  the uv_mode write of `search_best_independent_uv_mode` running the
+  wrong (allintra level-2) search shape.
+- Regression surface: nextest 2754/2754, regression_spotcheck ok,
+  identity_full_8bit 1100/1100 (still path byte-neutral by construction,
+  pinned by `allintra_flattening_matches_the_ladder`), real_video_inter
+  24/24, video_selfcheck ok.
+
+Open: preset -1 key frames remain — `diag 72x88 q40 p-1` shows PD0 costs,
+the fast lambda (15787) and the SB0 rate-table seed all byte-equal to C,
+with the first divergence inside SB0's MDS walk (leaf (0,0) 4x4: C picks
+DC+FILTER_D157, port picks D45); the p-1 SGRPROJ/LR write difference is
+downstream of that. See PLAN-ORACLES-AND-CLEANUP.md 3.8.

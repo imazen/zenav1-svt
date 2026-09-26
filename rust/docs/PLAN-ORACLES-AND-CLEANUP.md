@@ -611,6 +611,47 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     frame of a video encode (0/36 each; stills at those presets match) —
     brief `video-key`; (b) presets 0/2/3 diverge early in inter frames
     (5..7/36); (c) presets 4/5/7/10..13 are half to two thirds.
+  - Progress 2026-09-28 (i265, vs mainline-4.2.0): (a) closed for preset 1.
+    The first differing decision on the p1 key frame (`vidyo3 128x128 q40`)
+    was the uv_mode symbol at tile op 4933 — C coded `CDF14:s0`
+    (UV_DC_PRED), the port `s=2`. Root cause: `FunnelCfg::for_preset` baked
+    the allintra `chroma_level` row and nothing stamped
+    `svt_aom_set_chroma_controls` (`enc_mode_config.c:4326`) per arm; video
+    M1 keeps level 4 (`ind_uv_last_mds=2`, `inter_vs_intra_cost_th=100`,
+    `skip_ind_uv_if_only_dc=1`, `uv_nic_scaling_num=1`) where the still arm
+    has 2. `funnel_arm::apply` now stamps
+    `(ind_uv_independent, ind_uv_last_mds1, ind_uv_mds3)` from
+    `get_chroma_level_{allintra,default}` — with it the p1 key frame is
+    byte-identical (seg 0 clean; the cell's residual difference is seg 1,
+    the inter frame — item (b) territory), and the synthetic
+    `video_key_matrix.sh` p1 row is 5/5. Preset 7's measured cell is
+    identical.
+  - (a) at preset -1 is NOT the same defect and remains open. On
+    `diag 72x88 q40 p-1` (video key frame): PD0 costs are byte-equal
+    (`SVT_PD0COST_OUT` vs `SVTAV1_PD0DBG`, dist/ybits/cost and the
+    15787 fast lambda all match), the SB0 rate-table seed is byte-equal
+    (`SVT_SEED_OUT` vs `SVTAV1_SEED_DUMP`), yet the SB1 seed already
+    differs (C `part0=13636,7258,2376 kf00=17667,16273,14034` vs port
+    `13789,7804,3222 / 19410,16244,14394`) — so the first differing
+    DECISION is inside SB0's MDS walk. `SVT_FINAL_MI_OUT` vs
+    `SVTAV1_DUMP_TREE` shows leaf (0,0) 4x4: C commits mode DC +
+    FILTER_D157 (fi=3), the port D45; C's stream also carries an SGRPROJ
+    restoration unit the port omits (it searched and found RESTORE_NONE),
+    but that is downstream — the pre-DLF recon already differs (C luma SSE
+    4910 vs port 3477; the port's recon is CLOSER to source, i.e. it coded
+    more). Ruled out: partition pre-search (PD0), rate-table seeding, the
+    lambda ladder (both arms zero `lambda_weight` at `enc_mode <= ENC_MR`,
+    `enc_mode_config.c:9450`/`:10101`), and every already-armed ladder
+    (`txt`, `cfl`, `chroma`, `nic` level 1 both sides, intra, txs, part,
+    encdec, dlf, lr levels). `MdConfigSignals` is `None` on key frames —
+    `pipeline/tile_walk.rs` drives the key frame purely from the `*_arm`
+    stamps — so the next concrete step is to diff the MDS1 candidate SET on
+    SB0's first node: `SVT_FULLCOST_XY=all` st=1 rows vs the port's
+    `SVTAV1_CANDDBG` `NSQDBG PFAST` rows at `SVTAV1_DBG_MI=0,0`, looking for
+    a candidate class C carries that the port drops (or vice versa);
+    `svt_aom_sig_deriv_enc_dec_default` (`enc_mode_config.c:7842+`) fields
+    not yet mirrored per arm (e.g. `depth_early_exit_ctrls`,
+    `md_stage*_cand` composition, `uv_ctrls`) are the suspect pool.
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
   - SB128 beyond the root is unported (`pipeline/setup.rs`
