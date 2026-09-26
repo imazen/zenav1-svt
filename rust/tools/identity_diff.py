@@ -529,7 +529,7 @@ def _is_literal_bool(canon):
 
 def classify_divergent_op(c_ops, r_ops, div):
     """Heuristic symbol-class label for the first divergent op at index
-    `div` (into the last-segment-sliced op lists `diff_traces` compared).
+    `div` (into the op lists of the coder segment `diff_traces` compared).
 
     Returns a detail string with no "op-class: " prefix (e.g.
     "lr-taps (wiener_restore + literal run)" or
@@ -769,33 +769,55 @@ def main():
         c_ops, c_marks = parse_trace(args.c_trace)
         r_ops, r_marks = parse_trace(args.rust_trace)
 
-        # Compare only the LAST coder segment (RESET..DONE) on each side —
-        # the tile that actually landed in the OBU. The Rust encoder may
-        # legitimately run the entropy walk twice (the loop-restoration
-        # search needs the post-CDEF recon, so the tile is re-written with
-        # the per-SB lr syntax after the search); the discarded first pass
-        # still logs its ops. C's --lp 1 trace has exactly one segment, so
-        # this is a no-op there.
-        def last_segment(ops, marks):
-            last_reset_i = None
-            for i, m in enumerate(marks):
-                if "RESET" in m[1]:
-                    last_reset_i = i
-            if last_reset_i is None:
-                return ops
-            start = marks[last_reset_i][0]
-            end = len(ops)
-            # first DONE *after* the reset in marker (= file) order — op
-            # offsets alone can collide (pass-1 DONE and pass-2 RESET sit
-            # between the same two ops).
-            for m in marks[last_reset_i + 1:]:
-                if "DONE" in m[1]:
-                    end = m[0]
-                    break
-            return ops[start:end]
+        # A coder SEGMENT is one RESET..DONE run: one tile of one frame. C's
+        # --lp 1 trace has exactly one per tile. The port also logs empty
+        # resets, a 1-byte dummy coder and, on some paths, a discarded first
+        # entropy pass (the LR search re-writes the tile), so its segments are
+        # kept only if non-empty and their DONE `head` bytes occur in the
+        # stream that landed. Kept segments are then paired in coding order
+        # (frame by frame, tile by tile) and the FIRST pair that differs is
+        # reported. Comparing only the LAST segment, as this tool did until
+        # 2026-09-26, localised every multi-frame stream to its last frame's
+        # tile: a key-frame divergence was reported at an op of frame N.
+        def segments(ops, marks):
+            out, start = [], None
+            for pos, line, _ in marks:
+                if "RESET" in line:
+                    start = pos
+                elif "DONE" in line and start is not None:
+                    out.append((start, pos, line))
+                    start = None
+            if not out:
+                out.append((0, len(ops), ""))
+            return out
 
-        c_ops = last_segment(c_ops, c_marks)
-        r_ops = last_segment(r_ops, r_marks)
+        def landed(seg, stream):
+            m = re.search(r"head=\[([0-9a-fA-F, ]*)\]", seg[2])
+            if not m or not m.group(1).strip():
+                return True
+            head = bytes(int(x, 16) for x in m.group(1).split(","))
+            return head in stream
+
+        c_segs = [g for g in segments(c_ops, c_marks) if g[1] > g[0]]
+        r_segs = [g for g in segments(r_ops, r_marks)
+                  if g[1] > g[0] and landed(g, r_data)]
+        seg_k = None
+        for k in range(min(len(c_segs), len(r_segs))):
+            cs, rs_ = c_segs[k], r_segs[k]
+            dk, _, _ = diff_traces(c_ops[cs[0]:cs[1]], r_ops[rs_[0]:rs_[1]], args.context)
+            if dk is not None:
+                seg_k = k
+                break
+        if seg_k is None and len(c_segs) != len(r_segs):
+            set_stage("tile-count", f"{min(len(c_segs), len(r_segs))} coder segments "
+                      f"identical, then C has {len(c_segs)} and Rust {len(r_segs)}")
+        k = seg_k if seg_k is not None else len(c_segs) - 1
+        multi = len(c_segs) > 1 or len(r_segs) > 1
+        seg_note = f"seg {k} " if multi else ""
+        if k < len(c_segs) and k < len(r_segs):
+            c_ops = c_ops[c_segs[k][0]:c_segs[k][1]]
+            r_ops = r_ops[r_segs[k][0]:r_segs[k][1]]
+        vprint(f"  coder segments: C={len(c_segs)} Rust={len(r_segs)} (kept); comparing segment {k}")
         vprint(f"  op counts: C={len(c_ops)}  Rust={len(r_ops)}")
         c_done = [m for m in c_marks if "DONE" in m[1]]
         r_done = [m for m in r_marks if "DONE" in m[1]]
@@ -819,18 +841,18 @@ def main():
             op_class = classify_divergent_op(c_ops, r_ops, div)
             both = div < min(len(c_ops), len(r_ops))
             if not both:
-                set_stage("tile-count", f"identical {div} ops then "
+                set_stage("tile-count", f"{seg_note}identical {div} ops then "
                           f"C={len(c_ops)} Rust={len(r_ops)}")
                 vprint(f"  RESULT: identical for {div} ops, then op-count mismatch "
                        f"(C={len(c_ops)}, Rust={len(r_ops)})")
             elif rng_only:
-                set_stage("tile-op", f"op {div} rng C={c_ops[div][1]} "
+                set_stage("tile-op", f"{seg_note}op {div} rng C={c_ops[div][1]} "
                           f"Rust={r_ops[div][1]} (fields match; INVESTIGATE)")
                 vprint(f"  RESULT: first divergence at op {div}: SAME op fields but rng "
                        f"differs (C rng={c_ops[div][1]}, Rust rng={r_ops[div][1]}) — an op "
                        f"escaped one trace or engines diverge; INVESTIGATE")
             else:
-                set_stage("tile-op", f"op {div} C={op_short(c_ops[div][0])} "
+                set_stage("tile-op", f"{seg_note}op {div} C={op_short(c_ops[div][0])} "
                           f"Rust={op_short(r_ops[div][0])}")
                 vprint(f"  RESULT: first divergence at op {div}")
             vprint(f"  op-kind histogram up to divergence: "
