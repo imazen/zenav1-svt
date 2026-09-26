@@ -1551,10 +1551,7 @@ impl FunnelCfg {
 pub(super) use svtav1_types::math::rd::rdcost_u64 as rdcost;
 
 /// C `DIVIDE_AND_ROUND`.
-#[inline]
-pub(super) fn div_round(x: u64, y: u64) -> u64 {
-    (x + (y >> 1)) / y
-}
+pub(super) use svtav1_types::math::shift_u32::divide_and_round_u64 as div_round;
 
 /// C `svt_aom_get_qp_based_th_scaling_factors(true, ..)` — the pd0 port.
 pub(super) fn qp_scale_factors(cli_qp: u32) -> (u64, u64) {

@@ -85,12 +85,6 @@ pub const SIZE_GROUP_LOOKUP: [u8; BLOCK_SIZES_ALL] = [
 // Compound-type predicates (inter_prediction.h / .c)
 // ---------------------------------------------------------------------------
 
-/// C `svt_aom_is_masked_compound_type` (inter_prediction.c:34).
-#[inline]
-pub fn is_masked_compound_type(t: CompoundType) -> bool {
-    matches!(t, CompoundType::Wedge | CompoundType::DiffWtd)
-}
-
 /// C `svt_aom_is_interintra_wedge_used` (inter_prediction.c:2015):
 /// `wedge_params_lookup[bsize].bits > 0`.
 #[inline]

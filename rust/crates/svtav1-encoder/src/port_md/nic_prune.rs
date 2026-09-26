@@ -197,15 +197,7 @@ impl Threshold {
     }
 }
 
-/// C `DIVIDE_AND_ROUND` (utility.h:96): `(x + (y >> 1)) / y`.
-///
-/// Kept private to this module rather than shared with
-/// [`super::nics`]: the two files are edited by different lanes and a
-/// three-line arithmetic helper is not worth the coupling.
-#[inline]
-fn div_round(x: u64, y: u64) -> u64 {
-    (x + (y >> 1)) / y
-}
+use svtav1_types::math::shift_u32::divide_and_round_u64 as div_round;
 
 /// C's `mdsx_cand_th / (rank_factor ? rank_factor * cand_count : 1)`
 /// (`:7869`, `:7945`).
