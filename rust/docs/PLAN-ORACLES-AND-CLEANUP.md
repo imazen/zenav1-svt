@@ -238,6 +238,66 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   c_parity is 854/873. First divergence: frame header 26 cells
   (loop_filter_level, cdef_uv_pri_strength, lr_type, sharpness — start
   here), tile op 179, tile payload 42; no 10-bit cell matches.
+  - Session findings (2026-09-27, `grst` workspace — investigation only,
+    nothing landed):
+    1. **The census "frame header" stage labels are mislabeled for every
+       GR cell.** `tools/identity_diff.py` `decode_fh` models the
+       MAINLINE FH layout, but GR's `encode_quantization`
+       (svt-av1-hdr `entropy_coding.c:2341-2360` vs mainline
+       `9292ec8e3:2368-2404`) writes `diff_uv_delta` unconditionally and
+       `qm_y`/`qm_u`/`qm_v` unconditionally when `using_qmatrix`
+       (mainline writes the bit only when nonzero and `qm_v` only under
+       `diff_uv_delta`). GR stills run `enable_qm=1`, so the walk is
+       misaligned by up to 12 bits from `using_qmatrix` onward — e.g.
+       `photo_64_q20_p2_b8` reports `loop_filter_sharpness C=3`, but with
+       the true layout C signals `lf=4/4/3/5 sharp=1`, which the
+       instrumented C lib confirms is exactly what
+       `svt_av1_pick_filter_level` wrote. The PORT already emits the GR
+       layout — both streams are bit-identical through bit 63 on that
+       cell. Tool fix needed before trusting any FH field name or the
+       FH/payload boundary: make `decode_fh` oracle-aware (`SVT_ORACLE`
+       env or `--oracle` flag; `oracles.tsv` records the per-oracle
+       source). The "26 FH cells" classification itself may shift once
+       the walk is fixed.
+    2. Re-walked `photo_64_q20_p2_b8` with the GR layout: the only real
+       FH divergence is `filter_level_u/v` — C=3/5, Rust=2/2 (the chroma
+       loop-filter search result, C `search_filter_level`). sharpness=1
+       on both, CDEF and `lr_type` [2,0,0] identical.
+    3. Every sampled "FH" cell also diverges at a tile op — ops
+       10/28/29/36/89, all `lr-taps` (the `wiener_restore` CDF
+       icdf0=21198 + equiprobable literal runs = per-unit wiener taps
+       written at tile start). The FH fields ride on the same upstream
+       divergence.
+    4. The pre-DLF recon already differs globally
+       (`SVT_RECON_BIN`/`SVTAV1_RECON_BIN` dumps on
+       `photo_64_q20_p2_b8`: SSE C=40281/2703/6145 vs R=44660/2816/6103;
+       3604/4096 luma bytes, |d|<=15, mean ~3.4). MD/quant output differs
+       slightly everywhere — the filter searches and their FH fields are
+       downstream victims. The right workstream is upstream of recon.
+    5. Ordered suspects for the next session (all
+       `SvtReference::GhostRobot`-only):
+       - GR's rewritten variance boost —
+         `av1_get_deltaq_sb_variance_boost` +
+         `svt_av1_variance_adjust_qp(pcs, readjust_base_q_idx)`
+         (`reference/svt-av1-hdr` `Source/Lib/Codec/rc_aq.c:78-310`;
+         commits `f255ccdc4` strengths `{0,.4,.8,1.2,1.8}` + new curves,
+         `9cde3a949` re-adds the base-qindex readjust at the
+         `svt_av1_rc_init_sb_qindex` site `rc_aq.c:689` which RESIGNALS
+         `frm_hdr.base_q_idx` + `picture_qp`, `f354a3224` PQ curve-3).
+         GR stores `double` variances + a per-SB `mean`
+         (`compute_b64_variance`, `pic_analysis_process.c:316-446`).
+         Port: `sb_qindex.rs::variance_adjust_qp`/`compute_sb_variances`,
+         `var_boost.rs`, driven at `pipeline/frame_setup.rs:154-215`.
+         Verify the per-SB qindex plan against instrumented C on a q20
+         cell — a subtle mismatch produces exactly the observed
+         global-small recon diff.
+       - `is_noise_level`/`noise_norm_strength` arms are inert at tune
+         PSNR (all `sharpness_ctrls` off) — ruled out for this grid.
+       - `get_dlf_level_allintra` is identical between the trees —
+         ruled out.
+    6. Scratch artifacts (not in the repo): instrumented GR lib + probe
+       at `~/tmp/gr-probe/` (PFL_IN/PFL_OUT/ENC_LF prints);
+       recon dumps at `~/tmp/recon-cmp/`.
 
 - [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
   MDS0/1/2 there, and the port does not model those IFS arms (it skips the
