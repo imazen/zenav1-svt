@@ -552,6 +552,14 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     (5..7/36); (c) presets 4/5/7/10..13 are half to two thirds.
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
+  - SB128 beyond the root is unported (`pipeline/setup.rs`
+    `sb128_encode_supported`): the 128 level is forced SPLIT, and the
+    b64<->sb stat bridges and the CDEF 4-quadrant contract are translated
+    in `sb128_geom` but unwired (DEAD-CODE.tsv). C selects SB128 above
+    240p for allintra <= M1, video MR (-1), and video <= M5 at qp > 57
+    (`derive_super_block_size`), so the census above (all cells in the
+    240p class) never exercised it. Measure first: a census at 480p..1080p
+    in those configurations.
   Each closed cell lands in a gate (`real_video_inter_gate.sh`,
   `rc_tpl_gate.sh`) in the same change.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
