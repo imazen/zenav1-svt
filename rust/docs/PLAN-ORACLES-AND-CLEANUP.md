@@ -541,6 +541,19 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     level in the frame header.
   - Next: a 4:4:4 still grid census under ghost-robot, then the chroma LF
     derivation. Waits for 3.3s (the same DLF code for 4:2:0 stills).
+- [ ] 3.8 Mainline VIDEO byte parity (the stills are 1100/1100). Measured
+  2026-09-26, i265, vs mainline-4.2.0:
+  - Low delay, real video (`benchmarks/video_parity_census_2026-09-26.meta`,
+    `tools/inter_byte_matrix.sh` over 6 derf clips x {128,256} x qp
+    {20,40,55} x p-1..13, 8 frames): 244/540 byte-identical through every
+    frame. In order of leverage: (a) presets 1 and -1 differ in the KEY
+    frame of a video encode (0/36 each; stills at those presets match) —
+    brief `video-key`; (b) presets 0/2/3 diverge early in inter frames
+    (5..7/36); (c) presets 4/5/7/10..13 are half to two thirds.
+  - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
+  - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
+  Each closed cell lands in a gate (`real_video_inter_gate.sh`,
+  `rc_tpl_gate.sh`) in the same change.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
   `Hybrid3115` (a queued break), the hybrid gates, and `3115c0c1b` as the
   submodule pin.
