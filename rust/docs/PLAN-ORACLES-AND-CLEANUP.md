@@ -736,9 +736,12 @@ Order, by expected size:
      also ask for `lossless`, `recon` (aomdec == the port's final recon) and
      `dav1d` checks, name a `differs_from` sibling (anti-vacuity), and run
      `--bytes-only`; each check was shown to fail on a cell built to fail
-     it. `lossless_gate.sh` is the first gate ported: 240/240 as before,
-     148 s -> 32 s on i265. Next: the other ~44 scripts, one gate per change,
-     each landing with its verdicts unchanged.
+     it. Ported so far, each with its verdicts unchanged (i265): lossless
+     240/240 (148 s -> 32 s), superres 640/640 (decode-size leg -> recon,
+     preset 7 re-admitted), partial_sb 145/145 (26 s -> 11 s), bd10_nonflat
+     309/309 (decode leg -> recon, 56 s -> 22 s). cellrun also has per-side
+     env, `decodes`, `c_differs_from` and `arch`. Next: the other ~40
+     scripts (brief `gate-port`).
   2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
      `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
      that does not parse, a flag other than 0/1, and a still-only knob on a
