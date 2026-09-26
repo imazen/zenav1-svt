@@ -322,83 +322,48 @@ if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (IB_JOBS, default 4), with the GOP identity_diff_inter.sh used: low-delay
+# P, flat, key frame 0 only, per side. The whole two-frame stream must match
+# (both frames identical, the old "1/1"); OPEN_CELLS pin DIFFERS and are
+# self-promoting. A port exit of 101 is a PANIC and fails whatever the pin.
 work="${TMPDIR:-$HOME/tmp}/inter-byte-gate.$$"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
-
-# echoes "<f0>/<f1>" as 1 (identical) or 0, or "ERR", or "CRASH".
-#
-# CRASH IS ITS OWN ANSWER. MEASURED 2026-09-02: a frame-1 panic leaves
-# `rs.obu.f0` on disk, so the two checks below (status 3, missing files) both
-# passed and the cell scored "0/0" — a PASS cell would have failed loudly, but
-# a KNOWN-OPEN cell read as "open ... known", indistinguishable from the byte
-# divergence it is not. Eighteen 72x72 cells were in exactly that state.
-run_cell() {
-    local content=$1 w=$2 h=$3 qp=$4 preset=$5 frames=$6 shift_px=$7
-    local out="$work/${content}_${w}x${h}_q${qp}_p${preset}"
-    mkdir -p "$out"
-    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="$shift_px" \
-        "$HERE/identity_diff_inter.sh" "$w" "$h" "$qp" "$preset" "$frames" "$content" "$out" \
-        >"$out/diff.txt" 2>&1
-    local st=$?
-    if [[ $st -eq 4 ]]; then echo "CRASH"; return; fi
-    if [[ $st -eq 3 ]]; then echo "ERR"; return; fi
-    if [[ ! -s "$out/c.obu.pts0" || ! -s "$out/rs.obu.f0" ]]; then echo "ERR"; return; fi
-    local a=0 b=0
-    cmp -s "$out/c.obu.pts0" "$out/rs.obu.f0" && a=1
-    cmp -s "$out/c.obu.pts1" "$out/rs.obu.f1" && b=1
-    echo "$a/$b"
+LIST="$work/inter_byte.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\tenv_c\texpect\tcheck\n' >"$LIST"
+add() { # expect content w h qp preset frames shift
+    local expect=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 frames=$7 shift_px=$8
+    printf '%s_%sx%s_q%s_p%s_f%s_s%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tc\n' \
+        "$content" "$w" "$h" "$qp" "$p" "$frames" "$shift_px" "$content" "$w" "$h" "$qp" "$p" \
+        "SVTAV1_FRAMES=$frames;SVTAV1_INTRA_PERIOD=64;SVTAV1_HIER_LEVELS=0;SVTAV1_FRAME_SHIFT=$shift_px" \
+        "SVT_FRAMES=$frames;SVT_INTRA_PERIOD=-1;SVT_HIER_LEVELS=0;SVT_PRED_STRUCT=1" \
+        "$expect" >>"$LIST"
 }
-
-fail=0; err=0; promoted=0; crashed=0
+for spec in "${PASS_CELLS[@]}"; do add IDENTICAL $spec; done
+for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do add DIFFERS $spec; done
 echo "== inter byte gate =="
-for spec in "${PASS_CELLS[@]}"; do
-    # shellcheck disable=SC2086
-    got=$(run_cell $spec)
-    if [[ "$got" == "CRASH" ]]; then
-        echo "  CRASH  $spec  (the encoder PANICKED — not a byte divergence)"
-        crashed=$((crashed + 1))
-    elif [[ "$got" == "ERR" ]]; then
-        echo "  HARNESS  $spec  (the encoder refused, or produced no stream)"
-        err=$((err + 1))
-    elif [[ "$got" == "1/1" ]]; then
-        echo "  PASS  $spec"
-    else
-        echo "  FAIL  $spec  (frame0/frame1 identical = $got)"
-        fail=$((fail + 1))
-    fi
-done
-echo "-- known-open cells --"
-for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do
-    # shellcheck disable=SC2086
-    got=$(run_cell $spec)
-    if [[ "$got" == "CRASH" ]]; then
-        echo "  CRASH  $spec  (the encoder PANICKED — a known-open cell may DIFFER, never crash)"
-        crashed=$((crashed + 1))
-    elif [[ "$got" == "1/1" ]]; then
-        echo "  PROMOTED  $spec  (now byte-identical — move it to PASS_CELLS)"
-        promoted=$((promoted + 1))
-    else
-        echo "  open  $spec  (frame0/frame1 identical = $got, known)"
-    fi
-done
-
-echo
-echo "inter byte gate: ${#PASS_CELLS[@]} required, $fail failed, ${#OPEN_CELLS[@]} known-open ($promoted now identical), $crashed crashed, $err harness errors"
-# A crash fails the gate from EITHER list. A known-open cell is allowed to
-# produce different bytes; it is never allowed to panic.
-if [[ $crashed -gt 0 ]]; then
-    echo "inter byte gate: FAIL — $crashed cell(s) PANICKED. A panic is a defect," >&2
-    echo "  not a frontier state, and it is not what 'known-open' means." >&2
-    exit 1
-fi
-if [[ $err -gt 0 ]]; then
-    echo "inter byte gate: HARNESS FAILURE — not a parity result" >&2
-    exit 2
-fi
-if [[ $fail -gt 0 ]]; then exit 1; fi
-if [[ $promoted -gt 0 ]]; then
-    echo "A known-open cell is now byte-identical. Move it to PASS_CELLS in this script." >&2
-    exit 1
-fi
-echo "inter byte gate: PASS"
+python3 "$HERE/cellrun.py" "$LIST" --out "$work/result.tsv" --bytes-only --jobs "${IB_JOBS:-4}" 2>"$work/cellrun.err"
+python3 - "$work/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+need = [r for r in rows if r["expect"] == "IDENTICAL"]
+open_ = [r for r in rows if r["expect"] == "DIFFERS"]
+crashed = [r for r in rows if r["verdict"] == "ERROR" and "exited 101" in r["detail"]]
+err = [r for r in rows if r["verdict"] == "ERROR" and r not in crashed]
+fail = [r for r in need if r["verdict"] == "DIFFERS"]
+promoted = [r for r in open_ if r["verdict"] == "IDENTICAL"]
+for r in crashed: print(f"  CRASH  {r['name']}  (the encoder PANICKED — not a byte divergence): {r['detail']}")
+for r in err: print(f"  HARNESS  {r['name']}  {r['detail']}")
+for r in fail: print(f"  FAIL  {r['name']}  {r['detail']}")
+for r in promoted: print(f"  PROMOTED  {r['name']}  (now byte-identical — move it to PASS_CELLS)")
+print(f"\ninter byte gate: {len(need)} required, {len(fail)} failed, {len(open_)} known-open "
+      f"({len(promoted)} now identical), {len(crashed)} crashed, {len(err)} harness errors")
+if crashed:
+    print("inter byte gate: FAIL — a cell PANICKED. A panic is a defect, not a frontier state.", file=sys.stderr); sys.exit(1)
+if err:
+    print("inter byte gate: HARNESS FAILURE — not a parity result", file=sys.stderr); sys.exit(2)
+if fail or promoted:
+    sys.exit(1)
+print("inter byte gate: PASS")
+PY
