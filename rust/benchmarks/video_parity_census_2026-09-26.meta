@@ -1,0 +1,45 @@
+Snapshot, 2026-09-26: real-video byte parity with mainline C, low delay.
+
+Command (host i265, main at c71e5709 + the inter_byte_matrix port 4ede138f):
+  IBM_CONTENT="fourpeople johnny kristenandsara vidyo1 vidyo3 vidyo4" \
+  IBM_SIZES="128 256" IBM_QPS="20 40 55" \
+  IBM_PRESETS="-1 0 1 2 3 4 5 6 7 8 9 10 11 12 13" IBM_FRAMES=8 IBM_JOBS=4 \
+  run-heavy --mem 8G --jobs 6 -- tools/inter_byte_matrix.sh
+Oracle: mainline-4.2.0 (default). 540 cells, 317 s, peak RSS 0.99 GiB.
+Content: the public-domain derf clips (R2 video/pd-derf-720p/), 8 frames,
+low-delay P (SVT_PRED_STRUCT=1, intra period -1 / 64, hierarchical 0).
+
+Verdict = the first temporal unit where the port's stream leaves C's
+(both streams split on temporal delimiters); TU0 is the KEY frame, which
+makes every later unit meaningless. No cell errored or panicked.
+
+Result: 244 of 540 byte-identical through all 8 frames.
+
+| preset | identical | TU0 (key frame) | TU1..7 (inter) |
+|---|---|---|---|
+| -1 | 0 | 32 | 4 |
+| 0 | 5 | 0 | 31 |
+| 1 | 0 | 36 | 0 |
+| 2 | 7 | 0 | 29 |
+| 3 | 5 | 0 | 31 |
+| 4 | 20 | 0 | 16 |
+| 5 | 24 | 0 | 12 |
+| 6 | 34 | 0 | 2 |
+| 7 | 23 | 8 | 5 |
+| 8 | 32 | 0 | 4 |
+| 9 | 33 | 0 | 3 |
+| 10 | 19 | 2 | 15 |
+| 11 | 14 | 2 | 20 |
+| 12 | 14 | 2 | 20 |
+| 13 | 14 | 2 | 20 |
+
+By clip (identical/cells): fourpeople 52/90, johnny 33/90, kristenandsara 58/90, vidyo1 32/90, vidyo3 32/90, vidyo4 37/90.
+
+Reading:
+- Presets 1 and -1 diverge in the KEY frame of a video encode (36/36 and
+  32/36), although the same presets are byte-identical as stills
+  (identity_full_8bit): a video-arm intra configuration difference.
+  Preset 7 has 8 key-frame cells; 10..13 have 2.
+- Presets 0, 2, 3 diverge early in inter frames (29..31 of 36).
+- Presets 6, 8, 9 are nearly clean (32..34 of 36). Presets 11, 12 and 13
+  give identical per-cell verdicts (why was not checked).

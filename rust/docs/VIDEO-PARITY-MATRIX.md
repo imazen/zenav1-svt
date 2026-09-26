@@ -15,10 +15,10 @@ is the honest baseline; "we are" is measured state, not intent.
 | Byte == C, inter 8-bit | `inter_byte_gate.sh` | 91 pinned witness cells ({uniform,gradient,diag,screen} x {16,64,72,128} x q{20,40,55} x p{6,8}, 2-frame low-delay P). OPEN list empty. |
 | Byte == C, real clips | `real_video_inter_gate.sh` | 24 cells: 3 clips x {128,256}^2 x p{6,8} x 1/1 frames. |
 | Byte == C, 10-bit | `bd10_video_gate.sh` | 24/24. |
-| Key-frame video matrix | `video_key_matrix.sh` | p0..13 on real clips. |
+| Key-frame video matrix | `video_key_matrix.sh` | Frame 0 of a 2-frame video encode vs C; default content is the five synthetic classes and presets 0, 3..13 (-1, 1, 2 are not in its default list). |
 | Screen tools on video | `screen_ibc_gate.sh`, `screen_ibc_byte_gate.sh`, `screen_palette_gate.sh`, `screen_ibc_fh_gate.sh` | IntraBC + palette on screen-content video frames, incl. byte parity. |
 | Inter encodability | `inter_completion_scan.sh` (SCAN_GATE) | sizes 64..2048 x p{6,8,10,13}: floor MIN_OK=52, cap MAX_REFUSED=12 — the frontier inventory of where inter encodes at all. |
-| Inter byte matrix | `inter_byte_matrix.sh` | q{20,40,55} x p{6,8} configurable. |
+| Inter byte matrix (sweep, not a gate) | `inter_byte_matrix.sh` | Any grid of synthetic classes and derf clips, any frame count; names the first temporal unit that differs from C. Real-video census 2026-09-26 (`benchmarks/video_parity_census_2026-09-26.meta`): 244/540 cells byte-identical through 8 frames (6 clips x {128,256} x q{20,40,55} x p-1..13, low delay). |
 | qp0 coded-lossless inter, 8-bit 4:2:0 | `qp0_inter_gate.sh` | 7 cells: 4-frame encodes decode byte-identical to SOURCE via aomdec at p{0,6,13}, sb64+sb128, 128x128+256x256, with an inter-usage anti-vacuity leg. |
 | Monochrome inter | `mono_inter_gate.sh` | recon == aomdec == dav1d (TWO independent decoders) on every frame — 13-px-shift synthetic legs x p{0,6,8,13} x 64x64..256x128 AND the unaligned defect table (65x64, 64x67, 65x67, 66x66, 70x64, 64x70, 96x100, 100x96, a 64x65 control, an unaligned 6-frame chain), sb64+sb128, bd10 legs, fourpeople clip; anti-vacuity legs require real inter blocks + nonzero MVs. Extension surface — no C oracle (C cannot encode mono). |
 | Tool-specific | `warped_motion_gate.sh`, `obmc_gate.sh`, `global_motion_gate.sh`, `gm_join_gate.sh`, `inter_me_join_gate.sh`, `ifs_join_gate.sh` | warped motion, OBMC, GM coding+selection, GM derivation/model join vs C, ME join, IFS. |
@@ -42,8 +42,11 @@ is the honest baseline; "we are" is measured state, not intent.
 
 - **p{6,8} low-delay P, <=256x256**: byte-parity is pinned-witness strong.
 - **Other presets, low-delay**: decoder-verified (selfcheck ladder), not
-  byte-pinned — the differential witness set doesn't cover p-1..13 except
-  where `inter_byte_matrix`/`real_video_inter_gate` rows exist.
+  byte-pinned. The 2026-09-26 real-video census measured them: presets 6,
+  8, 9 are 32..34/36 byte-identical through 8 frames, 4/5/7/10 about half
+  to two thirds, 0/2/3 diverge early in inter frames (5..7/36), and at
+  presets 1 and -1 the KEY frame of a video encode already differs from C
+  (0/36) although those presets are byte-identical as stills.
 - **Everything in the gap list**: refused with a named reason — honest
   state, not a failure. A refusal moves to "verified" only with a gate
   in the same change.
