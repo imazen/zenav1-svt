@@ -1,6 +1,6 @@
 # output pins, group references_tunes: cell<TAB>bytes:fnv1a128, or REFUSED:<reason>.
 # Regenerate only with UPDATE_OUTPUT_PINS=1 and say why in the commit.
-grad-64x64-b10-p6-q30-GhostRobot-HdrFork	524:ae8d4f812f16b78c4b9ff4131bca89ac
+grad-64x64-b10-p6-q30-GhostRobot-HdrFork	524:daa3aa3d22acb78277789c329b9f2c3c
 grad-64x64-b10-p6-q30-GhostRobot-Mainline	REFUSED:unsupported config: Ghost Robot has no mainline mode: select SvtHdrMode::HdrFork, or SvtReference::Mainline420 for pristine mainline
 grad-64x64-b10-p6-q30-Hybrid3115-HdrFork	529:c1dfe0b12a113a10a38cc36ab326f712
 grad-64x64-b10-p6-q30-Hybrid3115-Mainline	611:eeac8b3c4f8b082a99b41b44814e26ff

@@ -1403,13 +1403,15 @@ pub(super) fn tx_unit_inner(
         // the spatial SSE BEFORE the <<4 (get_svt_psy_full_dist call sites
         // in full_loop.c). tx_bias=0 (fork default) keeps the facade a
         // plain SSE, so this is the whole fork-default delta here.
-        // LUMA only under GhostRobot (C's `get_svt_psy_full_dist` sites
-        // all read `input_pic->y_buffer`; `uv_full_distortion` carries no
-        // psy term). Other references keep the long-standing chroma term —
-        // the output pins freeze it.
-        if frame.ac_bias_eff > 0.0
-            && (plane_type == 0 || frame.reference != crate::reference::SvtReference::GhostRobot)
-        {
+        // Chroma TOO under GhostRobot — `svt_aom_full_loop_uv` adds
+        // get_svt_psy_full_dist(input_pic->u_buffer/v_buffer, pred/recon)
+        // to both DIST_CALC_PREDICTION and DIST_CALC_RESIDUAL under
+        // `effective_ac_bias` (full_loop.c:2564/:2594 for Cb, the :2791
+        // block for Cr). Witnessed: photo_64 q45 p2 leaf (32,32) 32x16 —
+        // C's ind-uv table stored dist=50272 for the DC chroma eval where
+        // the psy-free port measured 45392; the 11% gap flipped the
+        // check_best_indepedant_cfl arbitration to DC where C codes CFL.
+        if frame.ac_bias_eff > 0.0 {
             // C `get_svt_psy_full_dist(..., cropped_tx_width,
             // cropped_tx_height, ...)` (product_coding_loop.c:4834/:4862,
             // :5803/:5831) — cropped area, full recon stride.
@@ -1457,10 +1459,10 @@ pub(super) fn tx_unit_inner(
         // get_svt_psy_full_dist(input, pred)` — C adds the same term it
         // adds to the residual arm above (perform_dct_dct_tx
         // product_coding_loop.c:5961-5989 and the tx_type_search twin),
-        // also before <<4.
-        if frame.ac_bias_eff > 0.0
-            && plane_type == 0
-            && frame.reference == crate::reference::SvtReference::GhostRobot
+        // also before <<4. Chroma included under the fork
+        // (full_loop.c:2564 — the uv arm adds the psy term to its
+        // PREDICTION dist exactly like the residual one).
+        if frame.ac_bias_eff > 0.0 && frame.reference == crate::reference::SvtReference::GhostRobot
         {
             pd += svtav1_dsp::ac_bias::psy_full_dist(
                 src,
@@ -2433,10 +2435,10 @@ pub(super) fn tx_unit_hbd_screened(
                 // the u8 site above: residual and prediction arms each get
                 // `svt_psy_distortion_hbd` (<<2-scaled energy gap) before
                 // the caller's `<<4` (perform_dct_dct_tx /
-                // tx_type_search under `SVT_EFFECTIVE_HBD_MD`). LUMA only —
-                // C's psy sites all read `input_pic->y_buffer`; the chroma
-                // uv_full_distortion arm carries no psy term.
-                if a.ac_bias_eff > 0.0 && plane_type == 0 {
+                // tx_type_search under `SVT_EFFECTIVE_HBD_MD`). Chroma
+                // included — the hbd uv arm of `svt_aom_full_loop_uv`
+                // carries the same `effective_ac_bias` psy adds.
+                if a.ac_bias_eff > 0.0 {
                     sse += svtav1_dsp::ac_bias::psy_full_dist_hbd(
                         src,
                         src_off,
@@ -2459,7 +2461,7 @@ pub(super) fn tx_unit_hbd_screened(
                     crop_w,
                     crop_h,
                 );
-                if a.ac_bias_eff > 0.0 && plane_type == 0 {
+                if a.ac_bias_eff > 0.0 {
                     dp_sse += svtav1_dsp::ac_bias::psy_full_dist_hbd(
                         src,
                         src_off,
