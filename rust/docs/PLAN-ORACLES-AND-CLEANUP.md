@@ -600,6 +600,20 @@ Order, by expected size:
      1.17x C at 256 p6, 1.21x at 1024 p6, 1.33x at 1024 p10 (p25 1.20);
      1024 p10 is 312M instructions to C's 199M (the port's figure includes
      about 21M of harness content generation that is not timed).
+   - memset / memcpy callers at 1024 p10 (callgrind, i265, `c9f9e137`
+     + `6532bfe9`; total 301.4M Ir; memset 15.6M, memcpy 10.4M; C 3.0M
+     and 3.1M). memset by caller: `tx_unit_inner` 4.05M (10,348 calls,
+     through inlined callees, not its own lines), a libc-internal caller
+     (calloc) 2.86M (164), `predict_dc` 1.50M (17,000; C's DC predictor
+     memsets rows too), `DeblockGeom::record_block` 0.86M, `dirty_pool<i16>`
+     0.65M, `encode_tile_rows` 0.58M, `mod_input_64_into` 0.56M,
+     `filter_and_pack_frame` 0.52M, `DeblockGeom::new` 0.52M,
+     `extract_neighbors_tiled` 0.52M, `commit_leaf` 0.40M. memcpy is mostly
+     struct moves: `eval_candidate` 1.74M (107,200 calls), `evaluate_leaf`
+     1.03M, `commit_leaf` 0.97M, `encode_block_syntax` 0.79M,
+     `predict_unit` 0.60M, `tx_unit_inner` 0.59M. Line-level (debug build,
+     `--dump-instr=yes`) names `LeafEval`/`into_choice`,
+     `WarpRefineBlock` and `frame.cfg` copies. Brief: `perf-mem`.
    - Open, by excess over C at 1024 p10: `optimize_b` (38.3M vs
      30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
      (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma
