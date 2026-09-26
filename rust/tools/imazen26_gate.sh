@@ -33,11 +33,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
-RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
-# The driver build.sh published for the resolved oracle (a fixed name here
-# would silently run whichever oracle was built last).
-CT_BIN_FOR() { cat "$HERE/capture_c_trace/.selected.$("$HERE/oracle" resolve)" 2>/dev/null; }
-CT_BIN="$HERE/capture_c_trace/capture_c_trace.unresolved"
 IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
 # NO SILENT SKIP. This corpus is not committed and, until 2026-09-10, was not
 # materialised on any host reachable from this repo -- so `corpus_dir` resolved
@@ -148,49 +143,37 @@ CELLS=(
 )
 # @@CELLS_END@@
 
-echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
-    cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
-  || { echo "port build failed" >&2; exit 2; }
-"$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
-CT_BIN="$(CT_BIN_FOR)"
-[ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] || { echo "binaries missing" >&2; exit 2; }
-
-OUT="$RS_ROOT/target/imazen26_gate"
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (IM26_JOBS, default 4). With a decoder, each cell also checks `recon`
+# (aomdec's output == the port's final recon; stronger than the old "aomdec
+# accepts it", and it held on all 40 when adopted, 2026-09-26).
+OUT="${TMPDIR:-$HOME/tmp}/imazen26.$$"
 mkdir -p "$OUT"
-pass=0; fail=0; declare -a failed=()
-
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/imazen26.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tcheck\n' >"$LIST"
+check=c
+[ -n "$aomdec" ] && check=c,recon
+missing=()
 for cell in "${CELLS[@]}"; do
   read -r base preset qp bd <<<"$cell"
   png="$IM26_DIR/$base.png"
-  [ -f "$png" ] || { echo "  MISSING  $base (not in $IM26_DIR)" >&2; fail=$((fail+1)); failed+=("$base[missing]"); continue; }
   tag="${base%.png}__p${preset}_q${qp}_bd${bd}"
-  d="$OUT/$tag"; mkdir -p "$d"
-  if ! SVTAV1_BD="$bd" $LOWPRI \
-        "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$preset" "$d/rs" >/dev/null 2>"$d/rs.err"; then
-    fail=$((fail+1)); failed+=("$tag[rs-encode-err]"); echo "  RS-ERR   $tag"; continue
-  fi
-  if ! $LOWPRI \
-        "$CT_BIN" "$DIM" "$DIM" "$qp" "$preset" "$d/rs.yuv" "$d/c.obu" "$bd" >/dev/null 2>/dev/null; then
-    fail=$((fail+1)); failed+=("$tag[c-encode-err]"); echo "  C-ERR    $tag"; continue
-  fi
-  # DECODABILITY (self-desync = zero-tolerance)
-  if [ -n "$aomdec" ] && ! "$aomdec" --rawvideo -o /dev/null "$d/rs.obu" >/dev/null 2>&1; then
-    fail=$((fail+1)); failed+=("$tag[UNDECODABLE]"); echo "  CORRUPT  $tag  <-- port stream does not decode"; continue
-  fi
-  if cmp -s "$d/rs.obu" "$d/c.obu"; then
-    pass=$((pass+1)); echo "  OK       $tag ($(wc -c < "$d/rs.obu" | tr -d " ")B)"
-  else
-    fdiff=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $NF}')
-    fail=$((fail+1)); failed+=("$tag[DIFF@${fdiff} port=$(wc -c < "$d/rs.obu" | tr -d " ")B C=$(wc -c < "$d/c.obu" | tr -d " ")B]")
-    echo "  DIFF     $tag  @${fdiff}"
-  fi
-  rm -f "$d/rs.yuv"
+  if [ ! -f "$png" ]; then missing+=("$tag[missing]"); continue; fi
+  printf '%s\tcrop:%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "$png" "$DIM" "$DIM" "$qp" "$preset" "$bd" "$check" >>"$LIST"
 done
-
-rm -rf "$OUT"
-total=$((pass+fail))
-echo
-echo "imazen26 gate: $pass / $total byte-identical  (clean-subset regression gate)"
-if [ "$fail" -gt 0 ]; then printf 'FAILED: %s\n' "${failed[@]}"; fi
-[ "$fail" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${IM26_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" "${missing[@]+"${missing[@]}"}" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+missing = sys.argv[2:]
+ok = [r for r in rows if r["verdict"] == "IDENTICAL" and "FAIL" not in r["checks"]]
+print(f"\nimazen26 gate: {len(ok)} / {len(rows) + len(missing)} byte-identical  (clean-subset regression gate)")
+bad = [f"{r['name']}[{r['verdict']} {r['detail']}; {r['checks']}]" for r in rows if r not in ok] + missing
+if bad:
+    print("FAILED: " + "\nFAILED: ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+st=$?
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]
