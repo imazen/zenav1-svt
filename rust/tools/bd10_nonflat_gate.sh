@@ -23,9 +23,10 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/bd10nf.$$"
+OUT="${TMPDIR:-$HOME/tmp}/bd10nf.$$"
 mkdir -p "$OUT"
-# Reference decoder for the DECODABILITY assert below. Required, never skipped:
+# Reference decoder for the RECON assert below (aomdec's output == the port's
+# final recon; until 2026-09-26 only "aomdec accepts it"). Required, never skipped:
 # a byte-identity gate is structurally blind to a stream that is byte-equal to
 # nothing (a cell that regresses out of the list) and to corruption on the cells
 # it does not list, so every port OBU this gate produces must also be provably
@@ -576,27 +577,27 @@ CELLS=(
   "gradient 128 128 63 4"
   "gradient 128 128 63 5"
 )
+# The cells are a list for tools/cellrun.py (plan T3). CHECK is `recon` by
+# default: aomdec's 10-bit output must equal the port's final recon, which
+# subsumes "aomdec accepts the stream" (the check this gate made until
+# 2026-09-26). BD10NF_CHECK=decodes restores the weaker one.
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/bd10_nonflat.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tcheck\n' >"$LIST"
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}"
-  if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[c-err]"); continue
-  fi
-  # Decodability BEFORE byte-identity: a stream that aomdec rejects is a
-  # corruption bug regardless of what `cmp` says, and `cmp` alone cannot see it.
-  if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[undecodable]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pass=$((pass + 1))
-  else
-    fail=$((fail + 1)); failed+=("$tag")
-  fi
+  printf '%s_%sx%s_q%s_p%s\t%s\t%s\t%s\t%s\t%s\t10\tc,%s\n' \
+    "$content" "$w" "$h" "$qp" "$p" "$content" "$w" "$h" "$qp" "$p" "${BD10NF_CHECK:-recon}" >>"$LIST"
 done
-rm -rf "$OUT"
-echo "bd10 non-flat identity: $pass / $((pass + fail)) byte-identical"
-[ "$fail" -gt 0 ] && printf 'FAILED: %s\n' "${failed[@]}"
-[ "$fail" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${BD10NF_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+ok = [r for r in rows if r["ok"] == "yes" and r["verdict"] == "IDENTICAL"]
+print(f"bd10 non-flat identity: {len(ok)} / {len(rows)} byte-identical")
+for r in rows:
+    if r not in ok:
+        print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+PY
+[ "$rc" -eq 0 ] || exit 1

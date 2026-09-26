@@ -30,9 +30,10 @@ A cell list is a TSV file with a header row. Columns:
                 (anti-vacuity: the feature under test changed the output)
   c_differs_from  another cell whose C stream this one's must NOT equal
                 (anti-vacuity on the C side: the knob reached C's encoder)
-  arch          run the cell only on this machine arch (`uname -m`, e.g.
-                aarch64), or on every arch but it (`!aarch64`); for
-                arch-specific cells and pins
+  arch          comma list of machine arches (`uname -m`) the cell runs on,
+                e.g. `aarch64,arm64` (Linux and macOS spell ARM differently),
+                or ones it skips (`!aarch64,!arm64`); for arch-specific cells
+                and pins
 Blank lines and lines starting with `#` are ignored.
 
 Output: a TSV with one row per cell (name, verdict, stage, detail, expect,
@@ -80,8 +81,10 @@ def read_cells(path):
         rows.append(row)
     arch = os.uname().machine
     def applies(r):
-        a = (r.get("arch") or "").strip()
-        return not a or (a[1:] != arch if a.startswith("!") else a == arch)
+        toks = [t.strip() for t in (r.get("arch") or "").split(",") if t.strip()]
+        pos = [t for t in toks if not t.startswith("!")]
+        neg = [t[1:] for t in toks if t.startswith("!")]
+        return (not pos or arch in pos) and arch not in neg
     rows = [r for r in rows if applies(r)]
     names = {r["name"] for r in rows}
     if len(names) != len(rows):

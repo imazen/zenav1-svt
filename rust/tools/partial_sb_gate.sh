@@ -77,7 +77,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/partialsb.$$"
+OUT="${TMPDIR:-$HOME/tmp}/partialsb.$$"
 mkdir -p "$OUT"
 pass=0
 fail=0
@@ -359,25 +359,27 @@ CELLS=(
 #
 # Added on the host where it passes, which is how it reached CI: a cell
 # validated on one architecture is a per-architecture claim.
-case "$(uname -m)" in
-  arm64 | aarch64) CELLS+=("gradient 96 80 48 0") ;;
-esac
+# The cells are a list for tools/cellrun.py (plan T3); the arm64 cell carries
+# an `arch` column instead of a uname case.
+mkdir -p "$OUT"
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/partial_sb.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tarch\n' >"$LIST"
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}"
-  if ! "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[c-err]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pass=$((pass + 1))
-  else
-    fail=$((fail + 1)); failed+=("$tag")
-  fi
+  printf '%s_%sx%s_q%s_p%s\t%s\t%s\t%s\t%s\t%s\t\n' \
+    "$content" "$w" "$h" "$qp" "$p" "$content" "$w" "$h" "$qp" "$p" >>"$LIST"
 done
-rm -rf "$OUT"
-echo "partial-SB identity: $pass / $((pass + fail)) byte-identical"
-[ "$fail" -gt 0 ] && printf 'FAILED: %s\n' "${failed[@]}"
-[ "$fail" -eq 0 ]
+printf 'gradient_96x80_q48_p0\tgradient\t96\t80\t48\t0\taarch64,arm64\n' >>"$LIST"
+python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${PSB_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+ok = [r for r in rows if r["verdict"] == "IDENTICAL"]
+print(f"partial-SB identity: {len(ok)} / {len(rows)} byte-identical")
+for r in rows:
+    if r["verdict"] != "IDENTICAL":
+        print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}]")
+PY
+[ "$rc" -eq 0 ] || exit 1
