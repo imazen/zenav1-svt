@@ -59,7 +59,10 @@ pub enum CorrespondenceMethod {
     #[cfg_attr(test, allow(dead_code))]
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "C variant the port never selects (plan 1.4)")
+        expect(
+            dead_code,
+            reason = "no C preset selects MV_64x64 (enc_mode_config.c gm_ctrls: CORNERS, MV_8x8 or MV_16x16); kept so the discriminants mirror C"
+        )
     )]
     Mv64x64 = 0,
     Mv32x32 = 1,

@@ -293,8 +293,6 @@ pub fn predict_inter_yuv(
     );
 }
 
-
-
 /// [`predict_inter_yuv`] against a TRUE 10-BIT reference.
 ///
 /// The bd10 full-RD funnel residuals every candidate against a 10-bit
@@ -649,7 +647,6 @@ pub fn predict_inter_yuv_warped(
         .expect("the chroma leaf takes an 8-bit plane into an 8-bit destination");
     }
 }
-
 
 /// [`predict_inter_yuv_warped`] against a TRUE 10-BIT reference.
 ///

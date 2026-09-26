@@ -379,6 +379,3 @@ pub fn ref_pic_rc(rf: &crate::picture::ReferenceFrame) -> RefPicRc {
         obj_r0: rf.r0,
     }
 }
-
-
-

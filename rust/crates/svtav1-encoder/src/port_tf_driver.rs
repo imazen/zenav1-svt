@@ -411,30 +411,11 @@ fn tf_segment_block_rect(
 
 /// What [`ra_mctf_filter`] returns.
 pub struct RaMctfOut {
-    /// `pcs->tf_tot_horz_blks` — accumulated across all segments.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C temporal-filter counter no stage reads (plan 1.4)"
-        )
-    )]
-    pub tf_tot_horz_blks: u32,
-    /// `pcs->tf_tot_vert_blks`.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C temporal-filter counter no stage reads (plan 1.4)"
-        )
-    )]
-    pub tf_tot_vert_blks: u32,
     /// `pcs->filt_to_unfilt_diff` when the centre is an I slice and the save
     /// ran; `None` otherwise (the inherited value stands).
     pub filt_to_unfilt_diff: Option<u32>,
-    /// `pd_ctx->tf_motion_direction` — the `mctf_frame` verdict.
+    /// `pd_ctx->tf_motion_direction` — the `mctf_frame` verdict, and the only
+    /// reader of C's `pcs->tf_tot_{horz,vert}_blks` (pd_process.c:4232).
     pub motion_direction: i8,
 }
 
@@ -1166,8 +1147,6 @@ pub fn ra_mctf_filter(
 
     let motion_direction = tf_motion_direction(me_ctx.tf_tot_horz_blks, me_ctx.tf_tot_vert_blks);
     RaMctfOut {
-        tf_tot_horz_blks: me_ctx.tf_tot_horz_blks,
-        tf_tot_vert_blks: me_ctx.tf_tot_vert_blks,
         filt_to_unfilt_diff,
         motion_direction,
     }

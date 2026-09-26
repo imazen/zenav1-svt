@@ -108,11 +108,16 @@ It was done when:
     items in C-translation modules carry `#[cfg_attr(not(test),
     expect(dead_code, reason = "... (plan 1.4)"))]` — `expect` fails the
     build once an item is used, so the annotation cannot outlive the gap.
-    Triage list (wire or delete): `port_pd0_detector` (allintra detector,
-    9; its fork arm is the plan 3.3s variance lead, owned by that work),
-    `port_rc_driver` (4), the compound predictors in
-    `inter_pred_arm` (3), `run_frame_me`, `picture::PictureControlSet`
-    fields, `port_tf_driver` counters. `frame_geom`'s 13 are resolved:
+    Left to triage: `port_pd0_detector`'s 9 (its mainline arm duplicates
+    the live `pd0/lambda.rs` detector; its fork arm is the plan 3.3s
+    variance lead, so that work decides). Resolved 2026-09-26: the unread
+    `PictureControlSet` fields (8), `port_rc_driver`'s stub `ref_lists`,
+    duplicate `is_pic_skipped`, alias and unread field (4), the superseded
+    8-bit compound predictors in `inter_pred_arm` (3, with their 3 tests),
+    `port_tf_driver`'s output copies of the TF block counters (2);
+    `run_frame_me` and `depth_refine::ctrls::for_preset` are
+    `#[cfg(test)]` conveniences; `CorrespondenceMethod::Mv64x64` keeps
+    the C enum whole with a specific reason. `frame_geom`'s 13 are resolved:
     `sb_geom`, `lr_units_in_dim` and `seq_size_bits` duplicated live code
     (`port_pcs_geom::sb_geom`, `count_units_in_tile`, `entropy::obu`) and
     are deleted with their one test; the trivial accessors are deleted; the
