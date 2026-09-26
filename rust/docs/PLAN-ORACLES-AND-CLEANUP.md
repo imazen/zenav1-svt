@@ -108,9 +108,9 @@ It was done when:
     items in C-translation modules carry `#[cfg_attr(not(test),
     expect(dead_code, reason = "... (plan 1.4)"))]` — `expect` fails the
     build once an item is used, so the annotation cannot outlive the gap.
-    Triage list (wire or delete): `port_enc_dec_cdf` (C SB CDF selection and
-    averaging, `cdf_ctrl`, 11 items), `port_pd0_detector` (allintra detector,
-    9), `port_rc_driver` (4), the compound predictors in
+    Triage list (wire or delete): `port_pd0_detector` (allintra detector,
+    9; its fork arm is the plan 3.3s variance lead, owned by that work),
+    `port_rc_driver` (4), the compound predictors in
     `inter_pred_arm` (3), `run_frame_me`, `picture::PictureControlSet`
     fields, `port_tf_driver` counters. `frame_geom`'s 13 are resolved:
     `sb_geom`, `lr_units_in_dim` and `seq_size_bits` duplicated live code
@@ -118,7 +118,14 @@ It was done when:
     are deleted with their one test; the trivial accessors are deleted; the
     spec MiCols rule is one `frame_geom::mi_units` (intra_edge's three
     copies) and C's `((w + 15) / 16) << 2` one
-    `port_md_lambda::superres_mi_cols` (seven copies).
+    `port_md_lambda::superres_mi_cols` (seven copies). `port_enc_dec_cdf`'s 13 are resolved: `tile_body` now picks each SB's
+    rate-estimation context through `select_sb_cdf_source` and the named C
+    weights (the inline copy of the same rule is gone, and its
+    PORT-NOTE(unverified) about tile-row boundaries is cleared by
+    tile_gate's IDENTICAL multi-tile-row cells at allintra p6, where
+    `cdf_ctrl` is on); `avg_cdf_symbol`/`AvgCdfPlan` duplicated
+    `entropy::cdf::avg_cdf_entries` and `copy_mv_rate` was a two-way
+    `if`, all deleted with their 5 tests.
   - Open: the other 85 modules are used by integration tests; T2 moves those
     tests in-crate first.
 

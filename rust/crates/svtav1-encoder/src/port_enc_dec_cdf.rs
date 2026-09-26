@@ -10,209 +10,27 @@
 //! frame's adapted context. Getting the SELECTION wrong shifts every symbol's
 //! cost estimate, and the RD decisions with them.
 //!
-//! **EVIDENCE: TIER 4 for everything here, and the reason is worth reading
-//! before someone tries to improve it.** `avg_cdf_symbol` (:2543) and
-//! `avg_cdf_symbols` (:2585) DO survive the Release build as local symbols —
-//! but their only call site passes the literal weights
-//! `AVG_CDF_WEIGHT_LEFT = 3` / `AVG_CDF_WEIGHT_TOP = 1` (:2540-2541, :2895),
-//! and LLVM constant-propagated both parameters out of both signatures. The
-//! compiled `avg_cdf_symbols` overwrites `w2`/`w3` (its own `wt_left` /
-//! `wt_tr`) before its first call and never stages them anywhere. Binding
-//! either as declared would pass garbage in the weight slots — the same trap
-//! that produced a wrong 10-bit SSIM in
-//! [`crate::port_enc_dec_metrics`]. `svtav1-cref/build.rs`
-//! (`link_globalized_enc_dec_statics`) records the disassembly and REFUSES to
-//! promote them.
+//! **The rule is live**: `pipeline::tile_walk::tile_body` picks each SB's
+//! rate-estimation context with [`select_sb_cdf_source`] and blends with
+//! the named weights. The blend itself is
+//! [`crate::entropy::context::FrameContext::avg_cdf_with`] over
+//! [`crate::entropy::cdf::avg_cdf_entries`], which owns the field
+//! enumeration and is tested against C's `avg_cdf_symbol` formula.
 //!
-//! So these are hand-derived vectors traced against the C source, and they say
-//! so. A future session that wants tier 1 here needs either a shim that
-//! reaches them through the exported `svt_aom_mode_decision_kernel` (i.e. a
-//! whole encode) or a C build without IPO.
-//!
-//! **SCOPE, stated because the missing part is larger than the present part.**
-//! [`avg_cdf_symbol`] is the primitive, and [`SbCdfSource`] /
-//! [`select_sb_cdf_source`] are the selection policy. The full
-//! `avg_cdf_symbols` / `avg_nmv` field enumeration — sixty-odd CDF arrays
-//! walked in a fixed order — is NOT here: it belongs with whoever owns the
-//! crate's `FrameContext` type, and duplicating that enumeration in this lane
-//! would create two lists that must agree. [`AvgCdfPlan`] is the shape such a
-//! port should drive this primitive with, and the weights are named
-//! constants so the caller cannot guess them.
+//! **Evidence.** `avg_cdf_symbol` / `avg_cdf_symbols` survive C's Release
+//! build only with both weights constant-propagated out, so they cannot be
+//! bound (`svtav1-cref/build.rs` `link_globalized_enc_dec_statics` refuses to
+//! promote them). The selection rule is checked end to end instead:
+//! `tools/tile_gate.sh` pins multi-tile-row and multi-tile-column cells at
+//! allintra preset 6 (`update_cdf_level` 2, so `cdf_ctrl.update_se` is on
+//! and this chain prices every SB) IDENTICAL to C, including the 512x384
+//! and 640x448 ragged geometries.
 
 /// C `AVG_CDF_WEIGHT_LEFT` (enc_dec_process.c:2540). The LEFT neighbour is
 /// weighted 3x — it is the more recently adapted of the two.
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
 pub const AVG_CDF_WEIGHT_LEFT: i32 = 3;
 /// C `AVG_CDF_WEIGHT_TOP` (enc_dec_process.c:2541).
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
 pub const AVG_CDF_WEIGHT_TOP: i32 = 1;
-
-/// C `avg_cdf_symbol` (enc_dec_process.c:2543).
-///
-/// A rounded weighted average of two CDF tables, IN PLACE into `left`.
-///
-/// Three details that a natural rewrite gets wrong:
-///
-/// * **The inner loop is `j <= nsymbs`, not `j < nsymbs`.** An AV1 CDF array
-///   of `n` symbols has `n + 1` entries — `n` probabilities plus the trailing
-///   adaptation counter — and the counter is averaged along with them. Using
-///   `<` would leave the counter unblended and slowly desynchronise the
-///   adaptation rate.
-/// * **`cdf_stride` is not `nsymbs + 1`.** C's `AVG_CDF_STRIDE` macro derives
-///   `num_cdfs` from `sizeof(array) / cdf_stride` and passes `CDF_SIZE(nsymbs)`
-///   as the stride, which is `nsymbs + 1` ROUNDED UP for alignment in several
-///   tables. Rows are therefore strided, and entries past `nsymbs` in each row
-///   are skipped.
-/// * **The rounding is `+ (wt_left + wt_tr) / 2` before an integer divide**,
-///   i.e. round-half-up on a non-negative numerator — not a shift, and not
-///   round-to-even.
-///
-/// The arithmetic is done in `i32` because C's is: each CDF entry is a
-/// `uint16_t` promoted to `int`, and the products cannot exceed
-/// `32768 * 3 + 32768 * 1`.
-///
-/// # Panics
-/// When `left` or `tr` is shorter than `num_cdfs * cdf_stride`, or when
-/// `wt_left + wt_tr` is zero (C would divide by zero).
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
-pub fn avg_cdf_symbol(
-    left: &mut [u16],
-    tr: &[u16],
-    num_cdfs: usize,
-    cdf_stride: usize,
-    nsymbs: usize,
-    wt_left: i32,
-    wt_tr: i32,
-) {
-    let total = wt_left + wt_tr;
-    assert!(total != 0, "avg_cdf_symbol: zero total weight");
-    assert!(nsymbs < cdf_stride, "avg_cdf_symbol: nsymbs >= cdf_stride");
-    assert!(left.len() >= num_cdfs * cdf_stride);
-    assert!(tr.len() >= num_cdfs * cdf_stride);
-    for i in 0..num_cdfs {
-        let base = i * cdf_stride;
-        // `j <= nsymbs`: the trailing adaptation counter is averaged too.
-        for j in 0..=nsymbs {
-            let l = i32::from(left[base + j]);
-            let t = i32::from(tr[base + j]);
-            left[base + j] = ((l * wt_left + t * wt_tr + total / 2) / total) as u16;
-        }
-    }
-}
-
-/// One entry of the table C's `AVERAGE_CDF` / `AVG_CDF_STRIDE` macros expand
-/// to: a CDF array, how many symbols it codes, and its row stride.
-///
-/// C derives `num_cdfs` at each macro expansion from `sizeof(array) /
-/// cdf_stride`, so the count is a property of the array and not something a
-/// caller supplies. A port of the full `avg_cdf_symbols` should compute it the
-/// same way from its own array lengths rather than hard-coding sixty numbers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
-pub struct AvgCdfPlan {
-    /// C `nsymbs`.
-    pub nsymbs: usize,
-    /// C `cdf_stride`, i.e. `CDF_SIZE(nsymbs)` at most call sites but NOT at
-    /// all of them — several tables pass an explicit larger stride.
-    pub cdf_stride: usize,
-}
-
-impl AvgCdfPlan {
-    /// C `AVERAGE_CDF(l, r, nsymbs)`, whose stride is `CDF_SIZE(nsymbs)`.
-    #[must_use]
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-        )
-    )]
-    pub const fn average_cdf(nsymbs: usize) -> Self {
-        Self {
-            nsymbs,
-            cdf_stride: nsymbs + 1,
-        }
-    }
-
-    /// C `AVG_CDF_STRIDE(l, r, nsymbs, cdf_stride)`.
-    #[must_use]
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-        )
-    )]
-    pub const fn with_stride(nsymbs: usize, cdf_stride: usize) -> Self {
-        Self { nsymbs, cdf_stride }
-    }
-
-    /// C's `num_cdfs = array_size / cdf_stride`.
-    #[must_use]
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-        )
-    )]
-    pub const fn num_cdfs(&self, array_len: usize) -> usize {
-        array_len / self.cdf_stride
-    }
-
-    /// Apply this plan to one array pair with the encoder's weights.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-        )
-    )]
-    pub fn apply(&self, left: &mut [u16], tr: &[u16]) {
-        let n = self.num_cdfs(left.len().min(tr.len()));
-        avg_cdf_symbol(
-            left,
-            tr,
-            n,
-            self.cdf_stride,
-            self.nsymbs,
-            AVG_CDF_WEIGHT_LEFT,
-            AVG_CDF_WEIGHT_TOP,
-        );
-    }
-}
 
 /// Where a superblock's starting entropy context comes from.
 ///
@@ -224,14 +42,6 @@ impl AvgCdfPlan {
 /// LEFT context in first and then averages the top-right INTO it, so the
 /// left neighbour is both the base and the 3x-weighted term.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
 pub enum SbCdfSource {
     /// `pcs->md_frame_context` — the frame's initial (previous-frame-adapted)
     /// context.
@@ -246,14 +56,6 @@ pub enum SbCdfSource {
 
 /// The picture-level knobs `select_sb_cdf_source` reads.
 #[derive(Clone, Copy, Debug, Default)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
 pub struct SbCdfConfig {
     /// `pcs->cdf_ctrl.enabled` — 1 if mv, se or coeff CDF update is on.
     pub cdf_enabled: bool,
@@ -278,14 +80,6 @@ pub struct SbCdfConfig {
 /// TILE bounds — an SB at a tile's left edge has no left neighbour even when
 /// it has one in the picture.
 #[must_use]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
 pub fn select_sb_cdf_source(
     cfg: &SbCdfConfig,
     sb_index: u32,
@@ -322,58 +116,6 @@ pub fn select_sb_cdf_source(
     })
 }
 
-/// C `copy_mv_rate` (enc_dec_process.c:36).
-///
-/// Copies the MV rate tables from the picture's shared estimator into a
-/// per-thread one, and then re-points two stack pointers into the copy.
-///
-/// **Only ONE of the two cost tables is copied**, selected by
-/// `allow_high_precision_mv` — the other is left holding whatever the
-/// destination had. That is safe in C only because the stack pointers below
-/// select the same table, so nothing reads the stale one; a port that copied
-/// both "to be safe" would be doing more work for no observable difference,
-/// and one that copied the wrong one would be silently wrong. Returning which
-/// table is live makes the coupling explicit.
-///
-/// The pointer re-pointing itself (`nmvcoststack[i] = &table[i][MV_MAX]`) is
-/// C's way of giving the cost lookup a zero-centred index; a Rust port
-/// indexes `table[i][MV_MAX + mv]` instead and needs no pointers, so this
-/// function returns the SELECTION and leaves the indexing to the caller.
-#[must_use]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
-pub fn copy_mv_rate(allow_high_precision_mv: bool) -> MvRateTable {
-    if allow_high_precision_mv {
-        MvRateTable::HighPrecision
-    } else {
-        MvRateTable::Regular
-    }
-}
-
-/// Which of `MdRateEstimationContext`'s two MV cost tables is live for this
-/// frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
-    )
-)]
-pub enum MvRateTable {
-    /// `nmv_costs`, used when `allow_high_precision_mv` is 0.
-    Regular,
-    /// `nmv_costs_hp`, used when it is 1.
-    HighPrecision,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,64 +124,6 @@ mod tests {
     /// why tier 1 is not reachable (both C symbols have a constant-propagated
     /// ABI). Vectors are hand-derived from the C source at the cited lines.
     const _: () = ();
-
-    /// `avg_cdf_symbol` (:2543): the rounded 3:1 blend, and the `j <= nsymbs`
-    /// bound that includes the trailing adaptation counter.
-    #[test]
-    fn avg_cdf_symbol_blends_three_to_one_and_includes_the_counter() {
-        // One CDF of 2 symbols: stride 3, entries [p0, p1, counter].
-        let mut left = vec![1000u16, 2000, 4];
-        let tr = vec![2000u16, 6000, 8];
-        avg_cdf_symbol(&mut left, &tr, 1, 3, 2, 3, 1);
-        // (1000*3 + 2000*1 + 2) / 4 == 1250
-        assert_eq!(left[0], 1250);
-        // (2000*3 + 6000*1 + 2) / 4 == 3000
-        assert_eq!(left[1], 3000);
-        // The COUNTER is averaged too: (4*3 + 8*1 + 2) / 4 == 5
-        assert_eq!(left[2], 5);
-    }
-
-    /// The rounding is `+ total/2` then truncating divide — round-half-up,
-    /// not a shift and not round-to-even.
-    #[test]
-    fn avg_cdf_symbol_rounds_half_up() {
-        // (1*3 + 3*1 + 2) / 4 == 2  (exact 1.5 rounds UP)
-        let mut left = vec![1u16, 0];
-        let tr = vec![3u16, 0];
-        avg_cdf_symbol(&mut left, &tr, 1, 2, 0, 3, 1);
-        assert_eq!(left[0], 2);
-        // (2*3 + 3*1 + 2) / 4 == 2  (2.25 rounds DOWN)
-        let mut left = vec![2u16, 0];
-        let tr = vec![3u16, 0];
-        avg_cdf_symbol(&mut left, &tr, 1, 2, 0, 3, 1);
-        assert_eq!(left[0], 2);
-    }
-
-    /// Entries past `nsymbs` in a strided row are NOT touched — the stride can
-    /// exceed `nsymbs + 1`.
-    #[test]
-    fn avg_cdf_symbol_skips_the_stride_padding() {
-        // Two CDFs of 1 symbol at stride 4: entries 0,1 blended; 2,3 padding.
-        let mut left = vec![100u16, 4, 7777, 8888, 200, 6, 9999, 1111];
-        let tr = vec![200u16, 8, 0, 0, 400, 10, 0, 0];
-        avg_cdf_symbol(&mut left, &tr, 2, 4, 1, 3, 1);
-        assert_eq!(left[0], (100 * 3 + 200 + 2) / 4);
-        assert_eq!(left[1], (4 * 3 + 8 + 2) / 4);
-        assert_eq!(left[2], 7777, "stride padding must be untouched");
-        assert_eq!(left[3], 8888, "stride padding must be untouched");
-        assert_eq!(left[4], (200 * 3 + 400 + 2) / 4);
-        assert_eq!(left[6], 9999);
-    }
-
-    /// `AvgCdfPlan::num_cdfs` reproduces C's `sizeof(array) / cdf_stride`.
-    #[test]
-    fn avg_cdf_plan_derives_the_count_from_the_array() {
-        let p = AvgCdfPlan::average_cdf(3); // stride 4
-        assert_eq!(p.cdf_stride, 4);
-        assert_eq!(p.num_cdfs(40), 10);
-        let q = AvgCdfPlan::with_stride(3, 8);
-        assert_eq!(q.num_cdfs(40), 5);
-    }
 
     fn cfg(enabled: bool, pic_based: bool, rows: u32, cols: u32) -> SbCdfConfig {
         SbCdfConfig {
@@ -505,12 +189,5 @@ mod tests {
         // strictness of that comparison is called out here.
         assert_eq!(pick(64, 64, 32), SbCdfSource::Left);
         assert_eq!(pick(64, 64, 16), SbCdfSource::Left);
-    }
-
-    /// `copy_mv_rate` (:36) copies exactly ONE of the two tables.
-    #[test]
-    fn copy_mv_rate_selects_one_table() {
-        assert_eq!(copy_mv_rate(true), MvRateTable::HighPrecision);
-        assert_eq!(copy_mv_rate(false), MvRateTable::Regular);
     }
 }

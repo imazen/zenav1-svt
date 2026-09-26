@@ -1394,60 +1394,57 @@ pub(super) fn encode_one_tile_body(
             // the variance is recomputed from the coded source instead.
             let sb_stale_vars: Option<&crate::pd0::SbVariance> =
                 stale_vars.and_then(|v| v.get(sb_row * sb_cols + sb_col));
-            // PORT-NOTE(unverified): `chain_snaps` is a PER-TILE
-            // accumulator (pushed once per SB in this tile's own
-            // raster order, starting empty at tile_idx's first SB —
-            // see the push site below), so it must be indexed
-            // TILE-LOCALLY, not by the absolute frame-wide `sb_index`.
-            // Before task #86 `tile_rows` was always 1 (tile_idx == 0,
-            // tile_sb_row_start == 0), so local == absolute and this
-            // bug was unreachable — real `--tile-rows` use is what
-            // exposed it (`sb_index - 1` / `sb_index - sb_cols + 1`
-            // underflowed/out-of-bounded on tile_idx >= 1, a hard
-            // panic, not a byte divergence). `topright_avail`'s row
-            // check now gates on the TILE's own top row
-            // (`sb_row > tile_sb_row_start`), matching this being a
-            // per-tile-reset rate-ESTIMATE chain (mirrors the real
-            // entropy walk's per-tile above-context reset in
-            // `run_entropy_walk`) — not verified against C's own
-            // per-tile `ec_ctx_array` neighbor rule at a tile-row
-            // boundary specifically (only the single-tile-frame shape
-            // was ever C-cross-checked); this only affects MD RATE
-            // ESTIMATES (candidate cost comparisons), never the
-            // coded bitstream, whose entropy state comes from the
-            // separately-reset `run_entropy_walk`.
+            // `chain_snaps` is a PER-TILE accumulator (pushed once per SB
+            // in this tile's raster order, starting empty at the tile's
+            // first SB), so it is indexed TILE-LOCALLY: the top-right SB
+            // is `local - tile_sb_cols + 1`, the same SB C reaches with
+            // `sb_index - pic_width_in_sb + 1`. This chain only prices MD
+            // candidates; the coded bitstream's entropy state comes from
+            // the separately reset `run_entropy_walk`.
             let local_sb_index =
                 (sb_row - tile_sb_row_start) * tile_sb_cols + (sb_col - tile_sb_col_start);
             let chain_base = if funnel_chain {
                 // C `ec_ctx_array[sb]` neighbor rule for the rate-estimation
-                // CDF (enc_dec_process.c:3002-3022). `pic_based_rate_est` is
-                // only ever false (enc_handle.c), so the weighted-average
-                // branch always runs. Availability predicates match C for a
-                // single-tile SB-aligned frame: left = not tile-left column,
-                // top-right = not tile-top row AND the SB one to the right
-                // exists (so the last column has no top-right).
-                let left_avail = sb_col > tile_sb_col_start;
-                let topright_avail = sb_row > tile_sb_row_start && sb_col + 1 < tile_sb_col_end;
-                if left_avail && topright_avail {
-                    // both -> copy left, then avg with top-right (3:1).
-                    // C AVG_CDF_WEIGHT_LEFT / AVG_CDF_WEIGHT_TOP
-                    // (enc_dec_process.c:2665-2666, :3016-3021).
-                    const WT_LEFT: i32 = 3;
-                    const WT_TOP: i32 = 1;
-                    let mut base = chain_snaps[local_sb_index - 1].clone();
-                    let tr = &chain_snaps[local_sb_index - tile_sb_cols + 1];
-                    base.0.avg_cdf_with(&tr.0, WT_LEFT, WT_TOP);
-                    base.1.avg_cdf_with(tr.1.as_ref(), WT_LEFT, WT_TOP);
-                    Some(base)
-                } else if left_avail {
-                    // left only -> copy left (sb-1)
-                    Some(chain_snaps[local_sb_index - 1].clone())
-                } else if topright_avail {
-                    // top-right only -> copy top-right (sb - tile_sb_cols + 1)
-                    Some(chain_snaps[local_sb_index - tile_sb_cols + 1].clone())
-                } else {
-                    // neither -> md_frame_context (default)
-                    None
+                // CDF (enc_dec_process.c:2866-2899). `pic_based_rate_est` is
+                // only ever false (enc_handle.c), so the availability ladder
+                // always runs. The tile's column end is given on the SB grid;
+                // C's `mi_col_end` is the aligned frame edge for the last
+                // tile, and `(sb_x + sb) >> 2 < mi_col_end` agrees with the
+                // SB-grid test either way because the last SB always ends at
+                // or past that edge.
+                use crate::port_enc_dec_cdf::{
+                    AVG_CDF_WEIGHT_LEFT, AVG_CDF_WEIGHT_TOP, SbCdfConfig, SbCdfSource,
+                    select_sb_cdf_source,
+                };
+                let mi = |sb: usize| (sb * sb_size / 4) as i32;
+                let src = select_sb_cdf_source(
+                    &SbCdfConfig {
+                        cdf_enabled: true,
+                        ..SbCdfConfig::default()
+                    },
+                    local_sb_index as u32,
+                    (sb_col * sb_size) as u32,
+                    (sb_row * sb_size) as u32,
+                    sb_size.trailing_zeros(),
+                    mi(tile_sb_row_start),
+                    mi(tile_sb_col_start),
+                    mi(tile_sb_col_end),
+                );
+                let left = || chain_snaps[local_sb_index - 1].clone();
+                let top_right = || &chain_snaps[local_sb_index - tile_sb_cols + 1];
+                match src.expect("cdf_enabled") {
+                    SbCdfSource::LeftBlendedWithTopRight => {
+                        let mut base = left();
+                        let tr = top_right();
+                        base.0
+                            .avg_cdf_with(&tr.0, AVG_CDF_WEIGHT_LEFT, AVG_CDF_WEIGHT_TOP);
+                        base.1
+                            .avg_cdf_with(tr.1.as_ref(), AVG_CDF_WEIGHT_LEFT, AVG_CDF_WEIGHT_TOP);
+                        Some(base)
+                    }
+                    SbCdfSource::Left => Some(left()),
+                    SbCdfSource::TopRight => Some(top_right().clone()),
+                    SbCdfSource::FrameContext => None,
                 }
             } else {
                 None
