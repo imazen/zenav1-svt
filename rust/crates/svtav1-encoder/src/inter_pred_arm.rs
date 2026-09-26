@@ -1282,6 +1282,10 @@ pub fn predict_inter_yuv_compound_md(
                 wedge,
                 bsize,
                 mask_type: *mask_type,
+                // Ghost Robot f67a0f747's caller-ss arm is envelope-inert
+                // here: the only chroma the port codes is 4:2:0, so the
+                // caller's ss IS (1,1) — the value the derivation yields.
+                masked_warp_uses_caller_ss: false,
             });
         }
         enc_make_inter_predictor(
@@ -1345,6 +1349,7 @@ pub fn predict_inter_yuv_compound_md(
                     wedge,
                     bsize,
                     mask_type: *mask_type,
+                    masked_warp_uses_caller_ss: false,
                 });
             }
             enc_make_inter_predictor(
@@ -1456,6 +1461,10 @@ pub fn predict_inter_yuv_compound_md_hbd(
                 wedge,
                 bsize,
                 mask_type: *mask_type,
+                // Ghost Robot f67a0f747's caller-ss arm is envelope-inert
+                // here: the only chroma the port codes is 4:2:0, so the
+                // caller's ss IS (1,1) — the value the derivation yields.
+                masked_warp_uses_caller_ss: false,
             });
         }
         enc_make_inter_predictor(
@@ -1515,6 +1524,7 @@ pub fn predict_inter_yuv_compound_md_hbd(
                     wedge,
                     bsize,
                     mask_type: *mask_type,
+                    masked_warp_uses_caller_ss: false,
                 });
             }
             enc_make_inter_predictor(

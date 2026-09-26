@@ -241,6 +241,9 @@ fn run(cell: &Cell, seed: u32) {
         wedge: &wedge,
         bsize,
         mask_type: cell.masked.unwrap().1,
+        // Ghost Robot f67a0f747: the masked-warp leaf reads the caller's
+        // `ss_x`/`ss_y` instead of deriving `plane == 0 ? 0 : 1`.
+        masked_warp_uses_caller_ss: svtav1_cref::ORACLE_NAME == "ghost-robot",
     });
     enc_make_inter_predictor(
         src,
@@ -602,6 +605,7 @@ fn warp_without_a_model_is_refused() {
             wedge: &wedge,
             bsize: 3,
             mask_type: DiffwtdMaskType::D38,
+            masked_warp_uses_caller_ss: false,
         });
         let err = enc_make_inter_predictor(
             SrcPlanes::Lbd(&p.msb),

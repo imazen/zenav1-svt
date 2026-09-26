@@ -2246,10 +2246,17 @@ void ref_get_block_hash_value(const uint8_t* src, int32_t stride, int32_t block_
 
 extern AomVarianceFnPtr svt_aom_mefn_ptr[BLOCK_SIZES_ALL];
 
-/* av1me.c:291 (EXPORTED, no header decl — the direct-call `_c` name). */
+/* av1me.c:291 (EXPORTED, no header decl — the direct-call `_c` name).
+ * Ghost Robot 0a1cc6492 passes `center_mv` BY VALUE. */
+#ifdef ZEN_ORACLE_MV_BY_VALUE
+int svt_av1_diamond_search_sad_c(IntraBcContext* x, const SearchSiteConfig* cfg, Mv* ref_mv,
+                                 Mv* best_mv, int search_param, int sad_per_bit, int* num00,
+                                 const AomVarianceFnPtr* fn_ptr, const Mv center_mv);
+#else
 int svt_av1_diamond_search_sad_c(IntraBcContext* x, const SearchSiteConfig* cfg, Mv* ref_mv,
                                  Mv* best_mv, int search_param, int sad_per_bit, int* num00,
                                  const AomVarianceFnPtr* fn_ptr, const Mv* center_mv);
+#endif
 
 /* Kernel oracles: the EXACT sdf/vf the search binds for this bsize (RTCD-
  * resolved function pointers captured by init_fn_ptr — includes any SIMD
@@ -2320,7 +2327,7 @@ int32_t ref_diamond_search(const uint8_t* pic, int32_t stride, int32_t x_pos, in
     int num00   = 0;
     int bestsad = svt_av1_diamond_search_sad_c(&x, &cfg, &mvp_full, &best, search_param,
                                                sad_per_bit, &num00, &svt_aom_mefn_ptr[bsize],
-                                               &center);
+                                               ZEN_MV_ARG(center));
     *out_x     = best.x;
     *out_y     = best.y;
     *out_num00 = num00;

@@ -128,6 +128,13 @@ pub struct MaskedCompound<'a> {
     /// port's [`InterInterCompoundData`] carries only the three fields the
     /// BLEND reads, so the DIFFWTD mask builder's input rides here.
     pub mask_type: DiffwtdMaskType,
+    /// Ghost Robot `f67a0f747` (High Profile): the masked-warp leaf
+    /// (`av1_make_masked_warp_inter_predictor`, :1633) takes `ss_x`/`ss_y`
+    /// as parameters instead of deriving `plane == 0 ? 0 : 1` (:1657).
+    /// `true` selects that; `false` keeps the mainline/hybrid derivation.
+    /// On the port's 4:2:0 envelope the two agree, so only a differential
+    /// that passes chroma with `ss = (0, 0)` can tell them apart.
+    pub masked_warp_uses_caller_ss: bool,
 }
 
 /// What this entry refuses rather than approximating.
@@ -465,8 +472,15 @@ fn warp_leaf(
     // The leaf derives its OWN subsampling (:1657), and its `p_stride` is
     // `MAX_SB_SQUARE` into a scratch one row long — dead because this leaf is
     // always compound with `do_average == 0`. An empty slice keeps it dead
-    // LOUDLY: a live write panics rather than corrupting.
-    let (mss_x, mss_y) = if plane == 0 { (0, 0) } else { (1, 1) };
+    // LOUDLY: a live write panics rather than corrupting. Ghost Robot
+    // `f67a0f747` instead takes the caller's `ss_x`/`ss_y` outright.
+    let (mss_x, mss_y) = if m.masked_warp_uses_caller_ss {
+        (ss_x, ss_y)
+    } else if plane == 0 {
+        (0, 0)
+    } else {
+        (1, 1)
+    };
     let mut dead_pred_l: [u8; 0] = [];
     let mut dead_pred_h: [u16; 0] = [];
     let cp = to_warp_params(&own);

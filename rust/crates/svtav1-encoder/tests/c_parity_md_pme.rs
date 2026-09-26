@@ -123,18 +123,37 @@ fn sad_per_bit_matches_c_exhaustively() {
 // cost table.
 // ---------------------------------------------------------------------------
 
+/// The `SvtReference` matching the linked C oracle.
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
+fn ghost_robot() -> bool {
+    reference() == svtav1_encoder::reference::SvtReference::GhostRobot
+}
+
 #[test]
 fn fp_mv_err_cost_matches_c_across_every_cost_type() {
     let t = build_tables(0xFEED_2026_0831_0002);
     let mut rng = Rng(0xC057_2026_0831_0002);
-    let types = [
-        (0, rpme::MvCostType::Entropy),
-        (1, rpme::MvCostType::L1LowRes),
-        (2, rpme::MvCostType::L1MidRes),
-        (3, rpme::MvCostType::L1HdRes),
-        (4, rpme::MvCostType::Opt),
-        (5, rpme::MvCostType::None),
-    ];
+    // Ghost Robot `0a1cc6492` shrank MV_COST_TYPE to {ENTROPY, OPT, NONE}
+    // = {0,1,2}; the L1 variants do not exist there.
+    let types: &[(i32, rpme::MvCostType)] = if ghost_robot() {
+        &[
+            (0, rpme::MvCostType::Entropy),
+            (1, rpme::MvCostType::Opt),
+            (2, rpme::MvCostType::None),
+        ]
+    } else {
+        &[
+            (0, rpme::MvCostType::Entropy),
+            (1, rpme::MvCostType::L1LowRes),
+            (2, rpme::MvCostType::L1MidRes),
+            (3, rpme::MvCostType::L1HdRes),
+            (4, rpme::MvCostType::Opt),
+            (5, rpme::MvCostType::None),
+        ]
+    };
     let mut nonzero = 0usize;
     let mut checked = 0usize;
     let cref = t.c_ref();
@@ -150,7 +169,7 @@ fn fp_mv_err_cost_matches_c_across_every_cost_type() {
             y: (rng.below(8000) as i32 - 4000) as i16,
         };
         let epb = 1 + rng.below(4096) as i32;
-        for (ct_c, ct_r) in types {
+        for &(ct_c, ct_r) in types {
             // `use_tables == false` is compared only for the arms that
             // never touch the table. C's ENTROPY arm guards on
             // `if (mvcost)`, but `mvcost` is an ARRAY member and can
@@ -186,9 +205,10 @@ fn fp_mv_err_cost_matches_c_across_every_cost_type() {
             }
         }
     }
-    // 6 cost types x 2 table choices, minus the ENTROPY-without-table
-    // combination that C cannot survive.
-    assert_eq!(checked, 2000 * (6 * 2 - 1));
+    // N cost types x 2 table choices, minus the ENTROPY-without-table
+    // combination that C cannot survive (N = 6 on the older oracles, 3 on
+    // Ghost Robot).
+    assert_eq!(checked, 2000 * (types.len() * 2 - 1));
     assert!(
         nonzero > checked / 4,
         "positive control: only {nonzero} of {checked} costs were non-zero"
@@ -316,8 +336,12 @@ fn pme_sad_loop_kernel_matches_c() {
         for saw in [8i16, 9, 15, 16, 17, 24] {
             for sah in [1i16, 3, 8] {
                 for step in [1i16, 2, 4] {
-                    for (ct_c, ct_r) in [(0, rpme::MvCostType::Entropy), (4, rpme::MvCostType::Opt)]
-                    {
+                    // Ghost Robot `0a1cc6492`: MV_COST_OPT is enum 1 on
+                    // the fork (4 on the older oracles).
+                    for (ct_c, ct_r) in [
+                        (0, rpme::MvCostType::Entropy),
+                        (if ghost_robot() { 1 } else { 4 }, rpme::MvCostType::Opt),
+                    ] {
                         let (c, r) =
                             one_kernel_case(&mut rng, &t, bw, bh, saw, sah, step, ct_c, ct_r);
                         assert_eq!(

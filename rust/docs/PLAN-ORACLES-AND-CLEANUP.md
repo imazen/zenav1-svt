@@ -374,11 +374,29 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `ZEN_ORACLE_CTX_SUBSAMP`. Production callers do not exist (the MDS0
     intra fast-cost path lives in `leaf_funnel/mds3`, which has its own
     rate path) — the field exists for the differential only.
-  - Remaining 19: `md_subpel` (10), `md_pme` (2) — all the `0a1cc6492`
-    MV-cost cleanup (enum `MV_COST_TYPE` shrinks to ENTROPY/OPT/NONE,
-    `svt_mv_err_cost` by-value) — `rc_vbr_cbr_qpick`, `noise_gen` tables,
-    `inter_mvp` setup, `intrabc_search` diamond, `dist_facade`,
-    `enc_make_pred` masked-warp subsampling.
+  - `0a1cc6492` ("MV cost + subpel search cleanup", lands as a port +
+    harness batch): the search bodies are semantically identical to the
+    port under every reachable input — cost/best_mv matched on all 10
+    `md_subpel` cells — so the divergences were encoding/harness, not
+    algorithm. (a) The `MV_COST_TYPE` enum shrinks to {ENTROPY, OPT, NONE}
+    = {0,1,2}; the c-parity sweeps now map per-oracle (`cost_types()` /
+    `mv_cost_type_index` in `c_parity_md_subpel`, the `types` pair list in
+    `c_parity_md_pme`), and `MaskedCompound`/`warp_leaf` gained
+    `masked_warp_uses_caller_ss` for `f67a0f747`'s `ss_x`/`ss_y` params on
+    `av1_make_masked_warp_inter_predictor` (envelope-inert in production —
+    the port's only chroma is 4:2:0, where caller ss IS the derived
+    (1,1)). (b) `ref_diamond_search` had passed `&center` where GR's
+    signature is by-value `const Mv center_mv` — a real ABI mismatch that
+    made C read a pointer's low bits as the search centre; the extern decl
+    and call now route through `ZEN_MV_ARG`. (c) `distortion`/`sse1` out
+    params dropped upstream — the tree assert compares them only where the
+    oracle can answer. 15 divergences closed: md_subpel x10, md_pme x2,
+    intrabc diamond, enc_make_pred masked-warp (and one ratchet line more
+    than the brief's count — the sentinel-only fails were all the same
+    change).
+  - Remaining 4: `rc_vbr_cbr_qpick` `calc_qindex_rate_control`,
+    `noise_gen` tables, `inter_mvp` `setup_ref_mv_list_inter`,
+    `dist_facade` `full_distortion32`.
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0
   ac-bias dampening (`c65c2bfa`), chroma noise `pow(luma, 0.75)`
   (`9f54af57`), delta-q all-skip (`2f08c8e8`), lossless across tunes

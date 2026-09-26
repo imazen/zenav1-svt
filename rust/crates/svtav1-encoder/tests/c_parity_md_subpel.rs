@@ -166,8 +166,31 @@ struct Cell {
     with_tables: bool,
 }
 
+/// The `SvtReference` matching the linked C oracle.
+fn reference() -> svtav1_encoder::reference::SvtReference {
+    svtav1_encoder::reference::SvtReference::for_oracle_name(svtav1_cref::ORACLE_NAME)
+}
+
+fn ghost_robot() -> bool {
+    reference() == svtav1_encoder::reference::SvtReference::GhostRobot
+}
+
+/// C `MV_COST_TYPE` raw index for `t`. Ghost Robot `0a1cc6492` shrank the
+/// enum to {ENTROPY, OPT, NONE} — the L1 variants are gone and OPT/NONE
+/// moved to slots 1/2.
 fn mv_cost_type_index(t: MvCostType) -> i32 {
-    t as i32
+    if ghost_robot() {
+        match t {
+            MvCostType::Entropy => 0,
+            MvCostType::Opt => 1,
+            MvCostType::None => 2,
+            // Unreachable — `cost_types()` only yields the three GR variants
+            // when the linked oracle is the fork.
+            _ => panic!("MV_COST_TYPE {t:?} does not exist on Ghost Robot"),
+        }
+    } else {
+        t as i32
+    }
 }
 
 /// Run one cell on both sides and assert every observable agrees.
@@ -299,12 +322,21 @@ fn run_cell(c: &Cell, p: &Planes, t: &Tables, w: usize, h: usize, label: &str) {
         )
     };
 
+    // Ghost Robot `0a1cc6492` dropped the `distortion`/`sse1` out params
+    // of `fractional_mv_step_fp` — the shim reports sentinels there, so
+    // only `besterr`/`best_mv` are comparable. The port still computes both
+    // (mainline semantics); where the oracle can answer they must match.
+    let ours_tail: (i32, u32) = if ghost_robot() {
+        (-1, u32::MAX)
+    } else {
+        (st.distortion, st.sse1)
+    };
     assert_eq!(
         (
             besterr,
             (i32::from(st.best_mv.x), i32::from(st.best_mv.y)),
-            st.distortion,
-            st.sse1
+            ours_tail.0,
+            ours_tail.1
         ),
         (cres.besterr, cres.best_mv, cres.distortion, cres.sse1),
         "{label}: pruned={} {w}x{h} start={:?} stop={} hp={} iters={} skip={} bias={} \
@@ -338,6 +370,16 @@ const COST_TYPES: [MvCostType; 6] = [
     MvCostType::Opt,
     MvCostType::None,
 ];
+/// Ghost Robot `0a1cc6492` deleted the three L1 arms.
+const COST_TYPES_GR: [MvCostType; 3] = [MvCostType::Entropy, MvCostType::Opt, MvCostType::None];
+
+fn cost_types() -> &'static [MvCostType] {
+    if ghost_robot() {
+        &COST_TYPES_GR
+    } else {
+        &COST_TYPES
+    }
+}
 
 fn base_cell(bsize: BlockSize, pruned: bool) -> Cell {
     Cell {
@@ -413,7 +455,7 @@ fn pruned_tree_matches_c_across_mv_cost_types() {
     for &bsize in &SIZES {
         let (w, h) = dims(bsize);
         let p = make_planes(w, h, 8, &mut rng, false);
-        for &ct in &COST_TYPES {
+        for &ct in cost_types() {
             for &epb in &[0i32, 7, 40, 255] {
                 for &eeth in &[100i32, 1000, 5000] {
                     // `with_tables = false` is C's null `mvcost[i]`. On the
@@ -523,7 +565,7 @@ fn unpruned_tree_matches_c_across_mv_cost_types_and_bias() {
     for &bsize in &SIZES {
         let (w, h) = dims(bsize);
         let p = make_planes(w, h, 8, &mut rng, false);
-        for &ct in &COST_TYPES {
+        for &ct in cost_types() {
             for &bias in &[0i32, 90, 110] {
                 for &tight in &[false, true] {
                     let mut c = base_cell(bsize, false);
@@ -600,7 +642,7 @@ fn randomised_sweep_matches_c() {
             c.skip_diag_refinement = rng.below(6) as u8;
             c.subpel_search_type = 1 + rng.below(3) as i32;
             c.bias_fp = [0i32, 60, 95, 105, 150][rng.below(5) as usize];
-            c.mv_cost_type = COST_TYPES[rng.below(6) as usize];
+            c.mv_cost_type = cost_types()[rng.below(cost_types().len() as u64) as usize];
             c.error_per_bit = [0i32, 3, 40, 200][rng.below(4) as usize];
             c.early_exit_th = [50i32, 500, 1000, 4000][rng.below(4) as usize];
             c.start_mv = Mv {
@@ -633,7 +675,7 @@ fn randomised_sweep_matches_c() {
 fn fp_mv_err_cost_matches_c() {
     let t = build_tables();
     let mut rng = Rng(0x3141_5926_5358_9793);
-    for &ct in &COST_TYPES {
+    for &ct in cost_types() {
         for &epb in &[0i32, 1, 7, 40, 128, 255, 1023] {
             for &with_tables in &[true, false] {
                 if !with_tables && ct == MvCostType::Entropy {
