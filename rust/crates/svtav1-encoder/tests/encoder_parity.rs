@@ -1,12 +1,14 @@
-//! Aggregated integration-test entry point.
+//! The encoder's C-parity differentials, compiled INTO the crate's
+//! unit-test binary (`src/lib.rs` includes this file under `#[cfg(test)]`,
+//! plan T2), so they reach `pub(crate)` items and hold no module public.
+//! `extern crate self as svtav1_encoder` keeps their paths unchanged.
 //!
 //! Every file in `tests/` used to be its own crate AND its own linked
 //! executable -- 182 of them workspace-wide, 76-97% DWARF each, 5.62 GB per
-//! clean build (measured 2026-09-09). Declaring them as modules of one target
-//! links once instead of once per file. The files are NOT moved, so every
+//! clean build (measured 2026-09-09). The files are NOT moved, so every
 //! `include_bytes!("data/...")` path still resolves.
 //!
-//! DELIBERATELY NOT MERGED, and each still its own `[[test]]` target:
+//! DELIBERATELY NOT INCLUDED, and each still its own `[[test]]` target:
 //!   * files calling `archmage::testing::for_each_token_permutation` or
 //!     `lock_token_testing` -- token disabling is PROCESS-WIDE, and this repo
 //!     also runs plain `cargo test` (threaded, one process) from CI and from

@@ -164,3 +164,13 @@ pub(crate) fn stop_check(stop: &dyn enough::Stop) -> EncodeResult<()> {
 
 #[cfg(test)]
 mod cancellation_tests;
+
+// The C-parity differentials (`tests/encoder_parity.rs` and the modules it
+// aggregates) compile INTO the crate's unit-test binary (plan T2), so they
+// reach `pub(crate)` items and do not hold modules public. The alias keeps
+// their `svtav1_encoder::...` paths resolving unchanged.
+#[cfg(test)]
+extern crate self as svtav1_encoder;
+#[cfg(test)]
+#[path = "../tests/encoder_parity.rs"]
+mod encoder_parity;

@@ -2,8 +2,10 @@
 """Every tests/*.rs file belongs to exactly one test target.
 
 Three crates set `autotests = false` and aggregate most integration tests as
-modules of one target (dsp_parity, encoder_parity, svtav1_suite) so they link
-once. A file that is ALSO declared as its own [[test]] compiles into two
+modules of one target (dsp_parity, svtav1_suite) so they link once. The
+encoder's aggregator, `tests/encoder_parity.rs`, is compiled INTO the lib's
+unit-test binary instead (`#[cfg(test)] #[path = "../tests/..."] mod` in
+src/lib.rs, plan T2); a file the lib includes that way counts as owned. A file that is ALSO declared as its own [[test]] compiles into two
 binaries and runs twice; a file in NEITHER never runs at all. Both happened
 (35a246eb3 merged; d2abc282b re-declared 162 merged files as standalone). This
 check fails on either, and prints the fix.
@@ -43,8 +45,13 @@ def main() -> int:
         if "autotests = false" not in toml:
             continue  # cargo discovers every file itself: one target each
         declared = {m.group(2).split("/")[-1]: m for m in TEST_BLOCK.finditer(toml)}
-        aggregated = {}
-        for fname in declared:
+        lib = crate / "src/lib.rs"
+        in_lib = set()
+        if lib.exists():
+            for m in re.finditer(r'#\[path\s*=\s*"\.\./tests/([^"/]+)"\]\s*mod\s+\w+;', lib.read_text()):
+                in_lib.add(m.group(1))
+        aggregated = {f: ["src/lib.rs"] for f in in_lib}
+        for fname in list(declared) + sorted(in_lib):
             for mod in modules_of(tests_dir / fname):
                 aggregated.setdefault(mod, []).append(fname)
         files = sorted(p.name for p in tests_dir.glob("*.rs"))
