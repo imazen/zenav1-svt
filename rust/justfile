@@ -3,6 +3,11 @@
 # Default recipe
 default: check
 
+# Every cheap static check CI runs (fmt, clippy inventory, the ledgers,
+# file sizes, env names, shard partition). Run before every push.
+precheck:
+    tools/precheck.sh
+
 # Check all crates compile
 check:
     cargo check --workspace

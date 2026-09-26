@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **8** name a configuration C v4.2.0 actually encodes — the
+refusals, **7** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
 `[C: ...]` marker at all.
 
@@ -48,7 +48,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
 | `crates/svtav1-encoder/src/pipeline/config_check.rs` | accepts VBR only outside LOW_DELAY, enc_settings.c:177 | VBR rate control is not implemented: the ported two-pass arm (`svt_aom_process_rc_stat`/`av1_set_target_rate`, pass2_strategy.c) needs first-pass statistics, and firstpass.c is not ported — wiring VBR without them would emit CRF-shaped output under a bitrate label. Use RcMode::Cbr (LOW_DELAY) or RcMode::Cqp/Crf |
 | `crates/svtav1-encoder/src/pipeline/frame_output.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
-| `crates/svtav1-encoder/src/pipeline/frame_output.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a model it could not code. This refusal is RETIRED — `port_entropy_inter::gm:: write_global_motion` codes the frame's real models — and reaching it means a caller constructed the variant by hand |
 | `crates/svtav1-encoder/src/pipeline/grain.rs` | accepts | film-grain denoise with 10-bit superres is not implemented: the native-input u8 canvas exists only after the u16 downscale, which runs after denoise — C's packed-buffer order has no u16 equivalent here |
 | `crates/svtav1-encoder/src/pipeline/ra.rs` | logs the same config as an error | this GOP shape's reference structure is not implemented: every top-level branch of C's av1_generate_rps_info is translated, so this is a case C itself rejects — LD-CBR outside hierarchical levels 1-2, or a mini-GOP position outside the ported tables |
 | `crates/svtav1-encoder/src/pipeline/superres.rs` | accepts | superres on an INTER frame is not implemented: stills are the measured surface and the reference-geometry signaling under a changing coded width is decoder-ungated (C accepts it — this is a port capability gap, not a C envelope) |
