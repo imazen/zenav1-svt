@@ -63,7 +63,7 @@ pub(crate) mod funnel_arm;
 pub mod hdr_mode;
 pub(crate) mod inter_hdr_arm;
 pub(crate) mod inter_md_arm;
-#[cfg_attr(not(feature = "__dead_code_audit"), allow(dead_code, unused_imports))]
+#[cfg_attr(not(feature = "__dead_code_audit"), allow(dead_code))]
 pub(crate) mod inter_me;
 pub(crate) mod inter_me_arm;
 #[cfg_attr(not(feature = "__dead_code_audit"), allow(dead_code))]

@@ -79,7 +79,7 @@ use alloc::{vec, vec::Vec};
 use svtav1_types::motion::{Mv, TransformationType, WarpedMotionParams};
 use svtav1_types::prediction::PredictionMode;
 
-pub use svtav1_types::reference::{INTRA_FRAME, LAST_FRAME, NONE_FRAME};
+pub use svtav1_types::reference::{INTRA_FRAME, NONE_FRAME};
 /// C `BI_PRED` — the `MeCandidate::direction` value for bi-prediction.
 pub const BI_PRED: u8 = 2;
 /// C `BIPRED_3x3_REFINMENT_POSITIONS` (mode_decision.c:807).

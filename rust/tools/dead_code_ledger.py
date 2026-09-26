@@ -33,7 +33,7 @@ LEDGER = RUST / "docs/DEAD-CODE.tsv"
 SRC = "crates/svtav1-encoder/src/"
 LIB = RUST / SRC / "lib.rs"
 ALLOW = re.compile(
-    r'#\[cfg_attr\(not\(feature = "__dead_code_audit"\), allow\([^)]*\)\)\]\n(?:#\[[^\n]*\]\n)*'
+    r'#\[cfg_attr\(not\(feature = "__dead_code_audit"\), allow\(([^)]*)\)\)\]\n(?:#\[[^\n]*\]\n)*'
     r'pub(?:\(crate\))? mod (\w+);'
 )
 LINTS = {"dead_code", "unused_imports"}
@@ -120,9 +120,14 @@ def main() -> int:
     )
     text = header + body
 
-    annotated = set(ALLOW.findall(LIB.read_text()))
-    stale = sorted(annotated - set(per_mod))
-    unannotated = sorted(set(per_mod) - annotated)
+    allowed = {}
+    for lints, mod in ALLOW.findall(LIB.read_text()):
+        allowed[mod] = {l.strip() for l in lints.split(",")}
+    needed = {}
+    for f, what, _ in non_test:
+        needed.setdefault(module_of(f), set()).add("unused_imports" if "import" in what else "dead_code")
+    stale = sorted(f"{m}: {l}" for m in allowed for l in allowed[m] - needed.get(m, set()))
+    unannotated = sorted(f"{m}: {l}" for m in needed for l in needed[m] - allowed.get(m, set()))
 
     if write:
         LEDGER.write_text(text)
@@ -138,10 +143,10 @@ def main() -> int:
         return 1
     bad = 0
     for m in stale:
-        print(f"dead_code_ledger: `{m}` carries the dead-code allow but has no dead item; remove it from src/lib.rs")
+        print(f"dead_code_ledger: `{m}` is allowed but nothing in the module needs it; narrow the allow in src/lib.rs")
         bad = 1
     for m in unannotated:
-        print(f"dead_code_ledger: `{m}` has dead items but no allow (the build would warn)")
+        print(f"dead_code_ledger: `{m}` fires but is not allowed (the build would warn)")
         bad = 1
     return bad
 

@@ -86,8 +86,4 @@ pub mod obmc_search;
 pub mod sad;
 pub mod tables;
 
-pub use b64::{init_me_hme_data, me_static_b64_bypass, motion_estimation_b64};
-pub use context::{
-    MeB64Output, MeCandidate, MeContext, MeDsRef, MePicParams, MeRefs, MeSrcBufs, MeType, Plane,
-    SearchArea, SearchAreaMinMax,
-};
+pub use b64::motion_estimation_b64;
