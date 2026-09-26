@@ -245,6 +245,18 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   levels): all 247 divergences are in the tile, 166 first at a tile op and
   81 with downstream frame-header differences too; no 10-bit cell matches.
   The upstream is mode decision / quantization (see below).
+  - Lead (2026-09-26, from the plan 1.4 dead-code triage, not yet tested):
+    Ghost Robot `f354a3224` made the per-SB variance map `double**`
+    (svt-av1-hdr `pcs.h:854`; mainline `SvtVarType**`, 16-bit) and changed
+    its computation (`pic_analysis_process.c`) and every reader
+    (`pd0_detector_allintra` accumulates in double, `enc_dec_process.c:2395`;
+    `mode_decision.c`, `product_coding_loop.c`, `segmentation.c`,
+    `rc_aq.c`). The port's live readers (`pd0/lambda.rs`
+    `pd0_detector_allintra_demotes`, `lvl6_cost_allintra`, the var-boost
+    path) take the 16-bit map on every reference; the fork arm exists only
+    as the unused `port_pd0_detector::accumulate_fork`. A precision
+    difference there moves PD0 levels, the max block size and per-SB
+    qindex before any MD candidate is priced.
   - Session findings (2026-09-27, `grst` workspace — investigation only,
     nothing landed):
     1. **The census "frame header" stage labels are mislabeled for every
