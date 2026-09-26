@@ -45,14 +45,15 @@ tools/oracle libdir ghost-robot     # where libSvtAv1Enc.a lives
 the port defaults to `Mainline420` to match; `SVT_HDR_MODE=1` still means
 `hybrid-3115-hdr`, the fork oracle until Ghost Robot replaces it. The
 C-parity suite (`svtav1-cref`) still builds the hybrid by default, because its
-fork-feature tests need a fork oracle. `just cparity-oracle <name>` builds in `target/oracle-<name>` inside the
+fork-feature tests need a fork oracle. A gate that pins byte-identity numbers
+must name its oracle explicitly in its header and its
+output, the way refusal strings carry their date.
+
+`just cparity-oracle <name>` builds in `target/oracle-<name>` inside the
 checkout. Never point two jj workspaces at one `CARGO_TARGET_DIR`: cargo
 names a workspace member's artifacts by its path relative to the workspace
 root, so one workspace silently runs the other's binaries (measured
-2026-09-26: a "main" Ghost Robot count was the sibling workspace's). A gate
-that pins
-byte-identity numbers must name its oracle explicitly in its header and its
-output, the way refusal strings carry their date.
+2026-09-26: a "main" Ghost Robot count was the sibling workspace's).
 
 Under a `mainline`-API oracle the driver has no svt-av1-hdr config fields,
 so a fork knob such as `SVT_FORK_TX_BIAS` is refused (exit 2), never
