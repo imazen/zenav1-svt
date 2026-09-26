@@ -1,6 +1,6 @@
 # Ghost Robot c_parity tests that still diverge (plan phase 3). Maintained by
 # tools/cparity_ratchet.sh: a test leaves this list the moment it passes.
-c_parity_dist_facade::full_distortion32_facade_matches_c_over_every_mode_pair
-c_parity_inter_mvp::c_parity_setup_ref_mv_list_inter
-c_parity_noise_gen::noise_table_matches_c
-c_parity_rc_vbr_cbr_qpick::calc_qindex_rate_control_matches_c
+encoder_parity::c_parity_dist_facade::full_distortion32_facade_matches_c_over_every_mode_pair
+encoder_parity::c_parity_inter_mvp::c_parity_setup_ref_mv_list_inter
+encoder_parity::c_parity_noise_gen::noise_table_matches_c
+encoder_parity::c_parity_rc_vbr_cbr_qpick::calc_qindex_rate_control_matches_c

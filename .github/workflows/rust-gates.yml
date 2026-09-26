@@ -1261,6 +1261,12 @@ jobs:
         # (tests=yes) or nothing reaches (tests=no); a new one, a removed one,
         # or a module left annotated with nothing dead fails (plan T2).
         run: python3 tools/dead_code_ledger.py
+      - name: oracle exclude / divergent lists name real tests
+        working-directory: rust
+        # A stale name is silent: an exclude stops excluding, a divergent pin
+        # can never clear (every encoder name gained `encoder_parity::` when
+        # the parity tests moved into the crate, 2026-09-26).
+        run: python3 tools/oracle_lists_check.py
 
   # Animated AVIF, with a PINNED decoder. Parallel with the gates shards, so no
   # wall-time cost.
