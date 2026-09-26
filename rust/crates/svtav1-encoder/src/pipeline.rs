@@ -468,19 +468,9 @@ impl EncodePipeline {
 
         // Step 2: Create PCS
         let mut pcs = if is_key {
-            PictureControlSet::new_key_frame(self.width, self.height, display_order)
+            PictureControlSet::new_key_frame()
         } else {
-            PictureControlSet::new_inter_frame(
-                self.width,
-                self.height,
-                display_order,
-                // `pcs->decode_order` — the RA window's permutation; display
-                // order under low delay (the same value `pic_decision` carries).
-                pic_decision
-                    .as_ref()
-                    .map_or(display_order, |p| p.decode_order),
-                temporal_layer,
-            )
+            PictureControlSet::new_inter_frame()
         };
         // `pcs->frm_hdr.show_frame` — a hidden RA picture is coded but not
         // shown; `inter_signal` reads it through `pic_decision`, and

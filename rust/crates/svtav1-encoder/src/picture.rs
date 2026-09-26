@@ -9,116 +9,41 @@
 //! sys_resource_manager.c.
 
 use alloc::vec::Vec;
-use svtav1_types::frame::FrameType;
 use svtav1_types::reference::REF_FRAMES;
 
-/// Picture Control Set — per-picture encoding state.
-///
-/// This is the central data structure that flows through the pipeline.
-/// Each picture gets a PCS that tracks its encoding parameters,
-/// reference frame assignments, and output status.
+/// The per-picture values `pipeline::encode_frame` carries between its
+/// steps. Everything else C keeps on `PictureControlSet` lives on the
+/// pipeline's own state (`pic_decision`, the frame header); fields nobody
+/// read were removed (plan 1.4) because a stale default here is invisible
+/// until something trusts it — `refresh_frame_flags` defaulting to 0 once
+/// kept every inter frame out of the DPB (see `pipeline.rs`).
 #[derive(Debug)]
 pub struct PictureControlSet {
-    /// Frame number in display order.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub display_order: u64,
-    /// Frame number in decode order.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub decode_order: u64,
-    /// Frame type (key, inter, intra-only, switch).
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub frame_type: FrameType,
     /// Whether this frame is shown (vs. hidden alt-ref).
     pub show_frame: bool,
-    /// Temporal layer index (0 = base layer).
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub temporal_layer: u8,
-    /// Hierarchical level within the mini-GOP.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub hierarchical_level: u8,
     /// Base QP for this picture.
     pub qp: u8,
-    /// Reference frame indices into the DPB.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub ref_frame_idx: [i8; REF_FRAMES],
-    /// Whether this frame refreshes a reference slot.
+    /// Which DPB slots this frame refreshes.
     pub refresh_frame_flags: u8,
-    /// Picture width.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub width: u32,
-    /// Picture height.
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
-    )]
-    pub height: u32,
 }
 
 impl PictureControlSet {
-    pub fn new_key_frame(width: u32, height: u32, display_order: u64) -> Self {
+    /// A key frame: shown, refreshes every slot (C's key-frame mask 0xFF).
+    pub fn new_key_frame() -> Self {
         Self {
-            display_order,
-            decode_order: display_order,
-            frame_type: FrameType::Key,
             show_frame: true,
-            temporal_layer: 0,
-            hierarchical_level: 0,
             qp: 30,
-            ref_frame_idx: [-1; REF_FRAMES],
-            refresh_frame_flags: 0xFF, // Refresh all slots
-            width,
-            height,
+            refresh_frame_flags: 0xFF,
         }
     }
 
-    pub fn new_inter_frame(
-        width: u32,
-        height: u32,
-        display_order: u64,
-        decode_order: u64,
-        temporal_layer: u8,
-    ) -> Self {
+    /// An inter frame: shown and refreshing nothing until the caller applies
+    /// the picture decision's `rps.refresh_frame_mask`.
+    pub fn new_inter_frame() -> Self {
         Self {
-            display_order,
-            decode_order,
-            frame_type: FrameType::Inter,
             show_frame: true,
-            temporal_layer,
-            hierarchical_level: temporal_layer,
             qp: 30,
-            ref_frame_idx: [-1; REF_FRAMES],
             refresh_frame_flags: 0,
-            width,
-            height,
         }
     }
 }
@@ -660,17 +585,9 @@ mod tests {
 
     #[test]
     fn pcs_key_frame() {
-        let pcs = PictureControlSet::new_key_frame(1920, 1080, 0);
-        assert_eq!(pcs.frame_type, FrameType::Key);
+        let pcs = PictureControlSet::new_key_frame();
         assert!(pcs.show_frame);
         assert_eq!(pcs.refresh_frame_flags, 0xFF);
-    }
-
-    #[test]
-    fn pcs_inter_frame() {
-        let pcs = PictureControlSet::new_inter_frame(1920, 1080, 5, 3, 2);
-        assert_eq!(pcs.frame_type, FrameType::Inter);
-        assert_eq!(pcs.temporal_layer, 2);
     }
 
     #[test]
