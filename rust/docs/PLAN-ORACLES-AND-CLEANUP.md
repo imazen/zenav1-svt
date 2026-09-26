@@ -544,6 +544,26 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
         (ops 7-30, CDF10/13/14 + `B:` bools = partition/mode symbols and
         early txb headers). The bd8 norm work is done; these are the
         filter-search and residual MD-cost arms.
+    21. **Filter-search diffs are downstream of recon — the search is
+        faithful** (measured 2026-09-27): GR rewrote
+        `deblocking_filter.c` (LpfParamCache, subsampled chroma dims,
+        `SVT_EFFECTIVE_IS_16BIT_PIPELINE` selection), but the port's
+        `search_filter_level` port is faithful. Per-trial SSE on
+        `photo_64_q20_p2_b8` (instrumented lib `~/tmp/gr-probe`,
+        `DLFTRY` prints + `SVT_PFL_RECON` recon dump, port
+        `SVTAV1_DLFDBG`/`SVTAV1_DLF_TRY_BIN`): C's level-0 SSE 45413 vs
+        port 43754 — level 0 is unfiltered, so the *input recon* differs
+        (1560 px, confined to the two txd=2 32x32 leaves at x>=32).
+        The encode-pass txb overlay seeding bug was fixed
+        (`bf5e175a` — C's `ep_luma_recon_na` is seeded from `recon_pic`,
+        not zeros) but is grid-neutral — the recon diff persists, driven
+        by leaf-level winner/partition flips upstream (finding 14's
+        eval-cost-delta class). Also confirmed: no FH-only-diff group
+        exists — every FH-diff cell also has tile diffs, and the
+        early-tile `B:` ops are LR taps written at tile start (another
+        recon-dependent consumer). New probes: `cct3` rebuilt via
+        `SVT_CREF_LIB_DIR=~/tmp/gr-probe/lib build.sh` carries DLFTRY
+        per-trial SSE prints.
 
 - [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
   MDS0/1/2 there, and the port does not model those IFS arms (it skips the
