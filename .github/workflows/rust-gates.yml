@@ -286,7 +286,7 @@ jobs:
         # is not yet reachable; this pins the open divergences instead
         # (oracles/divergent/ghost-robot.txt). A new failure is a regression,
         # and a listed test that passes must leave the list, so the list only
-        # shrinks. 854/873 at 2026-09-26 on i265 (19 divergent).
+        # shrinks. 869/873 at 2026-09-26 on i265 (4 divergent).
         run: tools/cparity_ratchet.sh ghost-robot
 
       - name: Workspace tests (differential parity suites vs C)
