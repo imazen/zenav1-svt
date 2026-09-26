@@ -48,11 +48,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/bd10partialsb.$$"
+OUT="${TMPDIR:-$HOME/tmp}/bd10partialsb.$$"
 mkdir -p "$OUT"
-pass=0
-fail=0
-failed=()
 
 # Each cell: "content w h qp preset". Every one has a partial superblock
 # (aligned dims not a multiple of 64) and every one BYTE-MATCHES C at bd10.
@@ -256,22 +253,6 @@ CELLS=(
   "gradient 72 88 55 9"
 )
 
-for cell in "${CELLS[@]}"; do
-  read -r content w h qp p <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}"
-  if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-      "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("${tag}[c-err]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pass=$((pass + 1))
-  else
-    fail=$((fail + 1)); failed+=("$tag")
-  fi
-done
 
 # --- ANTI-VACUITY --------------------------------------------------------
 # A gate that would pass without the feature is a defect. Two checks:
@@ -308,6 +289,7 @@ fi
 # it is promoted into CELLS (a fix can never land unnoticed), and one that
 # stops encoding at all fails as a harness error.
 #
+# (HISTORY: bd10_nonflat_gate.sh is 309/309 since; re-measured 2026-09-26.)
 # The residual is NOT a partial-SB gap — it is the KNOWN bd10 non-flat gap
 # (`bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims), measured on both
 # geometries on 2026-08-04 over 11 geometries x p0..p8 x q{20,32,55} x
@@ -335,7 +317,6 @@ fi
 # unnoticed. The residual bd10 non-flat gap described above is unchanged;
 # it simply no longer has a partial-SB representative to pin, so the array is
 # empty and only the ISA-scoped pins below populate it.
-PINNED=()
 
 # --- ISA-SCOPED PINS -------------------------------------------------------
 # Three more cells diverge on aarch64 and MATCH C on the x86-64 runner:
@@ -358,33 +339,45 @@ PINNED=()
 # again: the first three were bd10-p7-screen, bd8-p0-gradient, and now these are
 # bd10 partial-SB gradient at three different presets. No sub-domain is safe to
 # assume architecture-independent.
-case "$(uname -m)" in
-  arm64 | aarch64)
-    PINNED+=("gradient 48 48 20 9" "gradient 96 80 20 4" "gradient 65 65 20 2")
-    ;;
-esac
-pin_ok=0
-pin_bad=()
-for cell in "${PINNED[@]}"; do
-  read -r content w h qp p <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}"
-  if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-    pin_bad+=("${tag}[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-      "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-    pin_bad+=("${tag}[c-err]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pin_bad+=("${tag}[NOW MATCHES — promote it into CELLS]")
-  else
-    pin_ok=$((pin_ok + 1))
-  fi
-done
+# These three are rows with an `arch` column in the cellrun list below: on
+# aarch64/arm64 each is pinned DIFFERS (a match fails the gate as "promote
+# it"), and everywhere else it must be IDENTICAL, which until 2026-09-26 no
+# x86-64 run checked at all (they were only ever pinned).
+ARCH_PINS=("gradient 48 48 20 9" "gradient 96 80 20 4" "gradient 65 65 20 2")
 
-rm -rf "$OUT"
-echo "bd10 partial-SB identity: $pass / $((pass + fail)) byte-identical"
-echo "bd10 partial-SB pinned divergences still diverging: $pin_ok / ${#PINNED[@]}"
-[ "$fail" -gt 0 ] && printf 'FAILED: %s\n' "${failed[@]}"
-[ "${#pin_bad[@]}" -gt 0 ] && printf 'PIN BROKEN: %s\n' "${pin_bad[@]}"
-[ "$fail" -eq 0 ] && [ "$vac" -eq 0 ] && [ "${#pin_bad[@]}" -eq 0 ]
+# The cells are a list for tools/cellrun.py (plan T3).
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/bd10_partial_sb.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\texpect\tarch\n' >"$LIST"
+row() { # name-suffix expect arch cell...
+  local sfx=$1 expect=$2 arch=$3; shift 3
+  read -r content w h qp p <<<"$1"
+  printf '%s_%sx%s_q%s_p%s%s\t%s\t%s\t%s\t%s\t%s\t10\t%s\t%s\n' \
+    "$content" "$w" "$h" "$qp" "$p" "$sfx" "$content" "$w" "$h" "$qp" "$p" \
+    "$expect" "$arch" >>"$LIST"
+}
+for cell in "${CELLS[@]}"; do row "" IDENTICAL "" "$cell"; done
+for cell in "${ARCH_PINS[@]}"; do
+  row "" IDENTICAL '!aarch64,!arm64' "$cell"
+  row "_pin" DIFFERS 'aarch64,arm64' "$cell"
+done
+python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${BPSB_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+cells = [r for r in rows if r["expect"] == "IDENTICAL"]
+pins = [r for r in rows if r["expect"] == "DIFFERS"]
+ok = [r for r in cells if r["ok"] == "yes"]
+print(f"bd10 partial-SB identity: {len(ok)} / {len(cells)} byte-identical")
+print(f"bd10 partial-SB pinned divergences still diverging: "
+      f"{sum(r['ok'] == 'yes' for r in pins)} / {len(pins)}")
+for r in cells:
+    if r["ok"] != "yes":
+        print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}]")
+for r in pins:
+    if r["ok"] != "yes":
+        why = "NOW MATCHES — promote it" if r["verdict"] == "IDENTICAL" else r["detail"]
+        print(f"PIN BROKEN: {r['name']} [{why}]")
+PY
+[ "$rc" -eq 0 ] && [ "$vac" -eq 0 ]
