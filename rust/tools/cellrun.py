@@ -30,6 +30,9 @@ A cell list is a TSV file with a header row. Columns:
   env_port      variables for the port only (e.g. SVTAV1_Y_STRIDE, or the
                 port's name for a knob the C driver spells differently)
   env_c         variables for the C driver only (e.g. SVT_TILE_ROWS)
+                In all three, `@CELL@` expands to the cell's artifact directory,
+                so a dump lands beside the cell's streams
+                (`SVTAV1_PACKTREE=@CELL@/rs.ptree`) for the gate to read after.
   expect        pinned C verdict, IDENTICAL or DIFFERS (optional)
   check         comma list from the table above (optional, default `c`)
   differs_from  another cell whose port stream this one's must NOT equal
@@ -104,7 +107,7 @@ def read_cells(path):
     return rows
 
 
-def cell_env(row, side=None):
+def cell_env(row, side=None, cell_dir=None):
     """The environment for one side (`port`, `c`) or for both (None)."""
     env = dict(os.environ)
     env["SVTAV1_BD"] = row.get("bd") or "8"
@@ -112,7 +115,10 @@ def cell_env(row, side=None):
     for col in cols:
         for kv in filter(None, (row.get(col) or "").split(";")):
             k, _, v = kv.partition("=")
-            env[k.strip()] = v.strip()
+            v = v.strip()
+            if cell_dir is not None:
+                v = v.replace("@CELL@", str(cell_dir))
+            env[k.strip()] = v
     return env
 
 
@@ -189,7 +195,7 @@ def c_sb_size(obu):
 
 def run_c(row, d, timeout, bytes_only):
     """Returns (verdict, stage, detail) for the C comparison."""
-    env = cell_env(row, "c")
+    env = cell_env(row, "c", d)
     oracle = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
                             capture_output=True, text=True).stdout.strip()
     sel = HERE / "capture_c_trace" / f".selected.{oracle}"
@@ -232,7 +238,7 @@ def run_cell(row, root, timeout, bytes_only):
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True)
-    env = cell_env(row, "port")
+    env = cell_env(row, "port", d)
     if "recon" in row["checks"]:
         env["SVTAV1_FINAL_RECON"] = str(d / "recon")
     try:
