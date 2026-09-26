@@ -558,8 +558,11 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     in `sb128_geom` but unwired (DEAD-CODE.tsv). C selects SB128 above
     240p for allintra <= M1, video MR (-1), and video <= M5 at qp > 57
     (`derive_super_block_size`), so the census above (all cells in the
-    240p class) never exercised it. Measure first: a census at 480p..1080p
-    in those configurations.
+    240p class) never exercised it. Stills measured 2026-09-26 (i265):
+    8 CID22 512x512 photos x qp {20,40,55,63} x presets {0,1}, 64/64
+    byte-identical with C confirmed at SB128 (cellrun `sb128` check) — the
+    forced SPLIT matches C's search on every one. Video (MR, or <= M5 at
+    qp > 57, above 240p) is unmeasured: the derf clips stop at 256x256.
   Each closed cell lands in a gate (`real_video_inter_gate.sh`,
   `rc_tpl_gate.sh`) in the same change.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
