@@ -68,8 +68,9 @@ detail, and they are regenerated or gated rather than narrated.
   re-exported only with `__expert`.
 - Random-access (hierarchical) GOPs encode end to end — decoder-verified
   (`ra_selfcheck_gate.sh`, 11/11), not byte-claimed vs C. Temporal filtering
-  is live under RA, including the delayed-intra key path. Open work:
-  VBR/CBR rate control, scene-change/adaptive GOP, TPL. The
+  is live under RA, including the delayed-intra key path, and so is TPL
+  (`aq_mode` 2); low-delay CBR is live but not byte-identical to C
+  (`tools/rc_tpl_gate.sh`). Open work: VBR, scene-change/adaptive GOP. The
   MSRV floor is 1.98, matching what the aarch64 dotprod
   intrinsics (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 

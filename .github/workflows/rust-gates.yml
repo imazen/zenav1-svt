@@ -630,6 +630,15 @@ jobs:
         # does an improvement, which must land as a table update.
         run: ./tools/real_video_inter_gate.sh
 
+      - name: TPL (random access, aq_mode 2) and low-delay CBR vs C
+        if: ${{ !cancelled() && matrix.shard == 3 }}
+        working-directory: rust
+        # Both paths are live but had byte claims only in commit messages.
+        # 17 pinned cells (IDENTICAL and DIFFERS both pinned), recon == aomdec
+        # == dav1d on every frame, and anti-vacuity twins (aq_mode 0, 50 kbps).
+        # 4 s locally.
+        run: ./tools/rc_tpl_gate.sh
+
       - name: warped motion, 10-bit video and global motion
         if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
