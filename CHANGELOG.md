@@ -2085,6 +2085,7 @@ Crates are not published to crates.io yet — depend by git.
 - `CONTEXT-HANDOFF.md` — build-from-scratch, gate, and open-work guide.
 
 ### Changed
+- RDOQ (`optimize_b`) is ~20% cheaper per call and now costs what C's does (30.1M vs C's 30.3M instructions at 1024x1024 p10); whole-encode instructions -2.8% at 1024 p10, -2.3% at 256 p6; output byte-identical (d487b986).
 
 - **Documentation is routed, not narrated** (`ba4729e2`). The 697-line
   `CONTEXT-HANDOFF.md` is a 39-line router; thirteen dated snapshots and the
