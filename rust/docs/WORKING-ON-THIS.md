@@ -80,7 +80,15 @@ delta is real (measured null spread on that host: ratio 0.9996, p25/p75
 `SVT_ORACLE` names, and classifies the pair (verdict, first divergent stage).
 A cell list is data: one row per cell, with an optional pinned verdict. New
 byte-identity gates should be a cell list plus this runner, not another copy
-of the port / C / diff loop in bash (plan T3).
+of the port / C / diff loop in bash (plan T3). Cells can also check lossless
+decode, recon == aomdec, dav1d == aomdec, and name a `differs_from` sibling;
+`lossless_gate.sh` and `superres_gate.sh` are the worked examples.
+`identity_run`'s environment is parsed in one place,
+`svtav1/examples/identity_run/cell.rs`; add a knob there, not in `main`.
+
+Run any other example through `tools/example <name> args...` (or
+`tools/example --path <name>` in a timing or memory harness): it builds
+first, so a gate can never run a stale or missing binary.
 
 ## Code-review tooling
 
