@@ -11,16 +11,14 @@
 # regions. Nothing defended it, so a change could delete a test — or add a large
 # untested module — and every gate would stay green.
 #
-# WHAT THIS NUMBER DOES **NOT** INCLUDE, which matters more than the number:
-# it is the `cargo nextest` surface ONLY. The 32 CI gate scripts are not in it.
-# That is why the inter/video path reads as uncovered here (inter_md_arm.rs 0%,
-# leaf_funnel/ifs.rs 0%, port_global_me.rs 49%): an inter-coding cell is
-# set by ten gate scripts and by ZERO tests, because the public pipeline refuses
-# multi-frame. Those lines are verified differentially against C in CI, not here.
-# Do not "fix" that by flipping the env var in a test: dbgenv.rs resolves it once
-# per process into a OnceLock and its own docs say it is not a feature flag and
-# not for callers, and the stream it produces is known to diverge from C past the
-# frame header.
+# WHAT THIS NUMBER DOES **NOT** INCLUDE: the CI gate scripts. They verify
+# the inter/video tools against C and a decoder, but they are not nextest,
+# so for a long time those paths read as uncovered here. Since 2026-09-26
+# svtav1/tests/video_paths.rs drives the public video pipeline (LD at low and
+# high presets, RA with and without TPL, CBR) on moving content: it took the
+# total from 88.06% to 91.50% locally and found a TPL panic on its first
+# run. Paths still only the gates reach should get a smoke test there, not a
+# lower floor.
 #
 # So this gate defends the STILL-image surface against silent test loss. It is a
 # floor, not a target: raising it is good, and COV_WRITE=1 records the new value.

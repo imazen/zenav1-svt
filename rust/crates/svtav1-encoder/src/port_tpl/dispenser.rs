@@ -249,9 +249,14 @@ pub(super) fn tpl_predict_intra(
         } else {
             (&above0[1..], &left0[1..], above0[0])
         };
+    // `2 * size`, not `size`: a directional mode reads the edge EXTENSION
+    // (zone 1 up to `w + h` above samples, zone 3 as many left), which C's
+    // pointer into the full neighbour buffer provides. Slicing to `size`
+    // panicked on the first zone-1/3 angle (random access + aq_mode 2 at
+    // 128x128, found 2026-09-26 by svtav1/tests/video_paths.rs).
     let n = crate::intra_open_loop::Neighbours {
-        above: &above_row[..size],
-        left: &left_row[..size],
+        above: &above_row[..2 * size],
+        left: &left_row[..2 * size],
         top_left: corner,
         has_left: mb_origin_x > 0,
         has_above: mb_origin_y > 0,

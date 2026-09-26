@@ -119,6 +119,14 @@ pub fn intra_prediction_open_loop_mb(
         if !(0 < p_angle && p_angle < 270) {
             return Err(OpenLoopError::AngleOutOfRange { p_angle });
         }
+        assert!(
+            n.above.len() >= width + height && n.left.len() >= width + height,
+            "directional open-loop prediction needs width + height = {} edge samples \
+             (the extension past the block); got above {}, left {}",
+            width + height,
+            n.above.len(),
+            n.left.len()
+        );
         intra_pred::predict_directional(
             dst, dst_stride, n.above, n.left, n.top_left, width, height, p_angle,
         );

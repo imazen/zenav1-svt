@@ -28,3 +28,4 @@ mod never_panics;
 mod output_pins;
 mod real_encode;
 mod thread_determinism;
+mod video_paths;
