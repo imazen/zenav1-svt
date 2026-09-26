@@ -292,3 +292,57 @@ fn video_sweep_never_panics(preset: i8) {
         cells.len()
     );
 }
+
+/// The other shipped video envelopes on moving content: monochrome inter at
+/// an unaligned size and coded-lossless (qp 0) inter at 8-bit 4:2:0, low
+/// delay. Every cell must encode.
+#[test]
+fn mono_and_lossless_video_never_panic() {
+    let mut problems = Vec::new();
+    for preset in [0i8, 4, 8, 12] {
+        for &(w, h, mono, qp) in &[(130usize, 98usize, true, 40u8), (64, 64, false, 0)] {
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    let rc = RcConfig {
+                        mode: RcMode::Cqp,
+                        qp,
+                        ..RcConfig::default()
+                    };
+                    let mut p = EncodePipeline::new_with_preset(
+                        w as u32,
+                        h as u32,
+                        NativePreset::new(preset).expect("preset"),
+                        rc,
+                        0,
+                        64,
+                    );
+                    if !mono {
+                        p = p.with_chroma_420(true);
+                    }
+                    for f in 0..4 {
+                        let (y, u, v) = frame_sized(f, w, h);
+                        let r = if mono {
+                            p.try_encode_frame(&y, w)
+                        } else {
+                            p.try_encode_frame_420(&y, &u, &v, w)
+                        };
+                        r.map_err(|e| e.to_string())?;
+                    }
+                    p.try_flush().map(|_| ()).map_err(|e| e.to_string())
+                }));
+            let tag = format!("{w}x{h} mono={mono} q{qp} p{preset}");
+            match r {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => problems.push(format!("{tag}: refused: {e}")),
+                Err(e) => problems.push(format!(
+                    "{tag}: PANIC {}",
+                    e.downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_default()
+                )),
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
