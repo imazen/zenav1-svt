@@ -37,6 +37,9 @@ command -v cargo-llvm-cov >/dev/null 2>&1 || {
 }
 
 cd "$RS_ROOT"
+# The scratch dir may not exist (a fresh CI runner has no ~/tmp): without the
+# mkdir the redirect below fails and the message would blame the tests.
+mkdir -p "${TMPDIR:-$HOME/tmp}"
 OUT="${TMPDIR:-$HOME/tmp}/coverage_gate.$$.log"
 cargo llvm-cov nextest --workspace --locked --no-fail-fast --summary-only \
     --ignore-filename-regex '(tests?/|examples/|benches/)' >"$OUT" 2>&1 || {
