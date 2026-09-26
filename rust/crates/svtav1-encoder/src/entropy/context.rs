@@ -1333,10 +1333,7 @@ pub fn write_intra_mode_kf(
     );
 }
 
-/// Returns true if the given intra mode is directional (V_PRED..D67_PRED).
-pub fn is_directional_mode(mode: u8) -> bool {
-    (1..=8).contains(&mode)
-}
+pub use crate::port_entropy_inter::modes::is_directional_mode;
 
 /// Encode a chroma (UV) intra prediction mode.
 ///

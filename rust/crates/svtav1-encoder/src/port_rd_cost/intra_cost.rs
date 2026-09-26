@@ -56,11 +56,7 @@ const V_PRED: u8 = 1;
 /// directional and pays no angle delta.
 pub const UV_TO_Y_MODE: [u8; UV_INTRA_MODES] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0];
 
-/// C `av1_is_directional_mode` (common_utils.h:126): `V_PRED..=D67_PRED`.
-#[inline]
-pub fn is_directional_mode(mode: u8) -> bool {
-    (V_PRED..=8).contains(&mode)
-}
+pub use crate::port_entropy_inter::modes::is_directional_mode;
 
 // ---------------------------------------------------------------------------
 // Rate tables

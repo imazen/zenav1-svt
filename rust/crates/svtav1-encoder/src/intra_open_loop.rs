@@ -38,8 +38,7 @@ use svtav1_types::prediction::{PredictionMode, UvPredictionMode};
 /// vertical / horizontal kernel.
 #[must_use]
 pub const fn is_directional_mode(mode: PredictionMode) -> bool {
-    let m = mode as u8;
-    m >= PredictionMode::VPred as u8 && m <= PredictionMode::D67Pred as u8
+    crate::port_entropy_inter::modes::is_directional_mode(mode as u8)
 }
 
 /// C `svt_aom_is_smooth` (intra_prediction.c:128).
