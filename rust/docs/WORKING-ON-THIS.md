@@ -30,9 +30,9 @@ change to main, and verify remote ancestry. Do not wait on CI unless requested.
 
 Run `tools/precheck.sh` (`just precheck`, ~10 s): fmt, the clippy
 inventory, the refusal / PORT-NOTE / SIMD-tier ledgers, test targets, file
-sizes, env names and the CI shard partition, each of which is a CI step (all
-cheap; CI's first job runs exactly these, and a red fmt step hides every step
-after it). After pushing, look at `gh run list` once the run finishes: CI was
+sizes, env names and the CI shard partition. Each is a CI step (fmt and
+clippy in the first job, the rest in gate shard 3), and each has gone red on
+main because it was not run locally first. After pushing, look at `gh run list` once the run finishes: CI was
 red from 2026-09-21 to 2026-09-25 while local gates stayed green, because
 nobody read it. The failures were fmt drift, six new clippy lint kinds, a
 monochrome-inter recon bug only the animation job exercised, a test that
