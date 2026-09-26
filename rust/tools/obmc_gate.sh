@@ -36,43 +36,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
-ASSETS="${ZENAV1_VIDEO_ASSETS:-${ZENAV1_CORPUS_ROOT:-$HOME/work/zen}/video/pd-derf-720p}"
-DAV1D="${DAV1D:-dav1d}"
-if [ ! -f "$ASSETS/vidyo3_256x256_8f.i420" ]; then
-    echo "== fetching video assets -> $ASSETS"
-    "$HERE/fetch_r2_assets.sh" video/pd-derf-720p/ "$ASSETS" || {
-        echo "obmc gate: could not obtain assets" >&2; exit 1; }
-fi
-
-# clip size preset min_obmc_blocks
-# MEASURED 2026-09-11 at cli_qp 40, 2 frames. A 0 means C's ladder closes OBMC
-# at that preset (level 5), so the port must code none either.
-#
-# THESE COUNTS MOVED when the MV refinement landed (186/76/12/54 -> 168/92/14/56).
-# That is the refinement doing its job — it changes which MV each OBMC
-# candidate carries, so it changes which blocks win RD — and it is NOT a
-# weakening of the gate: the load-bearing assertion is the RECON column, which
-# went from "byte-identical to dav1d with the unrefined MV" to the same thing
-# with C's real search in the loop. A count that moves with no named cause is a
-# regression; this one has one.
-#
-# THE COUNTS MOVED AGAIN 2026-09-20 (168/92/14/56 -> 138/76/12/62) when masked
-# compound and inter-intra landed on the inter MD path: C's real competitors
-# now exist at preset 0 (`inter_compound_mode` 3/4, `inter_intra_level` 2), so
-# blocks the port used to hand OBMC by default now go to bipred/wedge/diffwtd
-# and inter-intra — vidyo3-256 gains 42 new-mode coded blocks against the
-# 30-block OBMC drop. C's own counts on these cells (292/230/77) are NOT the
-# contract — the port's partition tree diverges at p0 (314 vs 959 coded blocks
-# on vidyo3-256; the path is decoder-verified, not byte-identical) — and the
-# port still spends a LARGER share of its blocks on OBMC than C does. The
-# load-bearing column, recon == dav1d, holds 2/2 on every cell.
-#
-# THE COUNTS MOVED AGAIN 2026-09-26 (138/76/62 -> 118/58/40 on the three
-# vidyo cells; owner-approved re-pin) when 606c4accd made WARPED_CAUSAL
-# reachable at preset 0. Before it the port coded NO warped block there,
-# where C codes warped on 6-26 % of blocks; now it codes 82/24/24, the OBMC
-# count fell by 20-22 per cell, and both mode shares moved toward C's
-# (benchmarks/obmc_gate_counts_2026-09-26.meta). Recon == dav1d holds 2/2.
 CELLS=(
     "vidyo3 256x256 0 118"
     "vidyo1 256x256 0 58"
@@ -82,76 +45,9 @@ CELLS=(
     "vidyo1 256x256 2 0"
 )
 
-QP="${OBMC_QP:-40}"
-FRAMES="${OBMC_FRAMES:-2}"
-work="${TMPDIR:-$HOME/tmp}/obmc-gate.$$"
-mkdir -p "$work"
-trap 'rm -rf "$work"' EXIT
-
-fail=0; ran=0; selecting=0
-echo "== OBMC gate (public-domain derf clips, qp $QP, $FRAMES frames) =="
-printf '%-10s %-8s %-3s %-8s %-8s %-8s %s\n' clip size p obmc min recon note
-for spec in "${CELLS[@]}"; do
-    # shellcheck disable=SC2086
-    set -- $spec
-    clip=$1; size=$2; preset=$3; mino=$4
-    w=${size%x*}; h=${size#*x}
-    asset="$ASSETS/${clip}_${size}_8f.i420"
-    if [ ! -f "$asset" ]; then
-        echo "  MISSING ASSET $asset" >&2; fail=$((fail + 1)); continue
-    fi
-    out="$work/${clip}_${size}_p${preset}"
-    mkdir -p "$out"
-    # Below the shipped preset-6 inter floor; see `dbgenv::inter_experimental`.
-    if ! env SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_INTERDBG=1 \
-        SVTAV1_FRAMES="$FRAMES" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
-        SVTAV1_FINAL_RECON="$out/rec" \
-        "$HERE/identity_run" "rawseq:$asset" "$w" "$h" "$QP" "$preset" "$out/p" \
-        >"$out/stdout.txt" 2>"$out/idbg.txt"; then
-        printf '  %-10s %-8s %-3s %-8s %-8s %-8s %s\n' "$clip" "$size" "$preset" ERR "$mino" - "encode failed"
-        fail=$((fail + 1)); continue
-    fi
-    ran=$((ran + 1))
-    obmc=$(grep -c 'mm=ObmcCausal' "$out/idbg.txt" || true)
-    [ "$obmc" -gt 0 ] && selecting=$((selecting + 1))
-    if ! "$DAV1D" -i "$out/p.obu" -o "$out/dec.yuv" >/dev/null 2>&1; then
-        printf '  %-10s %-8s %-3s %-8s %-8s %-8s %s\n' "$clip" "$size" "$preset" "$obmc" "$mino" UNDECODABLE FAIL
-        fail=$((fail + 1)); continue
-    fi
-    recon=$(RECON_DIR="$out" W="$w" H="$h" N="$FRAMES" python3 - <<'PY'
-import os
-w, h, n = int(os.environ['W']), int(os.environ['H']), int(os.environ['N'])
-fl = w * h + 2 * (w // 2) * (h // 2)
-d = open(os.path.join(os.environ['RECON_DIR'], 'dec.yuv'), 'rb').read()
-ok = 0
-for i in range(n):
-    p = os.path.join(os.environ['RECON_DIR'], f'rec.f{i}')
-    if not os.path.exists(p):
-        break
-    if open(p, 'rb').read()[:fl] == d[i * fl:(i + 1) * fl]:
-        ok += 1
-print(f'{ok}/{n}')
-PY
-)
-    note=ok
-    if [ "$recon" != "$FRAMES/$FRAMES" ]; then
-        note="RECON MISMATCH"; fail=$((fail + 1))
-    elif [ "$mino" -eq 0 ] && [ "$obmc" -ne 0 ]; then
-        note="OBMC where C's ladder codes none"; fail=$((fail + 1))
-    elif [ "$obmc" -lt "$mino" ]; then
-        note="selects FEWER OBMC blocks than pinned"; fail=$((fail + 1))
-    fi
-    printf '  %-10s %-8s %-3s %-8s %-8s %-8s %s\n' "$clip" "$size" "$preset" "$obmc" "$mino" "$recon" "$note"
-done
-
-echo
-echo "cells run: $ran of ${#CELLS[@]}   cells selecting OBMC: $selecting   failed: $fail"
-if [ "$ran" -ne "${#CELLS[@]}" ]; then
-    echo "ANTI-VACUITY FAIL: $ran of ${#CELLS[@]} cells actually ran" >&2; exit 1
-fi
-if [ "$selecting" -eq 0 ]; then
-    echo "ANTI-VACUITY FAIL: no cell selected a single OBMC block, so nothing" >&2
-    echo "  here exercised OBMC at all." >&2; exit 1
-fi
-[ "$fail" -eq 0 ] || exit 1
-echo "obmc gate: OK"
+# The run is tools/mode_count_gate.py (cellrun, in parallel; counts
+# mm=ObmcCausal per cell against the floor, recon == aomdec and dav1d ==
+# aomdec on every frame).
+exec python3 "$HERE/mode_count_gate.py" --mode ObmcCausal --label "obmc gate" \
+    --frames "${OBMC_FRAMES:-2}" --qp "${OBMC_QP:-40}" \
+    --env "SVTAV1_INTRA_PERIOD=64;SVTAV1_HIER_LEVELS=0" "${CELLS[@]}"

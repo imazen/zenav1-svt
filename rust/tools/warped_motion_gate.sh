@@ -29,17 +29,6 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-ASSETS="${ZENAV1_VIDEO_ASSETS:-${ZENAV1_CORPUS_ROOT:-$HOME/work/zen}/video/pd-derf-720p}"
-DAV1D="${DAV1D:-dav1d}"
-
-if [ ! -f "$ASSETS/vidyo3_128x128_8f.i420" ]; then
-    echo "== fetching video assets -> $ASSETS"
-    "$HERE/fetch_r2_assets.sh" video/pd-derf-720p/ "$ASSETS" || {
-        echo "warped motion gate: could not obtain assets" >&2; exit 1; }
-fi
-
-# clip size preset  min_warped_blocks  (0 = C selects none, so the port must not either)
-# MEASURED 2026-09-10 at cli_qp 40, 8 frames, preset 6/8 as given.
 CELLS=(
     "vidyo3         256x256 6 20"
     "vidyo1         256x256 6 5"
@@ -51,78 +40,8 @@ CELLS=(
     "vidyo1         128x128 8 0"
 )
 
-QP="${WMG_QP:-40}"
-FRAMES="${WMG_FRAMES:-8}"
-work="${TMPDIR:-$HOME/tmp}/warped-motion.$$"
-mkdir -p "$work"
-trap 'rm -rf "$work"' EXIT
-
-fail=0; ran=0
-echo "== warped motion gate (public-domain derf clips, qp $QP, $FRAMES frames) =="
-printf '%-16s %-8s %-3s %-8s %-8s %-10s %s\n' clip size p warped min recon note
-for spec in "${CELLS[@]}"; do
-    # shellcheck disable=SC2086
-    set -- $spec
-    clip=$1; size=$2; preset=$3; minw=$4
-    w=${size%x*}; h=${size#*x}
-    asset="$ASSETS/${clip}_${size}_8f.i420"
-    if [ ! -f "$asset" ]; then
-        echo "  MISSING ASSET $asset" >&2; fail=$((fail + 1)); continue
-    fi
-    out="$work/${clip}_${size}_p${preset}"
-    mkdir -p "$out"
-    # Frames 2+ reference an INTER
-    # picture; without it this would be a two-frame cell and warp would barely
-    # appear. Both flags are diagnostics — see `crate::dbgenv`.
-    # `SVTAV1_HIER_LEVELS=0` keeps the flat GOP the min_warped_blocks pins
-    # were measured against (vs C flat); unset resolves to C's AUTO
-    # hierarchy where the tl0 GM arming positions differ
-    # (`global_motion_gate.sh` pins the same way).
-    if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        SVTAV1_INTER_EXPERIMENTAL=1 \
-        SVTAV1_HIER_LEVELS=0 \
-        SVTAV1_FRAMES="$FRAMES" SVTAV1_INTERDBG=1 SVTAV1_FINAL_RECON="$out/rec" \
-        "$HERE/identity_run" "rawseq:$asset" "$w" "$h" "$QP" "$preset" "$out/p" \
-        >"$out/stdout.txt" 2>"$out/idbg.txt"; then
-        printf '  %-16s %-8s %-3s %-8s %-8s %-10s %s\n' "$clip" "$size" "$preset" ERR "$minw" - "encode failed"
-        fail=$((fail + 1)); continue
-    fi
-    ran=$((ran + 1))
-    warped=$(grep -c 'mm=WarpedCausal' "$out/idbg.txt" || true)
-    if ! "$DAV1D" -i "$out/p.obu" -o "$out/dec.yuv" >/dev/null 2>&1; then
-        printf '  %-16s %-8s %-3s %-8s %-8s %-10s %s\n' "$clip" "$size" "$preset" "$warped" "$minw" UNDECODABLE FAIL
-        fail=$((fail + 1)); continue
-    fi
-    recon=$(RECON_DIR="$out" W="$w" H="$h" N="$FRAMES" python3 - <<'PY'
-import os
-w, h, n = int(os.environ['W']), int(os.environ['H']), int(os.environ['N'])
-fl = w * h + 2 * (w // 2) * (h // 2)
-d = open(os.path.join(os.environ['RECON_DIR'], 'dec.yuv'), 'rb').read()
-ok = 0
-for i in range(n):
-    p = os.path.join(os.environ['RECON_DIR'], f'rec.f{i}')
-    if not os.path.exists(p):
-        break
-    if open(p, 'rb').read()[:fl] == d[i * fl:(i + 1) * fl]:
-        ok += 1
-print(f'{ok}/{n}')
-PY
-)
-    note=ok
-    if [ "$recon" != "$FRAMES/$FRAMES" ]; then
-        note="RECON MISMATCH"; fail=$((fail + 1))
-    elif [ "$minw" -eq 0 ] && [ "$warped" -ne 0 ]; then
-        note="warp where C selects NONE"; fail=$((fail + 1))
-    elif [ "$warped" -lt "$minw" ]; then
-        note="selects FEWER warped blocks than pinned"; fail=$((fail + 1))
-    fi
-    printf '  %-16s %-8s %-3s %-8s %-8s %-10s %s\n' "$clip" "$size" "$preset" "$warped" "$minw" "$recon" "$note"
-done
-
-echo
-echo "cells run: $ran of ${#CELLS[@]}   failed: $fail"
-if [ "$ran" -ne "${#CELLS[@]}" ]; then
-    echo "ANTI-VACUITY FAIL: $ran of ${#CELLS[@]} cells actually ran" >&2; exit 1
-fi
-[ "$fail" -eq 0 ] || exit 1
-echo "warped motion gate: OK"
+# The run is tools/mode_count_gate.py (cellrun, in parallel; counts
+# mm=WarpedCausal per cell against the floor, recon == aomdec and dav1d ==
+# aomdec on every frame).
+exec python3 "$HERE/mode_count_gate.py" --mode WarpedCausal --label "warped motion gate" \
+    --frames "${WMG_FRAMES:-8}" --qp "${WMG_QP:-40}" --env "SVTAV1_HIER_LEVELS=0" "${CELLS[@]}"
