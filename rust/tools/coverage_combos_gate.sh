@@ -67,14 +67,14 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/covcombos.$$"
+OUT="${TMPDIR:-$HOME/tmp}/covcombos.$$"
 mkdir -p "$OUT"
-SCORE="$RS_ROOT/benchmarks/coverage_combos_latest.tsv"
-mkdir -p "$RS_ROOT/benchmarks"
+# The scoreboard goes under target/: until 2026-09-26 every run rewrote the
+# tracked benchmarks/coverage_combos_latest.tsv (kept as coverage_combos_2026-09-02.tsv), so
+# running the gate dirtied the tree.
+SCORE="$RS_ROOT/target/coverage_combos_latest.tsv"
+mkdir -p "$RS_ROOT/target"
 
-pass=0
-fail=0
-failed=()
 
 aomdec="${AOMDEC:-aomdec}"
 if ! command -v "$aomdec" >/dev/null 2>&1; then
@@ -84,10 +84,9 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
   done
 fi
 command -v "$aomdec" >/dev/null 2>&1 || [ -x "$aomdec" ] || {
-  echo "WARNING: aomdec not found (set AOMDEC=...) — assert (C) DECODABILITY is SKIPPED" >&2
-  aomdec=""
+  echo "coverage combos gate: aomdec not found (set AOMDEC=...); assert (C) DECODABILITY is required" >&2
+  exit 2
 }
-[ -n "$aomdec" ] && echo "decodability check: $aomdec"
 
 CID="${CID_CORPUS:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
 SC="${SC_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"
@@ -239,151 +238,78 @@ BYTE_EXACT=(
 # of the cell lists; add here if a cell's control regresses.)
 CONTENT_DIVERGES=()
 
+# The cells are a list for tools/cellrun.py (plan T3). Each tiled cell names
+# the untiled encode of the same content/geometry/qp/preset: C's stream must
+# differ from it (VACUITY) and so must the port's; that untiled sibling is
+# the CONTROL and must byte-match (a CONTENT_DIVERGES cell's control would be
+# pinned DIFFERS instead; none is today). Tiled cells in BYTE_EXACT pin
+# IDENTICAL; the rest pin DIFFERS, which is self-promoting. SB128-axis cells
+# also require C's sequence header to say 128.
 in_list() {
   local needle="$1"; shift
   local e
   for e in "$@"; do [ "$e" = "$needle" ] && return 0; done
   return 1
 }
-
-# encode helper: $1=out-prefix $2=bd $3=content $4=w $5=h $6=qp $7=preset
-#                $8=rows_log2 $9=cols_log2  (rows/cols default 0)
-port_encode() {
-  local pfx=$1 bd=$2 content=$3 w=$4 h=$5 qp=$6 p=$7 r=${8:-0} c=${9:-0}
-  SVTAV1_BD=$bd SVTAV1_TILE_ROWS_LOG2=$r SVTAV1_TILE_COLS_LOG2=$c \
-    "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$pfx" >"$pfx.log" 2>"$pfx.trace"
-}
-c_encode() {
-  local yuv=$1 obu=$2 bd=$3 w=$4 h=$5 qp=$6 p=$7 r=${8:-0} c=${9:-0}
-  local bdarg=""; [ "$bd" = "10" ] && bdarg="10"
-  SVT_TILE_ROWS=$r SVT_TILE_COLUMNS=$c SVT_TRACE_OUT=/dev/null \
-    "$HERE/capture_c_trace/capture_c_trace" "$w" "$h" "$qp" "$p" "$yuv" "$obu" $bdarg >"$obu.log" 2>&1
-}
-
-printf 'axis\tbd\tcontent\tw\th\tqp\tpreset\trows\tcols\tsb128\tvacuity\tcontrol\ttiled\tc_bytes\tport_bytes\n' >"$SCORE"
-
-run_axis() {
-  local axis_name="$1"; shift
-  local -a cells=("$@")
-  local axis_pass=0 axis_diff=0 axis_contentdiv=0
-  echo "=================================================================="
-  echo "### AXIS: $axis_name"
-  echo "=================================================================="
-  for cell in "${cells[@]}"; do
+LIST="$OUT/coverage_combos.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\tenv_c\texpect\tcheck\tdiffers_from\tc_differs_from\n' >"$LIST"
+declare -A ctl_seen
+add_axis() {
+  local cell axis bd content w h qp p r c short ctl tag expect check
+  for cell in "$@"; do
     read -r axis bd content w h qp p r c <<<"$cell"
-    local short_content="$content"
-    case "$content" in file:*) short_content="$(basename "${content#file:}" .png)";; esac
-    local tag="${axis}_${short_content}_${w}x${h}_q${qp}_p${p}_r${r}c${c}_bd${bd}"
-
-    # port_tiled + rs.yuv
-    if ! port_encode "$OUT/rs" "$bd" "$content" "$w" "$h" "$qp" "$p" "$r" "$c"; then
-      fail=$((fail+1)); failed+=("$tag[rs-err]"); echo "  RS-ERR   $tag"; continue
+    short="$content"
+    case "$content" in file:*) short="$(basename "${content#file:}" .png)";; esac
+    ctl="ctl_${axis}_${short}_${w}x${h}_q${qp}_p${p}_bd${bd}"
+    tag="${axis}_${short}_${w}x${h}_q${qp}_p${p}_r${r}c${c}_bd${bd}"
+    if [ -z "${ctl_seen[$ctl]:-}" ]; then
+      ctl_seen[$ctl]=1
+      expect=IDENTICAL
+      in_list "$cell" "${CONTENT_DIVERGES[@]+"${CONTENT_DIVERGES[@]}"}" && expect=DIFFERS
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t\t%s\tc\t\t\n' \
+        "$ctl" "$content" "$w" "$h" "$qp" "$p" "$bd" "$expect" >>"$LIST"
     fi
-    # C_tiled
-    if ! c_encode "$OUT/rs.yuv" "$OUT/c.obu" "$bd" "$w" "$h" "$qp" "$p" "$r" "$c"; then
-      fail=$((fail+1)); failed+=("$tag[c-err]"); echo "  C-ERR    $tag"; continue
-    fi
-    # C_single (anti-vacuity ref)
-    c_encode "$OUT/rs.yuv" "$OUT/c0.obu" "$bd" "$w" "$h" "$qp" "$p" 0 0
-    # port_single (the CONTROL). Content is deterministic (same PNG/pattern,
-    # same dims, same bd), so rs0.yuv == rs.yuv byte-for-byte — c0.obu (from
-    # rs.yuv) and rs0.obu (from rs0.yuv) are apples-to-apples.
-    port_encode "$OUT/rs0" "$bd" "$content" "$w" "$h" "$qp" "$p" 0 0
-
-    # (A) anti-vacuity
-    local vac="tiled"
-    if cmp -s "$OUT/c.obu" "$OUT/c0.obu"; then vac="VACUOUS"; fi
-    # (A) SB128 axis: C_tiled must really be SB128
-    local sb="-"
-    if [ "$axis" = "sb128" ]; then
-      sb=$(python3 "$HERE/sb128_seqhdr.py" "$OUT/c.obu" 2>/dev/null | grep -o 'use_128x128_superblock=[01]' | cut -d= -f2)
-      [ -z "$sb" ] && sb="?"
-    fi
-    # (B) control
-    local ctlm="ctl-DIFF"
-    if cmp -s "$OUT/rs0.obu" "$OUT/c0.obu"; then ctlm="ctl-MATCH"; fi
-    # tiled verdict
-    local tiled="DIFF"
-    if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then tiled="MATCH"; fi
-
-    # `wc -c <` rather than `stat -c%s`: BSD stat (macOS) has no -c, and the
-    # error it printed instead was the only sign the byte columns were empty.
-    local cb rb; cb=$(wc -c <"$OUT/c.obu" | tr -d ' '); rb=$(wc -c <"$OUT/rs.obu" | tr -d ' ')
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$axis" "$bd" "$short_content" "$w" "$h" "$qp" "$p" "$r" "$c" "$sb" "$vac" "$ctlm" "$tiled" "$cb" "$rb" >>"$SCORE"
-
-    # ---- hard asserts ----
-    if [ "$vac" = "VACUOUS" ]; then
-      fail=$((fail+1)); failed+=("$tag[VACUOUS: C coded tiles == single tile]")
-      echo "  VACUOUS  $tag"; continue
-    fi
-    if [ "$axis" = "sb128" ] && [ "$sb" != "1" ]; then
-      fail=$((fail+1)); failed+=("$tag[NOT-SB128: C emitted sb=$sb]")
-      echo "  NOT-SB128 $tag"; continue
-    fi
-    if [ -n "$aomdec" ] && ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-      fail=$((fail+1)); failed+=("$tag[UNDECODABLE]")
-      echo "  CORRUPT  $tag  <-- port stream does not decode"; continue
-    fi
-
-    # (B) content-diverges-single-tile: not a tile finding
-    if [ "$ctlm" = "ctl-DIFF" ]; then
-      if in_list "$cell" "${CONTENT_DIVERGES[@]+"${CONTENT_DIVERGES[@]}"}"; then
-        axis_contentdiv=$((axis_contentdiv+1)); pass=$((pass+1))
-        echo "  content  $tag  (single-tile control DIFFERS — pre-existing, not a tile issue)"
-      else
-        fail=$((fail+1)); failed+=("$tag[CONTROL-REGRESSED: single-tile no longer matches]")
-        echo "  CTL-REG  $tag  <-- single-tile control regressed; investigate"
-      fi
-      continue
-    fi
-
-    # control matches from here — the tiled result IS an intersection finding
-    if [ "$tiled" = "MATCH" ]; then
-      if in_list "$cell" "${BYTE_EXACT[@]+"${BYTE_EXACT[@]}"}"; then
-        axis_pass=$((axis_pass+1)); pass=$((pass+1)); echo "  OK       $tag (byte-exact)"
-      else
-        fail=$((fail+1)); failed+=("$tag[PIN-BROKEN: now byte-exact -> add to BYTE_EXACT]")
-        echo "  PROMOTE  $tag  <-- now byte-exact! add it to BYTE_EXACT"
-      fi
-    else
-      if in_list "$cell" "${BYTE_EXACT[@]+"${BYTE_EXACT[@]}"}"; then
-        fail=$((fail+1)); failed+=("$tag[REGRESSION: was byte-exact]")
-        echo "  REGRESS  $tag"
-      else
-        axis_diff=$((axis_diff+1)); pass=$((pass+1))
-        echo "  pinned   $tag (C=${cb}B port=${rb}B — tile-intersection DIVERGES, control MATCHES)"
-      fi
-    fi
+    expect=DIFFERS
+    in_list "$cell" "${BYTE_EXACT[@]+"${BYTE_EXACT[@]}"}" && expect=IDENTICAL
+    check=c,decodes
+    [ "$axis" = sb128 ] && check=c,decodes,sb128
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$tag" "$content" "$w" "$h" "$qp" "$p" "$bd" \
+      "SVTAV1_TILE_ROWS_LOG2=$r;SVTAV1_TILE_COLS_LOG2=$c" "SVT_TILE_ROWS=$r;SVT_TILE_COLUMNS=$c" \
+      "$expect" "$check" "$ctl" "$ctl" >>"$LIST"
   done
-  echo "--- $axis_name: $axis_pass byte-exact / $axis_diff pinned-diverging / $axis_contentdiv content-diverges ---"
 }
 
 CC_AXES="${CC_AXES:-sb128 bd10 real}"
 skipped_axes=()
 axis_selected() { case " $CC_AXES " in *" $1 "*) return 0;; *) return 1;; esac; }
-if axis_selected sb128; then run_axis "SB128 x tiles" "${SB128_CELLS[@]}"; else skipped_axes+=(sb128); fi
-if axis_selected bd10;  then run_axis "bd10 x tiles"  "${BD10_CELLS[@]}";  else skipped_axes+=(bd10);  fi
-if axis_selected real;  then run_axis "real x tiles"  "${REAL_CELLS[@]}";  else skipped_axes+=(real);  fi
+if axis_selected sb128; then add_axis "${SB128_CELLS[@]}"; else skipped_axes+=(sb128); fi
+if axis_selected bd10;  then add_axis "${BD10_CELLS[@]}";  else skipped_axes+=(bd10);  fi
+if axis_selected real;  then add_axis "${REAL_CELLS[@]}";  else skipped_axes+=(real);  fi
 if [ "${#skipped_axes[@]}" -gt 0 ]; then
   echo "WARNING: axes SKIPPED by the caller via CC_AXES='$CC_AXES': ${skipped_axes[*]}" >&2
 fi
-if [ "$((pass + fail))" -eq 0 ]; then
+if [ "$(wc -l <"$LIST")" -le 1 ]; then
   echo "coverage combos gate: no axis selected (CC_AXES='$CC_AXES') — refusing to report 0/0 as a pass" >&2
-  rm -rf "$OUT"
   exit 2
 fi
-
-rm -rf "$OUT"
-total=$((pass + fail))
-echo
-if [ "${#skipped_axes[@]}" -gt 0 ]; then
-  echo "coverage combos gate: $pass / $total  (axes skipped by caller: ${skipped_axes[*]})"
-else
-  echo "coverage combos gate: $pass / $total"
-fi
+trap 'rm -rf "$OUT"' EXIT
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${CC_JOBS:-4}"
+rc=$?
+cp "$OUT/result.tsv" "$SCORE"
+python3 - "$OUT/result.tsv" "${skipped_axes[*]}" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+tiled = [r for r in rows if not r["name"].startswith("ctl_")]
+ctl = [r for r in rows if r["name"].startswith("ctl_")]
+bad = [r for r in rows if r["ok"] != "yes"]
+pinned = sum(r["expect"] == "DIFFERS" and r["ok"] == "yes" for r in tiled)
+skip = f"  (axes skipped by caller: {sys.argv[2]})" if sys.argv[2] else ""
+print(f"coverage combos gate: {len(rows) - len(bad)} / {len(rows)} "
+      f"({len(tiled)} tiled cells, {pinned} pinned diverging; {len(ctl)} controls){skip}")
+for r in bad:
+    why = "NOW MATCHES — add it to BYTE_EXACT" if r["expect"] == "DIFFERS" and r["verdict"] == "IDENTICAL" else f"{r['verdict']} {r['detail']}; {r['checks']}"
+    print(f"FAILED: {r['name']} [{why}]")
+PY
 echo "scoreboard: $SCORE"
-if [ "$fail" -gt 0 ]; then
-  printf 'FAILED: %s\n' "${failed[@]}"
-fi
-[ "$fail" -eq 0 ]
+exit "$rc"
