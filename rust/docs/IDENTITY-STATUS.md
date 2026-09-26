@@ -12,6 +12,33 @@ that is the property a wrong stream actually violates and because the port's
 inter search does not track C's bytes on all content. Never infer one from the
 other.
 
+## Video byte parity with mainline C, measured per cell — 2026-09-26
+
+Video is now ratcheted against C, not only against a decoder. Every figure
+below is pinned by a gate that fails on a regression AND on an improvement
+that has not moved its pin, so the gate is the current number:
+
+- Low delay, real video: `tools/video_census_gate.sh` — 6 public-domain
+  derf clips x {128,256} x qp {20,40,55} x presets -1..13, 8 frames; each
+  cell's first differing temporal unit is pinned in
+  `tools/pins/video_census.tsv` (244/540 identical at the census, 248 after
+  `801d103f` stamped the video arm's `chroma_level` on key frames). The
+  frontier by preset: 6/8/9 nearly clean; 0/2/3 diverge early in inter
+  frames (first difference in frame 1's loop-restoration taps, which come
+  first in the tile, so the upstream decision is not yet known); -1's key
+  frame differs in SB0's mode decision (plan 3.8).
+- TPL under random access (`aq_mode` 2) and low-delay CBR:
+  `tools/rc_tpl_gate.sh` — TPL 5/8 synthetic cells identical; CBR 0/8
+  (every cell differs from the key frame's qp, where C spends more bits).
+- SB128 stills (C selects 128 above 240p at presets <= 1): 64/64 identical
+  on 8 CID22 512x512 photos x qp {20,40,55,63} x presets {0,1}, with C's
+  SB128 confirmed per cell — the port's forced SPLIT at the 128 level
+  matches C there. Video at SB128 (MR, or <= M5 at qp > 57) is
+  unmeasured: the clips stop at 256x256.
+- Ghost Robot: stills 41/288 (`tools/still_grid_gate.sh ghost-robot`),
+  real video 0/36, every cell differing in the key frame
+  (`benchmarks/video_parity_census_gr_2026-09-26.meta`).
+
 ## Random-access stream bytes — 2026-09-24
 
 The RA path's *stream machinery* is now byte-verified against C where the
