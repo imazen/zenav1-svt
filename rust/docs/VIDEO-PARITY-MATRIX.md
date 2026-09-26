@@ -44,12 +44,10 @@ is the honest baseline; "we are" is measured state, not intent.
 ## How to read "every case"
 
 - **p{6,8} low-delay P, <=256x256**: byte-parity is pinned-witness strong.
-- **Other presets, low-delay**: decoder-verified (selfcheck ladder), not
-  byte-pinned. The 2026-09-26 real-video census measured them: presets 6,
-  8, 9 are 32..34/36 byte-identical through 8 frames, 4/5/7/10 about half
-  to two thirds, 0/2/3 diverge early in inter frames (5..7/36), and at
-  presets 1 and -1 the KEY frame of a video encode already differs from C
-  (0/36) although those presets are byte-identical as stills.
+- **Every preset, low-delay, real video**: ratcheted per cell by
+  `video_census_gate.sh`. Since `77d4d3ce` every key frame on its grid
+  matches C; the remaining divergences are inter frames, earliest at
+  presets 0/2/3 (plan 3.8 (b)). The pins file is the current count.
 - **Everything in the gap list**: refused with a named reason — honest
   state, not a failure. A refusal moves to "verified" only with a gate
   in the same change.
