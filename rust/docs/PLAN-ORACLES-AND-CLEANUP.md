@@ -487,6 +487,64 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
         BIPFULL all-modes pred dump), `~/tmp/gr-cell/` captures,
         `~/tmp/gr-hadamard-probe/` the fused-kernel differential.
 
+  - Session findings, fourth pass (`grst4` workspace, brief
+    `gr-stills4.grst4.md`; LANDED `cc845262`, temp instrumentation
+    removed):
+    17. **The finding-16 "Open" is now done:** a real per-SB encode pass
+        exists for bd8 stills — `leaf_funnel/enc_pass.rs`
+        (`encode_pass_luma_sb`, C `svt_aom_encode_sb` /
+        `av1_encode_loop`) runs after each SB's committed tree and
+        before the chain recode (C updates `ec_ctx_array` CDFs on
+        encode-pass coefficients): per-txb re-predict on the evolving
+        canvas (`predict_unit_overlay` at tx_depth>0), re-quantize under
+        `TxGate::enc_pass`, real `txb_skip`/`dc_sign` ctxs from a new
+        `ep_*`-equivalent cul tracker (unconditional per
+        coding_loop.c:776 — NOT the eval's `real_coeff_ctx` gate),
+        encode-pass recon written back into the tile canvas, leaf
+        coeffs/eobs/cul rewritten. Norm now fires only under
+        `gate.enc_pass` (eval never norms). Grid 65 -> 67/288, 0
+        regressed (promoted: `gradient_64_q20_p2_b8`,
+        `gradient_256_q45_p2_b8`); mainline 288/288.
+    18. **Two encode-pass subtleties that made the first attempt regress
+        to 0/24:** (a) C's encode-pass quantize RDOQs whenever
+        `rdoq_ctrls.enabled` (`(mds_do_rdoq || is_encode_pass)`, GR's
+        rewritten `svt_aom_quantize_inv_quantize`) even where the MDS
+        eval passed `RdoqCtrls::DISABLED` — the pass must carry
+        `frame.rdoq` with `enabled` forced by the SB's `rdoq_level`;
+        (b) `build_quant_table_sharp` leaves `qm_level=15` — the eval
+        stamps `frame.qm_levels[0]` onto `qt` (leaf_funnel/mod.rs:390)
+        and the pass MUST too, else `quantize_fp` runs without QM
+        matrices and produces a denser eob (p2 gradient 32x32: fp eob
+        997 vs C's 850, byte stream 572B vs 438B) that `optimize_b`
+        cannot shrink back.
+    19. **bd10 norm audit (brief item 1b): no gating bug, and no live
+        site.** `tx_unit_hbd*`/`bd10_reencode`/`bd10_post` never call
+        `perform_noise_normalization` — consistent with C under
+        `bypass_encdec` (allintra >= p4), where C ships MD coeffs
+        unnormed. At the only non-bypass bd10 grid preset (p2) the
+        coded tiles are ALREADY byte-identical to C (all diffs are FH
+        filter-search fields — `loop_filter_level`, `cdef_*` — riding
+        identical coeff data), so C's encode-pass norm made no coded
+        difference on those cells. Root cause of the port's invariance:
+        under `bd10_full_rd` the FUNNEL's eval quantize produces the
+        committed coeffs directly (no separate winner re-quantize runs
+        — `bd10_postpass_runs = !bd10_full_rd`), and the bd10 eval
+        already RDOQs, so eval == encode-pass output up to the norm
+        bump, which is observationally inert on the grid. A faithful
+        bd10 winner re-quantize+norm at allintra p0-3 remains the
+        correct long-term shape but is dead code on the observed grid;
+        don't land it unverified. `quantize_inv_quantize_still`'s
+        `is_encode_pass` norm arm is the OTHER still path (block_encode)
+        and is unaffected.
+    20. **Remaining p2-bd8 DIFFERS group by first-diff** (post-landing,
+        `~/tmp/grst4/p2b8_honest.result.tsv`): the tile-identical cells
+        now show `loop_filter_level`/`cdef_bits` FH diffs (the post-recon
+        filter search — same upstream class as finding 2/3's lr-taps),
+        plus a second group of mid-tile coefficient/mode-symbol diffs
+        (ops 7-30, CDF10/13/14 + `B:` bools = partition/mode symbols and
+        early txb headers). The bd8 norm work is done; these are the
+        filter-search and residual MD-cost arms.
+
 - [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
   MDS0/1/2 there, and the port does not model those IFS arms (it skips the
   search; `leaf_funnel/ifs.rs`). Streams are valid (decoder-verified), but
