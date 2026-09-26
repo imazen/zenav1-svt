@@ -235,9 +235,10 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     is fork-feature territory (items 3.3+).
 - [ ] 3.3s Ghost Robot STILLS (measured 2026-09-26,
   `benchmarks/gr_still_grid_2026-09-26.meta`): still grid 41/288 while
-  c_parity is 854/873. First divergence: frame header 26 cells
-  (loop_filter_level, cdef_uv_pri_strength, lr_type, sharpness — start
-  here), tile op 179, tile payload 42; no 10-bit cell matches.
+  c_parity is 869/873. Corrected census (identity_diff.py now reads the QM
+  levels): all 247 divergences are in the tile, 166 first at a tile op and
+  81 with downstream frame-header differences too; no 10-bit cell matches.
+  The upstream is mode decision / quantization (see below).
   - Session findings (2026-09-27, `grst` workspace — investigation only,
     nothing landed):
     1. **The census "frame header" stage labels are mislabeled for every

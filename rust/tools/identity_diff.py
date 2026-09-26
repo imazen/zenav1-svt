@@ -263,7 +263,16 @@ def decode_fh(payload, sh_info, num_planes):
                 b.su(6, "delta_q_v_dc")
             if b.f(1, "delta_q_v_ac.coded"):
                 b.su(6, "delta_q_v_ac")
-    b.f(1, "using_qmatrix")
+    # Spec 5.9.12: the qm levels follow using_qmatrix. This branch was
+    # missing, so any stream with quantization matrices on (Ghost Robot's
+    # default; mainline tune IQ) had every later field name read from the
+    # wrong bits: the 2026-09-26 Ghost Robot census labelled 26 cells as
+    # frame-header divergences on that basis.
+    if b.f(1, "using_qmatrix"):
+        b.f(4, "qm_y")
+        b.f(4, "qm_u")
+        if sh_info.get("separate_uv_delta_q"):
+            b.f(4, "qm_v")
     # segmentation_params()
     seg = b.f(1, "segmentation_enabled")
     if seg:
@@ -658,6 +667,12 @@ def main():
             if tile_note is None or (tile_note[0] == "tile" and s != "tile"):
                 tile_note = (s, d)
         if stage is None:
+            stage, detail = s, d
+        elif stage == "tile" and s in ("tile-op", "tile-count"):
+            # The same upgrade for the reported STAGE: the coarse byte-count
+            # verdict came first only because the OBU walk runs before the
+            # trace walk. (Hidden until 2026-09-26: a frame-header walk that
+            # misparsed QM streams threw before the OBU walk set "tile".)
             stage, detail = s, d
 
     npairs = max(len(c_obus), len(r_obus))

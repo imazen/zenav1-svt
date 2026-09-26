@@ -1,3 +1,26 @@
+# Ghost Robot still grid: 41/288; all 247 divergences are in the tile (corrected census, 2026-09-26)
+
+commit:  main at 6f174d38 + the identity_diff.py fixes of this change
+host:    i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+tool:    SVT_ORACLE=ghost-robot OSG_JOBS=4 tools/oracle_still_grid.sh
+         (rows: gr_still_grid_2026-09-26.tsv, replaced by this run)
+
+| first divergence | cells |
+|------------------|-------|
+| identical        | 41 (all 8-bit) |
+| tile-op          | 166 |
+| frame header     | 81, and ALL 81 also diverge in the tile (loop_filter_level, cdef strengths, lr_type: downstream of mode decision, per identity_diff's own guidance) |
+
+CORRECTION. The first census below was produced by an identity_diff.py that
+did not read qm_y/qm_u/qm_v after using_qmatrix = 1 (Ghost Robot's default),
+so every frame-header field name after it was misread, and a coarse "tile"
+stage then masked the op-level verdict. Both are fixed in the same change as
+this record. The grst investigation (plan 3.3s, 0221442e) found the real
+upstream: pre-deblock recon differs across the frame, so mode decision and
+quantization diverge first.
+
+---------------------------------------------------------------- superseded
+
 # Ghost Robot still grid: 41/288, and where the other 247 first diverge (2026-09-26)
 
 commit:  main at 2848742f (plan 3.3a landed); unchanged by b1fffbb3
