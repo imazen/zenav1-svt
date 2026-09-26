@@ -46,7 +46,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
-# Reference decoder for the DECODABILITY assert in run_cell. Required, never
+# Reference decoder for the RECON assert (aomdec output == the port's recon;
+# until 2026-09-26 only decodability). Required, never
 # skipped: byte-identity alone is blind to a cell that regresses OUT of the
 # lists below, so every port OBU this gate produces must also be provably
 # decodable. Same contract as bd10_nonflat_gate.sh. Override with AOMDEC=.
@@ -173,137 +174,64 @@ SPEC_CELLS_H=(
     "crop:$CLIC_DIR_G/final-test/02809272b4ca9b08af45771501b741296187c7e26907efb44abbbfcb6cd804f7.png|512|512|5|2"
 )
 
-OUT="${TMPDIR:-/tmp}/bd10photo.$$"
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (BD10_PHOTO_JOBS, default 4). CHECK is `recon` by default: aomdec's 10-bit
+# output must equal the port's final recon, which subsumes "aomdec accepts
+# it" (this gate's check until 2026-09-26); BD10_PHOTO_CHECK=decodes
+# restores the weaker one. A missing PNG fails its cell.
+OUT="${TMPDIR:-$HOME/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
-pass=0
-fail=0
-missing=0
-failed=()
-
-run_cell() {
-    local stem=$1 qp=$2 p=$3
-    local png="$CORPUS/$stem.png"
-    local tag="${stem}_q${qp}_p${p}"
-    if [ ! -f "$png" ]; then
-        missing=$((missing + 1))
-        failed+=("${tag}[no-png]")
-        return
-    fi
-    run_cell_spec "file:$png" "$tag" "$qp" "$p"
+LIST="$OUT/bd10_photo.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tcheck\n' >"$LIST"
+missing=()
+spec_row() { # tag spec qp preset
+    printf '%s\t%s\t512\t512\t%s\t%s\t10\tc,%s\n' "$1" "$2" "$3" "$4" "${BD10_PHOTO_CHECK:-recon}" >>"$LIST"
 }
-
-# Same contract, but the caller supplies the full identity_run content spec
-# (group G feeds `crop:` — the wider-corpus sweep's center-crop convention).
-run_cell_spec() {
-    local spec=$1 tag=$2 qp=$3 p=$4
-    if ! SVTAV1_BD=10 "$HERE/identity_run" "$spec" 512 512 "$qp" "$p" "$OUT/rs" \
-        >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[rs-err]")
-        return
-    fi
-    if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        512 512 "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[c-err]")
-        return
-    fi
-    # Decodability BEFORE byte-identity: a stream aomdec rejects is a failure
-    # regardless of what it compares equal to.
-    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[undecodable]")
-        return
-    fi
-    if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        pass=$((pass + 1))
-    else
-        fail=$((fail + 1))
-        failed+=("$tag")
-    fi
+grid() { # images-array-name qps-array-name presets-array-name
+    local -n imgs=$1 qps=$2 ps=$3
+    local stem qp p
+    for stem in "${imgs[@]}"; do
+        for qp in "${qps[@]}"; do
+            for p in "${ps[@]}"; do
+                if [ -f "$CORPUS/$stem.png" ]; then
+                    spec_row "${stem}_q${qp}_p${p}" "file:$CORPUS/$stem.png" "$qp" "$p"
+                else
+                    missing+=("${stem}_q${qp}_p${p}[no-png]")
+                fi
+            done
+        done
+    done
 }
-
-for stem in "${IMAGES_A[@]}"; do
-    for qp in "${QPS_A[@]}"; do
-        for p in "${PRESETS[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-for stem in "${IMAGES_B[@]}"; do
-    for qp in "${QPS_B[@]}"; do
-        for p in "${PRESETS[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-for stem in "${IMAGES_C[@]}"; do
-    for qp in "${QPS_C[@]}"; do
-        for p in "${PRESETS_C[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-for stem in "${IMAGES_D[@]}"; do
-    for qp in "${QPS_D[@]}"; do
-        for p in "${PRESETS_D[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-for stem in "${IMAGES_E[@]}"; do
-    for qp in "${QPS_E[@]}"; do
-        for p in "${PRESETS_E[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-for stem in "${IMAGES_F[@]}"; do
-    for qp in "${QPS_F[@]}"; do
-        for p in "${PRESETS_F[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-# Group G (see the header): the clic q5 near-tie repro, corpus-guarded.
+grid IMAGES_A QPS_A PRESETS
+grid IMAGES_B QPS_B PRESETS
+grid IMAGES_C QPS_C PRESETS_C
+grid IMAGES_D QPS_D PRESETS_D
+grid IMAGES_E QPS_E PRESETS_E
+grid IMAGES_F QPS_F PRESETS_F
 if [ -f "$IMAGE_G" ]; then
-    run_cell_spec "crop:$IMAGE_G" "clic8426ed_q5_p6" 5 6
+    spec_row clic8426ed_q5_p6 "crop:$IMAGE_G" 5 6
 else
-    missing=$((missing + 1))
-    failed+=("clic8426ed_q5_p6[no-png: set BD10_CLIC_CORPUS]")
+    missing+=("clic8426ed_q5_p6[no-png: set BD10_CLIC_CORPUS]")
 fi
-for stem in "${IMAGES_H[@]}"; do
-    for qp in "${QPS_H[@]}"; do
-        for p in "${PRESETS_H[@]}"; do run_cell "$stem" "$qp" "$p"; done
-    done
-done
-# Full-spec cells (group H tail): same contract as run_cell, but the content
-# argument is passed verbatim (crop:/gradient:/... specs), so non-CID22
-# sources can be pinned. Fails loudly when the source PNG is absent.
+grid IMAGES_H QPS_H PRESETS_H
 for spec in "${SPEC_CELLS_H[@]}"; do
     IFS='|' read -r content sw sh sqp sp <<<"$spec"
     tag="$(basename "${content#*:}" .png | cut -c1-12)_q${sqp}_p${sp}"
-    src="${content#*:}"
-    if [ ! -f "$src" ]; then
-        missing=$((missing + 1))
-        failed+=("${tag}[no-png]")
-        continue
-    fi
-    if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$sw" "$sh" "$sqp" "$sp" "$OUT/rs" \
-        >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[rs-err]")
-        continue
-    fi
-    if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$sw" "$sh" "$sqp" "$sp" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[c-err]")
-        continue
-    fi
-    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        failed+=("${tag}[undecodable]")
-        continue
-    fi
-    if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        pass=$((pass + 1))
-    else
-        fail=$((fail + 1))
-        failed+=("$tag")
-    fi
+    if [ -f "${content#*:}" ]; then spec_row "$tag" "$content" "$sqp" "$sp"; else missing+=("${tag}[no-png]"); fi
 done
-
-total=$((pass + fail + missing))
-echo "bd10 photographic identity: $pass / $total byte-identical"
-[ "$((fail + missing))" -gt 0 ] && printf 'FAILED: %s\n' "${failed[@]}"
-[ "$((fail + missing))" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${BD10_PHOTO_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" "${missing[@]+"${missing[@]}"}" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+missing = sys.argv[2:]
+ok = [r for r in rows if r["ok"] == "yes" and r["verdict"] == "IDENTICAL"]
+print(f"bd10 photographic identity: {len(ok)} / {len(rows) + len(missing)} byte-identical")
+bad = [f"{r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]" for r in rows if r not in ok] + missing
+if bad:
+    print("FAILED: " + "\nFAILED: ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+st=$?
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]
