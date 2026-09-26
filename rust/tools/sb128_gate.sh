@@ -168,8 +168,9 @@ SB128_BYTE_EXACT=(
 # gb82-sc IS fetched in CI since 2026-09-05 (rust-gates.yml sparse-clones it and
 # exports $ZENAV1_CORPUS_ROOT), so these four cells run there too; before that
 # they were dropped on every CI run. SC_CORPUS overrides the dir; when it is
-# absent the cells are dropped with a LOUD warning — the corpus-presence decision
-# is made HERE at the caller, never buried inside a silently-skipping cell.
+# absent the gate FAILS, unless the caller sets SB128_ALLOW_NO_CORPUS=1 to drop
+# those cells (with a warning) — the skip is the caller's decision, never one
+# buried inside a silently-skipping cell.
 SC_CORPUS="${SC_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"
 _wiki_png="$SC_CORPUS/codec_wiki.png"
 if [ -f "$_wiki_png" ]; then
