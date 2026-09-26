@@ -842,14 +842,15 @@ Order, by expected size:
      `--bytes-only`; each check was shown to fail on a cell built to fail
      it. Ported by 2026-09-26, verdicts unchanged unless noted (i265):
      lossless, superres (+recon, +preset 7), superres_bd10 (+preset 7),
-     partial_sb, bd10_partial_sb, bd10_nonflat (+recon), tile (aomdec
-     required, +port anti-vacuity, 9 controls), sb128 (+witnesses),
-     alignment, coverage_combos, video_selfcheck and its bd10 twin
-     (parallel; the 30-minute CI step), screen_palette, screen_palette_bd
-     (+screenrep, 4 stale pins removed), bd10_hbd_src. cellrun gained
-     per-side env, `decodes`, `inter`, `sb128`/`sb64`, `c_differs_from`,
-     `arch` and `@CELL@`. Next: screen_ibc(_byte), identity_full_8bit,
-     bd10_photo, imazen26, the inter byte gates (brief `gate-port`).
+     partial_sb, bd10_partial_sb, bd10_nonflat (+recon), bd10_photo (+recon),
+     imazen26 (+recon), tile (aomdec required, +port anti-vacuity, 9
+     controls), sb128 (+witnesses), alignment, coverage_combos,
+     video_selfcheck and its bd10 twin, screen_palette, screen_palette_bd
+     (+screenrep, 4 stale pins removed), screen_ibc_byte, bd10_hbd_src,
+     identity_full_8bit (scoreboard byte-identical; CI now runs its default
+     tiers). cellrun gained per-side env, `decodes`, `inter`, `sb128`/`sb64`,
+     `c_differs_from`, `same_as`, `arch`, `@CELL@` and `--root`. Next:
+     screen_ibc_gate, the inter byte gates, fctx_gate (brief `gate-port`).
   2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
      `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
      that does not parse, a flag other than 0/1, and a still-only knob on a
@@ -866,7 +867,8 @@ Order, by expected size:
      tier of `identity_full_8bit.sh` already ran there; `bd10_photo_gate.sh`
      joins shard 4 (its 14 CID22 photos and 2 CLIC crops join the sparse corpus
      fetch). Re-verified by hand 2026-09-25: 191/191, 309/309 and 1100/1100.
-     Open: identity_full_8bit's real tier (gb82 + CID22, ~45 min).
+     identity_full_8bit's default tiers run in CI since 2026-09-26 (1100
+     cells). Open: its real tier (gb82 photo is not in the sparse fetch).
 - [ ] T4 stage-boundary differentials.
 - [ ] T6 no_std, tier and dead-code gates.
   - Done: no_std. `just nostd-check` (and a CI step in shard 3) checks
