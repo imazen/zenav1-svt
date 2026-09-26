@@ -992,6 +992,24 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     per-tx-type/per-txb coeff-rate+dists for the same candidate — wrap
     C's MDS3 tx-type search outputs, or diff the port's `CAND`/`RSKIP`
     split against an extended `SVT_FULLCOST` record carrying tx fields.
+  - (b) third cell surveyed (2026-09-27): `vidyo1 128 q20 p0` — TU1, frame 1
+    same byte count (309 vs 309) but different bytes. First divergence is
+    the partition tree under poc=1's (16,16) 32x32 node: the port commits
+    PART_V4 (four 8x32 strips at mi (16,16..22)) where C's final grid is a
+    deeper SPLIT layout — BUT both sides evaluated BOTH layouts (C's CINTER
+    records a `bsize=18 part=8` eval at (16,16)); the flip is in
+    arbitration, not coverage. The leaf eval at that node is nearly exact:
+    same winner (mode17 {1,5}, mv=[0,1|1,0]), IDENTICAL dist=122368, and
+    rate 245024 vs C's 244523 — a +501 (~0.2%) compound-signalling gap on
+    an identical winner, matching the vidyo3 (8,24) signature (+830 there,
+    mode18 {1,5}). So the residual frontier is TWO systematic gaps: (i)
+    compound/inter signalling rate ~+0.2-2.5% per candidate (C's committed
+    leaf has imc=59 — compare the port's inter_mode_ctx/drlctx/`refbits`
+    and the comp-ref pair index bits), which flips near-tie partitions and
+    leaf winners; (ii) the MDS3 residual-eval under-harvest (johnny). Next
+    wedge for (i): instrument C's inter rate terms (ref-pair bits, mode
+    ctx bits, drl/mv-diff bits, comp-type bits) for one identical winner
+    and diff term-by-term against the port's `flr`/`refbits` split.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.
