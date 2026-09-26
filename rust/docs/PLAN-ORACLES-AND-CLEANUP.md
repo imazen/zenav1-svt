@@ -718,6 +718,16 @@ Order, by expected size:
      `predict_unit` 0.60M, `tx_unit_inner` 0.59M. Line-level (debug build,
      `--dump-instr=yes`) names `LeafEval`/`into_choice`,
      `WarpRefineBlock` and `frame.cfg` copies. Brief: `perf-mem`.
+   - Done (`8043b419`): `dq_full`'s 64-dim zero-fill was dead — its only
+     reader (`mod_input_64` inside `inv_txfm2d_dispatch`) touches exactly
+     the `pw x ph` corner the re-lay writes. -1,047,139 Ir.
+     Done (`6b0da44f`): `write_coeffs_txb`'s depth-0 `vec![0i32; aw*ah]`
+     was fully overwritten by its own copy loop — `with_capacity` +
+     `extend_from_slice` removes the calloc. -256,814 Ir. Both at
+     `benchmarks/perf_mem_2026-09-26.meta`. Still open: the 2.87M of
+     `grown_out` resize deltas in `tx_unit_inner` (10,276 calls — pooled
+     buffers arriving shorter than the request) and the 2.86M
+     calloc-internal memset (per-tile-row `EntropyCtx` rebuild).
    - Open, by excess over C at 1024 p10: `optimize_b` (38.3M vs
      30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
      (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma

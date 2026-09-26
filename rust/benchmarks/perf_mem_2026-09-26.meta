@@ -1,0 +1,62 @@
+# perf_mem_2026-09-26 — memset/memcpy callers (PLAN Phase 5 item 7)
+
+Host: i265 (hybrid Core Ultra 7 265K). Tool: callgrind instruction count
+(`valgrind --tool=callgrind --dump-instr=yes`), because `perf stat` is not
+usable on this host.
+
+Cell: `perf_encode gradient 1024 1024 40 10 <prefix> 0` (still, p10,
+mainline-4.2.0 oracle). Baseline build for attribution was
+`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_TARGET_DIR=target-heapdbg`.
+
+## Baseline attribution (301,332,807 Ir total)
+
+`memset` 15,641,373 Ir. Largest callers:
+- `tx_unit_inner` via `ptr::write_bytes` 2,998,885 (10,284 calls — Vec
+  `resize`/`fill` sites inlined into the function; not yet root-caused to a
+  single line) and via `slice::fill` 1,049,792 (64 calls — the `dq_full`
+  zero-fill on 64-dim shapes).
+- a libc-internal caller under `calloc` 2,862,047 (164 calls).
+- `predict_dc` row fills 1,497,808 (17,000; C's DC predictor memsets rows
+  too), `DeblockGeom::record_block` 856,320 (60,672), `dirty_pool<i16>`
+  650,336 (2,080), `mod_input_64_into` zero-extension 564,416 (2,112),
+  `extract_neighbors_tiled` 523,842 (32,896), `EntropyCtx`/`DeblockGeom`
+  per-frame construction ~1M combined.
+
+`memcpy` 10,399,776 Ir — mostly small struct moves in the leaf funnel:
+`eval_candidate` 1.74M (107,200 calls), `evaluate_leaf` ~1.03M,
+`commit_leaf` 968,704 (80,896), `encode_block_syntax` 789,256 (46,656),
+`predict_unit` 576,160 (10,400), `tx_unit_inner` 589,312 (44,544).
+
+## Change 1 — `dq_full` zero-fill removed (8043b419)
+
+`tx_unit_inner` re-lays the `pw x ph` quantised corner into a `w`-stride
+buffer for `inv_txfm2d_dispatch`; the old code claimed the tail zero-fill
+was load-bearing. It is not: the branch exists only for `w > 32 || h > 32`,
+which routes the dispatch through `mod_input_64`, which reads exactly the
+`pw x ph` corner the copy writes and nothing else. `zeroed` -> `grown`.
+
+301,332,807 -> 300,285,668 Ir (-1,047,139, -0.35%). Output .obu
+byte-identical on the measurement cell.
+
+## Change 2 — `block_syntax` 64-dim pack without calloc (6b0da44f)
+
+`write_coeffs_txb`'s depth-0 path built `vec![0i32; aw*ah]` then overwrote
+every element row by row — 64 calloc calls on this cell (the dominant
+`with_capacity_zeroed` site in a heaptrack of the same cell). Replaced with
+`Vec::with_capacity` + `extend_from_slice` rows.
+
+300,285,668 -> 300,028,854 Ir (-256,814, -0.09% incremental).
+Byte-identical.
+
+## Remaining (not landed)
+
+- The 2.87M `write_bytes`/`resize` fills inside `tx_unit_inner` (6,288
+  calls) and the 72K/3,988-call small fills — a `fill_probe` experiment
+  showed `grown_out`'s `buf.resize` fires 10,276 times filling 1,875,712
+  elements total (`qcoeff`/`recon` PoolVec growth deltas). Safe Rust cannot
+  skip that init; the fix shape is keeping pooled lengths from shrinking
+  below the class size, or a scratch contract that never reads unwritten
+  positions.
+- The 2.86M calloc-internal memset (EntropyCtx rebuilt per tile row at
+  ~16 calls x ~10 vecs, plus per-frame `DeblockGeom`/pad buffers).
+- Small struct moves under `eval_candidate`/`commit_leaf`/`into_choice`.
