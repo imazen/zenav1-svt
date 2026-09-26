@@ -12,6 +12,9 @@ its `check` column names:
   dav1d     dav1d's output == aomdec's (implies a decode);
   decodes   aomdec accepts the port's stream (no pixel comparison; implied
             by lossless/recon/dav1d);
+  inter     the port coded a frame past the key frame (`rs.obu.f1` is
+            non-empty): a video cell whose every frame is intra passes a
+            recon comparison trivially;
   sb128     C's sequence header says use_128x128_superblock = 1 (the cell
   sb64      really is an SB128 cell), or = 0; needs `c`
             (tools/sb128_seqhdr.py reads the bit);
@@ -66,7 +69,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RS_ROOT = HERE.parent
-CHECKS = {"c", "lossless", "recon", "dav1d", "decodes", "sb128", "sb64", "none"}
+CHECKS = {"c", "lossless", "recon", "dav1d", "decodes", "inter", "sb128", "sb64", "none"}
 
 
 def read_cells(path):
@@ -242,6 +245,9 @@ def run_cell(row, root, timeout, bytes_only):
             return ("ERROR", "PORT", f"identity_run exited {r.returncode}: "
                     f"{last_line(d / 'rs.trace')} ({d}/rs.trace)", [])
         checks = run_checks(row, d, env, timeout)
+        if "inter" in row["checks"]:
+            f1 = d / "rs.obu.f1"
+            checks.append(("inter", f1.exists() and f1.stat().st_size > 0))
         if "c" in row["checks"]:
             verdict, stage, detail = run_c(row, d, timeout, bytes_only)
             for want in row["checks"] & {"sb128", "sb64"}:

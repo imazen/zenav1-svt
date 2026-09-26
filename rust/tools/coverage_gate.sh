@@ -39,7 +39,7 @@ command -v cargo-llvm-cov >/dev/null 2>&1 || {
 }
 
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/coverage_gate.$$.log"
+OUT="${TMPDIR:-$HOME/tmp}/coverage_gate.$$.log"
 cargo llvm-cov nextest --workspace --locked --no-fail-fast --summary-only \
     --ignore-filename-regex '(tests?/|examples/|benches/)' >"$OUT" 2>&1 || {
     echo "coverage_gate: the instrumented test run FAILED — that is a test failure, not a coverage result" >&2

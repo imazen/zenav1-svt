@@ -73,71 +73,49 @@ work="${TMPDIR:-$HOME/tmp}/video-selfcheck.$$"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
-fail=0; ran=0; inter_seen=0
-echo "== video selfcheck gate (port recon vs aomdec, ${SIZE}, presets ${PRESETS}, ${FRAMES} frames) =="
-printf '  %-16s %-4s %-3s %-8s %s\n' clip qp p frames note
+# The cells are a list for tools/cellrun.py (plan T3), run in parallel
+# (VSG_JOBS, default 4): each cell is the port alone (no C side) with two
+# checks, `recon` (aomdec's output == the port's final recon on EVERY frame)
+# and `inter` (the port coded a frame past the key frame; anti-vacuity, per
+# cell). VSG_BD=10 runs the 10-bit twin (bd10_video_selfcheck_gate.sh).
+BD="${VSG_BD:-8}"
+LABEL="video selfcheck gate"
+[ "$BD" = 10 ] && LABEL="bd10 video selfcheck gate"
+echo "== $LABEL (port recon vs aomdec, ${SIZE}, presets ${PRESETS}, ${FRAMES} frames) =="
+LIST="$work/video_selfcheck.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv\tcheck\n' >"$LIST"
 for clip in "${CLIPS[@]}"; do
     asset="$ASSETS/${clip}_${SIZE}_8f.i420"
-    if [ ! -f "$asset" ]; then
-        echo "  MISSING ASSET $asset" >&2; fail=$((fail + 1)); continue
-    fi
+    [ -f "$asset" ] || { echo "  MISSING ASSET $asset" >&2; exit 1; }
     for qp in "${QPS[@]}"; do
       for PRESET in "${PRESET_LIST[@]}"; do
-        out="$work/${clip}_q${qp}_p${PRESET}"; mkdir -p "$out"
-        # SVTAV1_FRAME_SHIFT/_ZOOM_* are the SYNTHETIC motion model; cleared so
-        # a stale environment cannot layer a warp on top of real motion.
-        if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-            SVTAV1_FRAMES="$FRAMES" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
-            SVTAV1_FINAL_RECON="$out/rec" \
-            "$RUN" "rawseq:$asset" "$W" "$H" "$qp" "$PRESET" "$out/p" \
-            >"$out/stdout.txt" 2>"$out/trace.txt"; then
-            printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" - "ENCODE REFUSED/FAILED"
-            fail=$((fail + 1)); continue
-        fi
-        ran=$((ran + 1))
-        # ANTI-VACUITY, per cell, and BEFORE the decode: a run that coded no
-        # frame past the key frame would pass the comparison trivially, so
-        # require a frame 1 on disk. Counted here rather than after the decode
-        # so that a DECODE failure is reported as the failure it is instead of
-        # also tripping the vacuity check.
-        if [ -s "$out/p.obu.f1" ]; then
-            inter_seen=$((inter_seen + 1))
-        fi
-        if ! "$AOMDEC" --rawvideo -o "$out/dec.yuv" "$out/p.obu" >/dev/null 2>&1; then
-            printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" - "UNDECODABLE"
-            fail=$((fail + 1)); continue
-        fi
-        got=$(RECON_DIR="$out" W="$W" H="$H" N="$FRAMES" python3 - <<'PY'
-import os
-w, h, n = int(os.environ['W']), int(os.environ['H']), int(os.environ['N'])
-fl = w * h + 2 * (w // 2) * (h // 2)
-d = open(os.path.join(os.environ['RECON_DIR'], 'dec.yuv'), 'rb').read()
-ok, first = 0, None
-for i in range(n):
-    p = os.path.join(os.environ['RECON_DIR'], f'rec.f{i}')
-    if not os.path.exists(p):
-        break
-    if open(p, 'rb').read()[:fl] == d[i * fl:(i + 1) * fl]:
-        ok += 1
-    elif first is None:
-        first = i
-print(f"{ok}/{n}" + (f" drift-from-f{first}" if first is not None else ""))
-PY
-)
-        note=ok
-        if [ "$got" != "$FRAMES/$FRAMES" ]; then note="RECON MISMATCH"; fail=$((fail + 1)); fi
-        printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" "$got" "$note"
+        printf '%s_q%s_p%s\trawseq:%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_FRAMES=%s;SVTAV1_INTRA_PERIOD=64;SVTAV1_HIER_LEVELS=0\trecon,inter\n' \
+          "$clip" "$qp" "$PRESET" "$asset" "$W" "$H" "$qp" "$PRESET" "$BD" "$FRAMES" >>"$LIST"
       done
     done
 done
-
-echo
-echo "cells run: $ran of $EXPECT   inter-coding cells: $inter_seen   failed: $fail"
-if [ "$ran" -ne "$EXPECT" ]; then
-    echo "ANTI-VACUITY FAIL: $ran of $EXPECT cells actually ran" >&2; exit 1
-fi
-if [ "$inter_seen" -ne "$EXPECT" ]; then
-    echo "ANTI-VACUITY FAIL: $inter_seen of $EXPECT cells coded a frame past the key frame" >&2; exit 1
-fi
-[ "$fail" -eq 0 ] || exit 1
-echo "video selfcheck gate: OK"
+# SVTAV1_FRAME_SHIFT/_ZOOM_* are the SYNTHETIC motion model; cleared so a
+# stale environment cannot layer a warp on top of real motion.
+env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN AOMDEC="$AOMDEC" \
+    python3 "$HERE/cellrun.py" "$LIST" --out "$work/result.tsv" --jobs "${VSG_JOBS:-4}"
+rc=$?
+python3 - "$work/result.tsv" "$EXPECT" "$LABEL" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+expect, label = int(sys.argv[2]), sys.argv[3]
+ran = [r for r in rows if r["verdict"] != "ERROR"]
+inter = [r for r in rows if "inter=ok" in r["checks"]]
+bad = [r for r in rows if r["ok"] != "yes"]
+for r in bad:
+    print(f"  {r['name']:<24} {r['verdict']} {r['detail']} {r['checks']}")
+print(f"\ncells run: {len(ran)} of {expect}   inter-coding cells: {len(inter)}   failed: {len(bad)}")
+if len(ran) != expect:
+    sys.exit(f"ANTI-VACUITY FAIL: {len(ran)} of {expect} cells actually ran")
+if len(inter) != expect:
+    sys.exit(f"ANTI-VACUITY FAIL: {len(inter)} of {expect} cells coded a frame past the key frame")
+if bad:
+    sys.exit(1)
+print(f"{label}: OK")
+PY
+st=$?
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]

@@ -52,11 +52,14 @@ jobs:
     # 5-8 min and idled. The steps are independent processes sharing only cached
     # setup, so they split cleanly.
     #
-    # Balanced on MEASURED per-step duration (run 34318187912), longest-first
-    # bin packing: shard loads 598 / 601 / 595 / 606 / 605 s.
-    # Wall = max(shard) + setup = 660 s = 11 min. The floor is the single longest
-    # gate, `screen IntraBC byte gate` at 574 s, so more shards cannot beat it.
-    # Total runner-minutes 51 -> 55 (setup repeats per shard, 54 s each).
+    # Rebalanced 2026-09-26 on run 36204689040, the first in which every step
+    # ran (a red gate had been skipping the rest of shard 3): gate minutes were
+    # 12 / 14 / 58 / 19 / 9. The 10-bit video self-check alone took 1790 s
+    # serially; it and the 8-bit one now run their cells in parallel on
+    # cellrun (VSG_JOBS=4; locally 351 s -> 91 s for 8-bit), and the 10-bit
+    # step, arbitrary-size and both superres steps moved off shard 3.
+    # Re-measure after the next full run; the previous balance (2026-09-09,
+    # run 34318187912) predates most of today's steps.
     #
     # fail-fast OFF so one red gate does not hide the other four shards verdicts.
     #
@@ -695,7 +698,7 @@ jobs:
         run: ./tools/ra_selfcheck_gate.sh
 
       - name: 10-bit video self-consistency — port recon == aomdec, 8 frames
-        if: ${{ !cancelled() && matrix.shard == 3 }}
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         env:
           AOMDEC: ${{ github.workspace }}/aom-build/aomdec
@@ -922,7 +925,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/sb128_gate.sh
 
       - name: arbitrary-size robustness — panic-free + decodable
-        if: ${{ !cancelled() && matrix.shard == 3 }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         # 128 cells (gradient AND screen) x arbitrary/odd/partial/sub-64 dims.
         # This is the gate that must catch a crash on the public API. It ran
@@ -1030,7 +1033,7 @@ jobs:
         run: ./tools/research_matrix.sh
 
       - name: superres identity + conformance (chunk B.3)
-        if: ${{ !cancelled() && matrix.shard == 3 }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED
         # size under the reference decoder (the upscale is normative).
@@ -1038,7 +1041,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_gate.sh
 
       - name: superres bd10 identity + conformance + recon
-        if: ${{ !cancelled() && matrix.shard == 3 }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         # The 10-bit arm: u16 source downscale (C's pack->highbd_resize->
         # unpack order) + byte-parity + decode + last_recon10_final ==
