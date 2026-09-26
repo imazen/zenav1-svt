@@ -560,7 +560,23 @@ pub fn build_inter_candidates(
             near_count: cand_red.near_count_ctrls.near_count,
             near_near_count: cand_red.near_count_ctrls.near_near_count,
         },
-        bipred3x3_ctrls: Default::default(),
+        // C `ctx->bipred3x3_ctrls` — `svt_aom_set_bipred3x3_controls`
+        // (`pcs->bipred3x3_injection`) (enc_mode_config.c:5869/:7855).
+        // This is what arms `bipred_3x3_candidates_injection`'s +-2
+        // per-list NEW_NEWMV ring (mode_decision.c:2911) — the search that
+        // lets a compound candidate win mid-walk, so the mi grid carries
+        // `{LAST,BWDREF}` stamps later blocks' `setup_ref_mv_list` reads.
+        bipred3x3_ctrls: crate::port_enc_mode_config::ctrls::set_bipred3x3_controls(
+            f.bipred3x3_injection,
+        )
+        .map_or_else(crate::port_md::inject::Bipred3x3Ctrls::default, |c| {
+            crate::port_md::inject::Bipred3x3Ctrls {
+                enabled: c.enabled != 0,
+                search_diag: c.search_diag != 0,
+                use_best_list: c.use_best_list != 0,
+                use_l0_l1_dev: c.use_l0_l1_dev,
+            }
+        }),
         unipred3x3_injection: 0,
         // C `ctx->new_nearest_injection` — 1 in both sig derivations this
         // lane reaches (enc_mode_config.c:7570/:7848/:7965); the light sig's

@@ -233,6 +233,14 @@ pub struct InterMdFrame<'a> {
     /// M3+, which still permits the NEAREST_NEAREST/NEAR_NEAR/NEW_NEW
     /// compound candidates `inject_*` builds under `allow_bipred`.
     pub inter_compound_mode: u8,
+    /// C `pcs->bipred3x3_injection` — the level
+    /// `svt_aom_set_bipred3x3_controls` (enc_mode_config.c:5869) expands
+    /// into `ctx->bipred3x3_ctrls`, which gates
+    /// `bipred_3x3_candidates_injection` (mode_decision.c:2911) — the
+    /// per-list +-2 NEW_NEWMV MV ring that lets a compound candidate win
+    /// mid-walk and stamp a `{LAST, BWDREF}` block into the mi grid.
+    /// 1 at M0, 2 at M1, 0 past (enc_mode_config.c:9131-9137).
+    pub bipred3x3_injection: u8,
     /// C `pcs->ppcs->pic_obmc_level` (`svt_aom_get_obmc_level`,
     /// enc_mode_config.c:8815) — the ladder `set_obmc_controls` expands.
     ///

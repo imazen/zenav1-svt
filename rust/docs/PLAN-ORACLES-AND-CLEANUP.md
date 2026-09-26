@@ -826,6 +826,35 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `c_parity_setup_ref_mv_list_inter` divergence touches the same code.
     Next: reproduce on one p0 cell with `SVTAV1_PACKTREE` (now frame-tagged)
     and the C `SVT_MVP_OUT` dump, diff the stack for that block in files.
+  - (b) resolution (2026-09-27, vinter2 session): the stack function was
+    already faithful — every arm of the port's `setup_ref_mv_list`
+    (`add_ref_mv_candidate`, `add_tpl_ref_mv`, `scan_row_col_light`'s
+    `comp_list` construction, the clamped tails) transcribes
+    `adaptive_mv_pred.c:651-971`. A temporary neighbour dump in
+    `wrap_recon.c` showed the divergence was in the INPUTS: at C's eval of
+    `(8,8)` 32x32 on poc=1 the `xd->mi` above-strip held a committed 64x32
+    `rf=1,5` NEW_NEWMV block (a mid-walk PART_HORZ_A child stamp,
+    mv=(-2,-16,-2,-14)) that the port's grid never carried. The port never
+    committed a compound winner because its compound candidates could not
+    refine their MVs: `inter_md_arm/prelude.rs` hardcoded
+    `bipred3x3_ctrls: Default::default()`, disabling
+    `bipred_3x3_candidates_injection` — C's +-2 per-list NEW_NEWMV ring
+    (mode_decision.c:2911 / 1165-1310), enabled at M0-M1
+    (`bipred3x3_injection` 1/2, enc_mode_config.c:9131-9137). Wiring the
+    `MdConfigSignals::bipred3x3_injection` signal through `InterMdFrame`
+    into the injector's `bipred3x3_ctrls` makes the ring fire; the port now
+    commits compound winners (mode 24 `rf=1,5`) and the (8,8) ref=5/ref=8
+    stacks reproduce C's `(-2,-14)`/`(-2,-16|-2,-14)` entries. SB0 of
+    `vidyo3 128 q40 p0` is byte-identical through every leaf; the first
+    residual divergence moved to SB(0,16) mi(8,24) — a different shape
+    choice, next finding. Measured: video census 285/540 identical (was
+    284), 10 pins promoted, 0 regressed; nextest 2756/2756; spotcheck
+    147/147; real_video_inter 24/24; video_selfcheck 270/270; ghost-robot
+    ratchet 4 pinned = 4 divergent (`c_parity_setup_ref_mv_list_inter`
+    still diverges — Ghost Robot's `find_best_ref_mvs_from_stack` dropped
+    the allow_hp parameter and always lowers precision, a separate shim
+    difference). `unipred3x3_injection` is still stubbed off — it is 1 only
+    at MR and is the next wiring in this series.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.
