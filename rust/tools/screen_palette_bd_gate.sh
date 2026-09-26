@@ -45,23 +45,13 @@ read -r -a QPS <<<"${SP_QPS:-20 32 55}"
 # frame-header fields, so a length check is structurally blind to them).
 read -r -a PRESETS <<<"${SP_PRESETS:-0 2 4 6 7}"
 read -r -a BDS <<<"${SP_BDS:-8 10}"
-# DEFAULT is `screen` alone -- low-colour, palette-dominated, which is what this
-# gate exists to guard.
-#
-# `SP_CONTENTS="screen screenrep"` adds the high-entropy repeated-region content.
-# It is NOT in the default set on purpose: at bd10 it reproduces the SEPARATE,
-# pre-existing bd10 high-entropy divergence class (the same class as the
-# bd10_nonflat gate's open cells -- diag/gradient at bd10), which has nothing to
-# do with palette. Folding those into this gate would conflate two unrelated
-# root causes behind one red light and make a palette regression harder, not
-# easier, to see. Run it explicitly when working the bd10 residual:
-#
-#   SP_CONTENTS="screen screenrep" tools/screen_palette_bd_gate.sh
-#
-# Measured 2026-08-03: bd8 screenrep is byte-identical at every swept cell;
-# bd10 screenrep diverges at p2/q20 and p6/{q20,q32,q55} on top of the pinned
-# p4 cells below.
-read -r -a CONTENTS <<<"${SP_CONTENTS:-screen}"
+# DEFAULT is `screen` AND `screenrep` since 2026-09-26. screenrep was left
+# out because at bd10 it reproduced a separate high-entropy divergence class
+# (measured 2026-08-03: p2/q20, p6/{q20,q32,q55} and the p4 pins below). That
+# class has since closed: re-measured 2026-09-26 on i265, the full grid with
+# both contents is 120/120 byte-identical, so the gate now guards it too.
+# `SP_CONTENTS=screen` restores the palette-only grid.
+read -r -a CONTENTS <<<"${SP_CONTENTS:-screen screenrep}"
 
 # KNOWN-DIVERGING cells, pinned SELF-PROMOTINGLY (the sb128_gate pattern): a
 # cell listed here is expected to DIFFER, and a listed cell that starts MATCHING
@@ -75,146 +65,80 @@ read -r -a CONTENTS <<<"${SP_CONTENTS:-screen}"
 # p4/q55; diverging at p4/q20 and p4/q32 (1 byte at q32). Suspected root, not
 # yet confirmed: the NSQ recon-distortion gate keeps the u8 path at p4/p5
 # (depth_refine.rs) where C scores it at hbd_md.
-KNOWN_DIFF=(
-  "screenrep_64_q20_p4_bd10"
-  "screenrep_64_q32_p4_bd10"
-  "screenrep_128_q20_p4_bd10"
-  "screenrep_128_q32_p4_bd10"
-)
-
-# --- ISA-SCOPED PINS -------------------------------------------------------
-# `screen 64/128 q55 p7 bd10` byte-match on x86-64 and DIFFER on aarch64, and
-# that is not a port bug: it is C's own output changing with the host ISA.
-#
-# MEASURED 2026-08-04, in this order:
-#   1. This gate went red on the x86-64 CI runner demanding both cells be
-#      PROMOTED (the self-promoting pin doing its job). On the aarch64 dev host
-#      the same gate passed with both still pinned, reproducing the recorded
-#      counts exactly: C=117 port=119 and C=350 port=356.
-#   2. The port is NOT the ISA-dependent side. svtav1/tests/tier_invariance.rs
-#      encodes these exact cells under EVERY archmage dispatch tier and asserts
-#      byte-identical output; it is green. The scalar tier is portable integer
-#      Rust, so port(aarch64) == port(scalar) == port(x86-64) = 119 / 356.
-#   3. Therefore C(x86-64) = 119 / 356 while C(aarch64) = 117 / 350 -- C's
-#      encoder emits a DIFFERENT BITSTREAM for the same input depending on which
-#      kernels its RTCD dispatched.
-#   4. Consistent with a known upstream property, not a new theory: C's `_c` and
-#      SIMD kernels genuinely disagree at bd10 magnitudes
-#      (`svt_aom_hadamard_32x32_c` vs `_avx2`, pinned in c_parity_hadamard.rs),
-#      and preset 7 runs the MDS0 Hadamard fast loop. Recorded as entry #9 of
-#      docs/SUSPECTED-C-BUGS.md.
-#   5. C's aarch64 output does NOT vary within the arch: SVT_CPU_FLAGS=1
-#      (Neon only) and the default (all Neon extensions) produce identical
-#      bytes. The split is x86-64-vs-aarch64, not "any SIMD at all".
-#
-# CONSEQUENCE, and the reason this list is now conditional: "byte-identical to
-# C" is a PER-ISA statement for these cells. A flat pin list cannot be right on
-# both hosts -- pinning unconditionally makes x86-64 fail (pinned cell matches),
-# and not pinning makes aarch64 fail (unpinned cell differs). Scoping it is the
-# only honest option; deleting the cells to make both hosts quiet would throw
-# away the one gate that can see this.
-#
-# SVT_CPU_FLAGS=0 (pure C kernels everywhere) would settle it directly by
-# running both hosts on the same kernels. It SEGFAULTS on aarch64 -- Neon is
-# mandatory there and zeroing the flags leaves null RTCD pointers -- so the
-# comparison is not available. The knob is wired in capture_c_trace.c anyway
-# because on x86-64 it works and is the fastest way to test this class again.
-case "$(uname -m)" in
-  arm64 | aarch64)
-    KNOWN_DIFF+=("screen_64_q55_p7_bd10" "screen_128_q55_p7_bd10")
-    ;;
-esac
-is_known_diff() {
-  local needle=$1 k
-  for k in "${KNOWN_DIFF[@]}"; do
-    [[ "$k" == "$needle" ]] && return 0
-  done
+# KNOWN_DIFF cells pin `expect DIFFERS` (a match fails as "remove it from
+# KNOWN_DIFF"); ARCH_KNOWN_DIFF pins only on aarch64/arm64 (the `arch`
+# column), and those cells must MATCH elsewhere.
+# The four screenrep p4 bd10 pins were measured MATCHING on 2026-09-26 (both
+# this and the pre-cellrun script said "now match — remove") and are gone;
+# nobody saw it because the default contents never ran screenrep.
+KNOWN_DIFF=()
+ARCH_KNOWN_DIFF=("screen_64_q55_p7_bd10" "screen_128_q55_p7_bd10")
+in_list() {
+  local needle=$1 k; shift
+  for k in "$@"; do [[ "$k" == "$needle" ]] && return 0; done
   return 1
 }
-
-OUT="${TMPDIR:-/tmp}/screenpal.$$"
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (SP_JOBS, default 4); each screen cell's packed tree goes to @CELL@ and
+# must code at least one palette leaf (per-cell anti-vacuity).
+OUT="${TMPDIR:-$HOME/tmp}/screenpal.$$"
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
-
-pass=0
-fail=0
-vacuous=0
-pinned=0
-failed=()
-vacuous_cells=()
-promoted=()
-
+LIST="$OUT/screen_palette_bd.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\texpect\tcheck\tarch\n' >"$LIST"
 for content in "${CONTENTS[@]}"; do
 for bd in "${BDS[@]}"; do
   for sz in "${SIZES[@]}"; do
     for qp in "${QPS[@]}"; do
       for p in "${PRESETS[@]}"; do
         cell="${content}_${sz}_q${qp}_p${p}_bd${bd}"
-
-        if ! SVTAV1_BD="$bd" SVTAV1_PACKTREE="$OUT/tree.txt" \
-            "$HERE/identity_run" "$content" "$sz" "$sz" "$qp" "$p" "$OUT/rs" \
-            >/dev/null 2>&1; then
-          fail=$((fail + 1)); failed+=("${cell}[rs-err]"); continue
-        fi
-        if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-            "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" "$bd" \
-            >/dev/null 2>&1; then
-          fail=$((fail + 1)); failed+=("${cell}[c-err]"); continue
-        fi
-
-        # Anti-vacuity: a PALETTE cell must actually code palette leaves.
-        # `screenrep` is deliberately high-entropy so palette cannot win there
-        # (that is its whole point), so the assert applies to `screen` only.
-        if [[ "$content" == "screen" ]]; then
-          pal=$(awk '{for (i = 1; i <= NF; i++) if ($i ~ /^pal=/) {
-                        split($i, a, "="); if (a[2] > 0) n++
-                      }} END {print n + 0}' "$OUT/tree.txt" 2>/dev/null)
-          if [[ "${pal:-0}" -eq 0 ]]; then
-            vacuous=$((vacuous + 1)); vacuous_cells+=("$cell")
-          fi
-        fi
-
-        if cmp -s "$OUT/c.obu" "$OUT/rs.obu"; then
-          if is_known_diff "$cell"; then
-            # A pinned cell that MATCHES is a fix worth landing, not a pass to
-            # swallow: fail until it is moved out of KNOWN_DIFF.
-            fail=$((fail + 1)); promoted+=("$cell")
-          else
-            pass=$((pass + 1))
-          fi
-        elif is_known_diff "$cell"; then
-          pinned=$((pinned + 1))
+        row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_PACKTREE=@CELL@/rs.ptree\t%s\tc\t%s\n' \
+          "$1" "$content" "$sz" "$sz" "$qp" "$p" "$bd" "$2" "$3" >>"$LIST"; }
+        if in_list "$cell" "${KNOWN_DIFF[@]+"${KNOWN_DIFF[@]}"}"; then
+          row "$cell" DIFFERS ""
+        elif in_list "$cell" "${ARCH_KNOWN_DIFF[@]}"; then
+          row "$cell" IDENTICAL '!aarch64,!arm64'
+          row "${cell}_pin" DIFFERS 'aarch64,arm64'
         else
-          fail=$((fail + 1))
-          failed+=("${cell}[C=$(wc -c <"$OUT/c.obu") port=$(wc -c <"$OUT/rs.obu")]")
+          row "$cell" IDENTICAL ""
         fi
       done
     done
   done
 done
 done
-
-total=$((pass + fail))
-echo "screen-content palette identity: $pass / $total byte-identical" \
-     "(+$pinned pinned known-diff)"
-if ((${#promoted[@]})); then
-  echo "  PINNED CELLS NOW MATCH — remove them from KNOWN_DIFF:"
-  printf '    %s\n' "${promoted[@]}"
-fi
-if ((${#failed[@]})); then
-  printf '  FAILED: %s\n' "${failed[@]}"
-fi
-
-# A vacuous cell is a DEFECT, not a note: it means the gate would keep passing
-# with the palette path deleted. Report every one and fail the gate.
-if ((vacuous)); then
-  echo "  VACUOUS (no palette leaf coded — these cells guard nothing):"
-  printf '    %s\n' "${vacuous_cells[@]}"
-  echo "  A palette gate whose cells code no palette is a defect; fix the"
-  echo "  content or the preset range rather than accepting the pass."
-fi
-
-if ((fail || vacuous)); then
-  exit 1
-fi
-exit 0
+python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${SP_JOBS:-4}"
+rc=$?
+CELLDIR="$RS_ROOT/target/cells/screen_palette_bd.cells.${SVT_ORACLE:-default}"
+python3 - "$OUT/result.tsv" "$CELLDIR" <<'PY'
+import csv, re, sys
+from pathlib import Path
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+celldir = Path(sys.argv[2])
+pal = re.compile(r"(?:^|\s)pal=([1-9][0-9]*)")
+def palette_leaves(name):
+    t = celldir / name / "rs.ptree"
+    return sum(1 for l in t.read_text().splitlines() if pal.search(l)) if t.exists() else 0
+cells = [r for r in rows if r["expect"] == "IDENTICAL"]
+pins = [r for r in rows if r["expect"] == "DIFFERS"]
+ok = [r for r in cells if r["ok"] == "yes"]
+print(f"screen-content palette identity: {len(ok)} / {len(rows) - len(pins) + sum(r['ok'] != 'yes' for r in pins)} byte-identical "
+      f"(+{sum(r['ok'] == 'yes' for r in pins)} pinned known-diff)")
+bad = False
+promoted = [r["name"] for r in pins if r["verdict"] == "IDENTICAL"]
+if promoted:
+    print("  PINNED CELLS NOW MATCH — remove them from KNOWN_DIFF:")
+    for n in promoted: print(f"    {n}")
+    bad = True
+for r in cells:
+    if r["ok"] != "yes":
+        print(f"  FAILED: {r['name']} [{r['verdict']} {r['detail']}]"); bad = True
+vac = [r["name"] for r in rows if r["name"].startswith("screen_") and palette_leaves(r["name"]) == 0]
+if vac:
+    print("  VACUOUS (no palette leaf coded — these cells guard nothing):")
+    for n in vac: print(f"    {n}")
+    bad = True
+sys.exit(1 if bad else 0)
+PY
+st=$?
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]
