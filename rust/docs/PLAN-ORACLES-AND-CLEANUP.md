@@ -902,7 +902,7 @@ Order, by expected size:
   asserts an Ok floor of 440 against vacuity.
 - [ ] T2 in-crate differentials, shrinking the public API.
   - Done (2026-09-26): the encoder's 103 aggregated parity modules compile
-    into the crate (see 1.4); so do the dsp crate's 50 (`6566e97d`, 10
+    into the crate (see 1.4); so do the dsp crate's 50 (`6566e97d`, 11
     dsp modules narrowed, 35 dead items in the same ledger). Open: the
     facade (`svtav1_suite`, which mostly tests the public API, so little to
     narrow), and the standalone targets, which stay separate because they
