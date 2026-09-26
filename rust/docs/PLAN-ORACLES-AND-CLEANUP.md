@@ -787,10 +787,23 @@ Order, by expected size:
      Done (`6b0da44f`): `write_coeffs_txb`'s depth-0 `vec![0i32; aw*ah]`
      was fully overwritten by its own copy loop — `with_capacity` +
      `extend_from_slice` removes the calloc. -256,814 Ir. Both at
-     `benchmarks/perf_mem_2026-09-26.meta`. Still open: the 2.87M of
-     `grown_out` resize deltas in `tx_unit_inner` (10,276 calls — pooled
-     buffers arriving shorter than the request) and the 2.86M
-     calloc-internal memset (per-tile-row `EntropyCtx` rebuild).
+     `benchmarks/perf_mem_2026-09-26.meta`. Still open
+     (`benchmarks/perf_mem2_2026-09-26.meta`, probed at 54e353b5):
+     `grown_out`'s fills are NOT deltas — all 10,276 resize calls ran with
+     `len == 0`, i.e. fresh allocations on pool misses (i32 ~93% miss). The
+     pool starves because committed buffers leave it permanently through
+     `into_vec` in `LeafEval::into_choice` and live `Cand`s hoard theirs;
+     the fix is keeping `PoolVec` through the committed chain, not length
+     bookkeeping — `psq_resid`/`psq_resid10` alone explain the
+     `dirty_pool::<i16>` memset (~642K, 100% miss). The 2.60M
+     calloc-internal memset is per-TILE zeroed construction under
+     `encode_tile_rows` (`EntropyCtx::new` x16 + the 128-filled chroma
+     canvases + `DeblockGeom::new`); hoist `EntropyCtx` in
+     `walk_driver`'s per-tile loop and reset only what C's
+     `entropy_coding_reset_neighbor_arrays` resets (ec_process.c:60-117).
+     memcpy struct moves unchanged: `frame.cfg`/`LeafGeom`/`Mds3Ctx`
+     by-value copies in `eval_candidate`, `WarpRefineBlock` rebuilds,
+     `into_choice`.
    - Open, by excess over C at 1024 p10: `optimize_b` (38.3M vs
      30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
      (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma

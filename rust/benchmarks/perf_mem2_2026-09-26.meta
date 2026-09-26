@@ -1,0 +1,95 @@
+# perf_mem2_2026-09-26 — memset/memcpy round 2: instrumentation findings (PLAN Phase 5 item 7)
+
+Host: i265 (hybrid Core Ultra 7 265K). Tool: callgrind instruction count
+(`valgrind --tool=callgrind --dump-instr=yes`) on the heapdbg build
+(`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_TARGET_DIR=target/heapdbg`).
+
+Cell: `perf_encode gradient 1024 1024 40 10 <prefix> 0` (still, p10).
+Baseline at main 54e353b5: **300,114,657 Ir total; memset 14,326,072;
+memcpy 10,480,775.**
+
+This session landed no code change; it re-derived the round-1 diagnoses with
+two ad-hoc probes (a per-(type,len,n,cap) counter inside `grown_out`, and a
+per-class hit/miss counter inside `vecpool`'s `take_pooled`/`give_pooled`).
+The probes were reverted; the numbers below are what they printed.
+
+## grown_out — the diagnosis was wrong in detail, right in total
+
+All 10,276 `buf.resize` calls fired with `len == 0` — FRESH allocations on
+pool MISSES, not growth deltas of short parked buffers:
+
+    i32: n=16 x768, n=64 x2816, n=256 x2064, n=1024 x640   (6,288 fills)
+    u8 : n=16 x768, n=64 x2272, n=256 x823, n=1024 x124,
+         n=4096 x1                                        (3,988 fills)
+
+Pool hit/miss per class (takes): i32 misses 6,288 of 6,792 (~7% hit);
+u8 ~78% hit. i16+u16 classes ~2,080 takes, ZERO hits.
+
+Why the pool starves:
+- `LeafEval::into_choice` moves `txb_q`/`u_q`/`v_q`/`u_recon`/`v_recon`
+  through `PoolVec::into_vec` into the committed `LeafChoice` — the buffers
+  leave the pool PERMANENTLY (dropped as plain `Vec`s when the partition
+  trees die at frame end). ~6.3K i32 buffers lost ≈ the miss count.
+- Live `Cand`s additionally hoard their `txb_q`/recon buffers for the whole
+  leaf evaluation.
+- `LeafEval::psq_resid`/`psq_resid10` (`Vec<i16>`/`Vec<i32>`) are built by
+  `dirty_pool::<i16>(w*h)` then `.into_vec()` (mod.rs:1136/1220,
+  light.rs:863) — the same permanent drain, which is why the i16 pool never
+  hits once.
+
+Consequence: for `grown_out` the memset is the INIT of a fresh allocation,
+structural under the current ownership shape — each committed txb needs its
+OWN live buffer, so misses are inherent. The two fix shapes that remain:
+
+  1. Keep `psq_resid`/`psq_resid10` (and ideally the committed qcoeff/recon
+     chain through `LeafChoice`/`BlockDecision`) as `PoolVec` so drops
+     re-park the buffer. `psq_resid` alone is cheap to flip (LeafEval is a
+     `Clone`d struct of pool buffers already; readers go through
+     `ev.psq_resid()` -> `&[i16]`, which derefs cleanly). Estimated saving:
+     the whole `dirty_pool::<i16>` memset (~642K Ir on this cell) plus
+     i16/u16 pool warmup. Committed-path buffers only help ACROSS the point
+     where their trees drop (frame end), so on a single-frame cell the
+     into_vec chain buys ~nothing here — but it also costs ~nothing.
+  2. The `extend`/`push` restructure the brief floats is likely NET-NEGATIVE:
+     the quantizer writes ~1.88M elements through indexed stores; a push
+     loop costs ~2-3 extra instructions per element against a memset's
+     ~0.2 — worse than the ~2.9M Ir the fill costs.
+
+## calloc-internal memset — 2,598,239 Ir, 100 calls
+
+heaptrack on the same cell: 110 `alloc_zeroed` calls inside
+`encode_tile_rows`'s per-tile closure (2.55M peak), dominated by per-tile
+zeroed construction — `EntropyCtx::new` (~18 vecs: the palette colour
+arrays and `NeighborMi` rows are the big ones) ×16 tiles, `try_vec![128u8;
+ext_cbuf]` chroma recon canvases (262 KB each ×2 per tile — counted under
+the caller's own memset, not calloc), `DeblockGeom::new` x2 (~524K Ir).
+
+Fix shape (C-faithful): hoist `EntropyCtx` out of `walk_driver`'s per-tile
+loop and add a `reset_for_tile()` that restores exactly what C's
+`entropy_coding_reset_neighbor_arrays` + `reset_entropy_coding_picture`
+reset (ec_process.c:60-117): partition context, luma + cb/cr coeff
+neighbour arrays, txfm context (+ the port's inter_bw/inter_bh twins),
+`prev_qindex`/`prev_delta_lf` scalars, and the tile bounds
+(`tile_top_px`/`tile_left_px`/`tile_mi`). The mode/skip/palette/nmi arrays
+are availability-gated and C does NOT reset them — leaving them warm is
+C-faithful, not a shortcut. `fun_ectx`/`sim_ectx` in `tile_body` are
+per-tile on worker threads: reuse there needs a per-thread slot and only
+pays when tiles/thread > 1 (on this 20-thread box 16 tiles => 1 each — no
+gain on this cell).
+
+## memcpy — 10,480,775 Ir, mostly struct moves (unchanged from round 1)
+
+Callers: `eval_candidate` 1.37M (98,880 calls), `commit_leaf` 968K
+(80,896), `encode_block_syntax` 789K (46,656), `predict_unit` 651K
+(10,400), `tx_unit_inner` 589K (44,544), `evaluate_leaf` ~774K combined,
+`WarpRefineBlock` copy under evaluate_leaf 285K (2,080), `into_choice`
+185K (2,080), `decide_leaf` 235K (2,080).
+
+Named sites: `let cfg = frame.cfg` copies the ~200B `FunnelCfg` by value at
+~7 call sites (inject.rs:206, mds1.rs:47/459/587, mds3.rs:62/209/506,
+mod.rs:698); `eval_candidate` destructures `*g` (LeafGeom) and `*m`
+(Mds3Ctx) by value per call; `warp_refine.rs:198` rebuilds a
+`WarpRefineBlock` (~1.6 KB inline `samples: [WarpSamples; 8]` plus two
+Vecs) per call. Fix: destructure by reference (`let LeafGeom{..} = g` on
+`&LeafGeom` binds refs), `&FunnelCfg` params, and either pass
+`WarpRefineBlock` by ref or box the `samples` member.
