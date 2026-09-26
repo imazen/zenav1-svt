@@ -141,7 +141,14 @@ fi
 # Per-mode, like $OUT itself. Only for the default invocation — an explicit
 # argv[1] is the caller's own artifact and must not move the wrapper's target.
 if [[ -z "${1:-}" ]]; then
-    printf '%s\n' "$OUT" >"$HERE/.selected.$ORACLE"
+    # Atomic publish (write + rename): the wrapper execs whatever this file
+    # holds, and parallel cells rerun this script, so a plain truncate-and-
+    # write let a concurrent reader see it empty ("exec: : not found", two
+    # superres cells in CI on 2026-09-26). Skip the write when unchanged.
+    if [[ "$(cat "$HERE/.selected.$ORACLE" 2>/dev/null)" != "$OUT" ]]; then
+        printf '%s\n' "$OUT" >"$HERE/.selected.$ORACLE.tmp.$$"
+        mv -f "$HERE/.selected.$ORACLE.tmp.$$" "$HERE/.selected.$ORACLE"
+    fi
 fi
 
 # The --wrap flags come from the one interposer list (wrap_list.h).
