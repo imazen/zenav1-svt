@@ -38,10 +38,13 @@ fi
 LOG="${TMPDIR:-$HOME/tmp}/cparity_ratchet.$ORACLE.$$.log"
 mkdir -p "$(dirname "$LOG")"
 SVT_ORACLE=$ORACLE CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/oracle-$ORACLE}" \
-    cargo nextest run --no-fail-fast -p zenav1-svt-encoder -p zenav1-svt-dsp \
+    cargo nextest run --no-fail-fast --color never -p zenav1-svt-encoder -p zenav1-svt-dsp \
     -E "$filt" >"$LOG" 2>&1
 rc=$?
-summary=$(grep -E '^\s+Summary ' "$LOG" | tail -1)
+# Strip ANSI escapes too: CI exports CARGO_TERM_COLOR=always, and a coloured
+# "Summary" line did not match, so a clean 854/873 run was reported as "no
+# summary (build failure?)" in CI (2026-09-26).
+summary=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -E '^\s+Summary ' | tail -1)
 if [[ -z "$summary" ]]; then
     tail -30 "$LOG" >&2
     echo "cparity_ratchet: nextest produced no summary (build failure?) — log: $LOG" >&2
@@ -51,7 +54,9 @@ python3 - "$LOG" "$LIST" "$ORACLE" "$summary" <<'PY'
 import re, sys
 log, lst, oracle, summary = sys.argv[1:5]
 failed = set()
+ansi = re.compile(r"\x1b\[[0-9;]*m")
 for line in open(log, errors="replace"):
+    line = ansi.sub("", line)
     # "        FAIL [   0.007s] (139/875) crate::binary module::test"
     if re.match(r"\s+(?:FAIL|SIGSEGV|SIGABRT|SIGKILL|TIMEOUT)\s+\[", line):
         failed.add(line.split()[-1])
