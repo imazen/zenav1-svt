@@ -1124,24 +1124,24 @@ pub fn tpl_mc_flow_dispenser_sb_generic(
                     u32::from(eob),
                     false,
                 );
-                // populate the subsampled rows with a copy of the neighbour
+                // populate the subsampled rows with a copy of the neighbour.
+                // `copy_within`, not a `[u8; MAX_TPL_SIZE]` staging array: the
+                // TPL block is 16 wide on small frames, and `try_into` of a
+                // 16-sample row into a 32-array panicked (130x98, RA + aq_mode
+                // 2, presets 9 and 12; found 2026-09-26 by video_paths.rs).
                 if subsample_tx == 2 {
                     for i in (0..size).step_by(4) {
                         for k in 1..=3usize {
                             let src_row = dst_mb_offset + i * dst_buffer_stride;
                             let dst_row = dst_mb_offset + (i + k) * dst_buffer_stride;
-                            let row: [u8; MAX_TPL_SIZE] =
-                                recon.y[src_row..src_row + size].try_into().unwrap();
-                            recon.y[dst_row..dst_row + size].copy_from_slice(&row[..size]);
+                            recon.y.copy_within(src_row..src_row + size, dst_row);
                         }
                     }
                 } else if subsample_tx == 1 {
                     for i in (0..size).step_by(2) {
                         let src_row = dst_mb_offset + i * dst_buffer_stride;
                         let dst_row = dst_mb_offset + (i + 1) * dst_buffer_stride;
-                        let row: [u8; MAX_TPL_SIZE] =
-                            recon.y[src_row..src_row + size].try_into().unwrap();
-                        recon.y[dst_row..dst_row + size].copy_from_slice(&row[..size]);
+                        recon.y.copy_within(src_row..src_row + size, dst_row);
                     }
                 }
             }

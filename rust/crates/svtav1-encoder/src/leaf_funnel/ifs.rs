@@ -94,9 +94,14 @@ pub(super) fn ifs_at_mds3(
     };
     // C :7148 — `mds_do_ifs` at MDS3. The `IFS_MDS1`/`IFS_MDS2`-with-bypass
     // arms of that predicate, and `IFS_MDS0`, need `interpolation_search_level`
-    // 1..3, which the video ladder never yields for a non-negative preset
-    // (module header) and the allintra ladder never applies to an inter
-    // block. Unreachable, and NOT modelled.
+    // 1..3. The video ladder yields those ONLY at preset -1 (the research
+    // preset; every non-negative preset gives Mds3 or Off), and there the port
+    // skips the search: NOT MODELLED, so preset -1 video codes the filter C's
+    // MDS1 search would not have picked (a valid stream; the video gates are
+    // decoder-verified, not byte-claimed). This used to be a
+    // `debug_assert!(false)` claiming the arm unreachable, which panicked any
+    // debug-assertion build at preset -1 (video_paths.rs sweep, 2026-09-26).
+    // Porting the arms is plan Phase 3 work.
     match im.search.ifs_level {
         IfsLevel::Mds3 => {}
         IfsLevel::Off => {
@@ -104,12 +109,7 @@ pub(super) fn ifs_at_mds3(
             return;
         }
         IfsLevel::Mds0 | IfsLevel::Mds1 | IfsLevel::Mds2 => {
-            skip("level-unreachable");
-            debug_assert!(
-                false,
-                "IFS level {:?} is unreachable on this port's ladders",
-                im.search.ifs_level
-            );
+            skip("level-not-modelled");
             return;
         }
     }

@@ -239,6 +239,12 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   (loop_filter_level, cdef_uv_pri_strength, lr_type, sharpness — start
   here), tile op 179, tile payload 42; no 10-bit cell matches.
 
+- [ ] 3.2v Preset -1 video: the video ladder yields `interpolation_search_level`
+  MDS0/1/2 there, and the port does not model those IFS arms (it skips the
+  search; `leaf_funnel/ifs.rs`). Streams are valid (decoder-verified), but
+  preset -1 video does not choose filters as C does. Port the arms from C
+  `mds_do_ifs` (product_coding_loop.c :7148) and its MDS0/MDS1 callers.
+
 - [ ] 3.3 Fork determinism and correctness fixes: `f0111bae`, `d6f4b170`,
   `560f7453`, `ec7e414d`, `2c66d9ea`.
   - Findings (measured 2026-09-25): the first still divergence is a
