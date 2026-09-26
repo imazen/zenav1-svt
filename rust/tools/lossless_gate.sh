@@ -23,7 +23,7 @@
 # Cells: 5 synthetic contents x 4 geometries (64-aligned and PARTIAL-SB,
 # 8-aligned) x the preset ladder 0..13. Presets 10..13 are M9 on the C side
 # (all-intra clamp) but distinct port configurations. Env overrides:
-#   LL_CONTENTS, LL_DIMS ("WxH ..."), LL_PRESETS, AOMDEC.
+#   LL_CONTENTS, LL_DIMS ("WxH ..."), LL_PRESETS, LL_JOBS (4), AOMDEC.
 #
 # Every cell must match C and decode exactly to the source. The former
 # 32 low-preset pins were closed by the lossless PD0/PD1 and MD CDF wiring
@@ -44,63 +44,46 @@ if ! command -v "$aomdec" >/dev/null 2>&1 && [ ! -x "$aomdec" ]; then
   exit 2
 fi
 
-OUT="${TMPDIR:-/tmp}/lossless.$$"
+# The cells are a list for tools/cellrun.py (plan T3): each qp-0 cell checks C
+# byte identity and lossless decode, and names its qp-1 sibling (port only)
+# as the stream it must differ from.
+OUT="${TMPDIR:-$HOME/tmp}/lossless.$$"
 mkdir -p "$OUT"
-pass=0
-fail=0
-failed=()
-vacuous=()
-
+trap 'rm -rf "$OUT"' EXIT
+CELLS="$OUT/lossless.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tcheck\tdiffers_from\n' >"$CELLS"
 for content in "${CONTENTS[@]}"; do
   for dim in "${DIMS[@]}"; do
     w=${dim%x*}
     h=${dim#*x}
     for p in "${PRESETS[@]}"; do
       cell="${content}_${w}x${h}_q0_p${p}"
-      # (a) port at qp 0 -> rs.obu + rs.yuv (the SOURCE planes, I420)
-      if ! "$HERE/identity_run" "$content" "$w" "$h" 0 "$p" "$OUT/rs" >"$OUT/rs.log" 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
-      fi
-      # (b) C at qp 0 on the identical planes
-      if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-           "$w" "$h" 0 "$p" "$OUT/rs.yuv" "$OUT/c.obu" >"$OUT/c.log" 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-      fi
-      # (c) anti-vacuity: the port's qp-1 stream on the same content
-      if [ "$content" != "uniform" ]; then
-        if ! "$HERE/identity_run" "$content" "$w" "$h" 1 "$p" "$OUT/rs1" >"$OUT/rs1.log" 2>&1; then
-          fail=$((fail + 1)); failed+=("$cell[rs1-err]"); continue
-        fi
-        if cmp -s "$OUT/rs.obu" "$OUT/rs1.obu"; then
-          vacuous+=("$cell")
-        fi
-      fi
-      # (2) losslessness under the reference decoder — required for every cell.
-      rm -f "$OUT/dec.yuv"
-      if ! "$aomdec" --rawvideo -o "$OUT/dec.yuv" "$OUT/rs.obu" >"$OUT/dec.log" 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[aomdec-rejects]"); continue
-      fi
-      if ! cmp -s "$OUT/dec.yuv" "$OUT/rs.yuv"; then
-        fail=$((fail + 1)); failed+=("$cell[NOT-LOSSLESS: decoded != source]"); continue
-      fi
-      # (1) byte-identity, with no exceptions.
-      if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        pass=$((pass + 1))
+      if [ "$content" = "uniform" ]; then
+        printf '%s\t%s\t%s\t%s\t0\t%s\tc,lossless\t\n' "$cell" "$content" "$w" "$h" "$p" >>"$CELLS"
       else
-        fail=$((fail + 1)); failed+=("$cell[bytes: port $(wc -c <"$OUT/rs.obu" | tr -d ' ') B vs C $(wc -c <"$OUT/c.obu" | tr -d ' ') B]")
+        printf '%s\t%s\t%s\t%s\t0\t%s\tc,lossless\t%s\n' "$cell" "$content" "$w" "$h" "$p" "${cell}_q1" >>"$CELLS"
+        printf '%s_q1\t%s\t%s\t%s\t1\t%s\tnone\t\n' "$cell" "$content" "$w" "$h" "$p" >>"$CELLS"
       fi
     done
   done
 done
 
-total=$((pass + fail))
-echo "coded-lossless identity + lossless-decode: $pass / $total byte-identical, all lossless"
-if [ "$fail" -gt 0 ]; then
-  printf '  FAILED: %s\n' "${failed[@]}"
-fi
-if [ "${#vacuous[@]}" -gt 0 ]; then
-  echo "  GATE PREMISE FAILED — qp-0 stream == qp-1 stream on textured content (the lossless"
-  echo "  path was not exercised): ${vacuous[*]}"
-fi
-rm -rf "$OUT"
-[ "$fail" -eq 0 ] && [ "${#vacuous[@]}" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$CELLS" --out "$OUT/result.tsv" \
+  --bytes-only --jobs "${LL_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t") if not r["name"].endswith("_q1")]
+passed = [r for r in rows if r["verdict"] == "IDENTICAL" and "FAIL" not in r["checks"]]
+print(f"coded-lossless identity + lossless-decode: {len(passed)} / {len(rows)} byte-identical, all lossless")
+for r in rows:
+    if r in passed:
+        continue
+    why = [c for c in r["checks"].split() if c.endswith("=FAIL")]
+    if r["verdict"] != "IDENTICAL":
+        why.insert(0, f"{r['verdict']}: {r['detail']}")
+    print(f"  FAILED: {r['name']}[{'; '.join(why)}]")
+    if any(c.startswith("differs_from") for c in why):
+        print("  GATE PREMISE FAILED — qp-0 stream == qp-1 stream (the lossless path was not exercised)")
+PY
+exit "$rc"

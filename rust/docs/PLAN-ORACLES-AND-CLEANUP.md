@@ -618,7 +618,13 @@ Order, by expected size:
      `identity_diff.sh`, with `--jobs` and pinned verdicts.
      `oracle_still_grid.sh` now writes its cross product as a cell list and
      calls it; on a 16-cell ghost-robot subset its output is identical to the
-     old loop's, serial and at `--jobs 4`. Next: the 44 other scripts.
+     old loop's, serial and at `--jobs 4`. Since 2026-09-26 a cell can
+     also ask for `lossless`, `recon` (aomdec == the port's final recon) and
+     `dav1d` checks, name a `differs_from` sibling (anti-vacuity), and run
+     `--bytes-only`; each check was shown to fail on a cell built to fail
+     it. `lossless_gate.sh` is the first gate ported: 240/240 as before,
+     148 s -> 32 s on i265. Next: the other ~44 scripts, one gate per change,
+     each landing with its verdicts unchanged.
   2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
      `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
      that does not parse, a flag other than 0/1, and a still-only knob on a

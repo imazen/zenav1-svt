@@ -1,41 +1,58 @@
 #!/usr/bin/env python3
-"""One runner for byte-identity cells (plan T3, chunk 1).
+"""One runner for identity cells (plan T3).
 
-Each cell encodes with the port (`tools/identity_run`) and with the C oracle
-named by `SVT_ORACLE` (`tools/capture_c_trace/capture_c_trace`), then
-`tools/identity_diff.py` classifies the pair: the same three steps
-`tools/identity_diff.sh` runs, driven by a cell list instead of a shell loop,
-so two cells can differ only in what they ask for.
+Each cell encodes with the port (`tools/identity_run`), then runs the checks
+its `check` column names:
+  c         byte identity with the C oracle named by `SVT_ORACLE`
+            (`tools/capture_c_trace/capture_c_trace`), classified by
+            `tools/identity_diff.py` (the default check);
+  lossless  aomdec's output of the port's stream == the source .yuv;
+  recon     aomdec's output == the port's final recon (`SVTAV1_FINAL_RECON`,
+            set by the runner), the encoder/decoder alignment check;
+  dav1d     dav1d's output == aomdec's (implies a decode);
+  none      the port encode alone (e.g. the sibling a `differs_from` names).
+so cells differ only in what they ask for, never in how they are run.
 
 A cell list is a TSV file with a header row. Columns:
-  name      unique cell name (also its artifact directory)
-  content   anything identity_run accepts (gradient, crop:<png>, raw:<yuv>, ...)
+  name          unique cell name (also its artifact directory)
+  content       anything identity_run accepts (gradient, crop:<png>, ...)
   w h qp preset
-  bd        bit depth, 8 or 10 (optional, default 8)
-  env       extra variables for BOTH encoders, `K=V;K=V` (optional)
-  expect    pinned verdict, IDENTICAL or DIFFERS (optional)
+  bd            bit depth, 8 or 10 (optional, default 8)
+  env           extra variables for BOTH encoders, `K=V;K=V` (optional)
+  expect        pinned C verdict, IDENTICAL or DIFFERS (optional)
+  check         comma list from the table above (optional, default `c`)
+  differs_from  another cell whose port stream this one's must NOT equal
+                (anti-vacuity: the feature under test changed the output)
 Blank lines and lines starting with `#` are ignored.
 
 Output: a TSV with one row per cell (name, verdict, stage, detail, expect,
-ok), written to --out and summarised on stderr. Exit status: 0 when every
-cell that pins an `expect` matches it, 1 when one does not, 2 when a cell
-could not be run (encoder refused, driver missing, timeout).
+checks, ok), written to --out and summarised on stderr. `verdict` is the C
+comparison (IDENTICAL, DIFFERS, ERROR, or `-` without `c`); `checks` lists the
+other checks as `name=ok|FAIL`. Exit status: 0 when every pinned `expect`
+matches and every other check passes, 1 when one does not, 2 when a cell
+could not be run (encoder refused, driver or decoder missing, timeout).
+
+--bytes-only compares the C stream with `cmp` instead of capturing and
+diffing symbol traces: the verdict is the same, only localisation is lost.
 
 Usage: tools/cellrun.py CELLS.tsv [--out OUT.tsv] [--jobs N] [--timeout S]
+                        [--bytes-only]
 Run it under run-heavy; the oracle comes from SVT_ORACLE (default: the
-registry's default row, as for every other tool).
+registry's default row, as for every other tool). Decoders: AOMDEC, DAV1D.
 """
 
 import argparse
 import concurrent.futures
 import csv
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RS_ROOT = HERE.parent
+CHECKS = {"c", "lossless", "recon", "dav1d", "none"}
 
 
 def read_cells(path):
@@ -46,10 +63,17 @@ def read_cells(path):
         for col in ("name", "content", "w", "h", "qp", "preset"):
             if not row.get(col):
                 sys.exit(f"cellrun: {path}: a row lacks '{col}': {row}")
+        checks = set(filter(None, (row.get("check") or "c").split(",")))
+        if not checks <= CHECKS:
+            sys.exit(f"cellrun: {path}: {row['name']}: unknown check(s) {checks - CHECKS}")
+        row["checks"] = checks - {"none"}
         rows.append(row)
-    names = [r["name"] for r in rows]
-    if len(set(names)) != len(names):
+    names = {r["name"] for r in rows}
+    if len(names) != len(rows):
         sys.exit(f"cellrun: {path}: duplicate cell names")
+    for r in rows:
+        if r.get("differs_from") and r["differs_from"] not in names:
+            sys.exit(f"cellrun: {path}: {r['name']}: differs_from names no cell")
     return rows
 
 
@@ -62,50 +86,115 @@ def cell_env(row):
     return env
 
 
-def run_cell(row, root, timeout):
-    """Returns (verdict, stage, detail). verdict is IDENTICAL, DIFFERS or ERROR."""
-    d = root / row["name"]
-    d.mkdir(parents=True, exist_ok=True)
-    env = cell_env(row)
+def decoder(var, default):
+    exe = os.environ.get(var) or shutil.which(default)
+    if not exe or not (Path(exe).is_file() or shutil.which(exe)):
+        return None
+    return exe
+
+
+def recon_bytes(d):
+    """The port's final recon: one file for a still, `.f<i>` per frame."""
+    if (d / "recon").exists():
+        return (d / "recon").read_bytes()
+    frames = sorted(d.glob("recon.f*"), key=lambda p: int(p.suffix[2:]))
+    return b"".join(p.read_bytes() for p in frames) if frames else None
+
+
+def run_checks(row, d, env, timeout):
+    """The decoder checks. Returns [(name, ok)], or raises RuntimeError."""
+    want = row["checks"] & {"lossless", "recon", "dav1d"}
+    if not want:
+        return []
+    aomdec = decoder("AOMDEC", "aomdec")
+    if not aomdec:
+        raise RuntimeError("aomdec not found (set AOMDEC)")
+    depth = ["--output-bit-depth=10"] if row.get("bd") == "10" else []
+    r = subprocess.run([aomdec, "--rawvideo", *depth, "-o", str(d / "dec.yuv"), str(d / "rs.obu")],
+                       env=env, capture_output=True, timeout=timeout)
+    if r.returncode != 0:
+        return [(c, False) for c in sorted(want)] + [("aomdec-decodes", False)]
+    dec = (d / "dec.yuv").read_bytes()
+    out = []
+    if "lossless" in want:
+        out.append(("lossless", dec == (d / "rs.yuv").read_bytes()))
+    if "recon" in want:
+        rec = recon_bytes(d)
+        out.append(("recon", rec is not None and dec == rec))
+    if "dav1d" in want:
+        dav1d = decoder("DAV1D", "dav1d")
+        if not dav1d:
+            raise RuntimeError("dav1d not found (set DAV1D)")
+        r = subprocess.run([dav1d, "-q", "-i", str(d / "rs.obu"), "-o", str(d / "dav1d.yuv")],
+                           env=env, capture_output=True, timeout=timeout)
+        out.append(("dav1d", r.returncode == 0 and (d / "dav1d.yuv").read_bytes() == dec))
+    return out
+
+
+def run_c(row, d, env, timeout, bytes_only):
+    """Returns (verdict, stage, detail) for the C comparison."""
+    oracle = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
+                            capture_output=True, text=True).stdout.strip()
+    sel = HERE / "capture_c_trace" / f".selected.{oracle}"
+    # The byte-only driver (no --wrap on this linker) has no op trace; the
+    # verdict is unaffected, only the localization is.
+    nowrap = sel.exists() and sel.read_text().strip().endswith(".nowrap.bin")
+    traced = not (bytes_only or nowrap)
+    cenv = dict(env)
+    cenv["SVT_TRACE_OUT"] = str(d / "c.trace") if traced else os.devnull
     w, h, qp, preset = row["w"], row["h"], row["qp"], row["preset"]
-    try:
-        with open(d / "rs.trace", "wb") as err:
-            r = subprocess.run(
-                [str(HERE / "identity_run"), row["content"], w, h, qp, preset, str(d / "rs")],
-                env=env, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
-        if r.returncode != 0:
-            return "ERROR", "PORT", f"identity_run exited {r.returncode} (see {d}/rs.trace)"
-        # The byte-only driver (no --wrap on this linker) has no op trace; the
-        # verdict is unaffected, only the localization is.
-        oracle = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
-                                capture_output=True, text=True).stdout.strip()
-        sel = HERE / "capture_c_trace" / f".selected.{oracle}"
-        nowrap = sel.exists() and sel.read_text().strip().endswith(".nowrap.bin")
-        cenv = dict(env)
-        cenv["SVT_TRACE_OUT"] = os.devnull if nowrap else str(d / "c.trace")
-        with open(d / "c.stderr", "wb") as err:
-            r = subprocess.run(
-                [str(HERE / "capture_c_trace" / "capture_c_trace"), w, h, qp, preset,
-                 str(d / "rs.yuv"), str(d / "c.obu"), env["SVTAV1_BD"]],
-                env=cenv, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
-        if r.returncode != 0:
-            return "ERROR", "C", f"capture_c_trace exited {r.returncode} (see {d}/c.stderr)"
-        args = ["python3", str(HERE / "identity_diff.py"),
-                "--c-obu", str(d / "c.obu"), "--rust-obu", str(d / "rs.obu")]
-        if not nowrap:
-            args += ["--c-trace", str(d / "c.trace"), "--rust-trace", str(d / "rs.trace")]
-        r = subprocess.run(args, env=env, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "ERROR", "TIMEOUT", f"over {timeout}s"
+    with open(d / "c.stderr", "wb") as err:
+        r = subprocess.run(
+            [str(HERE / "capture_c_trace" / "capture_c_trace"), w, h, qp, preset,
+             str(d / "rs.yuv"), str(d / "c.obu"), env["SVTAV1_BD"]],
+            env=cenv, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
+    if r.returncode != 0:
+        return "ERROR", "C", f"capture_c_trace exited {r.returncode} (see {d}/c.stderr)"
+    rs, c = (d / "rs.obu").read_bytes(), (d / "c.obu").read_bytes()
+    if bytes_only:
+        return ("IDENTICAL", "-", "-") if rs == c else ("DIFFERS", "-", f"port {len(rs)} B, C {len(c)} B")
+    args = ["python3", str(HERE / "identity_diff.py"),
+            "--c-obu", str(d / "c.obu"), "--rust-obu", str(d / "rs.obu")]
+    if traced:
+        args += ["--c-trace", str(d / "c.trace"), "--rust-trace", str(d / "rs.trace")]
+    r = subprocess.run(args, env=env, capture_output=True, text=True, timeout=timeout)
     (d / "report.txt").write_text(r.stdout)
     if r.returncode == 0:
         return "IDENTICAL", "-", "-"
     for line in r.stdout.splitlines():
         if line.startswith("STAGE: "):
-            rest = line[len("STAGE: "):]
-            stage, _, detail = rest.partition(" | ")
+            stage, _, detail = line[len("STAGE: "):].partition(" | ")
             return "DIFFERS", stage, detail or "-"
     return "DIFFERS", "-", "-"
+
+
+def run_cell(row, root, timeout, bytes_only):
+    """Returns (verdict, stage, detail, checks)."""
+    d = root / row["name"]
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    env = cell_env(row)
+    if "recon" in row["checks"]:
+        env["SVTAV1_FINAL_RECON"] = str(d / "recon")
+    try:
+        with open(d / "rs.trace", "wb") as err:
+            r = subprocess.run(
+                [str(HERE / "identity_run"), row["content"], row["w"], row["h"], row["qp"],
+                 row["preset"], str(d / "rs")],
+                env=env, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
+        if r.returncode != 0:
+            return "ERROR", "PORT", f"identity_run exited {r.returncode} (see {d}/rs.trace)", []
+        checks = run_checks(row, d, env, timeout)
+        if "c" in row["checks"]:
+            verdict, stage, detail = run_c(row, d, env, timeout, bytes_only)
+        else:
+            verdict, stage, detail = "-", "-", "-"
+    except subprocess.TimeoutExpired:
+        return "ERROR", "TIMEOUT", f"over {timeout}s", []
+    except RuntimeError as e:
+        return "ERROR", "DECODER", str(e), []
+    return verdict, stage, detail, checks
 
 
 def main():
@@ -114,6 +203,8 @@ def main():
     ap.add_argument("--out", help="result TSV (default: <cells stem>.result.tsv beside the artifacts)")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--timeout", type=int, default=600, help="seconds per step")
+    ap.add_argument("--bytes-only", action="store_true",
+                    help="compare C bytes with cmp; skip the symbol traces")
     a = ap.parse_args()
 
     rows = read_cells(a.cells)
@@ -127,21 +218,35 @@ def main():
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
-        results = list(ex.map(lambda r: run_cell(r, root, a.timeout), rows))
+        results = list(ex.map(lambda r: run_cell(r, root, a.timeout, a.bytes_only), rows))
+
+    # Anti-vacuity, once every cell's stream exists.
+    by_name = {r["name"]: res for r, res in zip(rows, results)}
+    for row, res in zip(rows, results):
+        other = row.get("differs_from")
+        if other and res[0] != "ERROR" and by_name[other][0] != "ERROR":
+            same = (root / row["name"] / "rs.obu").read_bytes() == \
+                (root / other / "rs.obu").read_bytes()
+            res[3].append((f"differs_from:{other}", not same))
 
     bad = errors = 0
     with open(out, "w", newline="") as f:
         wr = csv.writer(f, delimiter="\t", lineterminator="\n")
-        wr.writerow(["name", "verdict", "stage", "detail", "expect", "ok"])
-        for row, (verdict, stage, detail) in zip(rows, results):
+        wr.writerow(["name", "verdict", "stage", "detail", "expect", "checks", "ok"])
+        for row, (verdict, stage, detail, checks) in zip(rows, results):
             expect = row.get("expect") or ""
-            ok = "-" if not expect else ("yes" if expect == verdict else "NO")
-            bad += ok == "NO"
+            failed = [n for n, ok in checks if not ok]
+            ok = (not expect or expect == verdict) and not failed
+            pinned = bool(expect) or bool(checks)
+            bad += pinned and not ok and verdict != "ERROR"
             errors += verdict == "ERROR"
-            wr.writerow([row["name"], verdict, stage, detail, expect or "-", ok])
-    ident = sum(v == "IDENTICAL" for v, _, _ in results)
-    print(f"cellrun: {oracle}: {ident}/{len(rows)} identical, {errors} errors, "
-          f"{bad} differ from their pinned verdict -> {out}", file=sys.stderr)
+            wr.writerow([row["name"], verdict, stage, detail, expect or "-",
+                         " ".join(f"{n}={'ok' if o else 'FAIL'}" for n, o in checks) or "-",
+                         ("yes" if ok else "NO") if pinned else "-"])
+    ident = sum(r[0] == "IDENTICAL" for r in results)
+    ran_c = sum("c" in r["checks"] for r in rows)
+    print(f"cellrun: {oracle}: {ident}/{ran_c} identical to C, {errors} errors, "
+          f"{bad} failing a pinned verdict or check -> {out}", file=sys.stderr)
     return 2 if errors else (1 if bad else 0)
 
 
