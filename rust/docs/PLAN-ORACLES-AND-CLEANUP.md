@@ -659,6 +659,16 @@ Order, by expected size:
   a C-side trace of `motion_mode`), then re-pin to C's behaviour or fix the
   port. Brief: `obmc-count`.
 
+- [x] A red gate no longer hides the rest of its shard (2026-09-26). A
+  step's default condition is `success()`, so from the day
+  `global_motion_gate.sh` first ran red, every later shard-3 step was
+  SKIPPED: video, RA and 10-bit self-consistency, superres, tiles, SB128,
+  lossless and more, 24 steps. Gate steps now carry
+  `!cancelled() && matrix.shard == N`, which `ci_shard_check.py` requires.
+  The C-oracle, pinned-oracle and aomdec caches are restore + explicit save
+  after their builds, since `actions/cache` only saves when the whole job
+  passes; rust-cache has `cache-on-failure`.
+
 - [x] CI green (2026-09-25; the global_motion_gate re-pin below was
   owner-approved and landed with its evidence in the gate). Was: shard 3's
   `global_motion_gate.sh` (running in CI for the first time, now that the

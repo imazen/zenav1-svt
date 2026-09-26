@@ -12,6 +12,10 @@ This check makes that impossible to land silently. It asserts:
   2. every step after the setup block carries exactly one shard guard;
   3. every guard names a shard that is actually in the matrix;
   4. every shard in the matrix owns at least one gate;
+  5. every gate guard also says `!cancelled()`, so a red gate does not skip
+     the gates after it (a step's default `if` is `success()`; from
+     2026-09-25 to 2026-09-26 a red obmc_gate silently switched off the
+     rest of shard 3, 24 steps);
   5. the guarded steps partition the gate set -- union == all, no overlap.
 
 Run: python3 rust/tools/ci_shard_check.py [--check]
@@ -28,7 +32,7 @@ except ImportError:
 WF = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "rust-gates.yml"
 # Steps before this index are shared setup (checkout, toolchain, caches, oracles)
 # and MUST run in every shard, so they carry no shard guard.
-GATE_START = 12  # +1 2026-09-25: the pinned-oracle cache step
+GATE_START = 16  # +4 2026-09-26: oracle build + three explicit cache saves
 
 def main() -> int:
     if not WF.is_file():
@@ -99,6 +103,13 @@ def main() -> int:
               f"{len(gates)} gate steps.", file=sys.stderr)
         return 1
 
+    no_cancel = [s.get("name", "?") for s in gates
+                 if "!cancelled()" not in str(s.get("if", ""))]
+    if no_cancel:
+        print("ci_shard_check: these gate steps lack `!cancelled()` in their `if`, so "
+              "an earlier red gate would silently skip them: " + ", ".join(no_cancel),
+              file=sys.stderr)
+        return 1
     print(f"ci_shard_check: OK — {len(gates)} gate steps partitioned across "
           f"shards {shards}: " + ", ".join(f"{n}:{len(owned[n])}" for n in shards))
     return 0

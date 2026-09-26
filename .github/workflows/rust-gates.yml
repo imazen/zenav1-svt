@@ -151,6 +151,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          # A red gate must not cost the next run its build cache.
+          cache-on-failure: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -166,7 +168,11 @@ jobs:
         run: echo "sha=$(git -C reference/svt-av1 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache the cargo-built C oracle (both variants)
-        uses: actions/cache@v6
+        # restore + an explicit save after the build: actions/cache saves in
+        # a post step that runs only when the WHOLE job succeeds, so while one
+        # gate was red no shard ever saved and every run rebuilt the oracles.
+        id: cref-cache
+        uses: actions/cache/restore@v6
         with:
           # Only the OUTPUT dirs — lib + SvtAv1EncApp + the .zenav1-cref-stamp.
           # Deliberately NOT cbuild-static{,-hdr}: a restored ninja tree sees
@@ -186,10 +192,24 @@ jobs:
         # build), which would cost every shard a C build. Its directory carries
         # its own STAMP (commit + flags), so a restored entry is only reused
         # for the registry row it was built from.
-        uses: actions/cache@v6
+        id: oracles-cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/zenav1-oracles
           key: oracles-v1-${{ runner.os }}-${{ hashFiles('rust/oracles/oracles.tsv', 'rust/tools/oracle') }}
+
+      - name: Build the pinned mainline-4.2.0 oracle
+        # Here rather than lazily in the first gate that needs it, so the save
+        # below runs before any gate. A no-op when the restored stamp matches.
+        working-directory: rust
+        run: tools/oracle build mainline-4.2.0
+
+      - name: Save the pinned-oracle cache
+        if: steps.oracles-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/zenav1-oracles
+          key: ${{ steps.oracles-cache.outputs.cache-primary-key }}
 
       - name: Build C reference (static, the differential oracle) — cargo-driven
         working-directory: rust
@@ -208,9 +228,18 @@ jobs:
           ls -la ../Bin/Release/libSvtAv1Enc.a ../Bin/Release/.zenav1-cref-stamp
           ls -la ../Bin/ReleaseHdr/libSvtAv1Enc.a ../Bin/ReleaseHdr/.zenav1-cref-stamp
 
+      - name: Save the C oracle cache
+        if: steps.cref-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Bin/Release
+            Bin/ReleaseHdr
+          key: ${{ steps.cref-cache.outputs.cache-primary-key }}
+
       - name: Cache libaom build (aomdec oracle)
         id: aom-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: aom-build/aomdec
           key: aomdec-v3-${{ runner.os }}
@@ -224,8 +253,15 @@ jobs:
             -DENABLE_DOCS=0 -DENABLE_TOOLS=0
           cmake --build aom-build --target aomdec
 
+      - name: Save the aomdec cache
+        if: steps.aom-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: aom-build/aomdec
+          key: ${{ steps.aom-cache.outputs.cache-primary-key }}
+
       - name: Workspace tests (differential parity suites vs C)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # nextest is the standard runner (faster, per-test isolation). It does
         # not run doctests; the workspace has 2 (svtav1/src/lib.rs, svtav1/src/avif.rs),
@@ -243,33 +279,33 @@ jobs:
           cargo test --workspace --doc
 
       - name: Decode conformance — mono (aomdec + dav1d)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" DAV1D="$(command -v dav1d)" \
             ./tools/decode_conformance.sh target/dc-mono
 
       - name: Decode conformance — 4:2:0 (aomdec + dav1d)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" DAV1D="$(command -v dav1d)" \
             ./tools/decode_conformance.sh target/dc-chroma chroma
 
       - name: bd10 identity (uniform, port == real aomenc at bit depth 10)
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         run: |
           ./tools/bd10_matrix.sh
 
       - name: bd10 non-flat identity (u16 MD path, DC-family cells)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_nonflat_gate.sh
 
       - name: bd10 NATIVE 10-bit source identity (task #6 chunk 2)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # Real 10-bit samples (low 2 bits SET) through the u16 entry points vs
         # the same .yuv through the C encoder. The other bd10 gates feed both
@@ -278,7 +314,7 @@ jobs:
           ./tools/bd10_hbd_src_gate.sh
 
       - name: bd10 photographic identity (CID22 photos, presets 0-13 except 4)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # The ledger number rust/CLAUDE.md cites (191/191) came from this gate,
         # which no CI job ran until 2026-09-25; it ran 211 s locally (i265).
@@ -286,7 +322,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_photo_gate.sh
 
       - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # The IntraBC tier cell needs the gb82-sc corpus. As of 2026-09-05 this
         # job FETCHES it (see "Fetch the gb82-sc screen corpus"), so the cell
@@ -303,7 +339,7 @@ jobs:
         run: cargo test -p zenav1-svt --test tier_invariance
 
       - name: peak-RSS memory sweep (port vs C, tiny -> large)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # Records peak RSS across sizes so a memory regression is VISIBLE. This
         # project required memory evidence from heaptrack/`time -v` in
@@ -319,7 +355,7 @@ jobs:
         run: ./tools/mem_gate.sh 6 || true
 
       - name: refusal inventory is current (capability debt stays visible)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # Every config the encoder REFUSES, split into CONTRACT (caller misuse,
         # permanent) and CAPABILITY (not implemented -- debt). A refusal makes a
@@ -330,7 +366,7 @@ jobs:
         run: ./tools/refusal_inventory.sh --check
 
       - name: PORT-NOTE index is current (verification-debt ledger cannot drift)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # CLAUDE.md indexes every PORT-NOTE(unverified) marker -- the list of
         # places whose bit-exactness vs C is asserted but not proven. A
@@ -341,7 +377,7 @@ jobs:
         run: ./tools/portnote_index.sh --check
 
       - name: every tests/*.rs file is in exactly one test target
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # With autotests = false, a test file can be compiled into two
         # binaries (run twice) or into none (never run). Both happened: 162
@@ -349,21 +385,21 @@ jobs:
         run: python3 tools/test_targets_check.py
 
       - name: SIMD tier ledger is current (incant! sites without x86 or neon)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # A new scalar-only dispatch site fails, and so does a closed gap still
         # listed; the ledger is docs/INCANT-TIER-GAPS.tsv (plan S8).
         run: python3 tools/review/incant_tiers.py --check docs/INCANT-TIER-GAPS.tsv
 
       - name: every .rs file is at most 3,000 lines
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # The 2-3 kloc target (2026-09-25). pipeline.rs had reached 23,560
         # lines; the check keeps a split from growing back.
         run: python3 tools/file_size_check.py
 
       - name: every SVT*/SVTAV1_* name a script sets has a reader
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # A script that sets a variable nothing reads runs green and reports
         # the default encoder under a feature's name: frontier_sweep's
@@ -371,7 +407,7 @@ jobs:
         run: python3 tools/env_names_check.py
 
       - name: no_std builds (each library crate, --no-default-features)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # Per crate, not per workspace: at workspace level, feature
         # unification through dev-dependencies re-enables `std` and hides the
@@ -386,7 +422,7 @@ jobs:
           done
 
       - name: regression spot-check (one cell per bug ever fixed)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # ~90s. Every cell is the MINIMAL REPRODUCER of a bug that once shipped,
         # so a red cell names its own regression instead of leaving someone to
@@ -398,7 +434,7 @@ jobs:
           RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/regression_spotcheck.sh
 
       - name: INTER byte gate (both frames of a 2-frame low-delay P encode)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # THE GATE THAT WAS NEVER IN CI. `inter_byte_gate.sh`, `fctx_gate.sh`,
         # `inter_decode_gate.sh` and `inter_fh_gate.sh` guard the entire inter
@@ -419,7 +455,7 @@ jobs:
         run: ./tools/inter_byte_gate.sh
 
       - name: INTER completion gate (does the port ENCODE the cell AT ALL)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # THE PANIC GATE THE INTER PATH NEVER HAD. `arbitrary_size_robustness.sh`
         # below is this repo's panic-freedom gate and it drives the PUBLIC API,
@@ -489,7 +525,7 @@ jobs:
           done
 
       - name: INTER decode census (does the port's stream DECODE, on all 96 cells)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # `inter_decode_gate.sh` asks that of FIVE named cells. This asks it of
         # all 96 — and 22 of them produce a stream `aomdec` REJECTS, which the
@@ -505,7 +541,7 @@ jobs:
         run: RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/inter_decode_census.sh
 
       - name: INTER ME join gate (the port's full-pel MV against C's, per block)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # THE ASSERTION THAT DID NOT EXIST. docs/INTER-ENCODE-PLAN.md §1z¹⁵
         # recorded that `md_nsq_motion_search` is ported and never called, that
@@ -520,7 +556,7 @@ jobs:
         run: ./tools/inter_me_join_gate.sh
 
       - name: INTER frame-context + header + decode gates
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # The three siblings of the byte gate, same reason. `fctx_gate` diffs
         # C's end-of-frame CDF state against the port's field by field (96
@@ -532,7 +568,7 @@ jobs:
           ./tools/inter_decode_gate.sh "$GITHUB_WORKSPACE/aom-build/aomdec"
 
       - name: REAL-video inter gate (public-domain derf clips, assets from R2)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # THE INTER SURFACE WAS ALL SYNTHETIC UNTIL THIS STEP. Every cell in
         # the three gates above encodes {uniform,gradient,diag,screen}, and the
@@ -563,7 +599,7 @@ jobs:
         run: ./tools/real_video_inter_gate.sh
 
       - name: warped motion, 10-bit video and global motion
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # THE THREE GATES THAT GUARD THE INTER TOOLS WIRED IN 2026-09-10, none
         # of which any other job asks about:
@@ -589,7 +625,7 @@ jobs:
           ./tools/obmc_gate.sh
 
       - name: video self-consistency — port recon == aomdec, 8 frames, real clips
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         env:
           AOMDEC: ${{ github.workspace }}/aom-build/aomdec
@@ -614,7 +650,7 @@ jobs:
         run: ./tools/video_selfcheck_gate.sh
 
       - name: RA self-consistency — hierarchical GOP, port recon == aomdec
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         env:
           AOMDEC: ${{ github.workspace }}/aom-build/aomdec
@@ -630,7 +666,7 @@ jobs:
         run: ./tools/ra_selfcheck_gate.sh
 
       - name: 10-bit video self-consistency — port recon == aomdec, 8 frames
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         env:
           AOMDEC: ${{ github.workspace }}/aom-build/aomdec
@@ -645,7 +681,7 @@ jobs:
             ./tools/bd10_video_selfcheck_gate.sh
 
       - name: mono inter, qp0 inter and film grain — port recon == decoder
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         env:
           AOMDEC: ${{ github.workspace }}/aom-build/aomdec
@@ -661,7 +697,7 @@ jobs:
           python3 tools/film_grain_gate.py target/film_grain_gate
 
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # THE gate this repo went without. `identity_matrix.sh` is a scoreboard
         # that exits 0 whatever the tally AND was never in this workflow, so
@@ -680,7 +716,7 @@ jobs:
             target/identity_full_8bit_ci.tsv
 
       - name: screen-content palette identity (bd8 AND bd10)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         # The ONLY gate that reaches the palette path: every other synthetic
         # content is photographic, so the screen-content detector never arms and
@@ -692,7 +728,7 @@ jobs:
           ./tools/screen_palette_bd_gate.sh
 
       - name: screen IntraBC byte gate — gb82-sc x presets 0..4 x qp (152 cells)
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         # THE GATE THAT GUARDED A BAND NOTHING IN CI TOUCHED. Three real
         # bitstream defects closed the gb82-sc IntraBC band on 2026-09-05
@@ -716,7 +752,7 @@ jobs:
         run: RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/screen_ibc_byte_gate.sh
 
       - name: screen-content luma palette byte gate — gb82-sc x preset 6 (50 cells)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # The real-screenshot twin of `screen_palette_bd_gate.sh` above: that
         # one is SYNTHETIC and this one is the gb82-sc corpus, which is where
@@ -727,7 +763,7 @@ jobs:
         run: ./tools/screen_palette_gate.sh
 
       - name: bd10 screen panic-freedom + decodability (gb82-sc, 60 cells)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         # PANIC ON THE PUBLIC API, on real screen content at 10 bits: the bd10
         # leaf funnel does not port the luma palette search, and a surviving
@@ -741,7 +777,7 @@ jobs:
         run: AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_screen_panic_gate.sh
 
       - name: partial-SB / odd-dimension identity (8-bit)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # 104 cells: partial superblocks, odd dims, straddle and both-partial
         # geometry vs the C oracle. A real pass/fail gate since it was written
@@ -751,7 +787,7 @@ jobs:
           ./tools/partial_sb_gate.sh
 
       - name: bd10 partial-SB identity (10-bit at non-64-aligned dims)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         # 157 cells across BOTH bd10 level producers (preset <= 8 full-RD
         # funnel, preset >= 9 level-only re-encode post-pass). Until 2026-08-04
@@ -765,7 +801,7 @@ jobs:
           ./tools/bd10_partial_sb_gate.sh
 
       - name: imazen26 K300 production-corpus identity (assets from R2)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         # A GATE THAT HAD NOT RUN SINCE THE DAY IT WAS WRITTEN, and had never
         # run in CI. `imazen26_gate.sh` asserts 40 cells over 20 images and
@@ -807,7 +843,7 @@ jobs:
             ./tools/imazen26_gate.sh
 
       - name: Alignment / stride gate (true-vs-aligned x stride x bit depth)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # The axis every other gate misses. `recon_parity` (432) and
         # `decode_gate_grid` (120) are entirely 64-ALIGNED SQUARES;
@@ -834,7 +870,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/alignment_gate.sh
 
       - name: tile identity — rows AND columns (8-bit)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # 29 cells across TileRowsLog2 x TileColsLog2 on divisible and ragged
         # SB grids, each asserting the C oracle's bytes actually CHANGED under
@@ -845,7 +881,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/tile_gate.sh
 
       - name: SB128 identity — allintra M0/M1 above 240p (8-bit)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # 22 cells. Each asserts the oracle really emitted a 128px superblock,
         # so a mis-sized cell fails loudly instead of silently testing SB64.
@@ -857,7 +893,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/sb128_gate.sh
 
       - name: arbitrary-size robustness — panic-free + decodable
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # 128 cells (gradient AND screen) x arbitrary/odd/partial/sub-64 dims.
         # This is the gate that must catch a crash on the public API. It ran
@@ -869,7 +905,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/arbitrary_size_robustness.sh
 
       - name: feature-combination identity — SB128 x tiles, bd10 x tiles (8-bit + 10-bit)
-        if: matrix.shard == 4
+        if: ${{ !cancelled() && matrix.shard == 4 }}
         working-directory: rust
         # Issue #8 item 7 (the corpus-free gates belong in CI). The gate's
         # third axis (real content x tiles) needs BOTH the CID22 and gb82-sc
@@ -887,7 +923,7 @@ jobs:
             ./tools/coverage_combos_gate.sh
 
       - name: coded-lossless identity + lossless decode (QP 0, issue #5)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # Two oracles per cell: byte-identity to C at qp 0 AND the reference
         # decoder's output == the source planes (the property the CodedLossless
@@ -924,7 +960,7 @@ jobs:
             ./tools/lossless_gate.sh
 
       - name: IFS join — the port MDS3 interpolation-filter search against C
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         # 96 cells, 26 s measured. This gate had never been wired because it
         # failed 96/96 with PROBE_NOT_INERT: it called tools/ctrace-linux/run.sh
@@ -939,7 +975,7 @@ jobs:
         run: ./tools/ifs_join_gate.sh
 
       - name: VIDEO-mode key-frame identity matrix (inter campaign scoreboard)
-        if: matrix.shard == 2
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         working-directory: rust
         # tools/video_key_matrix.sh existed but was in NO CI step. It is the
         # inter campaign's key-frame scoreboard: 60 cells, all IDENTICAL, 11.6 s
@@ -948,7 +984,7 @@ jobs:
         run: ./tools/video_key_matrix.sh
 
       - name: research preset -1 identity (8-bit AND 10-bit, partial-SB + screen)
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         working-directory: rust
         # ENCODER-POLICY-GOAL.md section 3 requires proving -1 parity across
         # quality levels, content classes, native 8/10-bit input and boundaries,
@@ -965,7 +1001,7 @@ jobs:
         run: ./tools/research_matrix.sh
 
       - name: superres identity + conformance (chunk B.3)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED
         # size under the reference decoder (the upscale is normative).
@@ -973,7 +1009,7 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_gate.sh
 
       - name: superres bd10 identity + conformance + recon
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # The 10-bit arm: u16 source downscale (C's pack->highbd_resize->
         # unpack order) + byte-parity + decode + last_recon10_final ==
@@ -982,13 +1018,13 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_bd10_gate.sh
 
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
-        if: matrix.shard == 5
+        if: ${{ !cancelled() && matrix.shard == 5 }}
         working-directory: rust
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/recon_parity.sh
 
       - name: Variance-boost delta-q recon parity (mainline, tune IQ)
-        if: matrix.shard == 3
+        if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
         # The default recon-parity matrix never signals per-SB delta-q
         # (tune PSNR => enable_variance_boost false), so it cannot see a
