@@ -162,6 +162,15 @@ pub struct IntraBlock {
     /// C `ctx->blk_org_y >> MI_SIZE_LOG2` / `blk_org_x >> MI_SIZE_LOG2`.
     pub mi_row: i32,
     pub mi_col: i32,
+    /// C `ctx->subsampling_x` / `subsampling_y` — read only under Ghost
+    /// Robot (`f67a0f747` moved the chroma fast-rate geometry off its
+    /// hardwired 4:2:0). The port's envelope is 4:2:0, so both are 1 in
+    /// production; the fields exist for the differential sweep.
+    pub subsampling_x: u8,
+    pub subsampling_y: u8,
+    /// The `SvtReference` the block is priced against — selects the
+    /// `f67a0f747` `ctx->subsampling_*` reads under GhostRobot.
+    pub reference: crate::reference::SvtReference,
 }
 
 /// C `cand->palette_size[0]` / `[1]`, present only when `palette_info` is.
@@ -279,8 +288,18 @@ pub fn get_intra_uv_fast_rate(
             block.mi_col,
             i32::from(block.bwidth) >> 2,
             i32::from(block.bheight) >> 2,
-            1,
-            1,
+            // Ghost Robot f67a0f747: `ctx->subsampling_x`/`_y` — the older
+            // references hardwire 4:2:0 here ("Subsampling assumes YUV 420").
+            if block.reference == crate::reference::SvtReference::GhostRobot {
+                i32::from(block.subsampling_x)
+            } else {
+                1
+            },
+            if block.reference == crate::reference::SvtReference::GhostRobot {
+                i32::from(block.subsampling_y)
+            } else {
+                1
+            },
         )
     {
         let use_palette_y = usize::from(cand.palette.is_some_and(|p| p.y > 0));

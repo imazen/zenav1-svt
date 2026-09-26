@@ -23,7 +23,10 @@ pub const NB_FIELDS: usize = 10;
 /// Number of `i32`s in [`inter_fast_cost`]'s scalar description.
 pub const IFC_FIELDS: usize = 47;
 /// Number of `i32`s in the intra description.
-pub const INTRA_FIELDS: usize = 30;
+/// `[i32]` input block to the intra fast-cost shims. Slots 30/31 are
+/// `ctx->subsampling_x` / `subsampling_y` — a real field only under
+/// `ZEN_ORACLE_CTX_SUBSAMP` (Ghost Robot `f67a0f747`).
+pub const INTRA_FIELDS: usize = 32;
 /// Number of `i32`s in [`full_cost`]'s description.
 pub const FULL_FIELDS: usize = 11;
 /// C `MV_VALS` (cabac_context_model.h:195).

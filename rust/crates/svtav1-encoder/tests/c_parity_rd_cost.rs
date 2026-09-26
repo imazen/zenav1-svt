@@ -692,6 +692,13 @@ fn intra_cell(r: &mut Rng, use_accurate_cfl: bool, hdr_allow_intrabc: bool) -> I
         palette_mode_ctx: 0,
         mi_row: 0,
         mi_col: 0,
+        // Ghost Robot f67a0f747 reads these off the ctx; on the other
+        // oracles C hardwires 1/1 and both sides ignore the slots.
+        subsampling_x: r.below(2) as u8,
+        subsampling_y: r.below(2) as u8,
+        reference: svtav1_encoder::reference::SvtReference::for_oracle_name(
+            svtav1_cref::ORACLE_NAME,
+        ),
     };
     let cand = rintra::IntraCandidate {
         mode: r.below(INTRA_MODES as u64) as u8,
@@ -759,6 +766,8 @@ fn intra_cell(r: &mut Rng, use_accurate_cfl: bool, hdr_allow_intrabc: bool) -> I
     fields[27] = cand.mv.y as i32;
     fields[28] = cand.pred_mv.x as i32;
     fields[29] = cand.pred_mv.y as i32;
+    fields[30] = block.subsampling_x as i32;
+    fields[31] = block.subsampling_y as i32;
 
     IntraCell {
         fields,
@@ -818,12 +827,15 @@ fn run_intra_cells(seed: u64, allow_intrabc: bool, cells: usize) {
         assert_eq!(
             (got.cost, got.fast_luma_rate, got.fast_chroma_rate),
             (c_cost, u64::from(c_luma), u64::from(c_chroma)),
-            "bsize={:?} mode={} uv={} ibc={} key={}",
+            "bsize={:?} mode={} uv={} ibc={} key={} ss={:?}/{:?} uv_mode={}",
             cell.block.bsize,
             cell.cand.mode,
             cell.cand.uv_mode,
             cell.cand.use_intrabc,
             cell.block.is_key_slice,
+            cell.block.subsampling_x,
+            cell.block.subsampling_y,
+            cell.cand.uv_mode,
         );
     }
 }

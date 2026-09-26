@@ -413,7 +413,10 @@ uint64_t ref_rd_inter_fast_cost(const int32_t* i, const int32_t* above, const in
  *  23 up_avail      24 left_avail     25 use_accurate_cfl
  *  26 mv.x          27 mv.y           28 pred_mv.x     29 pred_mv.y
  */
-#define RD_INTRA_FIELDS 30
+#define RD_INTRA_FIELDS 32
+/* i[30]/i[31]: ctx->subsampling_x / subsampling_y — a real field only under
+ * ZEN_ORACLE_CTX_SUBSAMP (Ghost Robot f67a0f747); the other oracles
+ * hardwire 4:2:0 and ignore the slots. */
 
 int32_t ref_rd_intra_fields(void) { return RD_INTRA_FIELDS; }
 
@@ -439,6 +442,10 @@ static void rd_intra_scene(RdScene* s, const int32_t* i, const int32_t* above, c
     s->ctx->skip_mode_ctx       = (uint8_t)i[20];
     s->ctx->blk_org_x           = (uint16_t)i[21];
     s->ctx->blk_org_y           = (uint16_t)i[22];
+#ifdef ZEN_ORACLE_CTX_SUBSAMP
+    s->ctx->subsampling_x       = (uint8_t)i[30];
+    s->ctx->subsampling_y       = (uint8_t)i[31];
+#endif
 
     ModeDecisionCandidate* c = s->cand;
     c->block_mi.mode         = (PredictionMode)i[1];

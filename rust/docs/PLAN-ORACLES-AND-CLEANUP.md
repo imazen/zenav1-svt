@@ -361,10 +361,18 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `DLF_O_PICK_METHOD` under `ZEN_ORACLE_DLF_PICK_METHOD`.
     `loop_filters.rs` keeps reading `sb_based_dlf`, which coincides with
     `pick_method == Q` at every level.
-  - Remaining 22: `md_subpel` (10), `md_pme` (2), `rd_cost` (3),
-    `rc_vbr_cbr_qpick`, `noise_gen` tables, `inter_mvp` setup,
-    `intrabc_search` diamond, `dist_facade`, `enc_make_pred` masked-warp
-    subsampling.
+  - `f67a0f747` (rd_cost): `get_intra_uv_fast_rate` reads
+    `ctx->subsampling_{x,y}` instead of hardwired 4:2:0 — new
+    `IntraBlock::subsampling_{x,y}` + `reference` fields, new shim input
+    slots `RD_INTRA_FIELDS` 30->32 populated under
+    `ZEN_ORACLE_CTX_SUBSAMP`. Production callers do not exist (the MDS0
+    intra fast-cost path lives in `leaf_funnel/mds3`, which has its own
+    rate path) — the field exists for the differential only.
+  - Remaining 19: `md_subpel` (10), `md_pme` (2) — all the `0a1cc6492`
+    MV-cost cleanup (enum `MV_COST_TYPE` shrinks to ENTROPY/OPT/NONE,
+    `svt_mv_err_cost` by-value) — `rc_vbr_cbr_qpick`, `noise_gen` tables,
+    `inter_mvp` setup, `intrabc_search` diamond, `dist_facade`,
+    `enc_make_pred` masked-warp subsampling.
 - [ ] 3.4 Fork behaviour: complex-hvs (`70877799`, `d705ef50`), MDS0
   ac-bias dampening (`c65c2bfa`), chroma noise `pow(luma, 0.75)`
   (`9f54af57`), delta-q all-skip (`2f08c8e8`), lossless across tunes
