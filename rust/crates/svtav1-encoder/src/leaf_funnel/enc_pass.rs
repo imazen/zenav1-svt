@@ -415,7 +415,20 @@ fn encode_pass_leaf(
     let (txw, txh) = txb_dims_at_depth(bw, bh, d.tx_depth);
     let cols = (bw / txw).max(1);
     let txbs = d.txb_qcoeffs.len().min(cols * (bh / txh));
+    // Seed the in-block overlay with the canvas's CURRENT (MD-committed)
+    // pixels: C's `ep_luma_recon_na` is seeded from `recon_pic` at SB entry,
+    // so a txb whose directional reference reaches a not-yet-encoded in-block
+    // position (extended DR edges read up to 2*txw/2*txh past the unit) sees
+    // the pre-pass recon there — not 0.
     let mut dep_recon = alloc::vec![0u8; bw * bh];
+    let wr = bw.min(recon_stride.saturating_sub(x));
+    for r in 0..bh {
+        let src_row = &recon[(y + r) * recon_stride + x..(y + r) * recon_stride + x + wr];
+        dep_recon[r * bw..r * bw + wr].copy_from_slice(src_row);
+        if let Some(&last) = src_row.last() {
+            dep_recon[r * bw + wr..r * bw + bw].fill(last);
+        }
+    }
     let mut eob_sum = 0u32;
     for i in 0..txbs {
         let (tx_x, tx_y) = ((i % cols) * txw, (i / cols) * txh);
