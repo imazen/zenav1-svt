@@ -37,6 +37,9 @@ A cell list is a TSV file with a header row. Columns:
   check         comma list from the table above (optional, default `c`)
   differs_from  another cell whose port stream this one's must NOT equal
                 (anti-vacuity: the feature under test changed the output)
+  same_as       another cell whose port stream this one's MUST equal (e.g. an
+                encode with a dump switched on vs one without: dumps must not
+                change a byte)
   c_differs_from  another cell whose C stream this one's must NOT equal
                 (anti-vacuity on the C side: the knob reached C's encoder)
   arch          comma list of machine arches (`uname -m`) the cell runs on,
@@ -101,7 +104,7 @@ def read_cells(path):
     if len(names) != len(rows):
         sys.exit(f"cellrun: {path}: duplicate cell names")
     for r in rows:
-        for col in ("differs_from", "c_differs_from"):
+        for col in ("differs_from", "same_as", "c_differs_from"):
             if r.get(col) and r[col] not in names:
                 sys.exit(f"cellrun: {path}: {r['name']}: {col} names no cell")
     return rows
@@ -321,6 +324,15 @@ def main():
         same = (root / row["name"] / "rs.obu").read_bytes() == \
             (root / other / "rs.obu").read_bytes()
         res[3].append((f"differs_from:{other}", not same))
+    for row, res in zip(rows, results):
+        other = row.get("same_as")
+        if not other or res[0] == "ERROR":
+            continue
+        a, b = root / row["name"] / "rs.obu", root / other / "rs.obu"
+        if by_name[other][0] == "ERROR" or not a.exists() or not b.exists():
+            res[3].append((f"same_as:{other}(missing)", False))
+            continue
+        res[3].append((f"same_as:{other}", a.read_bytes() == b.read_bytes()))
     for row, res in zip(rows, results):
         other = row.get("c_differs_from")
         if not other or res[0] == "ERROR":

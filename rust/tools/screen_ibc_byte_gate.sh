@@ -60,8 +60,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 export SVTAV1_ASSERT_NONFLAT=1
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
-RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
-CT_BIN="$HERE/capture_c_trace/capture_c_trace"
 SCREEN_DIR="${SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR
@@ -90,124 +88,102 @@ is_byte_exact() {
   return 1
 }
 
-echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
-    cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
-  || { echo "port build failed" >&2; exit 2; }
-"$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
-[ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] || { echo "binaries missing" >&2; exit 2; }
-
-OUT="$RS_ROOT/target/screen_ibc_byte_gate"
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (SIB_JOBS, default 4). Every cell writes its packed tree to @CELL@ and the
+# summary totals IBC and palette blocks from those files (run-level
+# anti-vacuity, as before). Record cells: a second row encodes the same cell
+# with SVTAV1_FINAL_RECON on, must be byte-identical to the first
+# (`same_as`: the dump must not change a byte) and must decode to its recon
+# (`recon`); the summary also checks the pinned byte size. A missing
+# screenshot or decoder FAILS (SIB_ALLOW_NO_RECON=1 accepts no decoder).
+OUT="${TMPDIR:-$HOME/tmp}/screen_ibc_byte.$$"
 mkdir -p "$OUT"
-match=0; diff=0; errs=0; ibc_total=0; pal_total=0; size_bad=0; recon_fail=0; recon_skipped=0
-regressions=(); promotions=(); map_lines=()
-
-# cell <tag> <png> <w> <h> <qp> <preset> [expected-size]
-cell() {
-  local tag=$1 png=$2 w=$3 h=$4 qp=$5 p=$6 expect=${7:-}
-  local d="$OUT/$tag"; mkdir -p "$d"; rm -f "$d/rs.ptree"
-  if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 $LOWPRI \
-        "$RUN_BIN" "$(screen_crop_spec "$png")" "$w" "$h" "$qp" "$p" "$d/rs" >/dev/null 2>/dev/null; then
-    errs=$((errs+1)); map_lines+=("$tag PORT-ENCODE-ERR"); echo "ERR  $tag port-encode"; return
+trap 'rm -rf "$OUT"' EXIT
+if [ -z "$AOMDEC" ] || ! command -v "$AOMDEC" >/dev/null 2>&1; then
+  if [ "${SIB_ALLOW_NO_RECON:-0}" != 1 ]; then
+    echo "screen_ibc_byte_gate: RS_AOMDEC not set or not runnable; the record cells' recon leg needs it (SIB_ALLOW_NO_RECON=1 to skip)" >&2
+    exit 2
   fi
-  if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \
-        "$CT_BIN" "$w" "$h" "$qp" "$p" "$d/rs.yuv" "$d/c.obu" 8 >/dev/null 2>/dev/null; then
-    errs=$((errs+1)); map_lines+=("$tag C-ENCODE-ERR"); echo "ERR  $tag c-encode"; return
-  fi
-  # anti-vacuity census from the port's pack tree (PTREE lines only; the
-  # dump carries the chain walk and the real pack, so count unique blocks).
-  local ibc pal
-  ibc=$(grep '^PTREE' "$d/rs.ptree" 2>/dev/null | awk '!s[$2]++' | grep -c 'ibc=1' || true)
-  pal=$(grep '^PTREE' "$d/rs.ptree" 2>/dev/null | awk '!s[$2]++' | grep -cE 'pal=[1-9]' || true)
-  ibc_total=$((ibc_total + ${ibc:-0})); pal_total=$((pal_total + ${pal:-0}))
-  local rb cb; rb=$(wc -c <"$d/rs.obu" | tr -d ' '); cb=$(wc -c <"$d/c.obu" | tr -d ' ')
-  if cmp -s "$d/rs.obu" "$d/c.obu"; then
-    match=$((match+1))
-    local line="$tag MATCH bytes=$rb ibc=$ibc pal=$pal"
-    if [ -n "$expect" ] && [ "$rb" != "$expect" ]; then
-      size_bad=$((size_bad+1)); line="$line SIZE-MISMATCH expected=$expect"
-    fi
-    map_lines+=("$line"); echo "OK   $line"
-    is_byte_exact "$tag" || promotions+=("$tag")
-  else
-    diff=$((diff+1))
-    local off; off=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $5}' | tr -d ,)
-    local line="$tag DIFF port=${rb}B c=${cb}B first-byte=${off:-?} ibc=$ibc pal=$pal"
-    map_lines+=("$line"); echo "DIFF $line"
-    is_byte_exact "$tag" && regressions+=("$tag")
-  fi
-  rm -f "$d/rs.yuv"
+fi
+LIST="$OUT/screen_ibc_byte.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\tenv_c\texpect\tcheck\tsame_as\n' >"$LIST"
+row() { # name png w h qp p expect check same_as
+  printf '%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_PACKTREE=@CELL@/rs.ptree\tSVT_NO_AUTO_CMAKE=1\t%s\t%s\t%s\n' \
+    "$1" "$(screen_crop_spec "$2")" "$3" "$4" "$5" "$6" "$7" "$8" "$9" >>"$LIST"
 }
-
-# recon_leg <tag> <w> <h>: the port's stream decodes (aomdec) to the port's
-# own FINAL recon. Needs the cell's rs.obu and an SVTAV1_FINAL_RECON dump.
-recon_leg() {
-  local tag=$1 png=$2 w=$3 h=$4 qp=$5 p=$6 d="$OUT/$1"
-  if [ -z "$AOMDEC" ] || ! command -v "$AOMDEC" >/dev/null 2>&1; then
-    recon_skipped=$((recon_skipped+1)); echo "SKIP $tag recon leg (no RS_AOMDEC)"; return
-  fi
-  SVTAV1_FINAL_RECON="$d/rs.recon" SVTAV1_BD=8 $LOWPRI \
-    "$RUN_BIN" "$(screen_crop_spec "$png")" "$w" "$h" "$qp" "$p" "$d/rs2" >/dev/null 2>/dev/null || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: port re-encode failed"; return; }
-  cmp -s "$d/rs.obu" "$d/rs2.obu" || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: re-encode not byte-stable"; return; }
-  "$AOMDEC" "$d/rs2.obu" -o "$d/rs.y4m" >/dev/null 2>&1 || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: aomdec refused the stream"; return; }
-  local verdict
-  verdict=$(python3 - "$d/rs.y4m" "$d/rs.recon" "$w" "$h" <<'PY'
-import sys
-y4m, recon, w, h = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-d = open(y4m, "rb").read(); hdr = d.index(b"\n"); fp = d.index(b"FRAME", hdr); start = d.index(b"\n", fp) + 1
-cw, ch = (w + 1) // 2, (h + 1) // 2; need = w * h + 2 * cw * ch
-dec = d[start:start + need]; enc = open(recon, "rb").read()
-print("OK" if (len(dec) == need and dec == enc) else f"FAIL {sum(1 for a, b in zip(dec, enc) if a != b)}px")
-PY
-)
-  case "$verdict" in
-    OK) echo "OK   $tag recon leg: decode == final recon" ;;
-    *) recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: $verdict" ;;
-  esac
-  rm -f "$d/rs2.yuv" "$d/rs.y4m" "$d/rs.recon"
-}
-
+missing=()
 for img in "${IMGS[@]}"; do
   png="$SCREEN_DIR/${img}.png"
-  [ -f "$png" ] || { echo "SKIP-MISSING $img ($png)"; errs=$((errs+1)); continue; }
+  [ -f "$png" ] || { missing+=("$img"); continue; }
   for p in "${PRESETS[@]}"; do
     for qp in "${QPS[@]}"; do
-      cell "${img}_p${p}_q${qp}" "$png" "$DIM" "$DIM" "$qp" "$p"
+      tag="${img}_p${p}_q${qp}"
+      if is_byte_exact "$tag"; then row "$tag" "$png" "$DIM" "$DIM" "$qp" "$p" IDENTICAL c ""
+      else row "$tag" "$png" "$DIM" "$DIM" "$qp" "$p" DIFFERS c ""; fi
     done
   done
 done
+declare -A RECORD_BYTES=([record_terminal_512x512_q40_p2]=5003 [record_graph_512x480_q40_p2]=3098)
 if [ "$RECORD" = 1 ]; then
-  if [ -f "$SCREEN_DIR/terminal.png" ] && [ -f "$SCREEN_DIR/graph.png" ]; then
-    cell record_terminal_512x512_q40_p2 "$SCREEN_DIR/terminal.png" 512 512 40 2 5003
-    cell record_graph_512x480_q40_p2 "$SCREEN_DIR/graph.png" 512 480 40 2 3098
-    recon_leg record_terminal_512x512_q40_p2 "$SCREEN_DIR/terminal.png" 512 512 40 2
-    recon_leg record_graph_512x480_q40_p2 "$SCREEN_DIR/graph.png" 512 480 40 2
-  else
-    echo "SKIP-MISSING record cells (terminal.png / graph.png)"; errs=$((errs+1))
-  fi
+  for spec in "record_terminal_512x512_q40_p2 terminal 512 512" "record_graph_512x480_q40_p2 graph 512 480"; do
+    read -r tag img w h <<<"$spec"
+    png="$SCREEN_DIR/$img.png"
+    [ -f "$png" ] || { missing+=("$tag"); continue; }
+    row "$tag" "$png" "$w" "$h" 40 2 IDENTICAL c ""
+    if [ -n "$AOMDEC" ] && command -v "$AOMDEC" >/dev/null 2>&1; then
+      row "${tag}__recon" "$png" "$w" "$h" 40 2 "" recon "$tag"
+    fi
+  done
 fi
-
-total=$((match + diff + errs))
-echo
-echo "==== screen IBC byte gate map (${DIM}x${DIM} bd8 + record cells) ===="
-printf '%s\n' "${map_lines[@]}"
-echo
-echo "screen_ibc_byte_gate: $match / $total byte-identical, $diff diverging, $errs errors; port IBC blocks: $ibc_total, palette blocks: $pal_total; recon legs: $recon_fail bad, $recon_skipped skipped"
-
-rc=0
-if [ "$ibc_total" -eq 0 ] || [ "$pal_total" -eq 0 ]; then
-  echo "ANTI-VACUITY FAIL: no IntraBC ($ibc_total) or no palette ($pal_total) block coded anywhere" >&2; rc=3
-fi
-if [ "${#regressions[@]}" -gt 0 ]; then
-  printf 'REGRESSION (asserted cell diverged): %s\n' "${regressions[@]}" >&2; rc=1
-fi
-if [ "$size_bad" -gt 0 ] || [ "$recon_fail" -gt 0 ]; then
-  echo "FAIL: $size_bad record-cell size mismatch(es), $recon_fail recon-leg failure(s)" >&2; rc=1
-fi
-if [ "${#promotions[@]}" -gt 0 ]; then
-  printf 'PROMOTE (pinned cell now matches — add to BYTE_EXACT): %s\n' "${promotions[@]}" >&2
-  [ "$rc" -eq 0 ] && rc=4
-fi
-if [ "$errs" -gt 0 ] && [ "$rc" -eq 0 ]; then rc=2; fi
-[ "$rc" -eq 0 ] && echo "PASS screen_ibc_byte_gate"
-exit "$rc"
+AOMDEC="$AOMDEC" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${SIB_JOBS:-4}"
+rc=$?
+CELLDIR="$RS_ROOT/target/cells/screen_ibc_byte.cells.${SVT_ORACLE:-default}"
+python3 - "$OUT/result.tsv" "$CELLDIR" "${missing[@]+"${missing[@]}"}" <<'PY'
+import csv, sys
+from pathlib import Path
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+celldir, missing = Path(sys.argv[2]), sys.argv[3:]
+record_bytes = {"record_terminal_512x512_q40_p2": 5003, "record_graph_512x480_q40_p2": 3098}
+def counts(name):
+    t = celldir / name / "rs.ptree"
+    if not t.exists():
+        return 0, 0
+    seen, ibc, pal = set(), 0, 0
+    for l in t.read_text().splitlines():
+        if not l.startswith("PTREE"):
+            continue
+        f = l.split()
+        if len(f) < 2 or f[1] in seen:
+            continue
+        seen.add(f[1])
+        ibc += " ibc=1" in f" {l}" and 1 or 0
+        pal += any(x.startswith("pal=") and x[4:5] in "123456789" for x in f)
+    return ibc, pal
+enc = [r for r in rows if not r["name"].endswith("__recon")]
+ibc_total = pal_total = 0
+for r in enc:
+    i, p = counts(r["name"]); ibc_total += i; pal_total += p
+match = [r for r in enc if r["verdict"] == "IDENTICAL"]
+diff = [r for r in enc if r["verdict"] == "DIFFERS"]
+errs = [r for r in rows if r["verdict"] == "ERROR"]
+size_bad = [n for n, b in record_bytes.items()
+            if (celldir / n / "rs.obu").exists() and (celldir / n / "rs.obu").stat().st_size != b]
+recon_bad = [r for r in rows if r["name"].endswith("__recon") and r["ok"] != "yes"]
+print(f"screen_ibc_byte_gate: {len(match)} / {len(enc) + len(missing)} byte-identical, {len(diff)} diverging, "
+      f"{len(errs) + len(missing)} errors; port IBC blocks: {ibc_total}, palette blocks: {pal_total}; "
+      f"recon legs: {len(recon_bad)} bad")
+rc = 0
+if ibc_total == 0 or pal_total == 0:
+    print(f"ANTI-VACUITY FAIL: no IntraBC ({ibc_total}) or no palette ({pal_total}) block coded anywhere", file=sys.stderr); rc = 3
+reg = [r["name"] for r in enc if r["expect"] == "IDENTICAL" and r["verdict"] != "IDENTICAL"]
+promo = [r["name"] for r in enc if r["expect"] == "DIFFERS" and r["verdict"] == "IDENTICAL"]
+if reg: print("REGRESSION (asserted cell diverged): " + " ".join(reg), file=sys.stderr); rc = rc or 1
+if size_bad or recon_bad:
+    print(f"FAIL: record size mismatch {size_bad}, recon legs {[r['name'] + ' ' + r['checks'] for r in recon_bad]}", file=sys.stderr); rc = rc or 1
+if promo: print("PROMOTE (pinned cell now matches — add to BYTE_EXACT): " + " ".join(promo), file=sys.stderr); rc = rc or 4
+if (errs or missing) and rc == 0:
+    print("errors: " + " ".join([r["name"] for r in errs] + missing), file=sys.stderr); rc = 2
+if rc == 0: print("PASS screen_ibc_byte_gate")
+sys.exit(rc)
+PY
+exit $?
