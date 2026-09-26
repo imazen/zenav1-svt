@@ -246,11 +246,12 @@ fn grown_out<T: crate::vecpool::Pooled>(buf: &mut PoolVec<T>, n: usize) -> &mut 
 /// * `residual` and `packed` were `Vec::with_capacity` + a loop that pushes
 ///   EVERY element, so they were never zero-initialised to begin with; here they
 ///   are `clear()`ed and refilled the same way. Same values, same order.
-/// * `coeffs`, `dq_full` and `inv` were `vec![0; n]`; here they are resized and
-///   explicitly `fill(0)`ed over the working length before use. Same bytes.
-///   (`dq_full` in particular is only partially overwritten — the fold copies a
-///   `pw x ph` corner into a `w x h` buffer — so its zeroing is load-bearing and
-///   is kept verbatim rather than reasoned away.)
+/// * `coeffs` under `skip_tx` is `fill(0)`ed over the working length before
+///   use — the quantizer reads it with no transform having run. `dq_full` and
+///   `inv` need no fill: `inv` is fully written by the inverse transform
+///   before `recon_add_clamp` reads it, and `dq_full`'s only reader
+///   (`mod_input_64` inside `inv_txfm2d_dispatch`) touches exactly the
+///   `pw x ph` corner the fold copies — never the unwritten tail.
 ///
 /// Sizes are bounded by the largest AV1 transform, 64x64, so the scratch tops out
 /// at 4096 i32 per full-size buffer and never reallocates after warmup.
@@ -290,9 +291,9 @@ impl TxScratch {
     /// buffer does not (`700357e2`'s finding, from the other direction).
     ///
     /// USE THIS ONLY WHERE THE FULL-WRITE IS PROVEN, and say where. It is NOT
-    /// interchangeable with [`TxScratch::zeroed`]: `dq_full`'s zero-fill IS
-    /// load-bearing on the 64-dim shapes, where only the `pw x ph` corner is
-    /// written.
+    /// interchangeable with [`TxScratch::zeroed`]: `coeffs` under `skip_tx`
+    /// is consumed by the quantizer with nothing having written it, so that
+    /// fill stays load-bearing.
     #[inline]
     pub(super) fn grown(buf: &mut Vec<i32>, n: usize) -> &mut [i32] {
         if buf.len() < n {
@@ -1279,20 +1280,25 @@ pub(super) fn tx_unit_inner(
     if !do_recon {
         // C's branch is simply not taken here.
     } else if eob > 0 {
-        // `dq_full` re-lays the pw x ph quantised corner into a zero-padded
-        // w x h buffer at stride `w`, because the inverse dispatch reads its
-        // input at the SAME stride it writes its output at. When there is no
-        // 64-dim fold (`pw == w && ph == h`, i.e. every TX up to 32x32) that
-        // buffer is a byte-for-byte COPY of `dqcoeff` at the same stride, so
-        // the zero-fill and the row copy are both dead: pass `dqcoeff`
-        // straight through. Only the 64-dim shapes, where `dqcoeff` is packed
-        // at stride `pw = 32` and the dispatch wants stride `w`, still need
-        // the re-lay — and there the zero-fill IS load-bearing, since only the
-        // pw x ph corner is written.
+        // `dq_full` re-lays the pw x ph quantised corner into a w-stride
+        // buffer, because the inverse dispatch reads its input at the SAME
+        // stride it writes its output at. When there is no 64-dim fold
+        // (`pw == w && ph == h`, i.e. every TX up to 32x32) that buffer is a
+        // byte-for-byte COPY of `dqcoeff` at the same stride, so the zero-fill
+        // and the row copy are both dead: pass `dqcoeff` straight through.
+        // Only the 64-dim shapes, where `dqcoeff` is packed at stride
+        // `pw = 32` and the dispatch wants stride `w`, still need the re-lay —
+        // and there the zero-fill is dead too: this branch exists only for
+        // `w > 32 || h > 32`, which routes the dispatch through
+        // `mod_input_64` (`inv_txfm.rs`), and that reads ONLY the top-left
+        // `min(w,32) x min(h,32)` = `pw x ph` corner the copy below writes.
+        // Nothing ever reads `dq_full` outside that corner (`dq_src`'s only
+        // other consumer, the lossless WHT, exists only at w == h == 4, where
+        // this branch cannot be taken), so the tail bytes are never observed.
         let dq_src: &[i32] = if pw == w && ph == h {
             &dqcoeff[..n]
         } else {
-            let dq_full = TxScratch::zeroed(dq_full, n);
+            let dq_full = TxScratch::grown(dq_full, n);
             for r in 0..ph {
                 dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
             }
