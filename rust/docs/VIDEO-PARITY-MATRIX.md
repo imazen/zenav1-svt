@@ -15,6 +15,8 @@ is the honest baseline; "we are" is measured state, not intent.
 | Byte == C, inter 8-bit | `inter_byte_gate.sh` | 91 pinned witness cells ({uniform,gradient,diag,screen} x {16,64,72,128} x q{20,40,55} x p{6,8}, 2-frame low-delay P). OPEN list empty. |
 | Byte == C, real clips | `real_video_inter_gate.sh` | 24 cells: 3 clips x {128,256}^2 x p{6,8} x 1/1 frames. |
 | Byte == C, 10-bit | `bd10_video_gate.sh` | 24/24. |
+| Byte == C, real video, every preset | `video_census_gate.sh` | Ratchet over 540 cells (6 derf clips x {128,256} x q{20,40,55} x p-1..13, 8 frames low delay): each cell's first differing temporal unit is pinned (244 IDENTICAL on 2026-09-26); earlier fails as regressed, later as promoted until the pin moves. |
+| Byte == C, TPL and CBR | `rc_tpl_gate.sh` | TPL under random access 5/8 IDENTICAL, low-delay CBR 0/8 (key-frame qp); every verdict pinned, recon == aomdec == dav1d. |
 | Key-frame video matrix | `video_key_matrix.sh` | Frame 0 of a 2-frame video encode vs C; default content is the five synthetic classes and presets 0, 3..13 (-1, 1, 2 are not in its default list). |
 | Screen tools on video | `screen_ibc_gate.sh`, `screen_ibc_byte_gate.sh`, `screen_palette_gate.sh`, `screen_ibc_fh_gate.sh` | IntraBC + palette on screen-content video frames, incl. byte parity. |
 | Inter encodability | `inter_completion_scan.sh` (SCAN_GATE) | sizes 64..2048 x p{6,8,10,13}: floor MIN_OK=52, cap MAX_REFUSED=12 — the frontier inventory of where inter encodes at all. |

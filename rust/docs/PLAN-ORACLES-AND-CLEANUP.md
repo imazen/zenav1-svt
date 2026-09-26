@@ -566,8 +566,9 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     byte-identical with C confirmed at SB128 (cellrun `sb128` check) — the
     forced SPLIT matches C's search on every one. Video (MR, or <= M5 at
     qp > 57, above 240p) is unmeasured: the derf clips stop at 256x256.
-  Each closed cell lands in a gate (`real_video_inter_gate.sh`,
-  `rc_tpl_gate.sh`) in the same change.
+  Each closed cell lands in a gate in the same change: the census itself
+  is the ratchet `tools/video_census_gate.sh` (pins in
+  `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
   `Hybrid3115` (a queued break), the hybrid gates, and `3115c0c1b` as the
   submodule pin.
