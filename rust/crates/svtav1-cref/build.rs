@@ -78,6 +78,18 @@ fn main() {
     // builds it if needed; its `driver_defs` bridge the API differences the
     // shims see. Live oracles keep the legacy paths below.
     println!("cargo:rerun-if-env-changed=SVT_ORACLE");
+    // The registry row supplies the shims' `driver_defs`, so a changed row
+    // must recompile them: without these two lines a new define (e.g.
+    // ZEN_ORACLE_CTX_SUBSAMP, 2026-09-26) linked shims built without it until
+    // `cargo clean -p zenav1-svt-cref`.
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("rust/oracles/oracles.tsv").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("rust/tools/oracle").display()
+    );
     let pinned = pinned_oracle(&repo_root);
     // Bake the oracle registry name into the crate so `c_parity_*` tests can
     // select the matching `SvtReference` arm in the port (plan 3.3+). A live
