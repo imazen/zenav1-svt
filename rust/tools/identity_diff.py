@@ -579,6 +579,15 @@ def classify_divergent_op(c_ops, r_ops, div):
                 if canon[0] != "B":
                     break  # multi-symbol CDF, unrecognized: past the LR
                            # region (partition/mode), not an adapted LR read
+                if i == 0 and not _is_literal_bool(canon):
+                    # The segment's FIRST op is a 2-outcome CDF and only
+                    # literal bits follow it to the divergence: a tile's
+                    # first SB codes its LR restore flag before anything
+                    # else (with LR off the first op is the multi-symbol
+                    # partition). In a later frame that flag's CDF carries
+                    # the previous frame's adaptation (e.g. 21921 = 21198
+                    # one step on), so it matches no pristine default.
+                    return "lr-taps (adapted restore flag + literal run)"
                 if not _is_literal_bool(canon):
                     skips += 1
                     if skips > MAX_SKIP_THROUGH:
