@@ -27,5 +27,6 @@ mod issue9_repro;
 mod never_panics;
 mod output_pins;
 mod real_encode;
+mod still_paths;
 mod thread_determinism;
 mod video_paths;
