@@ -992,6 +992,38 @@ pub struct FunnelCfg {
     /// `for_preset` bakes the allintra value; [`crate::encdec_arm::apply`]
     /// stamps the video arm's.
     pub skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls,
+    /// C `ctx->depth_early_exit_ctrls` (`set_depth_early_exit_ctrls`,
+    /// enc_mode_config.c:7182): the per-quadrant early-exit thresholds
+    /// `test_split_partition` reads (product_coding_loop.c:10803-10819) —
+    /// while a split's quadrants accumulate, `leaf_rd * th *
+    /// parent_cost_bias <= acc * 1e6` aborts the split and keeps the
+    /// parent, discarding the already-evaluated children. `th` is
+    /// `split_cost_th` for quadrant 0 and `early_exit_th` after; a 0
+    /// ctrl reads as 1000.
+    ///
+    /// The LEVEL forks on the `svt_aom_sig_deriv_enc_dec_*` arm —
+    /// allintra and rtc hold `enc_mode <= ENC_M7 -> 1 else 2`
+    /// (:8104-8108, :7993-7997) where the video default arm derives
+    /// level 2 already at `enc_mode > ENC_M6` (:7876-7880) — and the
+    /// levels differ only in `early_exit_th` (0 -> 1000 at level 1,
+    /// 900 at level 2). That is a real partition fork, not a tie:
+    /// measured on `fourpeople 128x128 q55 p7` video frame 0, the 16x16
+    /// node at mi(16,16) accumulates 36272196 after three 8x8 quadrants
+    /// against a leaf rd of 38697538 — C's level-2 abort bound
+    /// `leaf * 900 * 995 / 1e6` = 34653645 is crossed, the fourth
+    /// quadrant is never evaluated and the node codes PARTITION_NONE,
+    /// where the level-1 `early_exit_th` of 1000 lets all four run and
+    /// split wins at 37356367 < 38504050.
+    ///
+    /// `for_preset` bakes the allintra ladder; [`crate::encdec_arm::apply`]
+    /// stamps the video arm's.
+    pub depth_early_exit: crate::port_enc_mode_config::encdec::DepthEarlyExitCtrls,
+    /// C `ctx->parent_cost_bias` — a literal 995 on every PD1
+    /// `svt_aom_sig_deriv_enc_dec_*` arm (:7920, :8036, :8152), read by
+    /// the same `test_split_partition` gates. The PD0 arm's 1000 (and
+    /// its PD0_LVL_6 inter modulation, :7263-7307) is a different
+    /// derivation, carried by `pd0`'s own parameters.
+    pub parent_cost_bias: u16,
     /// C `ctx->tx_shortcut_ctrls` (`set_tx_shortcut_ctrls`,
     /// enc_mode_config.c:6722): the MDS3 transform-shortcut thresholds —
     /// `bypass_tx_th` (skip the whole TX when the MDS1 candidate had no
@@ -1106,6 +1138,11 @@ impl FunnelCfg {
             allow_intrabc: false,
             // Stamped below, where the preset is in scope.
             skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls::default(),
+            // Same — `set_depth_early_exit_ctrls` level and the PD1-arm
+            // `parent_cost_bias` literal are stamped below next to
+            // `skip_sub_depth`.
+            depth_early_exit: crate::port_enc_mode_config::encdec::DepthEarlyExitCtrls::default(),
+            parent_cost_bias: 995,
             // allintra pins `tx_shortcut_level = 0` at every preset
             // (:9982) — the all-zero struct IS level 0, and the video arm
             // stamps its own ladder in `encdec_arm::apply`.
@@ -1532,6 +1569,14 @@ impl FunnelCfg {
                 2
             })
             .expect("levels 1/2 are in-domain");
+        // `svt_aom_sig_deriv_enc_dec_allintra`'s depth_early_exit_lvl
+        // (enc_mode_config.c:8104-8108): `enc_mode <= ENC_M7 -> 1 else 2`,
+        // same M9-clamped enc_mode as skip_sub_depth. The video arm's M6
+        // boundary is stamped by `encdec_arm::apply`.
+        cfg.depth_early_exit = crate::port_enc_mode_config::encdec::set_depth_early_exit_ctrls(
+            if preset.min(9) <= 7 { 1 } else { 2 },
+        )
+        .expect("levels 1/2 are in-domain");
         cfg
     }
 

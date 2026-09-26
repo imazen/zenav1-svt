@@ -234,9 +234,6 @@ pub(super) fn c_part(p: PartitionType) -> u32 {
 }
 
 impl DepthWalk<'_, '_> {
-    const PARENT_COST_BIAS: u64 = 995; // ctx->parent_cost_bias, allintra
-    const EE_SPLIT_TH: u64 = 50; // depth_early_exit level 1
-    const EE_EARLY_TH: u64 = 1000; // early_exit_th 0 -> 1000
     /// C `CONSERVATIVE_OFFSET_0` / `AGGRESSIVE_OFFSET_1` (definitions.h:
     /// 255/258) — sq_weight adjustments in update_skip_nsq_shapes.
     const CONSERVATIVE_OFFSET_0: u64 = 5;
@@ -246,6 +243,34 @@ impl DepthWalk<'_, '_> {
     /// `FunnelCfg::for_preset`).
     pub(super) fn skip_sub(&self) -> SkipSubDepthCtrls {
         self.fx.frame.cfg.skip_sub_depth
+    }
+
+    /// `ctx->depth_early_exit_ctrls` + `ctx->parent_cost_bias` for THIS
+    /// arm — the same per-picture `encdec_arm::apply` stamp as
+    /// `skip_sub`. C reads the thresholds in `test_split_partition`'s
+    /// per-quadrant early exit (product_coding_loop.c:10808-10818) with
+    /// a 0 ctrl meaning 1000, and the bias again in its final compare
+    /// (:10842). The video arm runs `early_exit_th` 900 above M6 where
+    /// the allintra level 1 reads 1000 — the `fourpeople 128x128 q55 p7`
+    /// key-frame fork documented on `FunnelCfg::depth_early_exit`.
+    pub(super) fn early_exit(&self) -> (u128, u128, u128) {
+        let cfg = &self.fx.frame.cfg;
+        let ee = cfg.depth_early_exit;
+        let th0 = if ee.split_cost_th == 0 {
+            1000
+        } else {
+            ee.split_cost_th
+        };
+        let thn = if ee.early_exit_th == 0 {
+            1000
+        } else {
+            ee.early_exit_th
+        };
+        (
+            u128::from(th0),
+            u128::from(thn),
+            u128::from(cfg.parent_cost_bias),
+        )
     }
 
     /// C `calc_scr_to_recon_dist_per_quadrant` (product_coding_loop.c:
@@ -1527,16 +1552,18 @@ impl DepthWalk<'_, '_> {
                 continue;
             }
             // Per-quadrant early exit vs the parent depth cost
-            // (:11346-11360; th 50 for i == 0, else 1000; bias 995).
+            // (product_coding_loop.c:10808-10818): the thresholds are the
+            // arm-stamped `depth_early_exit_ctrls` — `split_cost_th` at
+            // quadrant 0, `early_exit_th` after, a 0 ctrl read as 1000 —
+            // times the arm-stamped `parent_cost_bias`. The video arm's
+            // level-2 `early_exit_th` 900 aborts a split whose quadrants
+            // have already accumulated ~90 % of the parent's leaf rd,
+            // where level 1's 1000 waits for ~99.5 % — the
+            // `fourpeople 128x128 q55 p7` mi(16,16) key-frame fork.
             if let Some(prd) = parent_rd {
-                let th = if i == 0 {
-                    Self::EE_SPLIT_TH
-                } else {
-                    Self::EE_EARLY_TH
-                };
-                if (prd as u128) * (th as u128) * (Self::PARENT_COST_BIAS as u128)
-                    <= (split_cost as u128) * 1_000_000
-                {
+                let (th0, thn, bias) = self.early_exit();
+                let th = if i == 0 { th0 } else { thn };
+                if (prd as u128) * th * bias <= (split_cost as u128) * 1_000_000 {
                     #[cfg(feature = "std")]
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
@@ -1565,15 +1592,11 @@ impl DepthWalk<'_, '_> {
 
         // Final compare (:11375): parent wins on
         // bias * parent_rd <= split_cost * 1000.
+        let (_, _, bias) = self.early_exit();
         #[cfg(feature = "std")]
         if nsqdbg_here(abs_x, abs_y) {
             let chose = match parent_rd {
-                Some(prd)
-                    if (Self::PARENT_COST_BIAS as u128) * (prd as u128)
-                        <= (split_cost as u128) * 1000 =>
-                {
-                    "parent"
-                }
+                Some(prd) if bias * (prd as u128) <= (split_cost as u128) * 1000 => "parent",
                 _ => "split",
             };
             eprintln!(
@@ -1593,7 +1616,7 @@ impl DepthWalk<'_, '_> {
             );
         }
         if let Some(prd) = parent_rd
-            && (Self::PARENT_COST_BIAS as u128) * (prd as u128) <= (split_cost as u128) * 1000
+            && bias * (prd as u128) <= (split_cost as u128) * 1000
         {
             return SplitOut::ParentKept;
         }

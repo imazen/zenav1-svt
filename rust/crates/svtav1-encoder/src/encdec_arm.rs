@@ -89,8 +89,10 @@
 //! the `true` that `FunnelCfg::for_preset` already defaults to.
 
 use crate::leaf_funnel::FunnelCfg;
-use crate::port_enc_mode_config::enc_mode::{M1, M2, M7, M10};
-use crate::port_enc_mode_config::encdec::{self, SkipSubDepthCtrls, TxShortcutCtrls};
+use crate::port_enc_mode_config::enc_mode::{M1, M2, M6, M7, M10};
+use crate::port_enc_mode_config::encdec::{
+    self, DepthEarlyExitCtrls, SkipSubDepthCtrls, TxShortcutCtrls,
+};
 use crate::port_enc_mode_config::leaf;
 use crate::sc_detect::ScArm;
 
@@ -122,6 +124,28 @@ pub(crate) fn skip_sub_depth(arm: ScArm, enc_mode: i8) -> SkipSubDepthCtrls {
         ScArm::Video { .. } => u8::from(enc_mode > M1) + 1,
     };
     encdec::set_skip_sub_depth_ctrls(lvl).expect("levels 1/2 are in-domain")
+}
+
+/// C `ctx->depth_early_exit_ctrls` for this arm + `enc_mode`, via
+/// `set_depth_early_exit_ctrls` (enc_mode_config.c:7182).
+///
+/// The arms disagree at video M7: `_default` derives level 2 already at
+/// `enc_mode > ENC_M6` (:7876-7880) where allintra and rtc hold level 1
+/// through M7 (:8104-8108 / :7993-7997). Only `early_exit_th` moves —
+/// 0 (read as 1000 by `test_split_partition`) at level 1, 900 at level
+/// 2 — and that is what makes C abandon the four-8x8 split at the
+/// mi(16,16) 16x16 node on `fourpeople 128x128 q55 p7` frame 0 one
+/// quadrant early: accumulated 36272196 crosses the level-2 bound
+/// `leaf_rd * 900 * 995 / 1e6` = 34653645 but not level 1's 38504050,
+/// so C keeps PARTITION_NONE where the port used to run all four
+/// quadrants and split.
+#[must_use]
+pub(crate) fn depth_early_exit(arm: ScArm, enc_mode: i8) -> DepthEarlyExitCtrls {
+    let lvl = match arm {
+        ScArm::Allintra => u8::from(enc_mode > M7) + 1,
+        ScArm::Video { .. } => u8::from(enc_mode > M6) + 1,
+    };
+    encdec::set_depth_early_exit_ctrls(lvl).expect("levels 1/2 are in-domain")
 }
 
 /// C `ctx->tx_shortcut_ctrls` for this arm + `enc_mode` + `is_base`, via
@@ -210,6 +234,10 @@ pub(crate) fn apply(
 ) {
     cfg.mds0_use_hadamard_sb = mds0_use_hadamard_sb(arm);
     cfg.skip_sub_depth = skip_sub_depth(arm, enc_mode);
+    cfg.depth_early_exit = depth_early_exit(arm, enc_mode);
+    // `ctx->parent_cost_bias` is a literal 995 on every PD1
+    // `sig_deriv_enc_dec_*` arm (:7920, :8036, :8152).
+    cfg.parent_cost_bias = 995;
     cfg.tx_shortcut = tx_shortcut(arm, enc_mode, is_base, is_not_leaf);
     cfg.bypass_encdec = bypass_encdec(arm, enc_mode, encoder_bit_depth);
 }
@@ -246,6 +274,11 @@ mod tests {
                 baked.skip_sub_depth, walked.skip_sub_depth,
                 "allintra skip_sub_depth at M{preset}"
             );
+            assert_eq!(
+                baked.depth_early_exit, walked.depth_early_exit,
+                "allintra depth_early_exit at M{preset}"
+            );
+            assert_eq!(walked.parent_cost_bias, 995);
             // `get_bypass_encdec_allintra(min(preset, 9))` must equal the
             // `preset >= 4` bake for every reachable preset, at both depths —
             // the allintra ladder reads no bit depth.
@@ -326,6 +359,34 @@ mod tests {
             sig.skip_sub_depth,
             skip_sub_depth(ScArm::Video { is_islice: true }, 6)
         );
+        assert_eq!(
+            sig.depth_early_exit,
+            depth_early_exit(ScArm::Video { is_islice: true }, 6)
+        );
+        assert_eq!(sig.parent_cost_bias, 995);
+    }
+
+    /// The `depth_early_exit` fork is narrower than skip_sub_depth's:
+    /// the arms disagree ONLY at video M7 (level 2 there vs the allintra
+    /// level 1), and the levels differ only in `early_exit_th` — the
+    /// `fourpeople 128x128 q55 p7` mi(16,16) abort bound. Allintra's own
+    /// M8/M9 climb to level 2, which the `for_preset` bake must match.
+    #[test]
+    fn depth_early_exit_forks_on_the_arm() {
+        let video = |is_islice: bool| ScArm::Video { is_islice };
+        assert_eq!(depth_early_exit(video(true), 7).early_exit_th, 900);
+        assert_eq!(depth_early_exit(video(false), 7).early_exit_th, 900);
+        // Video M6 and allintra M7 hold level 1 (`early_exit_th` 0 ->
+        // the 1000 read in `test_split_partition`); allintra M8 climbs.
+        assert_eq!(depth_early_exit(video(true), 6).early_exit_th, 0);
+        assert_eq!(depth_early_exit(ScArm::Allintra, 7).early_exit_th, 0);
+        assert_eq!(depth_early_exit(ScArm::Allintra, 8).early_exit_th, 900);
+        // split_cost_th is 50 at both reachable levels.
+        for arm in [ScArm::Allintra, video(true)] {
+            for enc_mode in -1..=13 {
+                assert_eq!(depth_early_exit(arm, enc_mode).split_cost_th, 50);
+            }
+        }
     }
 
     /// The level fork IS the divergence this module fixes: levels 1 and 2

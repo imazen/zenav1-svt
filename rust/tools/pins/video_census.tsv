@@ -37,7 +37,7 @@ fourpeople	128	55	3	8	TU2
 fourpeople	128	55	4	8	IDENTICAL
 fourpeople	128	55	5	8	IDENTICAL
 fourpeople	128	55	6	8	IDENTICAL
-fourpeople	128	55	7	8	TU0
+fourpeople	128	55	7	8	IDENTICAL
 fourpeople	128	55	8	8	IDENTICAL
 fourpeople	128	55	9	8	IDENTICAL
 fourpeople	128	55	10	8	IDENTICAL
@@ -67,7 +67,7 @@ fourpeople	256	40	3	8	TU3
 fourpeople	256	40	4	8	TU7
 fourpeople	256	40	5	8	IDENTICAL
 fourpeople	256	40	6	8	IDENTICAL
-fourpeople	256	40	7	8	TU0
+fourpeople	256	40	7	8	IDENTICAL
 fourpeople	256	40	8	8	IDENTICAL
 fourpeople	256	40	9	8	IDENTICAL
 fourpeople	256	40	10	8	IDENTICAL
@@ -82,7 +82,7 @@ fourpeople	256	55	3	8	TU2
 fourpeople	256	55	4	8	IDENTICAL
 fourpeople	256	55	5	8	IDENTICAL
 fourpeople	256	55	6	8	IDENTICAL
-fourpeople	256	55	7	8	TU0
+fourpeople	256	55	7	8	IDENTICAL
 fourpeople	256	55	8	8	IDENTICAL
 fourpeople	256	55	9	8	IDENTICAL
 fourpeople	256	55	10	8	IDENTICAL
@@ -157,7 +157,7 @@ johnny	256	40	3	8	TU1
 johnny	256	40	4	8	IDENTICAL
 johnny	256	40	5	8	TU5
 johnny	256	40	6	8	IDENTICAL
-johnny	256	40	7	8	TU2
+johnny	256	40	7	8	IDENTICAL
 johnny	256	40	8	8	IDENTICAL
 johnny	256	40	9	8	IDENTICAL
 johnny	256	40	10	8	TU5
@@ -247,7 +247,7 @@ kristenandsara	256	40	3	8	IDENTICAL
 kristenandsara	256	40	4	8	IDENTICAL
 kristenandsara	256	40	5	8	IDENTICAL
 kristenandsara	256	40	6	8	IDENTICAL
-kristenandsara	256	40	7	8	TU0
+kristenandsara	256	40	7	8	IDENTICAL
 kristenandsara	256	40	8	8	IDENTICAL
 kristenandsara	256	40	9	8	IDENTICAL
 kristenandsara	256	40	10	8	IDENTICAL
@@ -262,7 +262,7 @@ kristenandsara	256	55	3	8	IDENTICAL
 kristenandsara	256	55	4	8	IDENTICAL
 kristenandsara	256	55	5	8	IDENTICAL
 kristenandsara	256	55	6	8	IDENTICAL
-kristenandsara	256	55	7	8	TU0
+kristenandsara	256	55	7	8	IDENTICAL
 kristenandsara	256	55	8	8	IDENTICAL
 kristenandsara	256	55	9	8	IDENTICAL
 kristenandsara	256	55	10	8	IDENTICAL
@@ -307,7 +307,7 @@ vidyo1	128	55	3	8	IDENTICAL
 vidyo1	128	55	4	8	IDENTICAL
 vidyo1	128	55	5	8	IDENTICAL
 vidyo1	128	55	6	8	IDENTICAL
-vidyo1	128	55	7	8	TU0
+vidyo1	128	55	7	8	IDENTICAL
 vidyo1	128	55	8	8	IDENTICAL
 vidyo1	128	55	9	8	IDENTICAL
 vidyo1	128	55	10	8	IDENTICAL
@@ -352,7 +352,7 @@ vidyo1	256	55	3	8	TU1
 vidyo1	256	55	4	8	TU1
 vidyo1	256	55	5	8	TU2
 vidyo1	256	55	6	8	IDENTICAL
-vidyo1	256	55	7	8	TU0
+vidyo1	256	55	7	8	IDENTICAL
 vidyo1	256	55	8	8	IDENTICAL
 vidyo1	256	55	9	8	IDENTICAL
 vidyo1	256	55	10	8	TU0
@@ -442,7 +442,7 @@ vidyo3	256	55	3	8	TU1
 vidyo3	256	55	4	8	TU1
 vidyo3	256	55	5	8	TU1
 vidyo3	256	55	6	8	IDENTICAL
-vidyo3	256	55	7	8	TU0
+vidyo3	256	55	7	8	TU3
 vidyo3	256	55	8	8	IDENTICAL
 vidyo3	256	55	9	8	IDENTICAL
 vidyo3	256	55	10	8	TU0
@@ -472,7 +472,7 @@ vidyo4	128	40	3	8	TU1
 vidyo4	128	40	4	8	TU6
 vidyo4	128	40	5	8	IDENTICAL
 vidyo4	128	40	6	8	IDENTICAL
-vidyo4	128	40	7	8	TU6
+vidyo4	128	40	7	8	IDENTICAL
 vidyo4	128	40	8	8	IDENTICAL
 vidyo4	128	40	9	8	TU4
 vidyo4	128	40	10	8	TU1
@@ -517,7 +517,7 @@ vidyo4	256	40	3	8	TU1
 vidyo4	256	40	4	8	TU5
 vidyo4	256	40	5	8	IDENTICAL
 vidyo4	256	40	6	8	TU5
-vidyo4	256	40	7	8	TU1
+vidyo4	256	40	7	8	TU3
 vidyo4	256	40	8	8	IDENTICAL
 vidyo4	256	40	9	8	IDENTICAL
 vidyo4	256	40	10	8	TU3

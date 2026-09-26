@@ -724,44 +724,62 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `kristenandsara 128 q40`, `kristenandsara 128 q55`,
     `kristenandsara 256 q40`) and the whole p-1 row is off TU0 — the
     remaining differences are in the inter frames (item (b)).
-  - (a) at preset 7 remains open — 8 TU0 cells (fourpeople 128 q55, 256
-    q40/q55; kristenandsara 256 q40/q55; vidyo1 128 q55, 256 q55; vidyo3
-    256 q55). Localized on `fourpeople 128x128 q55 p7` (i265): first
-    differing symbol is tile op 5397, a `CDF10` partition write with the
-    SAME context on both sides (`icdf=[13596,7107,5111]`) — C wrote s=0
-    (PARTITION_NONE), the port s=3 (PARTITION_SPLIT). The first differing
-    DECISION is the 16x16 node at mi(16,16) (px 64,64, SB (1,1)): C
-    commits it as a leaf, the port splits to 8x8s. Verified equal inputs:
-    PD0 fast costs are unit-equal (64x64 1717068367, 32x32 394484769,
-    16x16 91082587, 8x8 33225463, lambda 148057, `SVT_PD0COST_OUT` vs
-    `SVTAV1_PD0DBG`) and both PD0 walks commit SPLIT at that node
-    (children 68.1M < parent 91.1M); the leaf's full-loop winner is
-    unit-equal too (C `CSQ cost=38583314 mode=10 uv=10 txd=1` + part rate
-    -> `PICKPART rd=38697538` == port `SHAPE shape=0 part_cost=38697538`,
-    `SVT_PICKPART_OUT` vs `SVTAV1_NSQDBG`). The divergence is that C never
-    evaluated ANY sub-shape at that node — no `CNSQ` rows under its
-    PICKPART — where the port evaluated the four 8x8s (~18.7M+14.3M+...)
-    and split. C's `SVT_PD0CFG_OUT` for that SB: `lvl=3 subres=1
-    pred_only=0 nsq=1 (md_disallow_nsq_search) drlvl=5
-    (pic_depth_removal_level, all four disallow bits 0)` and `PD0REFCFG
-    level=8 mode=1 s1=10 e1=10 s2=255 e2=255 limit=1 qscale=1` — the port's
-    `depth_refine::Ctrls::for_arm` already yields level 8 at video M7, so
-    the LEVEL matches; the mismatch is in the per-node bound the
-    refinement computes. Next concrete step: dump C's per-node
-    `s_depth`/`e_depth` out of `perform_pred_depth_refinement`
-    (enc_dec_process.c:1969+; the bound lands in `pc_tree` and feeds
-    `set_blocks_to_be_tested`/`mds->split_flag`, which is what gates
-    whether any child eval runs) for the (16,16) 16x16 node, and compare
-    with the port's REFINE rows (`SVTAV1_NSQDBG`, which print `s=`/`e=` —
-    note the port emitted no `sq=16` REFINE line for that node at all,
-    while its `sq=8` children show `s=-1 e=0`). If the bound matches, the
-    suspect list is the shape-entry gates in
-    `update_skip_nsq_based_on_split_rate` (product_coding_loop.c:9710+:
-    `nsq_split_cost_th`, `H_vs_V_split_rate_th`, `non_HV_split_rate_th`,
-    `lower_depth_split_cost_th`) — the port's SKIP lines already fire
-    `gate=2`/`gate=1` on the H/V shapes there. Also verify what
-    `md_disallow_nsq_search=1` actually suppresses on this frame, since C
-    still evaluates H/V at sibling nodes (CNSQ rows exist at (16,20)).
+  - (a) at preset 7 was a FOURTH defect, closed 2026-09-26 (i265,
+    workspace vkey2; this change). On `fourpeople 128x128 q55 p7` the first differing
+    decision is the 16x16 node at mi(16,16): C commits PARTITION_NONE at
+    rd 38697538, the port split to four 8x8s (18731811+14330287+1714374+
+    1084171 + rate = 37356367). NOT the `perform_pred_depth_refinement`
+    bound the earlier note suspected — C DID evaluate the 8x8 children
+    (`SVT_FULLCOST_OUT` shows st=1/st=3 rows at org (64,64); the missing
+    `CNSQ` rows meant only that `md_disallow_nsq_search` suppressed the
+    non-SQ shapes at that node). The divergent gate is
+    `test_split_partition`'s PER-QUADRANT early exit
+    (product_coding_loop.c:10808-10818): while the children's rd
+    accumulates, `leaf_rd * th * parent_cost_bias <= acc * 1e6` aborts
+    the split and discards the evaluated quadrants. At PD1 the video arm
+    derives `depth_early_exit_lvl = 2` at `enc_mode > ENC_M6`
+    (`svt_aom_sig_deriv_enc_dec_default`, enc_mode_config.c:7876-7880) —
+    `early_exit_th` 900 vs the allintra/rtc `<= ENC_M7` level 1's 0
+    (read as 1000). C aborts at quadrant 3 (acc 36272196 >= 38697538 x
+    900 x 995 / 1e6 = 34653645) and keeps the leaf; the port's hardcoded
+    1000 ran all four and split won (37356367 < 38504050). Ported as
+    `FunnelCfg::depth_early_exit` + `parent_cost_bias` (literal 995 on
+    every PD1 arm), stamped by `encdec_arm::apply`; PD0's own walk
+    already threads `depth_early_exit_th` separately (bias 1000 at PD0,
+    `sig_deriv_enc_dec_pd0` :7263). Measured: `video_census_gate.sh`
+    260/540 IDENTICAL, 0 regressed, 11 pins moved — all p7: the 8 TU0
+    cells -> 7 IDENTICAL + `vidyo3 256 q55` TU3, plus `johnny 256 q40`
+    TU2->IDENTICAL, `vidyo4 128 q40` TU6->IDENTICAL, `vidyo4 256 q40`
+    TU1->TU3.
+  - (a) at presets 10..13 remains open — the 8 TU0 cells left after the
+    early-exit fix: `vidyo1 256 q55` p10; `vidyo3 256 q55` p10..13;
+    `kristenandsara 256 q55` p11..13 (`vidyo1` p11..13 read TU1 in the
+    same sweep — its key frame already matched; its p10 cell still
+    diverges at TU0). Localized on
+    `vidyo3 256x256 q55 p10` (i265, workspace vkey2): first differing
+    symbol is tile op 381, a `CDF10` partition write with the SAME
+    context (`icdf=[24843,21725,15983]`) — C wrote s=0 (NONE), the port
+    s=2 (VERT). First differing DECISION: the 16x16 node at mi(4,0),
+    SB(0,0). C's PICKPART shows partition=0 rd=22005669 with a CSQ leaf
+    cost 21702904 (rate 37041, dist 85872, mode=11 uv=13); the port's
+    SHAPE 0 part_cost=22215031 with BLK cost=21912266 (rate 37765, dist
+    85872 — same dist, +724 rate). The port then evaluated VERT
+    (part_cost 18234128) and committed it; C printed no CNSQ rows for
+    the node at all while testing H at siblings (0,4)/(4,4). The gate
+    arithmetic (nsq level 19 at video M10, `nsq_split_cost_th` 35
+    qp-scaled by 9147/10000 -> 32, minus `rate_th_offset_lte16` 15 at
+    sq<=16 -> 17): C's `part_cost(V)*1000` = 372456000 > 21702904*17 =
+    368949368 SKIPS the V shape; the port's sq_cost 21912266*17 =
+    372509522 makes the same gate pass by 0.014 % — a knife edge. So the
+    root divergence is upstream: the port's PART_N leaf eval at (4,0)
+    over-prices the rate by 724 (37765 vs 37041) with identical mode,
+    txd, nz, dist. Suspect list for the 724: the coeff-rate estimator
+    state (`md_rate_est_ctx` / `coeff_rate_est_lvl`), the skip/tx-type
+    ctx the leaf read, or `shut_fast_rate` on this arm — not the
+    partition gate machinery, which is faithful. Next concrete step:
+    `SVT_FULLCOST_XY="0,16"` (C) vs `SVTAV1_CANDDBG`+`SVTAV1_DBG_MI=0,0`
+    (port) to decompose the leaf's MDS3 winner rate at (4,0); the pfq/
+    qdc fields already differ (`dcq=[144]` C vs `qdc=[1]` port).
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
   - SB128 beyond the root is unported (`pipeline/setup.rs`

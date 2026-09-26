@@ -1,0 +1,42 @@
+Video key-frame (TU0) byte parity: preset-7 cell closed
+2026-09-26
+
+Host: i265-class box (Intel i9-13900K), Linux x86_64, GCC 14.3.0.
+Commands: tools/video_census_gate.sh (VCG_WRITE=1, VCG_JOBS=6), ~207 s,
+540 cells (6 derf clips x 2 sizes x 3 qps x presets -1..13, 8 frames each,
+key-frame-first verdict from tools/inter_byte_matrix.py).
+
+Change under test: PD1 `test_split_partition` early-exit controls made
+per-arm — `FunnelCfg::depth_early_exit` + `parent_cost_bias` stamped by
+`encdec_arm::apply` (video arm: level 2 `early_exit_th` 900 at enc_mode >
+ENC_M6, per `svt_aom_sig_deriv_enc_dec_default`; allintra: level 1 through
+M7). Before: hardcoded `EE_SPLIT_TH=50`, `EE_EARLY_TH=1000`,
+`PARENT_COST_BIAS=995` in depth_refine/walk.rs.
+
+Pinned verdicts (tools/pins/video_census.tsv): 244 -> 260 IDENTICAL of 540.
+TU0 cells: 16 -> 8. All 11 moved rows are preset 7, all improvements:
+
+  fourpeople      128 q55 p7  TU0 -> IDENTICAL
+  fourpeople      256 q40 p7  TU0 -> IDENTICAL
+  fourpeople      256 q55 p7  TU0 -> IDENTICAL
+  kristenandsara  256 q40 p7  TU0 -> IDENTICAL
+  kristenandsara  256 q55 p7  TU0 -> IDENTICAL
+  vidyo1          128 q55 p7  TU0 -> IDENTICAL
+  vidyo1          256 q55 p7  TU0 -> IDENTICAL
+  vidyo3          256 q55 p7  TU0 -> TU3   (key frame now identical; the
+                                          TU3 divergence is inter, item (b))
+  johnny          256 q40 p7  TU2 -> IDENTICAL
+  vidyo4          128 q40 p7  TU6 -> IDENTICAL
+  vidyo4          256 q40 p7  TU1 -> TU3
+
+Remaining TU0 cells (all at presets 10..13, all qp 55, all 256x256):
+vidyo1 p10; vidyo3 p10..13; kristenandsara p11..13 — a DIFFERENT defect
+class: on vidyo3 p10 the leaf eval at mi(4,0) 16x16 over-prices rate by 724
+vs C (37765 vs 37041, same dist/mode), which keeps the qp-scaled
+`nsq_split_cost_th` gate from skipping the VERT shape C never tested.
+Evidence and the next drill step are in PLAN-ORACLES-AND-CLEANUP.md 3.8.
+
+Acceptance at this commit: cargo nextest --workspace --locked 2756/2756;
+regression_spotcheck 147/147; video_key_matrix 75/75; output pins 6/6;
+identity_full_8bit 1100/1100; real_video_inter_gate 24/24 (0 regressed);
+video_selfcheck_gate 270/270; tools/precheck.sh OK.
