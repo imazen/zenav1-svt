@@ -23,11 +23,11 @@ why the 697-line version that used to live there was removed.
   generated from the refusal strings, so it cannot drift from them, and the
   strings carry their own measurement and date. Move a number only by
   re-measuring it in the same change.
-- **Read what a gate ASSERTS, not what its name suggests.** `bd10_video_gate.sh`
-  says "decodes", and its decode leg only checks that the stream PARSES — it
-  does not compare reconstructions (the recon leg lives in
-  `bd10_video_selfcheck_gate.sh`). Every gate header states its own limit;
-  that is the contract.
+- **Read what a gate ASSERTS, not what its name suggests.** A gate named
+  for decoding may only check that the stream PARSES: `bd10_video_gate.sh`
+  did until 2026-09-26 (it now compares the recon with aomdec's output, and
+  dav1d's with aomdec's). Every gate header states its own limit; that is
+  the contract.
 - **A tool that can report a confidently wrong number is a defect.** The
   multi-frame `SVTAV1_FINAL_RECON` dump wrote the 8-bit canvas whatever the bit
   depth, which made a 10-bit comparison read as a total mismatch from frame 0.
