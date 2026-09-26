@@ -14,6 +14,7 @@ Crates are not published to crates.io yet — depend by git.
 ### QUEUED BREAKING CHANGES
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 23 modules are no longer public, and the homegrown `perceptual`, `multipass` and `film_grain` modules and `InterHdrError::GlobalMotionNotImplemented` are removed (no callers) (4a860c9e).
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 59 more modules are no longer public — the C-translation modules only the parity tests used, now compiled into the crate (d04e83c4). `PictureControlSet` keeps only `show_frame`, `qp` and `refresh_frame_flags`, and its constructors take no arguments (f1d3f132).
+- `svtav1_dsp`: 10 modules only the dsp parity tests used are no longer public (`obmc`, `port_convolve_hbd`, `port_convolve_scale`, `port_diffwtd_d16`, `port_full_pd1_pred`, `port_make_pred`, `port_obmc_single_pred`, `port_pack`, `scale`, `txfm_simd`, `warp`) (6566e97d).
 
 - The default reference is `SvtReference::Mainline420` (was `Hybrid3115`) for
   `EncodePipeline`'s constructors and `AvifEncoder::new`, and `tools/oracle`'s

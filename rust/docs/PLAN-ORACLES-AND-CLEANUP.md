@@ -902,10 +902,11 @@ Order, by expected size:
   asserts an Ok floor of 440 against vacuity.
 - [ ] T2 in-crate differentials, shrinking the public API.
   - Done (2026-09-26): the encoder's 103 aggregated parity modules compile
-    into the crate (see 1.4). Open: the same for `svtav1-dsp` (`dsp_parity`)
-    and the facade (`svtav1_suite`), and the encoder's four standalone
-    targets, which stay separate because they flip SIMD tiers
-    process-wide.
+    into the crate (see 1.4); so do the dsp crate's 50 (`6566e97d`, 10
+    dsp modules narrowed, 35 dead items in the same ledger). Open: the
+    facade (`svtav1_suite`, which mostly tests the public API, so little to
+    narrow), and the standalone targets, which stay separate because they
+    flip SIMD tiers process-wide.
 - [ ] T3 one cell harness instead of 39 bash copies. 46 of the 100 shell
   tools drive the C side directly (survey 2026-09-25). Chunks, each landing
   with its gate's verdicts unchanged:
