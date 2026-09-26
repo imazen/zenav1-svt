@@ -21,12 +21,14 @@ that has not moved its pin, so the gate is the current number:
 - Low delay, real video: `tools/video_census_gate.sh` — 6 public-domain
   derf clips x {128,256} x qp {20,40,55} x presets -1..13, 8 frames; each
   cell's first differing temporal unit is pinned in
-  `tools/pins/video_census.tsv` (244/540 identical at the census, 248 after
-  `801d103f` stamped the video arm's `chroma_level` on key frames). The
-  frontier by preset: 6/8/9 nearly clean; 0/2/3 diverge early in inter
-  frames (first difference in frame 1's loop-restoration taps, which come
-  first in the tile, so the upstream decision is not yet known); -1's key
-  frame differs in SB0's mode decision (plan 3.8).
+  `tools/pins/video_census.tsv`. 244/540 were identical at the census; the
+  pins hold the current count. The video arm's `chroma_level` on key frames
+  (`801d103f`) and its preset -1 qp-scaler bits (`b0e7cbe5`) moved every
+  preset 1 and -1 key frame past C's. The frontier by preset: 6/8/9 nearly
+  clean; 0/2/3 diverge early in inter frames (first difference in frame 1's
+  loop-restoration taps, which come first in the tile, so the upstream
+  decision is not yet known); key frames still differ at preset 7 and
+  10..13 (plan 3.8).
 - TPL under random access (`aq_mode` 2) and low-delay CBR:
   `tools/rc_tpl_gate.sh` — TPL 5/8 synthetic cells identical; CBR 0/8
   (every cell differs from the key frame's qp, where C spends more bits).

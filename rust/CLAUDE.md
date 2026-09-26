@@ -53,8 +53,7 @@ detail, and they are regenerated or gated rather than narrated.
   inter ships at 8-bit 4:2:0 only (`tools/qp0_inter_gate.sh`, 7/7). Byte
   parity with mainline C on real video is ratcheted cell by cell by
   `tools/video_census_gate.sh` (540 low-delay cells, 8 frames; the current
-  count is the IDENTICAL rows of `tools/pins/video_census.tsv`, 248 on
-  2026-09-26; plan 3.8).
+  count is the IDENTICAL rows of `tools/pins/video_census.tsv`; plan 3.8).
   Do not report video as either "working" or "missing".
 - **10-bit inter video is supported** (the `hbd_md` question is resolved).
   C derives `hbd_md = 2` at `bd10 && bypass_encdec && perform_md_recon`
