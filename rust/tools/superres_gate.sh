@@ -8,10 +8,12 @@
 #   1. BYTE-PARITY — the port's OBU == the real C encoder's OBU at the same
 #      config (`SVT_SUPERRES_KF_DENOM=D`, which the C driver maps to
 #      `superres_mode = SUPERRES_FIXED` + `superres_kf_denom = D`).
-#   2. DECODABILITY — the stream decodes under the AV1 reference decoder and
-#      the decoded frame comes out at the FULL (upscaled) size. Byte-parity
-#      alone cannot catch a header that describes a geometry neither encoder
-#      actually produced; the upscale is normative, so this is not optional.
+#   2. RECON — the stream decodes under the AV1 reference decoder to exactly
+#      the port's final (upscaled) reconstruction. Byte-parity alone cannot
+#      catch a header that describes a geometry neither encoder actually
+#      produced; the upscale is normative, so this is not optional. (Until
+#      2026-09-26 this leg only checked the decoded frame's SIZE; the recon
+#      comparison was then measured 512/512 and replaced it.)
 #   3. ANTI-VACUITY — the superres stream must DIFFER from the same cell
 #      encoded without superres. A cell where they coincide proves nothing.
 #
@@ -20,11 +22,11 @@
 # `superres_denom` signals `enable_superres = 1` but leaves `use_superres = 0`
 # on the key frame.
 #
-# SCOPE (the cells this gate CLAIMS byte-parity for): allintra preset 8, every
+# SCOPE (the cells this gate CLAIMS byte-parity for): allintra presets 7..13, every
 # denominator 9..=16, both contents, both sizes, qp {20,32,40,55}. Adding a cell
 # means it byte-matches — do NOT add one that only decodes.
 #
-# Two documented exclusions, both with a measured root cause:
+# One documented exclusion, with a measured root cause:
 #
 # * presets <= 6 — the port REFUSES superres there (`superres_config_error`):
 #   loop restoration is on (`seq_tools_for_preset`: wn > 0) and C runs LR on the
@@ -32,11 +34,9 @@
 #   cdef_process.c:152) while this port still searches/applies it at the coded
 #   width. Refusing beats emitting a stream whose LR geometry disagrees with the
 #   signalled one.
-# * ONE cell, `gradient_64_q32_p7_d10` — the only byte divergence left in the
-#   full `SR_PRESETS="7 8 9 10 13"` sweep, which is otherwise **639/640**
-#   byte-identical (and 640/640 decodable at the upscaled size). Preset 7 is
-#   therefore out of the default set until it is root-caused; run
-#   `SR_PRESETS="7 8 9 10 13" tools/superres_gate.sh` to see it.
+# * (closed) preset 7 was excluded for ONE divergent cell,
+#   `gradient_64_q32_p7_d10`, until re-measured 2026-09-26 at 128/128
+#   byte-identical with recon == aomdec (i265); it is in the default set.
 #
 #   History worth keeping: that sweep was 507/640 before chunk B.4. The 133
 #   divergences were all partition-symbol (`CDF10`) flips on textured content,
@@ -49,7 +49,8 @@
 #   computed on the FULL-RESOLUTION b64 grid through the new coded-grid
 #   indices. Chunk B.4 reproduces that indexing deliberately.
 #
-# Env: AOMDEC (path to aomdec; required — no graceful skip).
+# Env: AOMDEC (path to aomdec; required — no graceful skip), SR_JOBS (4),
+# SR_SIZES, SR_QPS, SR_PRESETS, SR_DENOMS, SR_CONTENTS.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -62,84 +63,41 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
 fi
 read -r -a SIZES <<<"${SR_SIZES:-64 128}"
 read -r -a QPS <<<"${SR_QPS:-20 32 40 55}"
-read -r -a PRESETS <<<"${SR_PRESETS:-8 9 10 13}"
+read -r -a PRESETS <<<"${SR_PRESETS:-7 8 9 10 13}"
 read -r -a DENOMS <<<"${SR_DENOMS:-9 10 11 12 13 14 15 16}"
 read -r -a CONTENTS <<<"${SR_CONTENTS:-uniform gradient}"
-OUT="${TMPDIR:-/tmp}/srgate.$$"
+# The grid is a cell list for tools/cellrun.py (plan T3). Each superres cell
+# checks C bytes and recon, and names its no-superres sibling (encoded once
+# per tuple, port only) as the stream it must differ from.
+OUT="${TMPDIR:-$HOME/tmp}/srgate.$$"
 mkdir -p "$OUT"
-pass=0
-fail=0
-failed=()
-decode_fail=()
-vac=()
+trap 'rm -rf "$OUT"' EXIT
+CELLS="$OUT/superres.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv\tcheck\tdiffers_from\n' >"$CELLS"
 for content in "${CONTENTS[@]}"; do
   for sz in "${SIZES[@]}"; do
     for qp in "${QPS[@]}"; do
       for p in "${PRESETS[@]}"; do
-        # (3) anti-vacuity baseline: the same cell WITHOUT superres. This encode
-        # does NOT depend on $d, so it is hoisted out of the denominator loop --
-        # it was being recomputed once per denominator, i.e. 448 of 512 runs were
-        # identical repeats (measured 2026-09-09). Each cell below still compares
-        # against the very same bytes it would have recomputed; identity_run is
-        # deterministic and takes no denominator argument here.
-        ns_ok=1
-        if ! "$HERE/identity_run" "$content" "$sz" "$sz" "$qp" "$p" "$OUT/ns" \
-             >/dev/null 2>&1; then
-          ns_ok=0
-        fi
+        base="${content}_${sz}_q${qp}_p${p}"
+        printf '%s_ns\t%s\t%s\t%s\t%s\t%s\t\tnone\t\n' \
+          "$base" "$content" "$sz" "$sz" "$qp" "$p" >>"$CELLS"
         for d in "${DENOMS[@]}"; do
-          cell="${content}_${sz}_q${qp}_p${p}_d${d}"
-          if [ "$ns_ok" -eq 0 ]; then
-            # Fail every denominator of this tuple, exactly as the per-cell
-            # version did when its own ns encode failed.
-            fail=$((fail + 1)); failed+=("$cell[ns-err]"); continue
-          fi
-          if ! SVTAV1_SUPERRES="$d" "$HERE/identity_run" \
-               "$content" "$sz" "$sz" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
-          fi
-          if ! SVT_SUPERRES_KF_DENOM="$d" SVT_TRACE_OUT=/dev/null \
-               "$HERE/capture_c_trace/capture_c_trace" \
-               "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 8 >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-          fi
-          if cmp -s "$OUT/rs.obu" "$OUT/ns.obu"; then
-            vac+=("$cell")
-          fi
-          # (2) decodability + output size, on the PORT's stream.
-          if ! "$aomdec" --rawvideo -o "$OUT/dec.yuv" "$OUT/rs.obu" >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[decode]"); decode_fail+=("$cell"); continue
-          fi
-          # I420 at the FULL width: w*h + 2*((w+1)/2 * (h+1)/2).
-          want=$(( sz * sz + 2 * (((sz + 1) / 2) * ((sz + 1) / 2)) ))
-          # `stat -c%s` is GNU-only: on darwin it errors, `got` comes back
-          # EMPTY, and `[ "" -ne N ]` fails as a bash SYNTAX error rather than
-          # as a comparison — so this assertion silently never fired on macOS
-          # (measured 2026-08-31; the gate still printed 512 / 512).
-          # `wc -c` is POSIX and works on both. See WORKING-ON-THIS.md §5.
-          got=$(wc -c < "$OUT/dec.yuv" | tr -d ' ')
-          if [ "$got" -ne "$want" ]; then
-            fail=$((fail + 1))
-            failed+=("$cell[decoded ${got}B != upscaled ${want}B]")
-            continue
-          fi
-          # (1) byte-parity.
-          if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-            pass=$((pass + 1))
-          else
-            fail=$((fail + 1)); failed+=("$cell")
-          fi
+          printf '%s_d%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_SUPERRES=%s;SVT_SUPERRES_KF_DENOM=%s\tc,recon\t%s_ns\n' \
+            "$base" "$d" "$content" "$sz" "$sz" "$qp" "$p" "$d" "$d" "$base" >>"$CELLS"
         done
       done
     done
   done
 done
-echo "superres identity + conformance: $pass / $((pass + fail)) cells"
-if [ "$fail" -gt 0 ]; then
-  printf '  FAILED: %s\n' "${failed[*]}"
-fi
-if [ "${#vac[@]}" -gt 0 ]; then
-  echo "  VACUOUS (superres stream == non-superres stream): ${vac[*]}"
-fi
-rm -rf "$OUT"
-[ "$fail" -eq 0 ] && [ "${#vac[@]}" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$CELLS" --out "$OUT/result.tsv" \
+  --bytes-only --jobs "${SR_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t") if not r["name"].endswith("_ns")]
+bad = [r for r in rows if r["ok"] != "yes"]
+print(f"superres identity + recon: {len(rows) - len(bad)} / {len(rows)} cells")
+for r in bad:
+    print(f"  FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+PY
+exit "$rc"

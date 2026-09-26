@@ -33,7 +33,7 @@ stays OFF by default, so everything landed is additive and byte-neutral.
 | stale full-res variance indexing | LANDED (chunk B.4) | wide sweep 507/640 -> **639/640** byte-identical; `superres_gate.sh` defaults to presets 8/9/10/13 (512 cells, all passing) |
 | LR restoration-unit geometry | LANDED (chunk B.5 part 1) | `restoration::superres_lr_geom_tests` vs C's formula, all denominators |
 | LR on the upscaled frame (presets <= 6) | **OPEN (chunk B.5 rest)** | refused today by `superres_config_error` |
-| `gradient_64_q32_p7_d10` | **OPEN** | the single divergent cell of the 640-cell sweep |
+| `gradient_64_q32_p7_d10` | CLOSED (re-measured 2026-09-26) | preset 7 is 128/128 byte-identical with recon == aomdec; `superres_gate.sh` defaults to presets 7..13 (640 cells). The fixing commit was not bisected. |
 
 ### Chunk B.5 — what is left, with the ordering question SETTLED
 
@@ -59,7 +59,10 @@ recon after the boundary save, run the LR search/apply at the upscaled width
 against the original source, and lift the `superres_config_error` refusal only
 when a preset-6 cell byte-matches.
 
-### The one open cell, `gradient_64_q32_p7_d10`
+### The formerly open cell, `gradient_64_q32_p7_d10`
+
+**Closed:** byte-identical on re-measurement 2026-09-26 (i265), with the
+whole preset-7 row (128/128). The investigation below is kept as history.
 
 Superres-conditional and preset-7-specific. RULED OUT by measurement: the
 geometry itself (a plain 51x64 gradient at p7 q32 is byte-IDENTICAL to C), the
