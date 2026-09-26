@@ -23,7 +23,9 @@
 #
 # Usage: tools/regression_spotcheck.sh
 # Env:   RS_AOMDEC (aomdec path, for the decodability cells)
-#        SCREEN_DIR / CID22_DIR (real-corpus cells; skipped LOUDLY if absent)
+#        SCREEN_DIR / CID22_DIR (real-corpus cells)
+#        SPOT_ALLOW_SKIP=1 accepts a run where a corpus or aomdec is absent;
+#        without it a skipped cell FAILS the run (the caller decides)
 #        ZENAV1_CORPUS_ROOT (a tree containing codec-corpus/, see lib_corpus.sh)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -1899,6 +1901,12 @@ echo "regression spot-check: $pass / $total"
 if ((skip)); then
   echo "  SKIPPED (corpus/tool absent — these cells guarded NOTHING this run):"
   printf '    %s\n' "${skipped[@]}"
+  # The CALLER decides whether a partial run is acceptable, never this
+  # script: a skip fails unless SPOT_ALLOW_SKIP=1 says so out loud.
+  if [ "${SPOT_ALLOW_SKIP:-0}" != 1 ]; then
+    echo "  FAILING: $skip cell(s) skipped; set SPOT_ALLOW_SKIP=1 to accept a partial run"
+    fail=$((fail + skip))
+  fi
 fi
 if ((fail)); then
   echo "  FAILED:"

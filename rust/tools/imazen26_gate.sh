@@ -24,7 +24,8 @@
 #   IM26_DIR       default /root/work/imazen26-cache/K300   (the 273 PNGs)
 #   IM26_MANIFEST  default $IM26_DIR/../K300.tsv            (basename->class)
 #   SVT_CREF_LIB_DIR must point at the C reference lib (Bin/Release).
-#   AOMDEC         optional; decodability check skipped LOUDLY if unset+absent.
+#   AOMDEC         required for the decodability check; IM26_ALLOW_NO_DECODE=1
+#                  skips it (the caller's decision, never this script's).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
@@ -87,8 +88,14 @@ aomdec="${AOMDEC:-}"
 if [ -z "$aomdec" ]; then
   for c in aomdec /root/aomdec-debug/aomdec; do command -v "$c" >/dev/null 2>&1 && { aomdec=$c; break; }; done
 fi
-[ -n "$aomdec" ] && echo "decodability check: $aomdec" || \
-  echo "WARNING: aomdec not found (set AOMDEC=) — DECODABILITY assert SKIPPED" >&2
+if [ -n "$aomdec" ]; then
+  echo "decodability check: $aomdec"
+elif [ "${IM26_ALLOW_NO_DECODE:-0}" = 1 ]; then
+  echo "WARNING: aomdec not found; DECODABILITY assert SKIPPED (IM26_ALLOW_NO_DECODE=1)" >&2
+else
+  echo "imazen26_gate: aomdec not found (set AOMDEC=, or IM26_ALLOW_NO_DECODE=1 to skip the decode assert)" >&2
+  exit 2
+fi
 
 # ---- fail LOUD if the (uncommitted) corpus is absent -----------------------
 [ -d "$IM26_DIR" ] || { echo "imazen26_gate: corpus dir absent: $IM26_DIR (set IM26_DIR=)" >&2; exit 2; }
