@@ -54,26 +54,12 @@ CID22_DIR="${CID22_DIR:-$HOME/work/zen/codec-corpus/CID22/CID22-512}"
 GB82_DIR="${GB82_DIR:-$HOME/work/zen/codec-corpus/gb82}"
 SCREEN_DIR="${SCREEN_DIR:-$HOME/work/zen/codec-corpus/gb82-sc}"
 
-RUN="$HERE/identity_run"
-CT="$HERE/capture_c_trace/capture_c_trace"
-W="${TMPDIR:-/tmp}/idfull.$$"
+W="${TMPDIR:-$HOME/tmp}/idfull.$$"
 mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
-# Warm BOTH drivers once, up front.
-#
-# `identity_run` and `capture_c_trace` are freshness wrappers: each runs its own
-# build/relink check on EVERY invocation. That is the staleness contract and
-# must not be bypassed — but it means the first cell of a sweep pays a build,
-# and, worse, two sweeps running CONCURRENTLY can race on the driver binary and
-# make a cell fail for a reason that has nothing to do with parity. (Measured:
-# a `[c]` harness error on `uniform 64 64 63 0` while another sweep was mid-run.)
-# Warming here collapses the per-cell build to a no-op stat check and makes the
-# race window a single serialized step instead of one per cell.
-echo "== warming the port and C drivers (freshness check runs per invocation) ==" >&2
-SVTAV1_BD="$BIT_DEPTH" $LOWPRI "$RUN" uniform 64 64 40 13 "$W/warm" >/dev/null 2>&1 || true
-SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 40 13 "$W/warm.yuv" "$W/warm.obu" "$BIT_DEPTH" >/dev/null 2>&1 || true
-
+# tools/cellrun.py builds both drivers once, up front, before any cell runs
+# (the per-cell rebuild race this script used to warm around is gone).
 # ---------------------------------------------------------------------------
 # KNOWN-DIVERGING cells. Format: "<content> <w> <h> <qp> <preset>".
 # Self-promoting: a listed cell that MATCHES fails the gate (exit 4).
@@ -121,66 +107,23 @@ is_known() {
   return 1
 }
 
-pass=0; fail=0; pinned=0; promoted=0; errs=0
-failed=(); promoted_cells=(); err_cells=()
-
-printf 'content\twidth\theight\tqp\tpreset\tc_bytes\tport_bytes\tverdict\n' >"$OUT"
-
-# cell <content> <w> <h> <qp> <preset>
+# The cells are a list for tools/cellrun.py (plan T3), in parallel
+# (IF_JOBS, default 4); the tier loops below only append rows. KNOWN_DIFF
+# cells pin `expect DIFFERS` (a match fails as "promote it").
+LIST="$W/identity_full.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\texpect\tcheck\n' >"$LIST"
+: >"$W/meta.tsv"
+ncell=0
 cell() {
   local content=$1 w=$2 h=$3 qp=$4 p=$5
-  local name="$content $w $h $qp $p"
-  # A fresh directory per invocation also preserves failed attempts without
-  # stale outputs from an earlier cell being mistaken for this one's output.
-  # The local W shadows the disposable sweep scratch only in this function;
-  # the EXIT trap still removes the outer scratch, never retained evidence.
-  local W="$W"
-  if [[ -n "$ARTIFACT_DIR" ]]; then
-    W=$(mktemp -d "$ARTIFACT_DIR/cell.XXXXXXXX") || exit 2
-    printf 'content=%s\nwidth=%s\nheight=%s\nqp=%s\npreset=%s\nbit_depth=%s\n' \
-      "$content" "$w" "$h" "$qp" "$p" "$BIT_DEPTH" >"$W/settings.txt"
-    printf '%s\t%s\n' "$W" "$name" >>"$ARTIFACT_DIR/index.tsv"
-  fi
-  if ! SVTAV1_BD="$BIT_DEPTH" timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
-       >"$W/rs.log" 2>&1 &&
-     ! SVTAV1_BD="$BIT_DEPTH" timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
-       >>"$W/rs.log" 2>&1; then
-    errs=$((errs+1)); err_cells+=("$name[rs]")
-    printf '%s\t%s\t%s\t%s\t%s\t-\t-\tRS_ERR\n' "$content" "$w" "$h" "$qp" "$p" >>"$OUT"
-    return
-  fi
-  # Retried ONCE: the only observed harness error was a transient driver-build
-  # race. A genuine failure reproduces, and still fails the gate.
-  if ! timeout "$CELL_TIMEOUT" env SVT_TRACE_OUT=/dev/null $LOWPRI \
-       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" "$BIT_DEPTH" >"$W/c.log" 2>&1 &&
-     ! timeout "$CELL_TIMEOUT" env SVT_TRACE_OUT=/dev/null $LOWPRI \
-       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" "$BIT_DEPTH" >>"$W/c.log" 2>&1; then
-    errs=$((errs+1)); err_cells+=("$name[c]")
-    printf '%s\t%s\t%s\t%s\t%s\t-\t-\tC_ERR\n' "$content" "$w" "$h" "$qp" "$p" >>"$OUT"
-    return
-  fi
-  local cb pb v
-  cb=$(wc -c <"$W/c.obu" | tr -d ' ')
-  pb=$(wc -c <"$W/rs.obu" | tr -d ' ')
-  if cmp -s "$W/c.obu" "$W/rs.obu"; then
-    if is_known "$name"; then
-      promoted=$((promoted+1)); promoted_cells+=("$name"); v=PROMOTE
-    else
-      pass=$((pass+1)); v=IDENTICAL
-    fi
-  elif is_known "$name"; then
-    pinned=$((pinned+1)); v=PINNED
-  else
-    fail=$((fail+1)); failed+=("$name [C=$cb port=$pb]"); v=DIFFERS
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$content" "$w" "$h" "$qp" "$p" "$cb" "$pb" "$v" >>"$OUT"
-  printf '%s\n' "$v" >"$W/verdict.txt"
+  local name="$content $w $h $qp $p" expect=IDENTICAL
+  is_known "$name" && expect=DIFFERS
+  ncell=$((ncell + 1))
+  local id; id=$(printf 'cell.%05d' "$ncell")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tc\n' "$id" "$content" "$w" "$h" "$qp" "$p" "$BIT_DEPTH" "$expect" >>"$LIST"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$content" "$w" "$h" "$qp" "$p" >>"$W/meta.tsv"
 }
-
-# --- TIER: synthetic -------------------------------------------------------
-# EVERY preset 0..13. C clamps all-intra presets above M9 to M9
-# (enc_handle.c:4415-4419) but the PORT does not, so 10..13 are genuinely
-# distinct configurations here and must be swept, not assumed.
+missing_corpora=()
 if [[ " $TIER " == *" synthetic "* || " $TIER " == *" all "* ]]; then
   read -r -a S_CONTENTS <<<"${IF_CONTENTS:-uniform gradient diag screen}"
   read -r -a S_SIZES    <<<"${IF_SIZES:-64 128}"
@@ -259,15 +202,15 @@ if [[ " $TIER " == *" real "* || " $TIER " == *" all "* ]]; then
   add_corpus() {
     local label=$1 dir=$2
     if [[ ! -d "$dir" ]]; then
-      echo "== tier real: SKIPPING $label — $dir not present ==" >&2
-      return
+      echo "== tier real: $label MISSING — $dir not present ==" >&2
+      missing_corpora+=("$label"); return
     fi
     local imgs
     # shellcheck disable=SC2207
     imgs=($(find "$dir" -iname '*.png' | sort | head -n "$REAL_N"))
     if ((${#imgs[@]} == 0)); then
-      echo "== tier real: SKIPPING $label — no PNGs under $dir ==" >&2
-      return
+      echo "== tier real: $label MISSING — no PNGs under $dir ==" >&2
+      missing_corpora+=("$label"); return
     fi
     echo "== tier real: $label, ${#imgs[@]} images ==" >&2
     for img in "${imgs[@]}"; do
@@ -281,27 +224,62 @@ if [[ " $TIER " == *" real "* || " $TIER " == *" all "* ]]; then
   add_corpus gb82-screen "$SCREEN_DIR"
 fi
 
-total=$((pass + fail + promoted))
-echo
-echo "$BIT_DEPTH-bit identity: $pass / $total byte-identical  (+$pinned pinned, $errs harness errors)"
-echo "scoreboard: $OUT"
-
-if ((errs)); then
-  echo "  HARNESS ERRORS (neither encoder produced a stream — NOT a parity result):"
-  printf '    %s\n' "${err_cells[@]}"
-fi
-if ((${#promoted_cells[@]})); then
-  echo "  PINNED CELLS NOW MATCH — promote them out of KNOWN_DIFF:"
-  printf '    %s\n' "${promoted_cells[@]}"
-fi
-if ((${#failed[@]})); then
-  echo "  UNEXPECTED DIVERGENCES:"
-  printf '    %s\n' "${failed[@]}"
-fi
-
-# Harness errors fail too: a cell that could not run proves nothing, and a
-# silently-skipped cell is exactly how a gate rots into a green no-op.
-if ((fail || promoted || errs)); then
-  exit 1
-fi
-exit 0
+ROOT="${ARTIFACT_DIR:-$W/cells}"
+python3 "$HERE/cellrun.py" "$LIST" --root "$ROOT" --out "$W/result.tsv" --bytes-only \
+  --jobs "${IF_JOBS:-4}" --timeout "$CELL_TIMEOUT" >/dev/null 2>"$W/cellrun.err"
+python3 - "$W/result.tsv" "$W/meta.tsv" "$ROOT" "$OUT" "$BIT_DEPTH" "${ARTIFACT_DIR:+1}" \
+  "${missing_corpora[*]:-}" <<'PY'
+import csv, sys
+from pathlib import Path
+res = {r["name"]: r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t")}
+meta = [l.rstrip("\n").split("\t") for l in open(sys.argv[2])]
+root, out, bd, artifacts, missing = Path(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6] == "1", sys.argv[7]
+counts = dict(pass_=0, fail=0, pinned=0, promoted=0, errs=0)
+failed, promoted, errs = [], [], []
+with open(out, "w") as f, (open(root / "index.tsv", "w") if artifacts else open("/dev/null", "w")) as idx:
+    f.write("content\twidth\theight\tqp\tpreset\tc_bytes\tport_bytes\tverdict\n")
+    for cid, content, w, h, qp, p in meta:
+        r, d = res[cid], root / cid
+        name = f"{content} {w} {h} {qp} {p}"
+        size = lambda fn: str((d / fn).stat().st_size) if (d / fn).exists() else "-"
+        cb, pb = size("c.obu"), size("rs.obu")
+        if r["verdict"] == "ERROR":
+            v = "RS_ERR" if r["stage"] in ("PORT", "TIMEOUT") else "C_ERR"
+            counts["errs"] += 1; errs.append(f"{name}[{v}: {r['detail']}]"); cb = pb = "-"
+        elif r["verdict"] == "IDENTICAL":
+            if r["expect"] == "DIFFERS":
+                v = "PROMOTE"; counts["promoted"] += 1; promoted.append(name)
+            else:
+                v = "IDENTICAL"; counts["pass_"] += 1
+        elif r["expect"] == "DIFFERS":
+            v = "PINNED"; counts["pinned"] += 1
+        else:
+            v = "DIFFERS"; counts["fail"] += 1; failed.append(f"{name} [C={cb} port={pb}]")
+        f.write(f"{content}\t{w}\t{h}\t{qp}\t{p}\t{cb}\t{pb}\t{v}\n")
+        if artifacts and d.exists():
+            (d / "settings.txt").write_text(
+                f"content={content}\nwidth={w}\nheight={h}\nqp={qp}\npreset={p}\nbit_depth={bd}\n")
+            (d / "verdict.txt").write_text(v + "\n")
+            idx.write(f"{d}\t{name}\n")
+total = counts["pass_"] + counts["fail"] + counts["promoted"]
+print(f"\n{bd}-bit identity: {counts['pass_']} / {total} byte-identical  "
+      f"(+{counts['pinned']} pinned, {counts['errs']} harness errors)")
+print(f"scoreboard: {out}")
+bad = False
+if errs:
+    print("  HARNESS ERRORS (neither encoder produced a stream — NOT a parity result):")
+    for e in errs: print(f"    {e}")
+    bad = True
+if promoted:
+    print("  PINNED CELLS NOW MATCH — promote them out of KNOWN_DIFF:")
+    for e in promoted: print(f"    {e}")
+    bad = True
+if failed:
+    print("  UNEXPECTED DIVERGENCES:")
+    for e in failed: print(f"    {e}")
+    bad = True
+if missing:
+    print(f"  REAL-TIER CORPORA MISSING (selected but absent): {missing}")
+    bad = True
+sys.exit(1 if bad else 0)
+PY

@@ -276,13 +276,14 @@ def main():
     ap.add_argument("--out", help="result TSV (default: <cells stem>.result.tsv beside the artifacts)")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--timeout", type=int, default=600, help="seconds per step")
+    ap.add_argument("--root", help="artifact directory (default: target/cells/<list stem>.<oracle>)")
     ap.add_argument("--bytes-only", action="store_true",
                     help="compare C bytes with cmp; skip the symbol traces")
     a = ap.parse_args()
 
     rows = read_cells(a.cells)
     oracle = os.environ.get("SVT_ORACLE", "default")
-    root = RS_ROOT / "target" / "cells" / f"{Path(a.cells).stem}.{oracle}"
+    root = Path(a.root) if a.root else RS_ROOT / "target" / "cells" / f"{Path(a.cells).stem}.{oracle}"
     out = Path(a.out) if a.out else root / "result.tsv"
     out.parent.mkdir(parents=True, exist_ok=True)
 
