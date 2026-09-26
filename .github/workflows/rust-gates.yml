@@ -1044,8 +1044,12 @@ jobs:
         # tools/video_key_matrix.sh existed but was in NO CI step. It is the
         # inter campaign's key-frame scoreboard: 60 cells, all IDENTICAL, 11.6 s
         # measured on i265. Wiring it costs nothing and stops the video-mode
-        # key-frame envelope from regressing unobserved.
-        run: ./tools/video_key_matrix.sh
+        # key-frame envelope from regressing unobserved. The preset list is
+        # pinned here: the tool's default grew -1, 1 and 2 (2026-09-26), whose
+        # video key frames differ from C on gradient/diag/screenrep — that
+        # frontier is tracked cell by cell by video_census_gate, and this step
+        # asserts the presets that are all IDENTICAL.
+        run: VKM_PRESETS="0 2 3 4 5 6 7 8 9 10 11 12 13" ./tools/video_key_matrix.sh
 
       - name: research preset -1 identity (8-bit AND 10-bit, partial-SB + screen)
         if: ${{ !cancelled() && matrix.shard == 1 }}
