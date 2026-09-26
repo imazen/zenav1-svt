@@ -779,12 +779,16 @@ Order, by expected size:
      also ask for `lossless`, `recon` (aomdec == the port's final recon) and
      `dav1d` checks, name a `differs_from` sibling (anti-vacuity), and run
      `--bytes-only`; each check was shown to fail on a cell built to fail
-     it. Ported so far, each with its verdicts unchanged (i265): lossless
-     240/240 (148 s -> 32 s), superres 640/640 (decode-size leg -> recon,
-     preset 7 re-admitted), partial_sb 145/145 (26 s -> 11 s), bd10_nonflat
-     309/309 (decode leg -> recon, 56 s -> 22 s). cellrun also has per-side
-     env, `decodes`, `c_differs_from` and `arch`. Next: the other ~40
-     scripts (brief `gate-port`).
+     it. Ported by 2026-09-26, verdicts unchanged unless noted (i265):
+     lossless, superres (+recon, +preset 7), superres_bd10 (+preset 7),
+     partial_sb, bd10_partial_sb, bd10_nonflat (+recon), tile (aomdec
+     required, +port anti-vacuity, 9 controls), sb128 (+witnesses),
+     alignment, coverage_combos, video_selfcheck and its bd10 twin
+     (parallel; the 30-minute CI step), screen_palette, screen_palette_bd
+     (+screenrep, 4 stale pins removed), bd10_hbd_src. cellrun gained
+     per-side env, `decodes`, `inter`, `sb128`/`sb64`, `c_differs_from`,
+     `arch` and `@CELL@`. Next: screen_ibc(_byte), identity_full_8bit,
+     bd10_photo, imazen26, the inter byte gates (brief `gate-port`).
   2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
      `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
      that does not parse, a flag other than 0/1, and a still-only knob on a
