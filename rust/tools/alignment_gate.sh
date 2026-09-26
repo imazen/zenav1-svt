@@ -79,7 +79,10 @@ esac
 
 AOMDEC="${AOMDEC:-}"
 if [[ -z "$AOMDEC" ]]; then
+    # PATH first: this list alone missed /usr/bin/aomdec (2026-09-26).
+    AOMDEC=$(command -v aomdec || true)
     for c in /opt/homebrew/bin/aomdec /usr/local/bin/aomdec /root/aomdec-build/aomdec; do
+        [[ -n "$AOMDEC" ]] && break
         [[ -x "$c" ]] && AOMDEC="$c" && break
     done
 fi
@@ -214,11 +217,9 @@ ARCH_BD10=(
     "gradient 192 256 33 2 10 0" # the ALIGNED control — the evidence above
     "screen 192 192 33 10 10 0"  # aligned, square, and still divergent
 )
-PINNED_DIFF=()
-case "$(uname -m)" in
-arm64 | aarch64) PINNED_DIFF=("${ARCH_BD10[@]}") ;;
-*) CELLS+=("${ARCH_BD10[@]}") ;;
-esac
+# ARCH_BD10 rows carry an `arch` column in the cellrun list below: pinned
+# DIFFERS (a match fails as "promote it") on aarch64/arm64, full cells
+# (bytes + recon) elsewhere.
 
 if [[ "$MODE" == full ]]; then
     # --- 7. FULL: preset and qp breadth over the shapes that matter --------
@@ -278,142 +279,48 @@ done
 [[ "$cov_fail" -eq 0 ]] || exit 1
 
 # ---------------------------------------------------------------------------
-pass=0
-fail=0
-recon_checked=0
-recon_px=0
-failed=()
-echo "alignment_gate: mode=$MODE cells=${#CELLS[@]} aomdec=$AOMDEC"
-
+# The cells are a list for tools/cellrun.py (plan T3): C bytes plus the
+# recon leg (aomdec's output == the port's final recon, 16-bit at bd10) on
+# every cell; the stride is port-only (the .yuv C reads stays tight).
+echo "alignment_gate: mode=$MODE cells=$((${#CELLS[@]} + ${#ARCH_BD10[@]})) aomdec=$AOMDEC"
+LIST="$OUT/alignment.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\texpect\tcheck\tarch\n' >"$LIST"
+row() { # expect check arch cell
+    local expect=$1 check=$2 arch=$3
+    read -r content w h qp p bd sp <<<"$4"
+    local stride=$((w + sp))
+    printf '%s_%sx%s_q%s_p%s_bd%s_st%s%s\t%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_Y_STRIDE=%s\t%s\t%s\t%s\n' \
+        "$content" "$w" "$h" "$qp" "$p" "$bd" "$stride" "${arch:+_$([[ $expect == DIFFERS ]] && echo pin || echo x86)}" \
+        "$content" "$w" "$h" "$qp" "$p" "$bd" "$stride" "$expect" "$check" "$arch" >>"$LIST"
+}
+# The width and height sweeps both contain 128x128; the old loop ran it twice.
+declare -A seen_cell
 for cell in "${CELLS[@]}"; do
-    read -r content w h qp p bd sp <<<"$cell"
-    stride=$((w + sp))
-    tag="${content}_${w}x${h}_q${qp}_p${p}_bd${bd}_st${stride}"
-
-    if ! SVTAV1_BD="$bd" SVTAV1_Y_STRIDE="$stride" \
-        SVTAV1_FINAL_RECON="$OUT/rs.recon" \
-        "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" \
-        >"$OUT/rs.log" 2>&1; then
-        fail=$((fail + 1))
-        failed+=("$tag[port-err]")
-        continue
-    fi
-
-    # --- BYTE leg -----------------------------------------------------------
-    if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" "$bd" \
-        >"$OUT/c.log" 2>&1; then
-        fail=$((fail + 1))
-        failed+=("$tag[c-err]")
-        continue
-    fi
-    if ! cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        fail=$((fail + 1))
-        failed+=("$tag[BYTE $(stat -f%z "$OUT/rs.obu" 2>/dev/null ||
-            stat -c%s "$OUT/rs.obu")B vs C $(stat -f%z "$OUT/c.obu" 2>/dev/null ||
-            stat -c%s "$OUT/c.obu")B]")
-        continue
-    fi
-
-    # --- RECON leg (bd8 AND bd10) -------------------------------------------
-    # bps = bytes per sample in BOTH the dump and aomdec's y4m (u8 at bd8,
-    # u16 LE at bd10 — `C420p10`).
-    bps=1
-    [[ "$bd" == 10 ]] && bps=2
-    {
-        rm -f "$OUT/rs.y4m"
-        if ! "$AOMDEC" "$OUT/rs.obu" -o "$OUT/rs.y4m" >/dev/null 2>&1; then
-            fail=$((fail + 1))
-            failed+=("$tag[decode-err]")
-            continue
-        fi
-        verdict=$(python3 - "$OUT/rs.y4m" "$OUT/rs.recon" "$w" "$h" "$bps" <<'PY'
-import sys
-y4m, recon, w, h, bps = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
-d = open(y4m, "rb").read()
-hdr = d.index(b"\n")
-if bps == 2 and b"C420p10" not in d[:hdr]:
-    print(f"FAIL y4m is not C420p10 at bd10: {d[:hdr]!r}")
-    sys.exit(0)
-fp = d.index(b"FRAME", hdr)
-start = d.index(b"\n", fp) + 1
-cw, ch = (w + 1) // 2, (h + 1) // 2
-nsamp = w * h + 2 * cw * ch
-need = nsamp * bps
-dec = d[start:start + need]
-enc = open(recon, "rb").read()
-if len(dec) != need:
-    print(f"FAIL y4m short: {len(dec)} < {need}")
-elif len(enc) != need:
-    print(f"FAIL recon size {len(enc)} != {need}")
-elif dec == enc:
-    print(f"OK {nsamp}")
-else:
-    if bps == 2:
-        dec = [int.from_bytes(dec[k:k + 2], "little") for k in range(0, need, 2)]
-        enc = [int.from_bytes(enc[k:k + 2], "little") for k in range(0, need, 2)]
-    n = sum(1 for a, b in zip(dec, enc) if a != b)
-    i = next(i for i, (a, b) in enumerate(zip(dec, enc)) if a != b)
-    pl = "Y" if i < w * h else ("U" if i < w * h + cw * ch else "V")
-    if pl == "Y":
-        pos = f"r{i // w} c{i % w}"
-    else:
-        j = (i - w * h) % (cw * ch)
-        pos = f"r{j // cw} c{j % cw}"
-    print(f"FAIL {n}px first {pl}@{pos} dec={dec[i]} enc={enc[i]}")
+    [[ -n "${seen_cell[$cell]:-}" ]] && continue
+    seen_cell[$cell]=1
+    row IDENTICAL c,recon "" "$cell"
+done
+for cell in "${ARCH_BD10[@]}"; do
+    row IDENTICAL c,recon '!aarch64,!arm64' "$cell"
+    row DIFFERS c 'aarch64,arm64' "$cell"
+done
+AOMDEC="$AOMDEC" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${ALIGN_GATE_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+pins = [r for r in rows if r["expect"] == "DIFFERS"]
+ok = [r for r in rows if r["ok"] == "yes"]
+recon = [r for r in rows if "recon=ok" in r["checks"]]
+print(f"alignment gate: {len(ok)} / {len(rows)} cells (incl. {len(pins)} pinned-DIFFER)")
+print(f"  recon leg: {len(recon)} cells compared vs aomdec")
+for r in rows:
+    if r["ok"] != "yes":
+        why = "NOW MATCHES C — promote it" if r["expect"] == "DIFFERS" and r["verdict"] == "IDENTICAL" else f"{r['verdict']} {r['detail']}; {r['checks']}"
+        print(f"FAILED: {r['name']} [{why}]")
+if not recon:
+    print("VACUOUS: the recon leg compared zero cells")
+    sys.exit(1)
 PY
-)
-        case "$verdict" in
-        OK\ *)
-            recon_checked=$((recon_checked + 1))
-            recon_px=$((recon_px + ${verdict#OK }))
-            ;;
-        *)
-            fail=$((fail + 1))
-            failed+=("$tag[RECON ${verdict#FAIL }]")
-            continue
-            ;;
-        esac
-    }
-    pass=$((pass + 1))
-done
-
-for cell in ${PINNED_DIFF[@]+"${PINNED_DIFF[@]}"}; do
-    read -r content w h qp p bd sp <<<"$cell"
-    stride=$((w + sp))
-    tag="PINNED ${content}_${w}x${h}_q${qp}_p${p}_bd${bd}"
-    if ! SVTAV1_BD="$bd" SVTAV1_Y_STRIDE="$stride" \
-        "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" \
-        >"$OUT/rs.log" 2>&1; then
-        fail=$((fail + 1))
-        failed+=("$tag[port-err]")
-        continue
-    fi
-    if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" "$bd" \
-        >"$OUT/c.log" 2>&1; then
-        fail=$((fail + 1))
-        failed+=("$tag[c-err]")
-        continue
-    fi
-    if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        fail=$((fail + 1))
-        failed+=("$tag NOW MATCHES C — promote it into CELLS")
-    else
-        pass=$((pass + 1))
-    fi
-done
-
-echo "alignment gate: $pass / $((pass + fail)) cells (incl. ${#PINNED_DIFF[@]} pinned-DIFFER)"
-echo "  recon leg: $recon_checked cells compared, $recon_px samples vs aomdec"
-if [[ "$fail" -gt 0 ]]; then
-    printf 'FAILED: %s\n' "${failed[@]}"
-fi
-# Recon-leg anti-vacuity: every bd8 cell must have reached the decoder
-# comparison. A run where the leg silently compared nothing is a failure even
-# if no cell "failed".
-if [[ "$fail" -eq 0 && "$recon_checked" -eq 0 ]]; then
-    echo "VACUOUS: the recon leg compared zero cells" >&2
-    exit 1
-fi
-[[ "$fail" -eq 0 ]]
+vac=$?
+[[ "$rc" -eq 0 && "$vac" -eq 0 ]]
