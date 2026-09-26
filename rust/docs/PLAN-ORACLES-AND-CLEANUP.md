@@ -265,7 +265,10 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   c_parity is 869/873. Corrected census (identity_diff.py now reads the QM
   levels): all 247 divergences are in the tile, 166 first at a tile op and
   81 with downstream frame-header differences too; no 10-bit cell matches.
-  The upstream is mode decision / quantization (see below).
+  The upstream is mode decision / quantization (see below). Ghost Robot
+  VIDEO is 0/36 on real clips, every cell differing in the key frame
+  (`benchmarks/video_parity_census_gr_2026-09-26.meta`), so it waits on
+  this item.
   - Lead (2026-09-26, from the plan 1.4 dead-code triage, not yet tested):
     Ghost Robot `f354a3224` made the per-SB variance map `double**`
     (svt-av1-hdr `pcs.h:854`; mainline `SvtVarType**`, 16-bit) and changed

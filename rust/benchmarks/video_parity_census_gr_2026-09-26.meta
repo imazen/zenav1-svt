@@ -1,0 +1,13 @@
+Snapshot, 2026-09-26: real-video byte parity with GHOST ROBOT C, low delay.
+
+Command (host i265, main at 2d3207ab):
+  SVT_ORACLE=ghost-robot IBM_CONTENT="fourpeople johnny kristenandsara vidyo1 vidyo3 vidyo4" \
+  IBM_SIZES="128 256" IBM_QPS=40 IBM_PRESETS="2 6 10" IBM_FRAMES=8 IBM_JOBS=4 \
+  run-heavy --mem 8G --jobs 6 -- tools/inter_byte_matrix.sh
+
+Result: 0 of 36 byte-identical; every cell differs in TU0, the KEY frame,
+at all three presets. Ghost Robot stills are 41/288 (plan 3.3s), and the
+key frame of a video encode runs the same intra machinery, so Ghost Robot
+video parity is blocked behind the stills work; re-run this after each
+3.3s landing. Compare the mainline census the same day: 244/540
+(video_parity_census_2026-09-26.meta).
