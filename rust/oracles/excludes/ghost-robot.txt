@@ -3,9 +3,8 @@
 # symbol exists to link or globalize, so the tier-1 oracle is unavailable
 # (the Rust side returns None via me_statics_oracle_is_available). Excluding
 # them keeps the pass count honest instead of counting silent early-returns.
-# The 45 remaining c_parity failures (2026-09-25,
-# cref_oracles_2026-09-25.meta) are genuine divergences between the
-# hybrid-targeted port and post-v4.2.0 Ghost Robot semantics; they must stay
-# visible, not be excluded.
+# Genuine divergences are NOT excluded here: they are pinned in
+# oracles/divergent/ghost-robot.txt, which tools/cparity_ratchet.sh keeps
+# exact (a new failure or a newly passing listed test fails CI).
 c_parity_inter_me::hme_level_2_matches_c
 c_parity_inter_me::check_00_center_matches_c

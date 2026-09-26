@@ -192,5 +192,9 @@ cparity-oracle ORACLE:
             filt="$filt & not test(/^${t}$/)"
         done < "$excl"
     fi
-    SVT_ORACLE={{ORACLE}} CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/tmp/target-{{ORACLE}}}" \
+    # Per-checkout target dir. A shared one ($HOME/tmp/target-<oracle>, until
+    # 2026-09-26) let a jj sibling workspace's build answer for this one:
+    # cargo hashes workspace members by their path RELATIVE to the workspace
+    # root, so two checkouts produce the same artifact names.
+    SVT_ORACLE={{ORACLE}} CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/oracle-{{ORACLE}}}" \
         cargo nextest run --no-fail-fast -p zenav1-svt-encoder -p zenav1-svt-dsp -E "$filt"

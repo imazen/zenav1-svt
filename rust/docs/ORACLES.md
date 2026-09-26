@@ -45,7 +45,12 @@ tools/oracle libdir ghost-robot     # where libSvtAv1Enc.a lives
 the port defaults to `Mainline420` to match; `SVT_HDR_MODE=1` still means
 `hybrid-3115-hdr`, the fork oracle until Ghost Robot replaces it. The
 C-parity suite (`svtav1-cref`) still builds the hybrid by default, because its
-fork-feature tests need a fork oracle. A gate that pins
+fork-feature tests need a fork oracle. `just cparity-oracle <name>` builds in `target/oracle-<name>` inside the
+checkout. Never point two jj workspaces at one `CARGO_TARGET_DIR`: cargo
+names a workspace member's artifacts by its path relative to the workspace
+root, so one workspace silently runs the other's binaries (measured
+2026-09-26: a "main" Ghost Robot count was the sibling workspace's). A gate
+that pins
 byte-identity numbers must name its oracle explicitly in its header and its
 output, the way refusal strings carry their date.
 
@@ -61,7 +66,7 @@ the change that moves it.
 | oracle | still grid, 288 cells (`tools/oracle_still_grid.sh`) | function-level C parity (`just cparity-oracle`) |
 |---|---|---|
 | `mainline-4.2.0` | 288/288 (re-measured 2026-09-26); also `identity_full_8bit` 1100/1100, `bd10_photo_gate` 191/191, `bd10_nonflat_gate` 309/309 under `SVT_ORACLE=mainline-4.2.0` | 867/867, 8 fork-only tests excluded by the caller |
-| `ghost-robot` | 41/288 (re-measured 2026-09-26 at `2848742f`) | 853/875 (`2848742f`, plan 3.3a); the 22 left are the plan phase 3 work list |
+| `ghost-robot` | 41/288 (re-measured 2026-09-26 at `2848742f`) | 854/873 on main at `c9f9e137` (2026-09-26); the 19 open divergences are pinned in `oracles/divergent/ghost-robot.txt` and checked by `tools/cparity_ratchet.sh` in CI shard 1 |
 | `hybrid-3115` | not run | 875/875 |
 
 ## How an oracle is built

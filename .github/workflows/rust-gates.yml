@@ -198,11 +198,14 @@ jobs:
           path: ~/.cache/zenav1-oracles
           key: oracles-v1-${{ runner.os }}-${{ hashFiles('rust/oracles/oracles.tsv', 'rust/tools/oracle') }}
 
-      - name: Build the pinned mainline-4.2.0 oracle
-        # Here rather than lazily in the first gate that needs it, so the save
-        # below runs before any gate. A no-op when the restored stamp matches.
+      - name: Build the pinned oracles (mainline-4.2.0, ghost-robot)
+        # Here rather than lazily in the first gate that needs them, so the
+        # save below runs before any gate. A no-op when the restored stamps
+        # match.
         working-directory: rust
-        run: tools/oracle build mainline-4.2.0
+        run: |
+          tools/oracle build mainline-4.2.0
+          tools/oracle build ghost-robot
 
       - name: Save the pinned-oracle cache
         if: steps.oracles-cache.outputs.cache-hit != 'true'
@@ -259,6 +262,16 @@ jobs:
         with:
           path: aom-build/aomdec
           key: ${{ steps.aom-cache.outputs.cache-primary-key }}
+
+      - name: Ghost Robot C-parity ratchet (function level)
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        working-directory: rust
+        # The Ghost Robot port is in progress (plan phase 3), so "all green"
+        # is not yet reachable; this pins the open divergences instead
+        # (oracles/divergent/ghost-robot.txt). A new failure is a regression,
+        # and a listed test that passes must leave the list, so the list only
+        # shrinks. 854/873 at 2026-09-26 on i265 (19 divergent).
+        run: tools/cparity_ratchet.sh ghost-robot
 
       - name: Workspace tests (differential parity suites vs C)
         if: ${{ !cancelled() && matrix.shard == 3 }}
