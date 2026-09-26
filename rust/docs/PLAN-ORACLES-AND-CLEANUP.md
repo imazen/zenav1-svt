@@ -611,7 +611,7 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     frame of a video encode (0/36 each; stills at those presets match) —
     brief `video-key`; (b) presets 0/2/3 diverge early in inter frames
     (5..7/36); (c) presets 4/5/7/10..13 are half to two thirds.
-  - Progress 2026-09-28 (i265, vs mainline-4.2.0): (a) closed for preset 1.
+  - Progress 2026-09-26 (i265, vs mainline-4.2.0): (a) closed for preset 1.
     The first differing decision on the p1 key frame (`vidyo3 128x128 q40`)
     was the uv_mode symbol at tile op 4933 — C coded `CDF14:s0`
     (UV_DC_PRED), the port `s=2`. Root cause: `FunnelCfg::for_preset` baked

@@ -1,4 +1,4 @@
-Snapshot, 2026-09-28: video-mode key-frame chroma-level arm, i265,
+Snapshot, 2026-09-26: video-mode key-frame chroma-level arm, i265,
 vs mainline-4.2.0.
 
 Change under test: `funnel_arm::apply` now stamps
