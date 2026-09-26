@@ -582,7 +582,11 @@ pub fn build_inter_candidates(
         // lane reaches (enc_mode_config.c:7570/:7848/:7965); the light sig's
         // copy reads here so a level that clears it stays reachable.
         new_nearest_injection: light.map_or(true, |s| s.new_nearest_injection != 0),
-        new_nearest_near_comb_injection: 0,
+        // C `ctx->new_nearest_near_comb_injection` — `pcs`'s level copied
+        // by both default sig derivations (enc_mode_config.c:7849/:7966);
+        // the light-PD1 derivation forces it 0 (:8079) but this lane's
+        // injector list doesn't reach it anyway.
+        new_nearest_near_comb_injection: f.new_nearest_near_comb_injection,
         inject_new_me: true,
         inject_new_pme: true,
         // The same per-block `ctx->updated_enable_pme` resolution

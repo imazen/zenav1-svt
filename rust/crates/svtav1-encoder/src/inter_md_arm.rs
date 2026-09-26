@@ -241,6 +241,14 @@ pub struct InterMdFrame<'a> {
     /// mid-walk and stamp a `{LAST, BWDREF}` block into the mi grid.
     /// 1 at M0, 2 at M1, 0 past (enc_mode_config.c:9131-9137).
     pub bipred3x3_injection: u8,
+    /// C `pcs->new_nearest_near_comb_injection` — the gate on
+    /// `inject_new_nearest_near_comb_candidates` (mode_decision.c:2901):
+    /// the NEAREST_NEWMV / NEW_NEARESTMV pair that keeps a stack predictor
+    /// on one list while the OTHER list carries the searched ME MV.
+    /// `>= 2` stops after those two modes (mode_decision.c:1774).
+    /// 1 at MR, `is_base ? 2 : 0` at M0/M1, 0 past
+    /// (enc_mode_config.c:9116-9120).
+    pub new_nearest_near_comb_injection: u8,
     /// C `pcs->ppcs->pic_obmc_level` (`svt_aom_get_obmc_level`,
     /// enc_mode_config.c:8815) — the ladder `set_obmc_controls` expands.
     ///

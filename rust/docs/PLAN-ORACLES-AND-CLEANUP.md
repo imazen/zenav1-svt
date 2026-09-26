@@ -933,6 +933,31 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     the allow_hp parameter and always lowers precision, a separate shim
     difference). `unipred3x3_injection` is still stubbed off — it is 1 only
     at MR and is the next wiring in this series.
+  - (b) second finding (2026-09-27, same session): with the mi grid now
+    carrying compound stamps, `vidyo3 128 q40 p0` poc=1 matched C through
+    SB(0,0) and diverged at SB(0,16) mi(8,16) — C committed mode 19
+    (NEAREST_NEWMV), the port mode 17 (NEAR_NEARMV), because
+    `new_nearest_near_comb_injection` was hardcoded 0 in prelude even
+    though `inject_new_nearest_new_comb_candidates` was fully ported
+    (including the `>= 2` early-continue at mode_decision.c:1774). C's
+    ladder gives `is_base ? 2 : 0` at M0/M1 and 1 at MR
+    (enc_mode_config.c:9116-9120); the `MdConfigSignals` field already
+    carried it. Wired it the same way. Census 289/540 (5 more promotions:
+    johnny 128 40 0 TU1->TU2, kristenandsara 128 20 1 -> IDENTICAL,
+    vidyo1 128 55 0/1 -> IDENTICAL, vidyo4 128 55 0 -> IDENTICAL), 0
+    regressed; OBMC counts hold the re-pinned floors (104/52/10/22 vs
+    100/50/10/22).
+  - (b) residual at mi(8,24) poc=1 — NOT an injection gap: both sides now
+    evaluate the identical winner at the 32x32 leaf (mode 18, mv
+    (-2,-18|-2,-20), dist 314992 identical) but the port charges rate
+    32874 vs C's 32043 — a ~830-unit ctx/rate difference on the SAME
+    compound candidate (inter_mode_ctx / drl_ctx / compound-idx path), so
+    the port's leaf cost (58.48M) sits above C's (58.02M) and its
+    SPLIT-vs-VERT_B arbitration then diverges (port split quarters sum
+    52.27M < its own leaf; C chose VERT_B at 54.07M). Next wedge: the
+    compound-mode rate terms for an identical winner — `drl_ctx`/
+    `inter_mode_ctx` derivation against the stack contents, or the
+    `comp_group`/`compound_idx` signalling cost.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.

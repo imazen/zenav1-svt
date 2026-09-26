@@ -227,6 +227,11 @@ impl EncodePipeline {
                     bipred3x3_injection: md_config_signals
                         .as_ref()
                         .map_or(0, |sigs| sigs.bipred3x3_injection),
+                    // C `pcs->new_nearest_near_comb_injection` — same
+                    // signal derivation.
+                    new_nearest_near_comb_injection: md_config_signals
+                        .as_ref()
+                        .map_or(0, |sigs| sigs.new_nearest_near_comb_injection),
                     // C `pcs->inter_intra_level` — `svt_aom_get_inter_
                     // intra_level`'s ladder, the input to
                     // `set_inter_intra_ctrls` at injection.
