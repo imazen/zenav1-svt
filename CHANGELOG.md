@@ -2619,6 +2619,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- Random access with `aq_mode` 2 (TPL) panicked in the directional intra predictor (index out of bounds) on moving content, e.g. 128x128 at preset 2: TPL's open-loop intra passed a block-sized neighbour edge where the directional modes read `w + h` samples (251ce523).
+
 - `EncodePipeline::recon_frames` queued each frame before film grain was synthesised, so the multi-frame `SVTAV1_FINAL_RECON` dump was the grain-free recon; `film_grain_gate.py`'s inter cells failed, unseen because the gate was not in CI (6369d24b).
 
 - **Monochrome inter at sizes that are not 8-aligned** decoded differently

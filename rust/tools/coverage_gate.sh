@@ -20,7 +20,7 @@
 # run. Paths still only the gates reach should get a smoke test there, not a
 # lower floor.
 #
-# So this gate defends the STILL-image surface against silent test loss. It is a
+# So this gate defends the nextest surface against silent test loss. It is a
 # floor, not a target: raising it is good, and COV_WRITE=1 records the new value.
 set -euo pipefail
 
