@@ -12,6 +12,9 @@ its `check` column names:
   dav1d     dav1d's output == aomdec's (implies a decode);
   decodes   aomdec accepts the port's stream (no pixel comparison; implied
             by lossless/recon/dav1d);
+  sb128     C's sequence header says use_128x128_superblock = 1 (the cell
+  sb64      really is an SB128 cell), or = 0; needs `c`
+            (tools/sb128_seqhdr.py reads the bit);
   none      the port encode alone (e.g. the sibling a `differs_from` names).
 so cells differ only in what they ask for, never in how they are run.
 
@@ -63,7 +66,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RS_ROOT = HERE.parent
-CHECKS = {"c", "lossless", "recon", "dav1d", "decodes", "none"}
+CHECKS = {"c", "lossless", "recon", "dav1d", "decodes", "sb128", "sb64", "none"}
 
 
 def read_cells(path):
@@ -77,6 +80,8 @@ def read_cells(path):
         checks = set(filter(None, (row.get("check") or "c").split(",")))
         if not checks <= CHECKS:
             sys.exit(f"cellrun: {path}: {row['name']}: unknown check(s) {checks - CHECKS}")
+        if checks & {"sb128", "sb64"} and "c" not in checks:
+            sys.exit(f"cellrun: {path}: {row['name']}: sb128/sb64 read C's stream; add `c`")
         row["checks"] = checks - {"none"}
         rows.append(row)
     arch = os.uname().machine
@@ -167,6 +172,18 @@ def run_checks(row, d, env, timeout):
     return out
 
 
+def c_sb_size(obu):
+    """128 or 64 from C's sequence header, None without one."""
+    sys.path.insert(0, str(HERE))
+    import sb128_seqhdr
+    if not obu.exists():
+        return None
+    for obu_type, payload in sb128_seqhdr.iter_obus(obu.read_bytes()):
+        if obu_type == 1:
+            return 128 if sb128_seqhdr.parse_sequence_header(payload)[0] else 64
+    return None
+
+
 def run_c(row, d, timeout, bytes_only):
     """Returns (verdict, stage, detail) for the C comparison."""
     env = cell_env(row, "c")
@@ -227,6 +244,8 @@ def run_cell(row, root, timeout, bytes_only):
         checks = run_checks(row, d, env, timeout)
         if "c" in row["checks"]:
             verdict, stage, detail = run_c(row, d, timeout, bytes_only)
+            for want in row["checks"] & {"sb128", "sb64"}:
+                checks.append((want, c_sb_size(d / "c.obu") == int(want[2:])))
         else:
             verdict, stage, detail = "-", "-", "-"
     except subprocess.TimeoutExpired:

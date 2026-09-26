@@ -62,12 +62,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/sb128gate.$$"
+OUT="${TMPDIR:-$HOME/tmp}/sb128gate.$$"
 mkdir -p "$OUT"
 
-pass=0
-fail=0
-failed=()
 
 # Reference decoder for assert (E). Optional but loudly reported when
 # missing — a silently-skipped corruption check is worse than none.
@@ -79,10 +76,9 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
   done
 fi
 command -v "$aomdec" >/dev/null 2>&1 || [ -x "$aomdec" ] || {
-  echo "WARNING: aomdec not found (set AOMDEC=...) — assert (E) DECODABILITY is SKIPPED" >&2
-  aomdec=""
+  echo "sb128 gate: aomdec not found (set AOMDEC=...); assert (E) DECODABILITY is required" >&2
+  exit 2
 }
-[ -n "$aomdec" ] && echo "decodability check: $aomdec"
 
 # Cells: "content w h qp preset". Every one is >= 165,120 aligned luma px
 # and preset <= 1, i.e. SB128 in C (asserted per-cell below, never assumed).
@@ -181,8 +177,11 @@ if [ -f "$_wiki_png" ]; then
                 "crop:$_wiki_png 512 512 32 0" "crop:$_wiki_png 512 512 48 1")
   SB128_BYTE_EXACT+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0"
                      "crop:$_wiki_png 512 512 32 0" "crop:$_wiki_png 512 512 48 1")
+elif [ "${SB128_ALLOW_NO_CORPUS:-0}" = 1 ]; then
+  echo "WARNING: $_wiki_png not found — codec_wiki SB128 cells SKIPPED (SB128_ALLOW_NO_CORPUS=1)" >&2
 else
-  echo "WARNING: $_wiki_png not found (set SC_CORPUS) — codec_wiki SB128 cells SKIPPED" >&2
+  echo "sb128 gate: $_wiki_png not found (set SC_CORPUS, or SB128_ALLOW_NO_CORPUS=1 to skip those cells)" >&2
+  exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -223,100 +222,43 @@ CONTROL_CELLS=(
   "gradient 256 256 32 0"
 )
 
-in_list() {
-  local needle="$1"; shift
-  local e
-  for e in "$@"; do [ "$e" = "$needle" ] && return 0; done
-  return 1
-}
-
-# ---------------------------------------------------------------- CONTROL
-echo "--- control cells (below the 165,120px threshold -> C codes SB64) ---"
+# The cells are a list for tools/cellrun.py (plan T3). Every SB128 cell is
+# byte-exact today (SB128_BYTE_EXACT == SB128_CELLS), so each row pins
+# IDENTICAL; one that diverges gets `expect DIFFERS` (self-promoting).
+# Checks: controls must be SB64 in C's sequence header and byte-match;
+# SB128 cells must be SB128 in C's header (else the cell is vacuous), decode,
+# and byte-match. WITNESS rows force the port to 64 px on an SB128 cell and
+# must DIFFER (new 2026-09-26): without them nothing shows that matching C
+# on these cells depends on the port's SB128 path at all.
+LIST="$OUT/sb128.cells.tsv"
+trap 'rm -rf "$OUT"' EXIT
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\texpect\tcheck\n' >"$LIST"
+cname() { case "$1" in crop:* | file:*) basename "${1#*:}" .png ;; *) echo "$1" ;; esac; }
 for cell in "${CONTROL_CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
-  tag="ctl_${content}_${w}x${h}_q${qp}_p${p}"
-  if ! "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
-    fail=$((fail + 1)); failed+=("$tag[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" >"$OUT/c.log" 2>&1; then
-    fail=$((fail + 1)); failed+=("$tag[c-err]"); continue
-  fi
-  # The control must be SB64 on BOTH sides, or it is not a control.
-  sb=$(python3 "$HERE/sb128_seqhdr.py" "$OUT/c.obu" | grep -o 'use_128x128_superblock=[01]' | cut -d= -f2)
-  if [ "$sb" != "0" ]; then
-    fail=$((fail + 1)); failed+=("$tag[control-is-sb128-not-a-control]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pass=$((pass + 1)); echo "  OK       $tag (sb64)"
-  else
-    fail=$((fail + 1)); failed+=("$tag[control-MISMATCH]")
-    echo "  MISMATCH $tag  <-- harness/preset regression, not an sb128 issue"
-  fi
+  printf 'ctl_%s_%sx%s_q%s_p%s\t%s\t%s\t%s\t%s\t%s\t\tIDENTICAL\tc,sb64\n' \
+    "$(cname "$content")" "$w" "$h" "$qp" "$p" "$content" "$w" "$h" "$qp" "$p" >>"$LIST"
 done
-
-# ------------------------------------------------------------- SB128 CELLS
-echo "--- sb128 cells (>= 165,120px, preset <= 1 -> C codes SB128) ---"
 for cell in "${SB128_CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
-  # `crop:/abs/foo.png` / `file:/abs/foo.png` -> a clean `foo` tag stem.
-  case "$content" in
-  crop:* | file:*) cname=$(basename "${content#*:}" .png) ;;
-  *) cname="$content" ;;
-  esac
-  tag="${cname}_${w}x${h}_q${qp}_p${p}"
-  if ! "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
-    fail=$((fail + 1)); failed+=("$tag[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" >"$OUT/c.log" 2>&1; then
-    fail=$((fail + 1)); failed+=("$tag[c-err]"); continue
-  fi
-
-  # (A) ANTI-VACUITY — the oracle must genuinely be an SB128 encode.
-  sb=$(python3 "$HERE/sb128_seqhdr.py" "$OUT/c.obu" | grep -o 'use_128x128_superblock=[01]' | cut -d= -f2)
-  if [ "$sb" != "1" ]; then
-    fail=$((fail + 1)); failed+=("$tag[VACUOUS: C emitted sb64, cell proves nothing]")
-    echo "  VACUOUS  $tag"
-    continue
-  fi
-
-  # (E) DECODABILITY — the port's own bytes must be a legal AV1 stream,
-  # whether or not they equal C's. See the header note.
-  if [ -n "$aomdec" ]; then
-    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-      fail=$((fail + 1)); failed+=("$tag[UNDECODABLE: aomdec rejected the port stream]")
-      echo "  CORRUPT  $tag  <-- port stream does not decode"
-      continue
-    fi
-  fi
-
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    if in_list "$cell" "${SB128_BYTE_EXACT[@]+"${SB128_BYTE_EXACT[@]}"}"; then
-      pass=$((pass + 1)); echo "  OK       $tag (sb128 byte-exact)"
-    else
-      # (D) the self-promoting pin fired: this is GOOD news that must not be
-      # silently absorbed. Fail loudly so the cell gets promoted.
-      fail=$((fail + 1)); failed+=("$tag[PIN-BROKEN: now byte-exact -> move to SB128_BYTE_EXACT]")
-      echo "  PROMOTE  $tag  <-- now byte-exact! add it to SB128_BYTE_EXACT"
-    fi
-  else
-    if in_list "$cell" "${SB128_BYTE_EXACT[@]+"${SB128_BYTE_EXACT[@]}"}"; then
-      fail=$((fail + 1)); failed+=("$tag[REGRESSION: was byte-exact]")
-      echo "  REGRESS  $tag"
-    else
-      pass=$((pass + 1))
-      cb=$(wc -c < "$OUT/c.obu" | tr -d " "); rb=$(wc -c < "$OUT/rs.obu" | tr -d " ")
-      echo "  pinned   $tag (C=${cb}B port=${rb}B — sb128 path unported)"
-    fi
-  fi
+  printf '%s_%sx%s_q%s_p%s\t%s\t%s\t%s\t%s\t%s\t\tIDENTICAL\tc,sb128,decodes\n' \
+    "$(cname "$content")" "$w" "$h" "$qp" "$p" "$content" "$w" "$h" "$qp" "$p" >>"$LIST"
 done
-
-rm -rf "$OUT"
-total=$((pass + fail))
-echo
-echo "sb128 gate: $pass / $total"
-if [ "$fail" -gt 0 ]; then
-  printf 'FAILED: %s\n' "${failed[@]}"
-fi
-[ "$fail" -eq 0 ]
+for cell in "gradient 512 384 32 0" "diag 512 384 55 0"; do
+  read -r content w h qp p <<<"$cell"
+  printf 'witness_sb64_%s_%sx%s_q%s_p%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_SB=64\tDIFFERS\tc,sb128\n' \
+    "$content" "$w" "$h" "$qp" "$p" "$content" "$w" "$h" "$qp" "$p" >>"$LIST"
+done
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${SB128_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+bad = [r for r in rows if r["ok"] != "yes"]
+n = lambda p: sum(r["name"].startswith(p) for r in rows)
+print(f"sb128 gate: {len(rows) - len(bad)} / {len(rows)} "
+      f"({len(rows) - n('ctl_') - n('witness_')} sb128, {n('ctl_')} controls, {n('witness_')} witnesses)")
+for r in bad:
+    print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+PY
+exit "$rc"
