@@ -116,9 +116,14 @@ QP="${RVIG_QP:-40}"
 work="${TMPDIR:-$HOME/tmp}/real-video-inter.$$"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
-echo "== real video inter gate (public-domain derf clips, qp $QP) =="
+# RVIG_BD=10 is the 10-bit gate (bd10_video_gate.sh is that wrapper);
+# RVIG_CHECK adds decoder checks to the C byte comparison.
+BD="${RVIG_BD:-8}"
+CHECK="${RVIG_CHECK:-c}"
+LABEL="${RVIG_LABEL:-real video inter gate}"
+echo "== $LABEL (public-domain derf clips, qp $QP, bit depth $BD) =="
 LIST="$work/real_video_inter.cells.tsv"
-printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\tenv_c\texpect\tcheck\n' >"$LIST"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\tenv_c\texpect\tcheck\n' >"$LIST"
 missing=0
 for spec in "${CELLS[@]}"; do
     set -- $spec
@@ -127,15 +132,15 @@ for spec in "${CELLS[@]}"; do
     w=${size%x*}; h=${size#*x}
     asset="$ASSETS/${clip}_${size}_8f.i420"
     if [ ! -f "$asset" ]; then echo "  MISSING ASSET $asset" >&2; missing=$((missing + 1)); continue; fi
-    printf '%s_%s_p%s\trawseq:%s\t%s\t%s\t%s\t%s\tSVTAV1_FRAMES=2;SVTAV1_INTRA_PERIOD=64;SVTAV1_HIER_LEVELS=0\tSVT_FRAMES=2;SVT_INTRA_PERIOD=-1;SVT_HIER_LEVELS=0;SVT_PRED_STRUCT=1\tIDENTICAL\tc\n' \
-        "$clip" "$size" "$preset" "$asset" "$w" "$h" "$QP" "$preset" >>"$LIST"
+    printf '%s_%s_p%s\trawseq:%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_FRAMES=2;SVTAV1_INTRA_PERIOD=64;SVTAV1_HIER_LEVELS=0\tSVT_FRAMES=2;SVT_INTRA_PERIOD=-1;SVT_HIER_LEVELS=0;SVT_PRED_STRUCT=1\tIDENTICAL\t%s\n' \
+        "$clip" "$size" "$preset" "$asset" "$w" "$h" "$QP" "$preset" "$BD" "$CHECK" >>"$LIST"
 done
 env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
     python3 "$HERE/cellrun.py" "$LIST" --out "$work/result.tsv" --bytes-only --jobs "${RVIG_JOBS:-4}" 2>"$work/cellrun.err"
-python3 - "$work/result.tsv" "${#CELLS[@]}" "$missing" <<'PY'
+python3 - "$work/result.tsv" "${#CELLS[@]}" "$missing" "$LABEL" <<'PY'
 import csv, sys
 rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
-total, missing = int(sys.argv[2]), int(sys.argv[3])
+total, missing, label = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 ran = [r for r in rows if r["verdict"] != "ERROR"]
 bad = [r for r in rows if r["ok"] != "yes"]
 for r in bad:
@@ -146,5 +151,5 @@ if len(ran) != total:
     sys.exit(f"ANTI-VACUITY FAIL: {len(ran)} of {total} cells actually ran")
 if bad:
     sys.exit(1)
-print("real video inter gate: OK")
+print(f"{label}: OK")
 PY

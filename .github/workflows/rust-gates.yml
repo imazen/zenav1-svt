@@ -649,7 +649,10 @@ jobs:
         #     FAILS if no cell reached a non-identity model.
         #
         # ~25 s for all three locally, on the same fetched derf assets the job
-        # above already has.
+        # above already has. AOMDEC: bd10_video_gate's decode leg is recon ==
+        # aomdec (and dav1d == aomdec) since 2026-09-26.
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
         run: |
           ./tools/warped_motion_gate.sh
           ./tools/bd10_video_gate.sh
