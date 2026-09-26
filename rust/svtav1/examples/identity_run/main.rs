@@ -65,20 +65,26 @@ fn main() {
     let prefix = &args[6];
     let spec = CellSpec::from_env();
     let timeout = spec.timeout;
-    // I420 chroma dims: AV1 4:2:0 uses CEILING rounding for odd luma dims
-    // ((w+1)/2), matching the port's `encode_frame_420` (which takes ceiling
-    // chroma) and the pic-buffer/app convention. Task #95 goal 1: ODD true
-    // dims (65x65, 65x64, 64x65) are now in scope for the synthetic content
-    // paths (uniform/gradient/diag, flat u=v=128 chroma — the floor-vs-ceiling
-    // choice is inert in flat chroma CONTENT; only the DLF chroma BOUND differs
-    // at odd width, which the port replicates per the port-map). The file:/raw:
-    // paths keep even dims (their 2x2 RGB averaging / floor .yuv layout needs
-    // it). For EVEN dims ceiling == floor, so every existing cell is byte-
-    // neutral. Chunk 1 (full-SB) + chunk 2 (partial-SB) already handled the
-    // aligned/8-round + partial-SB edge coding; this only adds odd true dims.
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    // Chroma dims from the cell's format (`SVT_CHROMA`): AV1 4:2:0 uses
+    // CEILING rounding for odd luma dims ((w+1)/2), matching the port's
+    // `encode_frame_420` (which takes ceiling chroma) and the pic-buffer/app
+    // convention; 4:4:4 is FULL-resolution (w x h per chroma plane — the
+    // fork's EB_YUV444 intake, enc_handle.c:5266-5270). Task #95 goal 1: ODD
+    // true dims (65x65, 65x64, 64x65) are now in scope for the synthetic
+    // content paths (uniform/gradient/diag, flat u=v=128 chroma — the
+    // floor-vs-ceiling choice is inert in flat chroma CONTENT; only the DLF
+    // chroma BOUND differs at odd width, which the port replicates per the
+    // port-map). The file:/raw: paths keep even dims at 4:2:0 (their 2x2
+    // RGB averaging / floor .yuv layout needs it). For EVEN dims ceiling ==
+    // floor, so every existing cell is byte-neutral. Chunk 1 (full-SB) +
+    // chunk 2 (partial-SB) already handled the aligned/8-round + partial-SB
+    // edge coding; this only adds odd true dims.
+    let fmt = spec.chroma;
+    let (cw, ch) = (fmt.chroma_width(w), fmt.chroma_height(h));
+    let ss_x = fmt.subsampling_x() as usize;
 
-    let content::Source { y, u, v, rawseq } = content::load(content, w, h, spec.assert_nonflat);
+    let content::Source { y, u, v, rawseq } =
+        content::load(content, w, h, spec.assert_nonflat, fmt);
 
     // SVTAV1_BD: encoder bit depth (8 default, or 10). At bd10 the C driver
     // (capture_c_trace <..> 10) reads PACKED u16 LE, so write the input as u16
@@ -286,8 +292,11 @@ fn main() {
                         dp *= zoom_den;
                     }
                     yuv.extend_from_slice(&warp(&y, w, h, dx, np, dp));
-                    yuv.extend_from_slice(&warp(&u, cw, ch, dx / 2, np, dp));
-                    yuv.extend_from_slice(&warp(&v, cw, ch, dx / 2, np, dp));
+                    // Chroma shifts in CHROMA pixels: the full-res planes of
+                    // 4:4:4 move with luma (dx), the half-res 4:2:0 planes at
+                    // dx/2 — `dx >> ss_x` either way.
+                    yuv.extend_from_slice(&warp(&u, cw, ch, dx >> ss_x, np, dp));
+                    yuv.extend_from_slice(&warp(&v, cw, ch, dx >> ss_x, np, dp));
                 }
             }
         }
@@ -374,7 +383,11 @@ fn main() {
             pipeline = pipeline.with_timeout(d);
         }
         if !mono {
-            pipeline = pipeline.with_chroma_420(true);
+            // `with_chroma_format` is the superset: Some(Yuv420) is exactly
+            // `with_chroma_420(true)`, and `SVT_CHROMA=444` routes the cell
+            // through the port's Yuv444 arm (its 10-bit absence is refused
+            // inside `try_encode_frame_444`'s envelope, not here).
+            pipeline = pipeline.with_chroma_format(Some(fmt));
         }
         // Only when SVTAV1_FINAL_RECON asks for the per-frame dump below.
         // Byte-INERT here by construction: `recon_output` reaches the encode
@@ -398,7 +411,11 @@ fn main() {
             let fy = &yuv[base..base + w * h];
             let fu = &yuv[base + w * h..base + w * h + cw * ch];
             let fv = &yuv[base + w * h + cw * ch..base + frame_len];
-            let r = if bd > 8 {
+            let r = if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
+                // 4:4:4 has no hbd entry point (the envelope is 8-bit); the
+                // u8 entry refuses a bd10 cell with the named gap.
+                pipeline.try_encode_frame_444(fy, fu, fv, w)
+            } else if bd > 8 {
                 // Widen exactly as the single-frame bd10 path does, so a
                 // multi-frame 10-bit cell differs from its 8-bit twin only in
                 // depth.
@@ -491,7 +508,7 @@ fn main() {
         }
         std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
     } else {
-        let mut yuv = Vec::with_capacity(w * h * 3 / 2);
+        let mut yuv = Vec::with_capacity(w * h + 2 * cw * ch);
         yuv.extend_from_slice(&y);
         yuv.extend_from_slice(&u);
         yuv.extend_from_slice(&v);
@@ -573,7 +590,13 @@ fn main() {
     };
     let (y, y10) = (y_in, y10_in);
 
-    let obu = if hbd_src {
+    let obu = if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
+        // `SVT_CHROMA=444`: the port's Yuv444 arm (8-bit only — a bd10 cell
+        // is refused inside the envelope check with the named gap, the same
+        // answer the multi-frame arm gives).
+        pipeline = pipeline.with_chroma_format(Some(fmt));
+        unwrap_or_refuse(pipeline.try_encode_frame_444(&y, &u, &v, y_stride))
+    } else if hbd_src {
         // Task #6: the native-10-bit entry points — the port sees the SAME
         // real u16 samples written to the .yuv the C oracle reads.
         if mono {

@@ -86,6 +86,11 @@ pub struct CellSpec {
     pub hbd_pq: bool,
     /// `SVTAV1_MONO`: code luma only.
     pub mono: bool,
+    /// `SVT_CHROMA`: 420 (default) or 444 — shared with the C driver, which
+    /// encodes the same full-res-chroma .yuv as EB_YUV444/profile 1 on
+    /// oracles that accept it (ghost-robot only; mainline and the hybrid
+    /// refuse at `svt_av1_verify_settings`).
+    pub chroma: svtav1_types::chroma::ChromaFormat,
     /// `SVTAV1_TIMEOUT_MS`: a deadline over the whole run (exit 4 on expiry).
     pub timeout: Option<core::time::Duration>,
     /// `SVTAV1_ASSERT_NONFLAT`: refuse a `crop@` window of one colour.
@@ -194,6 +199,14 @@ impl CellSpec {
             hbd_src,
             hbd_pq: hbd_src && flag("SVTAV1_HBD_PQ"),
             mono: flag("SVTAV1_MONO"),
+            chroma: match raw("SVT_CHROMA").as_deref() {
+                None | Some("420") => svtav1_types::chroma::ChromaFormat::Yuv420,
+                Some("444") => svtav1_types::chroma::ChromaFormat::Yuv444,
+                other => panic!(
+                    "SVT_CHROMA={other:?}: 420 or 444 (400 is SVTAV1_MONO; \
+                     422's port arm is not shipped)"
+                ),
+            },
             timeout: num("SVTAV1_TIMEOUT_MS").map(core::time::Duration::from_millis),
             assert_nonflat: flag("SVTAV1_ASSERT_NONFLAT"),
             frames,
@@ -253,6 +266,9 @@ impl CellSpec {
                 sr_dump: raw("SVTAV1_SR_DUMP"),
             },
         };
+        if spec.mono && spec.chroma == svtav1_types::chroma::ChromaFormat::Yuv444 {
+            panic!("SVTAV1_MONO with SVT_CHROMA=444: monochrome carries no chroma planes");
+        }
         if spec.frames > 1 {
             spec.refuse_still_only();
         }

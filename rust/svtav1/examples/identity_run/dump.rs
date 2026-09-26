@@ -19,11 +19,13 @@ const NO_RECON10: &str = "SVTAV1_FINAL_RECON at bd10: last_recon10_final is None
      produced no complete 10-bit recon (out of the bd10 envelope), so there is no 10-bit final \
      recon to dump; refusing to write the u8 chain's recon in its place";
 
-/// The dump crop: `aw` is the recon stride, (`tw`, `th`) what a decoder outputs.
+/// The dump crop: `aw` is the recon stride, (`tw`, `th`) what a decoder
+/// outputs, `fmt` the chroma geometry (full-resolution at 4:4:4).
 struct Geom {
     aw: usize,
     tw: usize,
     th: usize,
+    fmt: svtav1_types::chroma::ChromaFormat,
 }
 
 impl Geom {
@@ -32,6 +34,9 @@ impl Geom {
             aw: p.width as usize,
             tw: p.true_width as usize,
             th: p.true_height as usize,
+            fmt: p
+                .chroma_format
+                .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420),
         }
     }
 
@@ -43,6 +48,9 @@ impl Geom {
                 aw: uw,
                 tw: uw,
                 th: p.true_height as usize,
+                fmt: p
+                    .chroma_format
+                    .unwrap_or(svtav1_types::chroma::ChromaFormat::Yuv420),
             }
         } else {
             Self::of(p)
@@ -50,11 +58,13 @@ impl Geom {
     }
 
     /// Y, then U and V unless the frame is monochrome (empty chroma).
+    /// Chroma dims are the format's: ceiling-half at 4:2:0, FULL-resolution
+    /// at 4:4:4 (where a decoder's U/V planes are `tw`x`th`).
     fn pack<T: Copy>(&self, y: &[T], u: &[T], v: &[T]) -> Vec<T> {
         let (acw, tcw, tch) = (
-            self.aw.div_ceil(2),
-            self.tw.div_ceil(2),
-            self.th.div_ceil(2),
+            self.fmt.chroma_width(self.aw),
+            self.fmt.chroma_width(self.tw),
+            self.fmt.chroma_height(self.th),
         );
         let mut o = Vec::with_capacity(self.tw * self.th + 2 * tcw * tch);
         crop_into(&mut o, y, self.aw, self.tw, self.th);

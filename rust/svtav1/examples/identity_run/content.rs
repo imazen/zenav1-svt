@@ -1,8 +1,10 @@
-//! The cell's source pixels: synthetic patterns, PNG crops and raw I420.
+//! The cell's source pixels: synthetic patterns, PNG crops and raw I420/I444.
 //!
 //! The critical harness invariant is that the one `.yuv` written from these
 //! planes is the exact byte stream the C driver encodes too, so the RGB->YUV
 //! choice need not match any spec — only be fixed and deterministic.
+
+use svtav1_types::chroma::ChromaFormat;
 
 /// Frame 0's 8-bit planes, and the whole sequence for `rawseq:` content.
 pub struct Source {
@@ -14,9 +16,10 @@ pub struct Source {
     pub rawseq: Option<Vec<u8>>,
 }
 
-/// Generate or load `content` at `w`x`h` (ceiling chroma for odd dims).
-pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+/// Generate or load `content` at `w`x`h`, chroma at `fmt`'s geometry
+/// (4:2:0 ceiling for odd dims; 4:4:4 full-resolution).
+pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool, fmt: ChromaFormat) -> Source {
+    let (cw, ch) = (fmt.chroma_width(w), fmt.chroma_height(h));
     let mut rawseq: Option<Vec<u8>> = None;
     let (y, u, v) = if let Some(path) = content.strip_prefix("rawseq:") {
         // A REAL multi-frame I420 8-bit sequence: `SVTAV1_FRAMES` frames of
@@ -36,18 +39,18 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
         // Both encoders still consume the ONE shared `.yuv` this writes, so
         // the differential stays exact.
         assert!(
-            w.is_multiple_of(2) && h.is_multiple_of(2),
-            "rawseq: I420 harness requires even dims; got {w}x{h}"
+            fmt != ChromaFormat::Yuv420 || (w.is_multiple_of(2) && h.is_multiple_of(2)),
+            "rawseq: I420 harness requires even dims; got {w}x{h} (I444 is full-res)"
         );
         let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read rawseq {path}: {e}"));
-        let frame_len = w * h + 2 * (w / 2) * (h / 2);
+        let frame_len = w * h + 2 * cw * ch;
         assert!(
             bytes.len().is_multiple_of(frame_len) && !bytes.is_empty(),
-            "rawseq {path}: {} bytes is not a whole number of {w}x{h} I420 frames ({frame_len} B each)",
+            "rawseq {path}: {} bytes is not a whole number of {w}x{h} frames ({frame_len} B each)",
             bytes.len()
         );
         let ysz = w * h;
-        let csz = (w / 2) * (h / 2);
+        let csz = cw * ch;
         let planes = (
             bytes[..ysz].to_vec(),
             bytes[ysz..ysz + csz].to_vec(),
@@ -61,12 +64,13 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
         // decode_conformance failure cases (replicated-border padded content)
         // that synthetic uniform/gradient don't reproduce.
         assert!(
-            w.is_multiple_of(2) && h.is_multiple_of(2),
-            "raw: I420 harness requires even dims (floor .yuv layout); got {w}x{h}"
+            fmt != ChromaFormat::Yuv420 || (w.is_multiple_of(2) && h.is_multiple_of(2)),
+            "raw: I420 harness requires even dims (floor .yuv layout); got {w}x{h} \
+             (I444 is full-res)"
         );
         let bytes = std::fs::read(path).expect("read raw yuv");
         let ysz = w * h;
-        let csz = (w / 2) * (h / 2);
+        let csz = cw * ch;
         assert!(
             bytes.len() >= ysz + 2 * csz,
             "raw yuv {} too small: {} < {}",
@@ -89,7 +93,7 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
             "requested {w}x{h} is smaller than image {pw}x{ph} — caller must round up to >= image"
         );
         let rgb = pad_rgb_replicate(&rgb, pw, ph, w, h);
-        rgb_to_i420_bt601(&rgb, w, h)
+        rgb_to_yuv_bt601(&rgb, w, h, fmt)
     } else if let Some(rest) = content.strip_prefix("crop@") {
         // `crop@X,Y:path` -- an EXPLICIT crop origin instead of the centre.
         //
@@ -120,7 +124,7 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
         let cropped = crop_rgb(&rgb, pw, ox, oy, cwp, chp);
         assert_non_flat(assert_nonflat, &cropped, path, ox, oy);
         let rgb = pad_rgb_replicate(&cropped, cwp, chp, w, h);
-        rgb_to_i420_bt601(&rgb, w, h)
+        rgb_to_yuv_bt601(&rgb, w, h, fmt)
     } else if let Some(path) = content.strip_prefix("crop:") {
         // Real content CENTER-CROPPED to (w,h). Unlike `file:` (which pads a
         // small image UP to the box and rejects an image LARGER than the box),
@@ -140,7 +144,7 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
         let oy = (ph - chp) / 2;
         let cropped = crop_rgb(&rgb, pw, ox, oy, cwp, chp);
         let rgb = pad_rgb_replicate(&cropped, cwp, chp, w, h);
-        rgb_to_i420_bt601(&rgb, w, h)
+        rgb_to_yuv_bt601(&rgb, w, h, fmt)
     } else {
         let mut y = vec![0u8; w * h];
         for r in 0..h {
@@ -236,6 +240,43 @@ pub fn load(content: &str, w: usize, h: usize, assert_nonflat: bool) -> Source {
         (y, u, v)
     };
     Source { y, u, v, rawseq }
+}
+
+/// RGB->YUV at the cell's chroma geometry: I420 via the 2x2-averaged
+/// [`rgb_to_i420_bt601`]; I444 takes every pixel's own chroma (full
+/// resolution, `SVT_CHROMA=444` — the .yuv Ghost Robot's EB_YUV444 path
+/// reads). Any other format is refused: the harness has no writer for it.
+fn rgb_to_yuv_bt601(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    fmt: ChromaFormat,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    match fmt {
+        ChromaFormat::Yuv420 => rgb_to_i420_bt601(rgb, w, h),
+        ChromaFormat::Yuv444 => rgb_to_i444_bt601(rgb, w, h),
+        other => panic!("no RGB->{other:?} converter (420/444 only)"),
+    }
+}
+
+/// Per-pixel BT.601 limited-range RGB->I444: the same coefficients as
+/// [`rgb_to_i420_bt601`] with no 2x2 averaging — the chroma planes are
+/// full-resolution `w`x`h`.
+fn rgb_to_i444_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    assert!(w > 0 && h > 0, "empty frame");
+    let mut y = vec![0u8; w * h];
+    let mut u = vec![0u8; w * h];
+    let mut v = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            let i = (r * w + c) * 3;
+            let (rr, gg, bb) = (rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
+            y[r * w + c] = clip8(((66 * rr + 129 * gg + 25 * bb + 128) >> 8) + 16);
+            u[r * w + c] = clip8(((-38 * rr - 74 * gg + 112 * bb + 128) >> 8) + 128);
+            v[r * w + c] = clip8(((112 * rr - 94 * gg - 18 * bb + 128) >> 8) + 128);
+        }
+    }
+    (y, u, v)
 }
 
 fn clip8(x: i32) -> u8 {

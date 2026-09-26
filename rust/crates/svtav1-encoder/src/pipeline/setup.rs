@@ -471,6 +471,20 @@ impl EncodePipeline {
     ) -> Self {
         self.chroma_format = format;
         self.chroma_420 = format == Some(svtav1_types::chroma::ChromaFormat::Yuv420);
+        if format == Some(svtav1_types::chroma::ChromaFormat::Yuv444) {
+            // Full-resolution chroma uses 64x64 superblocks — C's force is
+            // unconditional and AFTER the resolution/preset ladder
+            // (enc_handle.c:4158-4160, f67a0f74: "at most four 32x32 chroma
+            // transforms per coding block"), so a frame that would derive
+            // 128 at 4:2:0 derives 64 here. An explicit `with_sb_size(128)`
+            // still refuses at the encode envelope rather than silently
+            // degrading.
+            if self.sb_size_override.is_none() {
+                self.sb_size = 64;
+                self.derived_sb_size = 64;
+                self.sb128_fallback = false;
+            }
+        }
         self
     }
 

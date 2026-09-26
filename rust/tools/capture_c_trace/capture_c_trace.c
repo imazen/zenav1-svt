@@ -16,6 +16,9 @@
  * od_ec coder — those are compared at the byte level by identity_diff.py.
  *
  * Usage: capture_c_trace <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>
+ * Env: SVT_CHROMA=444 — encode an I444 .yuv (full-res Cb/Cr) as EB_YUV444,
+ *      profile 1. Only on oracles carrying -DZEN_ORACLE_YUV444 (ghost-robot);
+ *      refused elsewhere rather than silently encoded as 4:2:0.
  * Env: SVT_WRAP_REPORT=1 (stderr) or =<file> (appended) — at exit, one
  *      `WRAP_FIRED\t<symbol>\t<count>` line per --wrap interposer, zeros
  *      included (wrap_fired.c; the symbols are listed once, in wrap_list.h).
@@ -202,6 +205,39 @@ int main(int argc, char** argv) {
     const uint32_t bit_depth   = (argc == 8) ? (uint32_t)atoi(argv[7]) : 8;
     const size_t   sample_size = (bit_depth > 8) ? 2 : 1;
 
+    /* SVT_CHROMA=444 (default: unset or "420"): the .yuv is I444 — the Cb/Cr
+       planes are FULL-resolution (w*h samples each, 3*w*h*sample_size per
+       frame) — and the encode runs EB_YUV444 at High profile, the path Ghost
+       Robot's `f67a0f74` opens ("High profile support": verify_settings
+       accepts EB_YUV444 with profile == 1, enc_settings.c:488-501; the
+       library would auto-promote profile 0 -> 1 in copy_api_from_app, but the
+       driver sets it explicitly so the config on record says what ran).
+
+       Refused — exit 2, the same code a mainline-API fork knob gets — when
+       the oracle lacks the support. ZEN_ORACLE_YUV444 is a registry
+       driver_def set only on oracles whose verify_settings accepts
+       EB_YUV444; without it this request dies HERE rather than surfacing as
+       a generic set_parameter error, and rather than ever encoding the same
+       .yuv as 4:2:0 under the requested name. */
+    int yuv444 = 0;
+    {
+        const char* chroma_env = getenv("SVT_CHROMA");
+        if (chroma_env && *chroma_env && strcmp(chroma_env, "420") != 0) {
+            if (strcmp(chroma_env, "444") != 0)
+                die("SVT_CHROMA must be 420 or 444", EB_ErrorBadParameter);
+#ifdef ZEN_ORACLE_YUV444
+            yuv444 = 1;
+#else
+            fprintf(stderr,
+                    "capture_c_trace: SVT_CHROMA=444 requires an oracle whose "
+                    "svt_av1_verify_settings accepts EB_YUV444 (ghost-robot); this "
+                    "one refuses it — refusing rather than encoding the frame as "
+                    "4:2:0 under a 4:4:4 request\n");
+            return 2;
+#endif
+        }
+    }
+
     const size_t ysz = (size_t)w * h;
     /* AV1 4:2:0 CEILING chroma dims ((w+1)/2). The .yuv the Rust harness
        writes is laid out ceiling-strided, matching the port's ceiling chroma
@@ -210,9 +246,11 @@ int main(int argc, char** argv) {
        library internally reads FLOOR chroma (luma_width>>1) columns/rows from
        this ceiling-strided buffer (resource_coordination_process.c:491) — for
        the flat u=v=128 synthetic chroma the ignored last ceiling col/row are
-       128 too, so both encoders see identical chroma content. */
-    const size_t cw = ((size_t)w + 1) / 2;
-    const size_t ch = ((size_t)h + 1) / 2;
+       128 too, so both encoders see identical chroma content.
+       At 4:4:4 chroma is FULL-resolution (enc_handle.c:5266-5270 derives
+       chroma_width = (luma_width + 0) >> 0 = w), so the planes are w*h. */
+    const size_t cw = yuv444 ? (size_t)w : ((size_t)w + 1) / 2;
+    const size_t ch = yuv444 ? (size_t)h : ((size_t)h + 1) / 2;
     const size_t csz = cw * ch;
     const size_t frame_bytes = (ysz + 2 * csz) * sample_size;
 
@@ -260,7 +298,8 @@ int main(int argc, char** argv) {
     if (!fi)
         die("cannot open input .yuv", 0);
     if (fread(yuv, 1, frame_bytes * (size_t)n_frames, fi) != frame_bytes * (size_t)n_frames)
-        die("short read (need SVT_FRAMES * w*h*3/2 * sample_size bytes of I420)", 0);
+        die("short read (need SVT_FRAMES * (w*h + 2*chroma) * sample_size bytes; "
+            "I420 chroma is ceil(w/2)*ceil(h/2), I444 is w*h)", 0);
     fclose(fi);
 
     /* STEP 1: handle + library defaults. */
@@ -368,7 +407,9 @@ int main(int argc, char** argv) {
     }
     cfg.level_of_parallelism   = 1;   /* --lp 1 */
     cfg.encoder_bit_depth      = bit_depth;
-    cfg.encoder_color_format   = EB_YUV420;
+    cfg.encoder_color_format   = yuv444 ? EB_YUV444 : EB_YUV420;
+    if (yuv444)
+        cfg.profile = 1; /* High profile — 444 cannot signal under Main (0) */
     cfg.frame_rate_numerator   = 30; /* matches the F30:1 y4m the perf gate feeds the app */
     /* SVT_CPU_FLAGS (optional): pin the C encoder's RTCD dispatch level.
      * Absent => library default EB_CPU_FLAGS_ALL, i.e. the fastest kernels the
