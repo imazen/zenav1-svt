@@ -41,7 +41,7 @@
 #       the cell gets promoted instead of silently absorbed.
 #
 # Usage: tile_gate.sh
-# Env:   AOMDEC=/path/to/aomdec (autodetected)
+# Env:   AOMDEC=/path/to/aomdec (autodetected; required), TILE_JOBS (4)
 #
 # The full sweep behind the cell choices is tools/tile_map.sh, whose
 # scoreboard lives at benchmarks/tile_map_latest.tsv.
@@ -49,12 +49,9 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
-OUT="${TMPDIR:-/tmp}/tilegate.$$"
+OUT="${TMPDIR:-$HOME/tmp}/tilegate.$$"
 mkdir -p "$OUT"
 
-pass=0
-fail=0
-failed=()
 
 aomdec="${AOMDEC:-aomdec}"
 if ! command -v "$aomdec" >/dev/null 2>&1; then
@@ -63,31 +60,14 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
     [ -x "$cand" ] && { aomdec="$cand"; break; }
   done
 fi
+# Required: (E) used to be SKIPPED with a warning when aomdec was missing,
+# and a gate that silently drops an assert is the one that lets corruption
+# through (the pre-#96 undecodable-rows bug was exactly that class).
 command -v "$aomdec" >/dev/null 2>&1 || [ -x "$aomdec" ] || {
-  echo "WARNING: aomdec not found (set AOMDEC=...) — assert (E) DECODABILITY is SKIPPED" >&2
-  aomdec=""
+  echo "tile gate: aomdec not found (set AOMDEC=...); assert (E) DECODABILITY is required" >&2
+  exit 2
 }
-[ -n "$aomdec" ] && echo "decodability check: $aomdec"
 
-# Geometries, chosen so the grid is genuinely exercised (a tile is at
-# least one SB, and the tile grid is counted in SBs):
-#
-#   256x256 -> 4x4 SBs   both axes divide by every log2 in range — the
-#                        clean power-of-two grid. rows_log2=2 gives 4
-#                        tiles of 1 SB row; with cols_log2=2 that is 16
-#                        one-SB tiles, the maximum decomposition here.
-#   512x384 -> 8x6 SBs   6 does NOT divide by 4: C's algorithm gives a
-#                        2-SB tile height and therefore THREE tile rows
-#                        at rows_log2=2, not four. This is the geometry
-#                        that produced the out-of-range
-#                        context_update_tile_id.
-#   640x448 -> 10x7 SBs  neither axis divides — ragged on BOTH axes at
-#                        once. At log2=2 on both: width ceil(10/4)=3 SBs
-#                        -> ceil(10/3)=4 columns, height ceil(7/4)=2 SBs
-#                        -> ceil(7/2)=4 rows, with the last tile of each
-#                        axis short (1 SB wide, 1 SB high).
-#
-# Cells: "content w h qp preset rows_log2 cols_log2".
 CELLS=(
   # --- 256x256, the clean grid ---
   "gradient 256 256 45 6  0 1"
@@ -123,212 +103,42 @@ CELLS=(
   "gradient 640 448 20 6  2 2"
 )
 
-# Cells that BYTE-MATCH the C reference today. A cell only ever moves here
-# after `cmp` says so (measured by tools/tile_map.sh, 162-cell sweep).
-#
-# ALL 26 tile cells are byte-exact — the full 162-cell sweep is 162/162 MATCH
-# after the M6 PD0 tile-boundary fix (see the note below). This includes
-# `512x384 r2` (the ragged-rows geometry, tile count 3 where 1<<log2 is 4, the
-# ex-UNDECODABLE cell) and the four big-gap witnesses (512x384 q45 r1c1/r1c2,
-# 640x448 q20 r1c2/r2c2) that were 190-219 bytes off before the fix.
-BYTE_EXACT=(
-  "gradient 256 256 45 6  0 1"
-  "gradient 256 256 45 6  0 2"
-  "gradient 256 256 45 6  1 0"
-  "gradient 256 256 45 6  1 1"
-  "gradient 256 256 45 6  1 2"
-  "gradient 256 256 45 6  2 0"
-  "gradient 256 256 45 6  2 1"
-  "gradient 256 256 45 6  2 2"
-  "gradient 256 256 45 10 1 0"
-  "gradient 256 256 45 10 2 0"
-  "gradient 256 256 45 10 2 2"
-  "gradient 256 256 45 13 2 2"
-  "gradient 256 256 20 6  1 0"
-  "gradient 256 256 20 6  2 2"
-  "gradient 512 384 45 6  0 1"
-  "gradient 512 384 45 6  1 0"
-  "gradient 512 384 45 6  2 0"
-  "gradient 512 384 45 6  2 2"
-  "gradient 512 384 20 6  2 0"
-  "gradient 512 384 45 6  1 1"
-  "gradient 512 384 45 6  1 2"
-  "gradient 640 448 45 6  1 1"
-  "gradient 640 448 45 6  2 2"
-  "gradient 640 448 45 10 2 1"
-  "gradient 640 448 20 6  1 2"
-  "gradient 640 448 20 6  2 2"
-)
-
-# ---------------------------------------------------------------------------
-# THE MULTI-TILE PRESET-6 RESIDUAL — ROOT-CAUSED AND CLOSED (162/162 MATCH).
-#
-# The frame header is NOT the problem, and never was: identity_diff
-# classifies every diverging cell's first divergence as `tile payload`,
-# never SH or FH. tile_info() — uniform_tile_spacing_flag, both increment
-# runs, context_update_tile_id over the ACTUAL tile count,
-# tile_size_bytes_minus_1 — and the tile group's size prefixes are
-# byte-correct across the entire 162-cell sweep.
-#
-# The MD-search fix (`intra_edge::TileMi` carrying the tile's mi rect into
-# the leaf funnel's UnitGeom / DrGeom so C's tile-scoped availability
-# predicates and neighbour extraction stop at the tile edge instead of
-# reading the 128 fill) promoted 12 of the 22 cells — but it fixed only the
-# LEAF-MODE search, not the PARTITION search.
-#
-# The residual (25 cells, every one PRESET 6) was a SECOND tile-blind
-# corner: the M6 PD0 partition search (`pd0_pick_sb_partition_m6_eval` ->
-# `Pd0Ctx::lvl1_block_cost_rect`) predicted the DC candidate from
-# `extract_neighbors` — the FRAME-edge availability form — so at a
-# tile-TOP-ROW / tile-LEFT-COLUMN superblock it read source pixels ACROSS
-# the tile boundary. C's `up_available` / `left_available` respect tiles at
-# every preset, so C predicts DC from the tile edge (worse prediction ->
-# higher residual -> SPLIT into 16x16/8x8) while the port kept the 64x64
-# NONE and coded a different tree. Measured at 512x384 q45 r1c0: at the
-# tile-row boundary mi_row=48 (pixel 192) C-multi splits to bsize 6/3 where
-# C-single (== port) keeps bsize 12 — and the port's multi-tile tree was
-# BYTE-IDENTICAL to its own single-tile tree (tile-blind). Fix: thread the
-# tile pixel origin into `Pd0Ctx` and use `extract_neighbors_tiled` in the
-# LVL_1 leaf cost (byte-inert at origin 0, so single-tile / eff-M9 LVL_5 /
-# bd10 LVL_0 are untouched — which is exactly why presets 10/13 were 48/48
-# THROUGHOUT: their variance-dominated eff-M9 partition never reacted to the
-# boundary-prediction change in the first place).
-#
-# The `lr-taps` "first divergence" was a faithful SYMPTOM, not the root: LR
-# syntax is written before each SB's partition tree, so any recon difference
-# anywhere in the frame reprices the whole-frame Wiener taps and surfaces at
-# the very first coded op. Both encoders DO pick RESTORE_WIENER; the taps
-# just differed because the recon fed to the (genuinely whole-frame /
-# tile-independent — restoration.c `foreach_rest_unit_in_frame` uses
-# `whole_frame_rect` and calls `on_tile(0,0)` exactly once, tile loop
-# hardcoded `< 1` at :1699) LR search differed. The earlier "per-tile RU
-# grid" hypothesis (pipeline.rs task-#86 PORT-NOTE) was WRONG — the recon
-# difference was the PD0 partition, now fixed.
-#
-# NOT COVERED by this gate (stated so nobody reads 26/26 as more than it
-# is):
-#   * SB128 + tiles. Every cell here is SB64 — C picks SB128 only at
-#     preset <= 1 and >= 165,120 aligned px, and these presets are 6/10/13.
-#     TileGrid::resolve does implement the SB128 limits (max_tile_width_sb
-#     halves, max_tile_area_sb quarters) but nothing exercises them.
-#   * bd10 + tiles. The bd10 re-encode is post-merge and whole-frame — see
-#     the PORT-NOTEs at both UnitGeom sites in pipeline.rs.
-#   * Real photographic / screen content with tiles. All cells are
-#     `gradient`.
-#   * C's enc_settings validation caps (each log2 <= 6, product <= 128,
-#     and tile_columns <= 4 — enc_settings.c:373,377) are a hard REJECT in
-#     C, where the port clamps geometrically. That is an error-behaviour
-#     difference, not a bitstream one, and it is out of reach here anyway:
-#     cols_log2 5 needs >= 32 SB columns, i.e. a >= 2048px-wide frame.
-#   * Non-uniform tile spacing is not a gap — C itself refuses it
-#     ("NON uniform_tile_spacing_flag not supported yet",
-#     entropy_coding.c:2427), so uniform is the whole envelope.
-# ---------------------------------------------------------------------------
-
-# CONTROLS: the same geometries at rows=cols=0. These must byte-match —
-# they are the harness-faithfulness witness AND the regression guard for
-# tile_info() bits that every other gate's cells also carry.
-CONTROLS=(
-  "gradient 256 256 45 6"
-  "gradient 512 384 45 6"
-  "gradient 640 448 45 6"
-)
-
-in_list() {
-  local needle="$1"; shift
-  local e
-  for e in "$@"; do [ "$e" = "$needle" ] && return 0; done
-  return 1
-}
-
-# ---------------------------------------------------------------- CONTROL
-echo "--- control cells (rows=cols=0 -> single tile; must byte-match) ---"
-for cell in "${CONTROLS[@]}"; do
-  read -r content w h qp p <<<"$cell"
-  tag="ctl_${content}_${w}x${h}_q${qp}_p${p}"
-  if ! "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" \
-        >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
-    fail=$((fail + 1)); failed+=("$tag[rs-err]"); continue
-  fi
-  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-        "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" >"$OUT/c.log" 2>&1; then
-    fail=$((fail + 1)); failed+=("$tag[c-err]"); continue
-  fi
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    pass=$((pass + 1)); echo "  OK       $tag"
-  else
-    fail=$((fail + 1)); failed+=("$tag[control-MISMATCH]")
-    echo "  MISMATCH $tag  <-- single-tile regression, NOT a tile-grid issue"
-  fi
-done
-
-# ------------------------------------------------------------- TILE CELLS
-echo "--- tile cells (rows_log2 x cols_log2) ---"
+# The cells are a list for tools/cellrun.py (plan T3). Every tile cell is
+# byte-exact today (the 162-cell tools/tile_map.sh sweep is 162/162), so each
+# row pins IDENTICAL; a cell that ever diverges gets `expect DIFFERS`, which
+# is self-promoting (a match then fails the gate). Each tile cell names the
+# untiled encode of the same (size, qp, preset) twice: C's bytes must differ
+# from it (A, the knob reached C) and so must the port's (the port honoured
+# it too; new 2026-09-26). The untiled siblings are the controls (C): they
+# must byte-match, and there is now one per (size, qp, preset) instead of one
+# per size.
+LIST="$OUT/tile.cells.tsv"
+trap 'rm -rf "$OUT"' EXIT
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\tenv_c\texpect\tcheck\tdiffers_from\tc_differs_from\n' >"$LIST"
+declare -A seen
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p r c <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}_r${r}c${c}"
-
-  if ! SVTAV1_TILE_ROWS_LOG2="$r" SVTAV1_TILE_COLS_LOG2="$c" \
-       "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" \
-       >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
-    fail=$((fail + 1)); failed+=("$tag[rs-err]"); continue
+  ctl="ctl_${content}_${w}x${h}_q${qp}_p${p}"
+  if [ -z "${seen[$ctl]:-}" ]; then
+    seen[$ctl]=1
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t\t\tIDENTICAL\tc,decodes\t\t\n' \
+      "$ctl" "$content" "$w" "$h" "$qp" "$p" >>"$LIST"
   fi
-  if ! SVT_TILE_ROWS="$r" SVT_TILE_COLUMNS="$c" SVT_TRACE_OUT=/dev/null \
-       "$HERE/capture_c_trace/capture_c_trace" \
-       "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" >"$OUT/c.log" 2>&1; then
-    fail=$((fail + 1)); failed+=("$tag[c-err]"); continue
-  fi
-
-  # (A) ANTI-VACUITY — the tile request must have changed the C encode.
-  if ! SVT_TILE_ROWS=0 SVT_TILE_COLUMNS=0 SVT_TRACE_OUT=/dev/null \
-       "$HERE/capture_c_trace/capture_c_trace" \
-       "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c0.obu" >/dev/null 2>&1; then
-    fail=$((fail + 1)); failed+=("$tag[c0-err]"); continue
-  fi
-  if cmp -s "$OUT/c.obu" "$OUT/c0.obu"; then
-    fail=$((fail + 1))
-    failed+=("$tag[VACUOUS: C coded it identically to a single tile]")
-    echo "  VACUOUS  $tag  <-- geometry clamped the request away; cell proves nothing"
-    continue
-  fi
-
-  # (E) DECODABILITY — the port's bytes must be a legal AV1 stream.
-  if [ -n "$aomdec" ]; then
-    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
-      fail=$((fail + 1))
-      failed+=("$tag[UNDECODABLE: aomdec rejected the port stream]")
-      echo "  CORRUPT  $tag  <-- port stream does not decode"
-      continue
-    fi
-  fi
-
-  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-    if in_list "$cell" "${BYTE_EXACT[@]+"${BYTE_EXACT[@]}"}"; then
-      pass=$((pass + 1)); echo "  OK       $tag (byte-exact)"
-    else
-      # (D) the self-promoting pin fired — good news that must not be
-      # silently absorbed.
-      fail=$((fail + 1))
-      failed+=("$tag[PIN-BROKEN: now byte-exact -> move it to BYTE_EXACT]")
-      echo "  PROMOTE  $tag  <-- now byte-exact! add it to BYTE_EXACT"
-    fi
-  else
-    if in_list "$cell" "${BYTE_EXACT[@]+"${BYTE_EXACT[@]}"}"; then
-      fail=$((fail + 1)); failed+=("$tag[REGRESSION: was byte-exact]")
-      echo "  REGRESS  $tag"
-    else
-      pass=$((pass + 1))
-      cb=$(wc -c < "$OUT/c.obu" | tr -d " "); rb=$(wc -c < "$OUT/rs.obu" | tr -d " ")
-      echo "  pinned   $tag (C=${cb}B port=${rb}B, decodes — see the note above)"
-    fi
-  fi
+  printf '%s_%sx%s_q%s_p%s_r%sc%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tIDENTICAL\tc,decodes\t%s\t%s\n' \
+    "$content" "$w" "$h" "$qp" "$p" "$r" "$c" "$content" "$w" "$h" "$qp" "$p" \
+    "SVTAV1_TILE_ROWS_LOG2=$r;SVTAV1_TILE_COLS_LOG2=$c" "SVT_TILE_ROWS=$r;SVT_TILE_COLUMNS=$c" \
+    "$ctl" "$ctl" >>"$LIST"
 done
-
-rm -rf "$OUT"
-total=$((pass + fail))
-echo
-echo "tile gate: $pass / $total"
-if [ "$fail" -gt 0 ]; then
-  printf 'FAILED: %s\n' "${failed[@]}"
-fi
-[ "$fail" -eq 0 ]
+AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${TILE_JOBS:-4}"
+rc=$?
+python3 - "$OUT/result.tsv" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+bad = [r for r in rows if r["ok"] != "yes"]
+ctl = [r for r in rows if r["name"].startswith("ctl_")]
+print(f"tile gate: {len(rows) - len(bad)} / {len(rows)} "
+      f"({len(rows) - len(ctl)} tile cells, {len(ctl)} single-tile controls)")
+for r in bad:
+    print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+PY
+exit "$rc"
