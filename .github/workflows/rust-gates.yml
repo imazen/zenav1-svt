@@ -120,8 +120,9 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
           # Plus the 14 CID22 photos (5.4 MB) that `global_motion_gate.sh`
-          # (shard 3) and `bd10_photo_gate.sh` (shard 4) read; without them
-          # those gates exit FATAL on this runner.
+          # (shard 3) and `bd10_photo_gate.sh` (shard 4) read, and the two
+          # CLIC crops (9.2 MB) bd10_photo_gate's groups G and H read; without
+          # them those gates fail their cells as missing on this runner.
           git -C "$dest" sparse-checkout set --no-cone '/gb82-sc/' \
             '/CID22/CID22-512/training/1001682.png' \
             '/CID22/CID22-512/training/1080721.png' \
@@ -136,7 +137,9 @@ jobs:
             '/CID22/CID22-512/training/4666751.png' \
             '/CID22/CID22-512/training/7062227.png' \
             '/CID22/CID22-512/training/708587.png' \
-            '/CID22/CID22-512/training/pexels-photo-3214683.png'
+            '/CID22/CID22-512/training/pexels-photo-3214683.png' \
+            '/clic2025/final-test/02809272b4ca9b08af45771501b741296187c7e26907efb44abbbfcb6cd804f7.png' \
+            '/clic2025/final-test/8426ed2245c791232862b0a0b2a62a1f17031e8e6e38921fe939df0b3a05ac41.png'
           n=$(ls "$dest"/gb82-sc/*.png 2>/dev/null | wc -l | tr -d ' ')
           echo "gb82-sc PNGs fetched: $n -> $dest/gb82-sc"
           [ "$n" -eq 10 ] || { echo "FATAL: expected 10 gb82-sc PNGs, got $n" >&2; exit 1; }
@@ -1083,8 +1086,9 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
           # Plus the 14 CID22 photos (5.4 MB) that `global_motion_gate.sh`
-          # (shard 3) and `bd10_photo_gate.sh` (shard 4) read; without them
-          # those gates exit FATAL on this runner.
+          # (shard 3) and `bd10_photo_gate.sh` (shard 4) read, and the two
+          # CLIC crops (9.2 MB) bd10_photo_gate's groups G and H read; without
+          # them those gates fail their cells as missing on this runner.
           git -C "$dest" sparse-checkout set --no-cone '/gb82-sc/' \
             '/CID22/CID22-512/training/1001682.png' \
             '/CID22/CID22-512/training/1080721.png' \

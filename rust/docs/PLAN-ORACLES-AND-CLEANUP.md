@@ -579,7 +579,7 @@ Order, by expected size:
      CI shard 3.
   3. Run the ledger gates in CI. `bd10_nonflat_gate.sh` and the synthetic
      tier of `identity_full_8bit.sh` already ran there; `bd10_photo_gate.sh`
-     joins shard 4 (this change; its 14 CID22 photos join the sparse corpus
+     joins shard 4 (its 14 CID22 photos and 2 CLIC crops join the sparse corpus
      fetch). Re-verified by hand 2026-09-25: 191/191, 309/309 and 1100/1100.
      Open: identity_full_8bit's real tier (gb82 + CID22, ~45 min).
 - [ ] T4 stage-boundary differentials.
