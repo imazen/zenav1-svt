@@ -840,17 +840,21 @@ Order, by expected size:
      also ask for `lossless`, `recon` (aomdec == the port's final recon) and
      `dav1d` checks, name a `differs_from` sibling (anti-vacuity), and run
      `--bytes-only`; each check was shown to fail on a cell built to fail
-     it. Ported by 2026-09-26, verdicts unchanged unless noted (i265):
-     lossless, superres (+recon, +preset 7), superres_bd10 (+preset 7),
-     partial_sb, bd10_partial_sb, bd10_nonflat (+recon), bd10_photo (+recon),
-     imazen26 (+recon), tile (aomdec required, +port anti-vacuity, 9
-     controls), sb128 (+witnesses), alignment, coverage_combos,
-     video_selfcheck and its bd10 twin, screen_palette, screen_palette_bd
-     (+screenrep, 4 stale pins removed), screen_ibc_byte, bd10_hbd_src,
-     identity_full_8bit (scoreboard byte-identical; CI now runs its default
-     tiers). cellrun gained per-side env, `decodes`, `inter`, `sb128`/`sb64`,
-     `c_differs_from`, `same_as`, `arch`, `@CELL@` and `--root`. Next:
-     screen_ibc_gate, the inter byte gates, fctx_gate (brief `gate-port`).
+     it. Ported by 2026-09-26, verdicts unchanged unless noted (i265): 24
+     gates. Stills: lossless, superres (+recon, +preset 7), superres_bd10
+     (+preset 7), partial_sb, bd10_partial_sb, bd10_nonflat (+recon),
+     bd10_photo (+recon), imazen26 (+recon), tile (aomdec required, +port
+     anti-vacuity, 9 controls), sb128 (+witnesses), alignment,
+     coverage_combos, screen_palette, screen_palette_bd (+screenrep, 4 stale
+     pins removed), screen_ibc_byte, bd10_hbd_src, identity_full_8bit
+     (scoreboard byte-identical; CI runs its default tiers). Video:
+     video_selfcheck and its bd10 twin, inter_byte, real_video_inter and
+     bd10_video (one script, +recon), warped_motion and obmc (one helper,
+     tools/mode_count_gate.py, +recon). cellrun gained per-side env,
+     `decodes`, `inter`, `sb128`/`sb64`, `c_differs_from`, `same_as`,
+     `arch`, `@CELL@` and `--root`. Not ported (specialised checks, fast):
+     global_motion (model all-identity check), screen_ibc (decode-diff
+     self-desync), the join and census gates, fctx.
   2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
      `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
      that does not parse, a flag other than 0/1, and a still-only knob on a
