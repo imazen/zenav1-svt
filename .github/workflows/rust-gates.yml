@@ -9,19 +9,22 @@ on:
     - cron: "17 4 * * *"
   push:
     branches: ["wave2/**", "main"]
-    paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml"]
+    # Docs, benchmark records and briefs change no gate's verdict.
+    paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml",
+            "!rust/docs/**", "!rust/benchmarks/**", "!**/*.md"]
   pull_request:
     paths: ["rust/**", "reference/**", ".gitmodules"]
 
-# One run per ref: a push supersedes the run still in progress for the same
-# branch. Pushes to main land every few minutes and a run takes ~40, so
-# without this the queue grew without bound and the tip's verdict came an
-# hour late (six runs queued on 2026-09-26). The tip carries every earlier
-# change, so its result is the one that matters. The nightly (coverage) run
-# gets its own group, so a push cannot cancel it.
+# One run in flight and one pending per ref: a newer push replaces the
+# PENDING run, and the running one finishes. Pushes to main land every few
+# minutes and a run takes ~40, so without a group the queue grew without
+# bound (six runs queued on 2026-09-26); cancelling the RUNNING one instead
+# meant a steady stream of pushes never let any run finish. The tip carries
+# every earlier change, so the next run to start tests everything. The
+# nightly (coverage) run gets its own group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
