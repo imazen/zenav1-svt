@@ -1,5 +1,5 @@
 content	size	preset	qp	bd	verdict
-gradient	64	2	20	8	DIFFERS
+gradient	64	2	20	8	IDENTICAL
 gradient	64	4	20	8	IDENTICAL
 gradient	64	6	20	8	DIFFERS
 gradient	64	8	20	8	DIFFERS
@@ -107,7 +107,7 @@ gradient	256	6	32	8	DIFFERS
 gradient	256	8	32	8	DIFFERS
 gradient	256	10	32	8	DIFFERS
 gradient	256	13	32	8	DIFFERS
-gradient	256	2	45	8	DIFFERS
+gradient	256	2	45	8	IDENTICAL
 gradient	256	4	45	8	DIFFERS
 gradient	256	6	45	8	DIFFERS
 gradient	256	8	45	8	DIFFERS

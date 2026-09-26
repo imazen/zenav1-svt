@@ -45,6 +45,9 @@ pub(super) fn encode_coding_unit(
     fun_u_recon: &mut Vec<u8>,
     fun_v_recon: &mut Vec<u8>,
     fun_ectx: &mut Option<EntropyCtx>,
+    // The per-tile encode-pass coefficient-neighbour chain
+    // (`ep_luma_dc_sign_level_coeff_na`) — `Some` whenever the funnel ran.
+    enc_cul: &mut Option<crate::leaf_funnel::EncPassCul>,
     fun_frame: &Option<crate::leaf_funnel::FunnelFrame>,
     ibc_state: &Option<Box<crate::leaf_funnel::IbcFrameState>>,
     ibc_mvp_grid: &mut Vec<crate::intrabc_mvp::MvpMiEntry>,
@@ -1614,13 +1617,49 @@ pub(super) fn encode_coding_unit(
     // PARTITION_SPLIT node rooted at the 128 square — which is
     // what C codes: an 8-symbol partition symbol at CDF row
     // bsl=4 (ctx 16..19), then the quadrants in Z-order.
-    let sb_result = merge_sb_units(unit_results, sb_size, unit_size, ref_frame_data.is_none());
+    let mut sb_result = merge_sb_units(unit_results, sb_size, unit_size, ref_frame_data.is_none());
     // SB128 fold of the per-unit RDOQ enables: C resolves
     // `rdoq_ctrls` once per 128 SB while the funnel resolves lpd1
     // per 64 unit, so disagreeing quadrants are already an MD-side
     // approximation — `any` keeps RDOQ where any unit kept it.
     // Identity at SB64 (`units.len() == 1`).
     let sb_enc_rdoq = unit_enc_rdoq.iter().any(|&e| e);
+
+    // [SVT_HDR_MODE] C `svt_aom_encode_sb` (enc_dec_process.c:3112): the
+    // per-SB encode pass that runs when `pic_bypass_encdec` is 0 —
+    // re-predicts every committed luma txb on the evolving recon canvas
+    // (the canvas so far = earlier SBs' encode-pass output + this SB's
+    // MD output, exactly C's `recon_pic`), re-quantizes with
+    // `is_encode_pass = true` — the arm under which the fork's noise
+    // normalization lives — and rewrites the leaf coefficients. It must
+    // run BEFORE the chain recode: C's `ec_ctx_array` coefficient CDFs
+    // are updated on the encode pass (coding_loop.c:1713), so the chain
+    // has to code the normed levels. `enc_cul` chains the encode-pass
+    // `cul` values (`ep_luma_dc_sign_level_coeff_na`) that the
+    // re-quantize's RDOQ contexts read.
+    if let (Some(frame), Some(cul)) = (fun_frame.as_ref(), enc_cul.as_mut()) {
+        if use_funnel && bit_depth == 8 && frame.noise_norm_strength > 0 && !frame.cfg.bypass_encdec
+        {
+            if let Some(tree) = sb_result.tree.as_mut() {
+                let mut ep_rdoq = frame.rdoq;
+                ep_rdoq.enabled = sb_enc_rdoq;
+                crate::leaf_funnel::encode_pass_luma_sb(
+                    tree,
+                    tile_frame_recon,
+                    w,
+                    sb_input,
+                    in_stride,
+                    frame,
+                    fun_rates.as_deref().unwrap(),
+                    ep_rdoq,
+                    fun_ectx.as_ref().unwrap(),
+                    cul,
+                    sb_x0,
+                    sb_y0,
+                );
+            }
+        }
+    }
 
     // Chain: evolve this SB's contexts by re-coding the decided
     // tree (throwaway arithmetic state; only the CDF updates

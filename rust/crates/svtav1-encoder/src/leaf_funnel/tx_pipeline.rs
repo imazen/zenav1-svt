@@ -63,6 +63,14 @@ pub(crate) struct TxGate {
     /// to the lossless WHT path (C's `svt_av1_estimate_transform` selects
     /// `fwht4x4` unconditionally on a lossless 4x4).
     pub n4: bool,
+    /// C `is_encode_pass` (full_loop.c's `svt_aom_quantize_inv_quantize`
+    /// param): set ONLY from the post-decision encode pass
+    /// ([`super::enc_pass`]) — it arms the encode-only quantization arms
+    /// (Ghost Robot's luma noise normalization; the chroma light-RDOQ
+    /// caller sites). Mode-decision callsites all leave it false, which
+    /// is what keeps evaluation coefficients unnormalized — the phase
+    /// C's winner selection actually saw.
+    pub enc_pass: bool,
 }
 
 pub(super) struct TxUnitOut {
@@ -1237,18 +1245,14 @@ pub(super) fn tx_unit_inner(
     // C runs it only on the ENCODE pass (`svt_aom_quantize_inv_quantize`,
     // full_loop.c:1989: `is_encode_pass && *eob != 0 && tx_type != IDTX &&
     // luma`), and the encode pass exists only when `pic_bypass_encdec` is 0
-    // (allintra <= M3, video <= M2 at 8 bits / <= M7 at 10 bits). Under
-    // bypass C's coefficients come straight from mode decision and are never
-    // normalized, so neither are the port's: applying it there too bumped
-    // one luma level per txb and flipped Ghost Robot's MDS3 winners (plan
-    // 3.3s, photo_64_q20_p2_b8 (16,0): bits 172113 vs C 171180). Without
-    // bypass the port, which has no separate encode pass, still normalizes
-    // at MD quantization, as before.
-    if frame.noise_norm_strength > 0
-        && !frame.cfg.bypass_encdec
-        && plane_type == 0
-        && eob != 0
-        && tx_type != 9
+    // (allintra <= M3, video <= M2 at 8 bits / <= M7 at 10 bits). Normalizing
+    // during mode-decision evaluation bumped one luma level per txb and
+    // flipped MDS3 winners the evaluation should never have priced through
+    // (plan 3.3s, photo_64_q20_p2_b8 (16,0): bits 172113 vs C 171180), so
+    // this site is gated on `gate.enc_pass` — set only from
+    // [`super::enc_pass::encode_pass_luma_sb`], which re-quantizes the
+    // COMMITTED winner on the evolving recon canvas in C's per-SB order.
+    if frame.noise_norm_strength > 0 && gate.enc_pass && plane_type == 0 && eob != 0 && tx_type != 9
     {
         crate::noise_norm::perform_noise_normalization(
             &qt.dequant,

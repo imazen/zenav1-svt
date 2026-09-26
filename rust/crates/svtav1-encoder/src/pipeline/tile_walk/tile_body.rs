@@ -418,6 +418,16 @@ pub(super) fn encode_one_tile_body(
     } else {
         None
     };
+    // [SVT_HDR_MODE] the encode-pass coefficient-neighbour chain
+    // (`ep_luma_dc_sign_level_coeff_na`) — per-tile like C's
+    // `reset_encode_pass_neighbor_arrays`. Live only for the funnel's
+    // post-decision encode pass (Ghost Robot noise-norm); see
+    // `leaf_funnel/enc_pass.rs`.
+    let mut enc_cul = if use_funnel || coded_lossless {
+        Some(crate::leaf_funnel::EncPassCul::new(w, h))
+    } else {
+        None
+    };
     let fun_rates = if use_funnel || coded_lossless {
         // §1s item 8: C's `init_frame_rate_tables` (md_config_process.c:292)
         // seeds `md_frame_context` from the primary reference's SAVED
@@ -1706,6 +1716,7 @@ pub(super) fn encode_one_tile_body(
                 &mut fun_u_recon,
                 &mut fun_v_recon,
                 &mut fun_ectx,
+                &mut enc_cul,
                 &fun_frame,
                 &ibc_state,
                 &mut ibc_mvp_grid,

@@ -98,6 +98,7 @@ mod chroma;
 mod coeff_rate;
 mod commit;
 mod detect;
+mod enc_pass;
 mod ifs;
 mod inject;
 pub(crate) mod light;
@@ -125,6 +126,7 @@ mod tests;
 pub(crate) use cfl::*;
 pub(crate) use coeff_rate::*;
 pub(crate) use commit::*;
+pub(crate) use enc_pass::*;
 // `detect`, `overlay` and `txt` export nothing above `pub(super)` -- nothing
 // outside `leaf_funnel` calls them -- so these are plain imports. A
 // `pub(crate)` glob over them would warn (it re-exports nothing), which is the

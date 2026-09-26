@@ -436,6 +436,7 @@ pub(super) fn txt_search(
                             tx_pipeline::TxGate {
                                 skip_tx: gate.skip_tx,
                                 n4: gate.n4,
+                                enc_pass: false,
                             },
                         );
                         if let Some(sc) = screen.as_ref() {
@@ -494,6 +495,7 @@ pub(super) fn txt_search(
                             tx_pipeline::TxGate {
                                 skip_tx: gate.skip_tx,
                                 n4: gate.n4,
+                                enc_pass: false,
                             },
                             target,
                         )

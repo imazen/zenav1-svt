@@ -490,9 +490,10 @@ pub struct FunnelFrame {
     /// [SVT_HDR_MODE] fork `--noise-norm-strength` (0 = off). C runs it in
     /// the encode pass on the winner (full_loop.c:1989, `is_encode_pass &&
     /// eob!=0 && tx_type!=IDTX && LUMA`), which exists only without
-    /// `bypass_encdec`; `tx_unit` applies it under that same condition, at MD
-    /// quantization since this port has no separate encode pass. Ghost Robot
-    /// stills are ratcheted by `tools/still_grid_gate.sh ghost-robot`.
+    /// `bypass_encdec`; `tx_unit` fires it only under `TxGate::enc_pass` —
+    /// set from the post-decision `enc_pass::encode_pass_luma_sb` walk, not
+    /// the MD evaluations. Ghost Robot stills are ratcheted by
+    /// `tools/still_grid_gate.sh ghost-robot`.
     pub noise_norm_strength: u8,
     /// [SVT_HDR_MODE] per-plane frame QM levels [Y, U, V] (15 = off);
     /// stamped onto the per-plane `QuantTable`s so every quantize site
