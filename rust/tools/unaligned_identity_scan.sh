@@ -46,7 +46,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
-OUT="${1:-$RS_ROOT/benchmarks/unaligned_real_identity_latest.tsv}"
+# Default output is target/ (gitignored): a tracked or new file under
+# benchmarks/ gets snapshotted into the working commit by jj. Pass a suffix
+# (e.g. a date) to record a run in benchmarks/ deliberately.
+OUT="${1:-$RS_ROOT/target/unaligned_real_identity_latest.tsv}"
+mkdir -p "$(dirname "$OUT")"
 IR="$HERE/identity_run"
 CE="$HERE/perf_c_encode/perf_c_encode"
 WORK="$RS_ROOT/target/unaligned_identity"

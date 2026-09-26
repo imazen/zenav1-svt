@@ -44,7 +44,7 @@
 # Env:   AOMDEC=/path/to/aomdec (autodetected; required), TILE_JOBS (4)
 #
 # The full sweep behind the cell choices is tools/tile_map.sh, whose
-# scoreboard lives at benchmarks/tile_map_latest.tsv.
+# scoreboard is written to target/tile_map_latest.tsv (last recorded: benchmarks/tile_map_2026-07-22.tsv).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)

@@ -25,8 +25,11 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
-SUFFIX="${1:-latest}"
-OUT="$RS_ROOT/benchmarks/identity_matrix_${SUFFIX}.tsv"
+# Default output is target/ (gitignored): a tracked or new file under
+# benchmarks/ gets snapshotted into the working commit by jj. Pass a suffix
+# (e.g. a date) to record a run in benchmarks/ deliberately.
+if [ -n "${1:-}" ]; then OUT="$RS_ROOT/benchmarks/identity_matrix_$1.tsv"; else OUT="$RS_ROOT/target/identity_matrix_latest.tsv"; fi
+mkdir -p "$(dirname "$OUT")"
 mkdir -p "$RS_ROOT/benchmarks"
 
 # Overridable via env for broader sweeps, e.g.

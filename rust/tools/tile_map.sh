@@ -36,7 +36,11 @@ if [[ -n "$ARTIFACT_DIR" ]]; then
   mkdir -p "$ARTIFACT_DIR"
   ARTIFACT_DIR=$(cd "$ARTIFACT_DIR" && pwd)
 fi
-TSV="${1:-$RS_ROOT/benchmarks/tile_map_latest.tsv}"
+# Default output is target/ (gitignored): a tracked or new file under
+# benchmarks/ gets snapshotted into the working commit by jj. Pass a suffix
+# (e.g. a date) to record a run in benchmarks/ deliberately.
+TSV="${1:-$RS_ROOT/target/tile_map_latest.tsv}"
+mkdir -p "$(dirname "$TSV")"
 
 aomdec="${AOMDEC:-aomdec}"
 if ! command -v "$aomdec" >/dev/null 2>&1; then

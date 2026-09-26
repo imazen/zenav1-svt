@@ -32,8 +32,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_nice.sh"
 . "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
-SUFFIX="${1:-latest}"
-OUT="$RS_ROOT/benchmarks/real_image_identity_${SUFFIX}.tsv"
+# Default output is target/ (gitignored): a tracked or new file under
+# benchmarks/ gets snapshotted into the working commit by jj. Pass a suffix
+# (e.g. a date) to record a run in benchmarks/ deliberately.
+if [ -n "${1:-}" ]; then OUT="$RS_ROOT/benchmarks/real_image_identity_$1.tsv"; else OUT="$RS_ROOT/target/real_image_identity_latest.tsv"; fi
+mkdir -p "$(dirname "$OUT")"
 mkdir -p "$RS_ROOT/benchmarks"
 
 # --- Config (all env-overridable, like identity_matrix.sh) --------------------
