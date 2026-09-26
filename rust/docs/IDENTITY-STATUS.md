@@ -38,7 +38,7 @@ that has not moved its pin, so the gate is the current number:
   SB128 confirmed per cell — the port's forced SPLIT at the 128 level
   matches C there. Video at SB128 (MR, or <= M5 at qp > 57) is
   unmeasured: the clips stop at 256x256.
-- Ghost Robot: stills 41/288 (`tools/still_grid_gate.sh ghost-robot`),
+- Ghost Robot: stills 65/288 after `eee60fd8` (`tools/still_grid_gate.sh ghost-robot`),
   real video 0/36, every cell differing in the key frame
   (`benchmarks/video_parity_census_gr_2026-09-26.meta`).
 

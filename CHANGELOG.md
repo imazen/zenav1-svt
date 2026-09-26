@@ -2622,6 +2622,7 @@ Crates are not published to crates.io yet — depend by git.
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
 
 ### Fixed
+- Ghost Robot (`HdrFork`): noise normalization is applied only where C runs it, the encode pass, which exists only without `bypass_encdec` (allintra <= M3). Normalizing at every mode-decision quantization shifted one luma level per transform block and flipped mode decisions; Ghost Robot still parity 41 -> 65 of 288 grid cells (eee60fd8). Changes the bytes of fork encodes at bypass presets.
 - Video key frames now take the video arm's settings where C does: the independent-chroma search level at preset 1 (801d103f), and at preset -1 the qp-based threshold scaling C turns off for NIC counts, NIC pruning and the transform-type search (b0e7cbe5). At preset 7 the PD1 split walk takes the video arm's `depth_early_exit` and `parent_cost_bias` (aae52a01), and frames coded with `TX_MODE_LARGEST` (the video arm at M10+, and non-base frames at M8/M9) no longer price a tx-size symbol C never codes (77d4d3ce; this changes the bytes of such frames). Every key frame of the real-video census now matches C (census 244 -> 284 of 540 cells identical through 8 frames).
 
 - Random access with TPL (`aq_mode` 2) panicked at frame sizes whose TPL block is 16 wide (e.g. 130x98 at presets 9 and 12): a subsampled-row copy staged 16 samples through a 32-sample array (8fd42f7e).

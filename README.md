@@ -32,7 +32,7 @@ switch the same way with one variable, `SVT_ORACLE=mainline-4.2.0` or
 mainline stills are byte-identical (below), and mainline video is ratcheted
 cell by cell against C (`tools/video_census_gate.sh`, 284 of 540 real-video
 cells identical through 8 frames on 2026-09-26); Ghost Robot is in progress
-(function-level suite 869/873, still grid 41/288, real video 0/36 — every
+(function-level suite 869/873, still grid 65/288, real video 0/36 — every
 cell differs in the key frame; ORACLES.md has the current numbers).
 
 ## References, policy and coverage
