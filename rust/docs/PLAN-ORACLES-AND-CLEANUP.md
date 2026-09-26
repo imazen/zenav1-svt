@@ -457,6 +457,20 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
         `effective_ac_bias`/`get_svt_psy_full_dist` placement is still
         suspect but `SVT_FORK_AC_BIAS=0` on both sides does NOT close
         the stream, so ac-bias is not sufficient on its own).
+    16. **Root cause found and fixed (2026-09-26, grst3 + lead):** the port
+        ran Ghost Robot's noise normalization at every MD quantization; C
+        runs it only on the encode pass (`svt_aom_quantize_inv_quantize`,
+        full_loop.c:1989, `is_encode_pass`), which exists only without
+        `pic_bypass_encdec` (allintra <= M3). It bumped one luma level per
+        txb (photo_64_q20_p2_b8 (16,0): raster 115 -3 -> -4, the +933
+        bits / -560 dist of finding 14), flipping MDS3 winners. `tx_unit`
+        now normalizes only without `bypass_encdec`: still grid 41 -> 65/288,
+        0 regressed; mainline 288/288. Removing it everywhere instead gave
+        65 but regressed one p2 cell (C does normalize there, on the encode
+        pass). Open: the port still normalizes at MD quantization for p0..3
+        rather than on the winner alone, and the 10-bit path
+        (`bd10_reencode`) did not move its p6 noise-norm pin — check whether
+        it normalizes under bypass.
     15. Next concrete step: for mode=0/txt=0 at (16,0) dump WHICH arm
         produced C's 68672 — `ctx->mds_do_spatial_sse`, the
         `txb_full_distortion_txt` decomposition (pred vs residual arms,

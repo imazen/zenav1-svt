@@ -487,12 +487,12 @@ pub struct FunnelFrame {
     pub sharpness: i8,
     /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta-q).
     pub sharp_tx_active: bool,
-    /// [SVT_HDR_MODE] fork `--noise-norm-strength` (0 = off). Applied to
-    /// the quantized luma coefficients in `tx_unit` — C runs it in the
-    /// encode pass on the winner (full_loop.c:2017, `is_encode_pass &&
-    /// eob!=0 && tx_type!=IDTX && LUMA`); this single-pass port applies it
-    /// at MD quantization so dist/recon/coded levels stay consistent (fork
-    /// mode carries no byte-vs-C gate; the kernel itself is parity-tested).
+    /// [SVT_HDR_MODE] fork `--noise-norm-strength` (0 = off). C runs it in
+    /// the encode pass on the winner (full_loop.c:1989, `is_encode_pass &&
+    /// eob!=0 && tx_type!=IDTX && LUMA`), which exists only without
+    /// `bypass_encdec`; `tx_unit` applies it under that same condition, at MD
+    /// quantization since this port has no separate encode pass. Ghost Robot
+    /// stills are ratcheted by `tools/still_grid_gate.sh ghost-robot`.
     pub noise_norm_strength: u8,
     /// [SVT_HDR_MODE] per-plane frame QM levels [Y, U, V] (15 = off);
     /// stamped onto the per-plane `QuantTable`s so every quantize site

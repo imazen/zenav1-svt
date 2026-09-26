@@ -93,17 +93,27 @@ fn sharp_tx_is_live_in_fork_mode() {
 
 #[test]
 fn noise_norm_is_live_in_fork_mode() {
-    #[allow(clippy::single_element_loop)] // a sweep grid that happens to hold one cell today;
-    // the loop form keeps the `{preset}`/`{qp}` assert messages and the extension point
-    for (preset, qp) in [(6u8, 40u8)] {
-        let mut on = HdrForkConfig::hdr_fork();
-        on.noise_norm_strength = 4;
-        let mut off = HdrForkConfig::hdr_fork();
-        off.noise_norm_strength = 0;
-        let a = encode_with(Some(on), qp, preset);
-        let b = encode_with(Some(off), qp, preset);
-        assert_ne!(a, b, "p{preset} qp{qp}: noise_norm_strength knob is inert");
-    }
+    // C applies noise normalization only on the ENCODE pass
+    // (full_loop.c:1989, `is_encode_pass`), which exists only without
+    // `pic_bypass_encdec` — allintra <= M3. So the knob must change the
+    // stream at preset 2 AND leave it untouched at preset 6, where C never
+    // runs it (until 2026-09-26 the port normalized at every preset and this
+    // test asserted the preset-6 effect C does not have).
+    let knob = |strength: u8, qp: u8, preset: u8| {
+        let mut c = HdrForkConfig::hdr_fork();
+        c.noise_norm_strength = strength;
+        encode_with(Some(c), qp, preset)
+    };
+    assert_ne!(
+        knob(4, 40, 2),
+        knob(0, 40, 2),
+        "p2 qp40: noise_norm_strength knob is inert"
+    );
+    assert_eq!(
+        knob(4, 40, 6),
+        knob(0, 40, 6),
+        "p6 qp40: noise normalization ran under bypass_encdec, where C never runs it"
+    );
 }
 
 #[test]
