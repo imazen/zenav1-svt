@@ -977,10 +977,21 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     inter signalling terms, that differ first. Temporary wraps on
     `svt_aom_is_me_data_present`/`svt_aom_get_me_block_offset` verified the
     offset mapping (off=10) and table contents ((0,1)) match; instrumentation
-    reverted. Next wedge: dump the MDS3 per-candidate rate/dist split for
-    the same mode+mv on both sides (`SVT_FULLCOST_OUT` st=3 vs the port's
-    CAND lines) and bisect which rate term (tx size / tx type / coeff
-    context) diverges.
+    reverted. The MDS3 rate/dist split (C `SVT_FULLCOST_OUT` st=3 vs port
+    `SVTAV1_SKIPDBG`) makes the flip concrete: for the identical
+    mode16/iiu=1 candidates, C prices mv0=2,4 at ycb=26079/ydist=30416 and
+    mv0=-4,4 at ycb=32223/ydist=26736 — a 3680-dist win that outweighs the
+    6144-rate loss. The port prices 2,4 at yb=21233/yres=30208
+    (nsc=5220285) and -4,4 at yb=26471/yres=28560 (nsc=5255455) — only a
+    1648-dist win, so -4,4 loses by ~35K. The port's residual eval under-
+    harvests distortion on -4,4 (28560 vs C's 26736) while writing FEWER
+    coeff bits (26471 vs 32223): its tx/RDOQ pipeline finds a cheaper-but-
+    worse residual coding for the same prediction. This is the intra-side
+    item-13 defect class (`leaf_funnel/coeff_rate.rs` /
+    `tx_pipeline.rs` estimators) observed on the inter path. Next wedge:
+    per-tx-type/per-txb coeff-rate+dists for the same candidate — wrap
+    C's MDS3 tx-type search outputs, or diff the port's `CAND`/`RSKIP`
+    split against an extended `SVT_FULLCOST` record carrying tx fields.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.
