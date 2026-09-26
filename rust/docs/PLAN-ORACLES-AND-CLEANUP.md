@@ -815,6 +815,17 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     byte-identical with C confirmed at SB128 (cellrun `sb128` check) — the
     forced SPLIT matches C's search on every one. Video (MR, or <= M5 at
     qp > 57, above 240p) is unmeasured: the derf clips stop at 256x256.
+  - (b) inter frames, first finding (2026-09-26, vinter session, stopped at
+    its context limit before a fix): at preset 0 on the first inter frame a
+    compound LAST+BWDREF candidate's reference-MV stack differs — the port's
+    BWDREF stack duplicates LAST's entries instead of collecting the
+    neighbours' list-1 MVs, so its compound stack pairs `this_mv` with
+    itself where C pairs the ref-1 stack's `this_mv` with the ref-5
+    compound entries (C `setup_ref_mv_list` / `svt_aom_generate_av1_mvp_
+    table` compound arm). The Ghost Robot ratchet's pinned
+    `c_parity_setup_ref_mv_list_inter` divergence touches the same code.
+    Next: reproduce on one p0 cell with `SVTAV1_PACKTREE` (now frame-tagged)
+    and the C `SVT_MVP_OUT` dump, diff the stack for that block in files.
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.

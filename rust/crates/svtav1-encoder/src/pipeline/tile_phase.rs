@@ -347,6 +347,15 @@ impl EncodePipeline {
             * fmt.chroma_height(h.div_ceil(sb_size) * sb_size);
         #[cfg(feature = "std")]
         if crate::dbgenv::dump_tree() {
+            // Frame marker: the dump is one eprintln stream shared by every
+            // frame, so without a per-frame tag a frame-1 tree cannot be
+            // split from frame 0's (same gap the PTREE file had).
+            static DUMP_FRAME: core::sync::atomic::AtomicUsize =
+                core::sync::atomic::AtomicUsize::new(0);
+            std::eprintln!(
+                "# FRAME {}",
+                DUMP_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+            );
             for (sb_idx, tree) in all_trees.iter().enumerate() {
                 let bx = (sb_idx % sb_cols) * sb_size;
                 let by = (sb_idx / sb_cols) * sb_size;

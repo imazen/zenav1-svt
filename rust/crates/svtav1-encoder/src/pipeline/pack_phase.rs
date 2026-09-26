@@ -77,6 +77,22 @@ impl EncodePipeline {
             qm_levels,
             seq_tools,
         } = *fs;
+        // Frame-boundary marker in the PACKTREE file: the dump appends one
+        // record per coded leaf with no frame tag, which made a multi-frame
+        // ptree unusable — a frame-1 divergence could not be split from
+        // frame 0's rows. `# FRAME` matches tree_diff.py's convention of
+        // ignoring any line that does not start with the record tag.
+        #[cfg(feature = "std")]
+        if let Some(path) = crate::dbgenv::packtree() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "# FRAME poc={display_order}");
+            }
+        }
         #[allow(clippy::type_complexity)]
         // inline tuple documents the shape; a `type` alias would hide it
         // `recon_only` — see the call-site comment at the recon walk below:
