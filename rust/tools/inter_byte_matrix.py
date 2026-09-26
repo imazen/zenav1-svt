@@ -89,7 +89,10 @@ def main():
                   or Path(os.environ.get("ZENAV1_CORPUS_ROOT", Path.home() / "work/zen"))
                   / "video/pd-derf-720p")
     if any(c in CLIPS for c in contents) and not (assets / "vidyo3_128x128_8f.i420").exists():
-        r = subprocess.run([str(HERE / "fetch_r2_assets.sh"), "video/pd-derf-720p/", str(assets)])
+        # stdout is the TSV: the fetch's progress goes to stderr (on a fresh CI
+        # runner it once landed above the header and broke every consumer).
+        r = subprocess.run([str(HERE / "fetch_r2_assets.sh"), "video/pd-derf-720p/", str(assets)],
+                           stdout=sys.stderr)
         if r.returncode != 0:
             sys.exit("inter_byte_matrix: could not fetch the derf clips")
 

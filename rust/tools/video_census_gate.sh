@@ -45,7 +45,9 @@ fi
 python3 - "$PINS" "$work/now.tsv" <<'PY'
 import csv, sys
 def load(p):
-    rows = [r for r in csv.DictReader((l for l in open(p) if not l.startswith("#")), delimiter="\t")]
+    lines = [l for l in open(p) if not l.startswith("#")]
+    head = next(i for i, l in enumerate(lines) if l.startswith("content\t"))
+    rows = list(csv.DictReader(lines[head:], delimiter="\t"))
     return {(r["content"], r["size"], r["qp"], r["preset"], r["frames"]): r["verdict"] for r in rows}
 def rank(v):  # later divergence is better; IDENTICAL best; ERROR worst
     return 1000 if v == "IDENTICAL" else (-1 if v == "ERROR" else int(v[2:]))
