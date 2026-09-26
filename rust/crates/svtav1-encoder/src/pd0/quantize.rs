@@ -13,17 +13,7 @@ pub(super) struct QuantEntry {
     pub(super) dequant: [i32; 2],
 }
 
-/// C `svt_aom_invert_quant` (inv_transforms.c:3507).
-pub(super) fn invert_quant(d: i32) -> (i32, i32) {
-    let mut t = d as u32;
-    let mut l = 0i32;
-    while t > 1 {
-        t >>= 1;
-        l += 1;
-    }
-    let m = 1i64 + (1i64 << (16 + l)) / d as i64;
-    ((m - (1 << 16)) as i32, 1 << (16 - l))
-}
+pub(super) use crate::quant::invert_quant;
 
 pub(super) fn build_quant_entry(qindex: u8) -> QuantEntry {
     let q = qindex as usize;

@@ -80,15 +80,8 @@ pub fn mv_bit_cost(mv: Mv, ref_mv: Mv, table: &MvCostTable, weight: i32) -> i32 
     (v + (1 << 6)) >> 7
 }
 
-/// C `svt_av1_mv_bit_cost_light` (rd_cost.c:59-65) — the
-/// `approx_inter_rate` fast path, table-independent.
-#[inline]
-pub fn mv_bit_cost_light(mv: Mv, ref_mv: Mv) -> i32 {
-    const FACTOR: i32 = 50;
-    let absdx = (i32::from(mv.x) - i32::from(ref_mv.x)).abs();
-    let absdy = (i32::from(mv.y) - i32::from(ref_mv.y)).abs();
-    1296 + FACTOR * (absdx + absdy)
-}
+/// C `svt_av1_mv_bit_cost_light` (rd_cost.c:59-65).
+pub use crate::inter_mv_code::mv_bit_cost_light;
 
 /// The MD-context fields `choose_best_av1_mv_pred` reads.
 pub struct ChooseDrlCtx<'a> {

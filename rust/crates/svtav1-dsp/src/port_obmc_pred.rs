@@ -314,21 +314,7 @@ pub const COMPONENT_LUMA: u32 = 1;
 /// `PICTURE_BUFFER_DESC_CHROMA_MASK`.
 pub const COMPONENT_CHROMA: u32 = 6;
 
-/// The `plane` range a `component_mask` selects: luma only, chroma only, or
-/// both — `[start, end)`.
-fn plane_range(component_mask: u32) -> (usize, usize) {
-    let start = if component_mask & COMPONENT_LUMA != 0 {
-        0
-    } else {
-        1
-    };
-    let end = if component_mask & COMPONENT_CHROMA != 0 {
-        3
-    } else {
-        1
-    };
-    (start, end)
-}
+use crate::port_full_pd1_pred::inter_intra_plane_range as plane_range;
 
 /// One plane's destination and neighbour-prediction buffers, 8-bit.
 pub struct ObmcPlanes<'a> {

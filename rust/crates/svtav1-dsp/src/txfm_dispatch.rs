@@ -93,14 +93,7 @@ pub fn inv_txfm2d_dispatch_bd(
 }
 
 /// C `get_flip_cfg` (inv_transforms.h:139): (ud_flip, lr_flip) per TxType.
-pub fn flip_cfg(tx_type: TxType) -> (bool, bool) {
-    match tx_type {
-        TxType::FlipAdstDct | TxType::FlipAdstAdst | TxType::VFlipAdst => (true, false),
-        TxType::DctFlipAdst | TxType::AdstFlipAdst | TxType::HFlipAdst => (false, true),
-        TxType::FlipAdstFlipAdst => (true, true),
-        _ => (false, false),
-    }
-}
+pub use crate::fwd_txfm_pf::get_flip_cfg as flip_cfg;
 
 /// Decompose a 2D TxType into (column_1d_type, row_1d_type).
 /// 0=DCT, 1=ADST, 2=FLIPADST, 3=IDENTITY
@@ -125,30 +118,7 @@ fn tx_type_to_1d(tx_type: TxType) -> (u8, u8) {
     }
 }
 
-/// Get (width, height) for a TxSize.
-const fn tx_size_dims(tx_size: TxSize) -> (usize, usize) {
-    match tx_size {
-        TxSize::Tx4x4 => (4, 4),
-        TxSize::Tx8x8 => (8, 8),
-        TxSize::Tx16x16 => (16, 16),
-        TxSize::Tx32x32 => (32, 32),
-        TxSize::Tx64x64 => (64, 64),
-        TxSize::Tx4x8 => (4, 8),
-        TxSize::Tx8x4 => (8, 4),
-        TxSize::Tx8x16 => (8, 16),
-        TxSize::Tx16x8 => (16, 8),
-        TxSize::Tx16x32 => (16, 32),
-        TxSize::Tx32x16 => (32, 16),
-        TxSize::Tx32x64 => (32, 64),
-        TxSize::Tx64x32 => (64, 32),
-        TxSize::Tx4x16 => (4, 16),
-        TxSize::Tx16x4 => (16, 4),
-        TxSize::Tx8x32 => (8, 32),
-        TxSize::Tx32x8 => (32, 8),
-        TxSize::Tx16x64 => (16, 64),
-        TxSize::Tx64x16 => (64, 16),
-    }
-}
+use crate::fwd_txfm_pf::tx_size_dims;
 
 #[cfg(test)]
 mod tests {

@@ -66,7 +66,7 @@ pub struct QuantTable {
 }
 
 /// C `svt_aom_invert_quant` (inv_transforms.c:3507).
-fn invert_quant(d: i32) -> (i32, i32) {
+pub(crate) fn invert_quant(d: i32) -> (i32, i32) {
     let mut t = d as u32;
     let mut l = 0i32;
     while t > 1 {
