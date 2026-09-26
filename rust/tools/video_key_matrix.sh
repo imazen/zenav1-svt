@@ -4,19 +4,19 @@
 # The still sibling is `identity_matrix.sh`. This one drives the SAME cell
 # shape the campaign's `benchmarks/video_key_matrix_*.tsv` records: both sides
 # encode a 2-frame low-delay-P stream of the same `.yuv` and only FRAME 0 is
-# compared, because the port refuses frame 1 (exit 3) while the inter chunks
-# are still landing. A refusal is not a failure here — see
-# `docs/WORKING-ON-THIS.md` §6.
+# compared: the key frame of a VIDEO encode, whose configuration differs from
+# a still's. Inter frames are `inter_byte_matrix.sh`'s job, which names the
+# first differing temporal unit on real clips as well.
 #
-# It exists because §1m..§1p each re-derived this loop by hand, and a hand
-# loop is exactly what the "silent harness" trap in §5 warns about: it prints
-# ONE LINE PER CELL, always, so a cell that never ran is visible.
+# It prints ONE LINE PER CELL, always, so a cell that never ran is visible.
 #
 # Usage: tools/video_key_matrix.sh [outdir]
 # Env:
 #   VKM_W / VKM_H / VKM_QP   cell geometry (default 72 / 88 / 40)
 #   VKM_CONTENT              space-separated (default the five synthetic classes)
-#   VKM_PRESETS              space-separated (default 0 3 4 5 6 7 8 9 10 11 12 13)
+#   VKM_PRESETS              space-separated (default -1 0 1 2 3 .. 13; -1, 1 and 2
+#                            were missing until 2026-09-26, and are the presets
+#                            whose video KEY frame differs from C on real clips)
 #   VKM_FRAMES               default 2
 #
 # Output: a TSV on stdout (content, preset, c_bytes, port_bytes, pct, verdict)
@@ -35,7 +35,7 @@ cd "$RS_ROOT"
 W="${VKM_W:-72}"; H="${VKM_H:-88}"; QP="${VKM_QP:-40}"
 FRAMES="${VKM_FRAMES:-2}"
 CONTENTS="${VKM_CONTENT:-gradient diag screen screenrep uniform}"
-PRESETS="${VKM_PRESETS:-0 3 4 5 6 7 8 9 10 11 12 13}"
+PRESETS="${VKM_PRESETS:--1 0 1 2 3 4 5 6 7 8 9 10 11 12 13}"
 OUT="${1:-$RS_ROOT/target/video-key-matrix}"
 mkdir -p "$OUT"
 
