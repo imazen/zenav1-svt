@@ -124,6 +124,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- `EncodePipeline::with_reference(SvtReference)`: switches the raw-OBU pipeline to a C target in one call, loading that target's fork defaults (Ghost Robot implies its fork mode), as `AvifEncoder::with_reference` already did (ae0cb4ee).
+
 - **Typed fork knobs on the facade**: `ForkConfig` (re-exported from
   `svtav1::avif`) names every `HdrForkConfig` knob by its C field, and
   `AvifEncoder::with_fork` applies it; unset fields keep the reference's
