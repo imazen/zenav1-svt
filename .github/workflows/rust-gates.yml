@@ -299,6 +299,16 @@ jobs:
         # shrinks. 869/873 at 2026-09-26 on i265 (4 divergent).
         run: tools/cparity_ratchet.sh ghost-robot
 
+      - name: still-grid ratchets (Ghost Robot 41/288, mainline 288/288)
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        working-directory: rust
+        # The oracle still grid per cell, pinned in tools/pins/still_grid.*.tsv:
+        # an IDENTICAL cell that differs fails as regressed, a DIFFERS cell that
+        # matches fails as promoted until the pin moves. ~30 s each on i265.
+        run: |
+          tools/still_grid_gate.sh ghost-robot
+          tools/still_grid_gate.sh mainline-4.2.0
+
       - name: Workspace tests (differential parity suites vs C)
         if: ${{ !cancelled() && matrix.shard == 3 }}
         working-directory: rust
