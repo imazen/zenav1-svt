@@ -81,9 +81,13 @@ delta is real (measured null spread on that host: ratio 0.9996, p25/p75
 `SVT_ORACLE` names, and classifies the pair (verdict, first divergent stage).
 A cell list is data: one row per cell, with an optional pinned verdict. New
 byte-identity gates should be a cell list plus this runner, not another copy
-of the port / C / diff loop in bash (plan T3). Cells can also check lossless
-decode, recon == aomdec, dav1d == aomdec, and name a `differs_from` sibling;
-`lossless_gate.sh` and `superres_gate.sh` are the worked examples.
+of the port / C / diff loop in bash (plan T3). The docstring of
+`tools/cellrun.py` is the contract: checks (`c`, `lossless`, `recon`,
+`dav1d`, `decodes`, `inter`, `sb128`/`sb64`), per-side env
+(`env_port`/`env_c`), `@CELL@` for per-cell dump paths, siblings
+(`differs_from`, `same_as`, `c_differs_from`), `arch` for per-ISA pins,
+`--jobs`, `--bytes-only`, `--root`. 22 gates run on it; `lossless_gate.sh`,
+`tile_gate.sh` and `screen_ibc_byte_gate.sh` are good templates.
 `identity_run`'s environment is parsed in one place,
 `svtav1/examples/identity_run/cell.rs`; add a knob there, not in `main`.
 
