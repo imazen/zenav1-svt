@@ -10,6 +10,8 @@ its `check` column names:
   recon     aomdec's output == the port's final recon (`SVTAV1_FINAL_RECON`,
             set by the runner), the encoder/decoder alignment check;
   dav1d     dav1d's output == aomdec's (implies a decode);
+  decodes   aomdec accepts the port's stream (no pixel comparison; implied
+            by lossless/recon/dav1d);
   none      the port encode alone (e.g. the sibling a `differs_from` names).
 so cells differ only in what they ask for, never in how they are run.
 
@@ -19,10 +21,18 @@ A cell list is a TSV file with a header row. Columns:
   w h qp preset
   bd            bit depth, 8 or 10 (optional, default 8)
   env           extra variables for BOTH encoders, `K=V;K=V` (optional)
+  env_port      variables for the port only (e.g. SVTAV1_Y_STRIDE, or the
+                port's name for a knob the C driver spells differently)
+  env_c         variables for the C driver only (e.g. SVT_TILE_ROWS)
   expect        pinned C verdict, IDENTICAL or DIFFERS (optional)
   check         comma list from the table above (optional, default `c`)
   differs_from  another cell whose port stream this one's must NOT equal
                 (anti-vacuity: the feature under test changed the output)
+  c_differs_from  another cell whose C stream this one's must NOT equal
+                (anti-vacuity on the C side: the knob reached C's encoder)
+  arch          run the cell only on this machine arch (`uname -m`, e.g.
+                aarch64), or on every arch but it (`!aarch64`); for
+                arch-specific cells and pins
 Blank lines and lines starting with `#` are ignored.
 
 Output: a TSV with one row per cell (name, verdict, stage, detail, expect,
@@ -52,7 +62,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RS_ROOT = HERE.parent
-CHECKS = {"c", "lossless", "recon", "dav1d", "none"}
+CHECKS = {"c", "lossless", "recon", "dav1d", "decodes", "none"}
 
 
 def read_cells(path):
@@ -68,21 +78,30 @@ def read_cells(path):
             sys.exit(f"cellrun: {path}: {row['name']}: unknown check(s) {checks - CHECKS}")
         row["checks"] = checks - {"none"}
         rows.append(row)
+    arch = os.uname().machine
+    def applies(r):
+        a = (r.get("arch") or "").strip()
+        return not a or (a[1:] != arch if a.startswith("!") else a == arch)
+    rows = [r for r in rows if applies(r)]
     names = {r["name"] for r in rows}
     if len(names) != len(rows):
         sys.exit(f"cellrun: {path}: duplicate cell names")
     for r in rows:
-        if r.get("differs_from") and r["differs_from"] not in names:
-            sys.exit(f"cellrun: {path}: {r['name']}: differs_from names no cell")
+        for col in ("differs_from", "c_differs_from"):
+            if r.get(col) and r[col] not in names:
+                sys.exit(f"cellrun: {path}: {r['name']}: {col} names no cell")
     return rows
 
 
-def cell_env(row):
+def cell_env(row, side=None):
+    """The environment for one side (`port`, `c`) or for both (None)."""
     env = dict(os.environ)
     env["SVTAV1_BD"] = row.get("bd") or "8"
-    for kv in filter(None, (row.get("env") or "").split(";")):
-        k, _, v = kv.partition("=")
-        env[k.strip()] = v.strip()
+    cols = ["env"] + ([f"env_{side}"] if side else [])
+    for col in cols:
+        for kv in filter(None, (row.get(col) or "").split(";")):
+            k, _, v = kv.partition("=")
+            env[k.strip()] = v.strip()
     return env
 
 
@@ -117,7 +136,7 @@ def last_line(path):
 
 def run_checks(row, d, env, timeout):
     """The decoder checks. Returns [(name, ok)], or raises RuntimeError."""
-    want = row["checks"] & {"lossless", "recon", "dav1d"}
+    want = row["checks"] & {"lossless", "recon", "dav1d", "decodes"}
     if not want:
         return []
     aomdec = decoder("AOMDEC", "aomdec")
@@ -127,9 +146,9 @@ def run_checks(row, d, env, timeout):
     r = subprocess.run([aomdec, "--rawvideo", *depth, "-o", str(d / "dec.yuv"), str(d / "rs.obu")],
                        env=env, capture_output=True, timeout=timeout)
     if r.returncode != 0:
-        return [(c, False) for c in sorted(want)] + [("aomdec-decodes", False)]
+        return [(c, False) for c in sorted(want)]
     dec = (d / "dec.yuv").read_bytes()
-    out = []
+    out = [("decodes", True)] if "decodes" in want else []
     if "lossless" in want:
         out.append(("lossless", dec == (d / "rs.yuv").read_bytes()))
     if "recon" in want:
@@ -145,8 +164,9 @@ def run_checks(row, d, env, timeout):
     return out
 
 
-def run_c(row, d, env, timeout, bytes_only):
+def run_c(row, d, timeout, bytes_only):
     """Returns (verdict, stage, detail) for the C comparison."""
+    env = cell_env(row, "c")
     oracle = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
                             capture_output=True, text=True).stdout.strip()
     sel = HERE / "capture_c_trace" / f".selected.{oracle}"
@@ -189,7 +209,7 @@ def run_cell(row, root, timeout, bytes_only):
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True)
-    env = cell_env(row)
+    env = cell_env(row, "port")
     if "recon" in row["checks"]:
         env["SVTAV1_FINAL_RECON"] = str(d / "recon")
     try:
@@ -203,7 +223,7 @@ def run_cell(row, root, timeout, bytes_only):
                     f"{last_line(d / 'rs.trace')} ({d}/rs.trace)", [])
         checks = run_checks(row, d, env, timeout)
         if "c" in row["checks"]:
-            verdict, stage, detail = run_c(row, d, env, timeout, bytes_only)
+            verdict, stage, detail = run_c(row, d, timeout, bytes_only)
         else:
             verdict, stage, detail = "-", "-", "-"
     except subprocess.TimeoutExpired:
@@ -239,7 +259,7 @@ def main():
     for row in rows:
         if "c" not in row["checks"]:
             continue
-        env = cell_env(row)
+        env = cell_env(row, "c")
         oracle_name = subprocess.run([str(HERE / "oracle"), "resolve"], env=env,
                                      capture_output=True, text=True).stdout.strip()
         if oracle_name in built:
@@ -267,6 +287,15 @@ def main():
         same = (root / row["name"] / "rs.obu").read_bytes() == \
             (root / other / "rs.obu").read_bytes()
         res[3].append((f"differs_from:{other}", not same))
+    for row, res in zip(rows, results):
+        other = row.get("c_differs_from")
+        if not other or res[0] == "ERROR":
+            continue
+        a, b = root / row["name"] / "c.obu", root / other / "c.obu"
+        if by_name[other][0] == "ERROR" or not a.exists() or not b.exists():
+            res[3].append((f"c_differs_from:{other}(missing)", False))
+            continue
+        res[3].append((f"c_differs_from:{other}", a.read_bytes() != b.read_bytes()))
 
     bad = errors = 0
     with open(out, "w", newline="") as f:
