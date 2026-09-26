@@ -651,6 +651,44 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `kristenandsara 128 q40`, `kristenandsara 128 q55`,
     `kristenandsara 256 q40`) and the whole p-1 row is off TU0 — the
     remaining differences are in the inter frames (item (b)).
+  - (a) at preset 7 remains open — 8 TU0 cells (fourpeople 128 q55, 256
+    q40/q55; kristenandsara 256 q40/q55; vidyo1 128 q55, 256 q55; vidyo3
+    256 q55). Localized on `fourpeople 128x128 q55 p7` (i265): first
+    differing symbol is tile op 5397, a `CDF10` partition write with the
+    SAME context on both sides (`icdf=[13596,7107,5111]`) — C wrote s=0
+    (PARTITION_NONE), the port s=3 (PARTITION_SPLIT). The first differing
+    DECISION is the 16x16 node at mi(16,16) (px 64,64, SB (1,1)): C
+    commits it as a leaf, the port splits to 8x8s. Verified equal inputs:
+    PD0 fast costs are unit-equal (64x64 1717068367, 32x32 394484769,
+    16x16 91082587, 8x8 33225463, lambda 148057, `SVT_PD0COST_OUT` vs
+    `SVTAV1_PD0DBG`) and both PD0 walks commit SPLIT at that node
+    (children 68.1M < parent 91.1M); the leaf's full-loop winner is
+    unit-equal too (C `CSQ cost=38583314 mode=10 uv=10 txd=1` + part rate
+    -> `PICKPART rd=38697538` == port `SHAPE shape=0 part_cost=38697538`,
+    `SVT_PICKPART_OUT` vs `SVTAV1_NSQDBG`). The divergence is that C never
+    evaluated ANY sub-shape at that node — no `CNSQ` rows under its
+    PICKPART — where the port evaluated the four 8x8s (~18.7M+14.3M+...)
+    and split. C's `SVT_PD0CFG_OUT` for that SB: `lvl=3 subres=1
+    pred_only=0 nsq=1 (md_disallow_nsq_search) drlvl=5
+    (pic_depth_removal_level, all four disallow bits 0)` and `PD0REFCFG
+    level=8 mode=1 s1=10 e1=10 s2=255 e2=255 limit=1 qscale=1` — the port's
+    `depth_refine::Ctrls::for_arm` already yields level 8 at video M7, so
+    the LEVEL matches; the mismatch is in the per-node bound the
+    refinement computes. Next concrete step: dump C's per-node
+    `s_depth`/`e_depth` out of `perform_pred_depth_refinement`
+    (enc_dec_process.c:1969+; the bound lands in `pc_tree` and feeds
+    `set_blocks_to_be_tested`/`mds->split_flag`, which is what gates
+    whether any child eval runs) for the (16,16) 16x16 node, and compare
+    with the port's REFINE rows (`SVTAV1_NSQDBG`, which print `s=`/`e=` —
+    note the port emitted no `sq=16` REFINE line for that node at all,
+    while its `sq=8` children show `s=-1 e=0`). If the bound matches, the
+    suspect list is the shape-entry gates in
+    `update_skip_nsq_based_on_split_rate` (product_coding_loop.c:9710+:
+    `nsq_split_cost_th`, `H_vs_V_split_rate_th`, `non_HV_split_rate_th`,
+    `lower_depth_split_cost_th`) — the port's SKIP lines already fire
+    `gate=2`/`gate=1` on the H/V shapes there. Also verify what
+    `md_disallow_nsq_search=1` actually suppresses on this frame, since C
+    still evaluates H/V at sibling nodes (CNSQ rows exist at (16,20)).
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
   - SB128 beyond the root is unported (`pipeline/setup.rs`
