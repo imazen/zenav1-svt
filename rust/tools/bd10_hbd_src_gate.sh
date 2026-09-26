@@ -55,154 +55,89 @@ read -r -a CONTENTS <<<"${HBD_CONTENTS:-uniform gradient}"
 # fails x86-64 (where the cell MATCHES) and not pinning fails aarch64. Pins are
 # self-promoting: a pinned cell that starts matching FAILS, so the day C stops
 # diverging here the gate says so instead of quietly widening.
-KNOWN_DIFF=()
-case "$(uname -m)" in
-  arm64 | aarch64)
-    KNOWN_DIFF+=("gradient_64_q8_p6" "gradient_128_q8_p8" "gradient_128_q20_p8")
-    ;;
-esac
-is_known_diff() {
-  local needle=$1 k
-  for k in "${KNOWN_DIFF[@]}"; do
-    [[ "$k" == "$needle" ]] && return 0
-  done
+# Per-ISA pins (SUSPECTED-C-BUGS #9): `arch` rows in the cellrun list pin
+# these DIFFERS on aarch64/arm64; everywhere else they are plain cells.
+ARCH_KNOWN_DIFF=("gradient_64_q8_p6" "gradient_128_q8_p8" "gradient_128_q20_p8")
+in_list() {
+  local needle=$1 k; shift
+  for k in "$@"; do [[ "$k" == "$needle" ]] && return 0; done
   return 1
 }
-
-OUT="${TMPDIR:-/tmp}/bd10hbd.$$"
+# The cells are a list for tools/cellrun.py (plan T3), in parallel (HBD_JOBS,
+# default 4). Each native-10-bit cell has a port-only WIDENED sibling (the
+# same content at bd10 without HBD_SRC); the summary compares their streams
+# for the vacuity report and the per-configuration premise.
+OUT="${TMPDIR:-$HOME/tmp}/bd10hbd.$$"
 mkdir -p "$OUT"
-pass=0
-fail=0
-vacuous=0
-isa_pinned=0
-failed=()
-vac=()
-isa_pins=()
-# Per-(content,size,preset) count of cells whose low bits changed the stream.
-declare -A live
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/bd10_hbd_src.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tbd\tenv_port\texpect\tcheck\tarch\n' >"$LIST"
+add() { # cell triple content sz qp p hbd_env
+  local cell=$1 triple=$2 content=$3 sz=$4 qp=$5 p=$6 envp=$7
+  printf '%s__w\t%s\t%s\t%s\t%s\t%s\t10\t\t\tnone\t\n' "$cell" "$content" "$sz" "$sz" "$qp" "$p" >>"$LIST"
+  if in_list "$cell" "${ARCH_KNOWN_DIFF[@]}"; then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t10\t%s\tIDENTICAL\tc\t!aarch64,!arm64\n' "$cell" "$content" "$sz" "$sz" "$qp" "$p" "$envp" >>"$LIST"
+    printf '%s__pin\t%s\t%s\t%s\t%s\t%s\t10\t%s\tDIFFERS\tc\taarch64,arm64\n' "$cell" "$content" "$sz" "$sz" "$qp" "$p" "$envp" >>"$LIST"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t10\t%s\tIDENTICAL\tc\t\n' "$cell" "$content" "$sz" "$sz" "$qp" "$p" "$envp" >>"$LIST"
+  fi
+  echo "$cell $triple" >>"$OUT/triples"
+}
 for content in "${CONTENTS[@]}"; do
   for sz in "${SIZES[@]}"; do
     for qp in "${QPS[@]}"; do
       for p in "${PRESETS[@]}"; do
-        cell="${content}_${sz}_q${qp}_p${p}"
-        if ! SVTAV1_BD=10 SVTAV1_HBD_SRC=1 "$HERE/identity_run" \
-             "$content" "$sz" "$sz" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-          fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
-        fi
-        if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-             "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-          fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-        fi
-        # The widened-u8 stream of the SAME content, for the anti-vacuity check.
-        if ! SVTAV1_BD=10 "$HERE/identity_run" \
-             "$content" "$sz" "$sz" "$qp" "$p" "$OUT/w" >/dev/null 2>&1; then
-          fail=$((fail + 1)); failed+=("$cell[widen-err]"); continue
-        fi
-        triple="${content}_${sz}_p${p}"
-        : "${live[$triple]:=0}"
-        if cmp -s "$OUT/rs.obu" "$OUT/w.obu"; then
-          vacuous=$((vacuous + 1)); vac+=("$cell")
-        else
-          live[$triple]=$(( ${live[$triple]} + 1 ))
-        fi
-        if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-          if is_known_diff "$cell"; then
-            # Self-promoting: C stopped diverging on this host, so the pin is
-            # stale and must be removed rather than left masking a real cell.
-            fail=$((fail + 1)); failed+=("$cell[PER-ISA pin now MATCHES — remove it]")
-          else
-            pass=$((pass + 1))
-          fi
-        elif is_known_diff "$cell"; then
-          isa_pinned=$((isa_pinned + 1)); isa_pins+=("$cell")
-        else
-          fail=$((fail + 1)); failed+=("$cell")
-        fi
+        add "${content}_${sz}_q${qp}_p${p}" "${content}_${sz}_p${p}" "$content" "$sz" "$qp" "$p" "SVTAV1_HBD_SRC=1"
       done
     done
   done
 done
-# --- PQ tier (corpus-free, so it runs in CI unlike bd10_hbd_pq_gate.sh) ---
-#
-# The cells above carry a SYNTHETIC low-bit pattern, `(3r + 5c + v) % 4`. These
-# carry low bits produced by a REAL transfer curve instead: `SVTAV1_HBD_PQ`
-# linearizes the 8-bit luma as sRGB, maps it onto a 1000-nit display, applies
-# the SMPTE ST 2084 (PQ) OETF and quantizes to 10-bit LIMITED range; chroma is
-# rescaled 8-bit limited -> 10-bit limited. The code-value HISTOGRAM is
-# PQ-shaped — dense in the shadows, sparse in the highlights — which a modulo
-# pattern cannot produce, and it is the distribution an HDR still actually
-# hands an encoder.
-#
-# WHY IT IS HERE and not only in the photographic gate: `bd10_hbd_pq_gate.sh`
-# needs the PHOTOGRAPHIC corpus (CID22-512, 94 MB), which rust-gates.yml still
-# does not fetch — only gb82-sc (2.9 MB) is fetched, as of 2026-09-05 — so it
-# can still only run locally. This
-# sub-grid is synthetic, therefore corpus-free, therefore the x86-64 reference
-# host does see PQ-shaped low bits at every preset band — including preset 6,
-# the only one that runs the CDEF strength and Wiener LR searches, where the
-# photographic PQ gate has 12 aarch64-scoped pins.
 read -r -a PQ_QPS <<<"${HBD_PQ_QPS:-8 20 32}"
 read -r -a PQ_PRESETS <<<"${HBD_PQ_PRESETS:-6 8 9}"
 for sz in "${SIZES[@]}"; do
   for qp in "${PQ_QPS[@]}"; do
     for p in "${PQ_PRESETS[@]}"; do
-      cell="pq_gradient_${sz}_q${qp}_p${p}"
-      if ! SVTAV1_BD=10 SVTAV1_HBD_SRC=1 SVTAV1_HBD_PQ=1 "$HERE/identity_run" \
-           gradient "$sz" "$sz" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
-      fi
-      if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
-           "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-      fi
-      if ! SVTAV1_BD=10 "$HERE/identity_run" \
-           gradient "$sz" "$sz" "$qp" "$p" "$OUT/w" >/dev/null 2>&1; then
-        fail=$((fail + 1)); failed+=("$cell[widen-err]"); continue
-      fi
-      triple="pq_gradient_${sz}_p${p}"
-      : "${live[$triple]:=0}"
-      if cmp -s "$OUT/rs.obu" "$OUT/w.obu"; then
-        vacuous=$((vacuous + 1)); vac+=("$cell")
-      else
-        live[$triple]=$(( ${live[$triple]} + 1 ))
-      fi
-      if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        if is_known_diff "$cell"; then
-          fail=$((fail + 1)); failed+=("$cell[PER-ISA pin now MATCHES — remove it]")
-        else
-          pass=$((pass + 1))
-        fi
-      elif is_known_diff "$cell"; then
-        isa_pinned=$((isa_pinned + 1)); isa_pins+=("$cell")
-      else
-        rs=$(stat -f %z "$OUT/rs.obu" 2>/dev/null || stat -c %s "$OUT/rs.obu")
-        cb=$(stat -f %z "$OUT/c.obu" 2>/dev/null || stat -c %s "$OUT/c.obu")
-        fail=$((fail + 1)); failed+=("$cell[port=${rs}B C=${cb}B]")
-      fi
+      add "pq_gradient_${sz}_q${qp}_p${p}" "pq_gradient_${sz}_p${p}" gradient "$sz" "$qp" "$p" "SVTAV1_HBD_SRC=1;SVTAV1_HBD_PQ=1"
     done
   done
 done
-
-echo "bd10 NATIVE-10-bit-source identity: $pass / $((pass + fail)) byte-identical"
-if [ "$fail" -gt 0 ]; then
-  printf '  FAILED: %s\n' "${failed[*]}"
-fi
-if [ "$isa_pinned" -gt 0 ]; then
-  echo "  per-ISA pinned (C diverges from itself across hosts, SUSPECTED-C-BUGS #9;"
-  echo "  these MATCH C-on-x86-64 in CI): ${isa_pins[*]}"
-fi
-if [ "$vacuous" -gt 0 ]; then
-  echo "  vacuous cells (real-10-bit stream == widened-u8 stream — they verify"
-  echo "  parity but do NOT exercise the u16 path): ${vac[*]}"
-fi
-dead=()
-for t in "${!live[@]}"; do
-  [ "${live[$t]}" -eq 0 ] && dead+=("$t")
-done
-if [ "${#dead[@]}" -gt 0 ]; then
-  echo "  GATE PREMISE FAILED — these configurations are vacuous at EVERY qp,"
-  echo "  so they would pass with the u16 threading removed: ${dead[*]}"
-fi
-echo "  configurations with at least one low-bits-live qp: $(( ${#live[@]} - ${#dead[@]} )) / ${#live[@]}"
-rm -rf "$OUT"
-[ "$fail" -eq 0 ] && [ "${#dead[@]}" -eq 0 ]
+python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${HBD_JOBS:-4}"
+rc=$?
+CELLDIR="$RS_ROOT/target/cells/bd10_hbd_src.cells.${SVT_ORACLE:-default}"
+python3 - "$OUT/result.tsv" "$CELLDIR" "$OUT/triples" <<'PY'
+import csv, sys
+from pathlib import Path
+rows = {r["name"]: r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t")}
+celldir = Path(sys.argv[2])
+triples = [l.split() for l in open(sys.argv[3])]
+cells = [r for n, r in rows.items() if not n.endswith("__w") and not n.endswith("__pin")]
+pins = [r for n, r in rows.items() if n.endswith("__pin")]
+ok = [r for r in cells if r["ok"] == "yes"]
+print(f"bd10 NATIVE-10-bit-source identity: {len(ok)} / {len(cells)} byte-identical")
+bad = [r for r in cells + pins if r["ok"] != "yes"]
+for r in bad:
+    why = "PER-ISA pin now MATCHES — remove it" if r["name"].endswith("__pin") and r["verdict"] == "IDENTICAL" else f"{r['verdict']} {r['detail']}"
+    print(f"  FAILED: {r['name']} [{why}]")
+if pins:
+    print(f"  per-ISA pinned (C diverges from itself across hosts, SUSPECTED-C-BUGS #9): "
+          + " ".join(r["name"] for r in pins if r["ok"] == "yes"))
+live, vac = {}, []
+for cell, triple in triples:
+    live.setdefault(triple, 0)
+    a, b = celldir / cell / "rs.obu", celldir / f"{cell}__w" / "rs.obu"
+    if a.exists() and b.exists() and a.read_bytes() == b.read_bytes():
+        vac.append(cell)
+    elif a.exists() and b.exists():
+        live[triple] += 1
+if vac:
+    print("  vacuous cells (real-10-bit stream == widened-u8 stream — they verify")
+    print("  parity but do NOT exercise the u16 path): " + " ".join(vac))
+dead = sorted(t for t, n in live.items() if n == 0)
+if dead:
+    print("  GATE PREMISE FAILED — these configurations are vacuous at EVERY qp,")
+    print("  so they would pass with the u16 threading removed: " + " ".join(dead))
+print(f"  configurations with at least one low-bits-live qp: {len(live) - len(dead)} / {len(live)}")
+sys.exit(1 if bad or dead else 0)
+PY
+st=$?
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]
