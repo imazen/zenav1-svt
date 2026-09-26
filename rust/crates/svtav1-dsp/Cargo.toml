@@ -25,6 +25,10 @@ zenav1-svt-cref = { path = "../svtav1-cref" }
 workspace = true
 
 [features]
+# Lifts the per-module `allow(dead_code)` in lib.rs so
+# tools/dead_code_ledger.py can list the items only the parity tests call
+# (docs/DEAD-CODE.tsv, plan T2). Never enable it in a build that ships.
+__dead_code_audit = []
 # `avx512` is DEFAULT-ON on purpose. It does not force AVX-512 on anyone: it
 # only makes archmage's `X64V4Token` exist, so `incant!`'s `v4(cfg(avx512))`
 # arm is COMPILED. Whether that arm RUNS is decided at run time by
@@ -48,10 +52,6 @@ required-features = ["std"]
 [[bench]]
 name = "kernel_tiers"
 harness = false
-
-[[test]]
-name = "dsp_parity"
-path = "tests/dsp_parity.rs"
 
 [[test]]
 name = "c_parity_cdef"

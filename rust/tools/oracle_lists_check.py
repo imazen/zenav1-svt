@@ -2,8 +2,8 @@
 """Every name in oracles/excludes/*.txt and oracles/divergent/*.txt is a test.
 
 Both lists hold nextest test names (`module::test`, with an
-`encoder_parity::` prefix for the encoder's parity modules, which compile
-into the encoder crate's unit-test binary). A name that matches no test is
+`encoder_parity::` or `dsp_parity::` prefix for the parity modules that
+compile into the encoder's or the dsp crate's unit-test binary). A name that matches no test is
 silent: an exclude stops excluding and a divergent pin can never clear. That
 happened on 2026-09-26, when the parity tests moved into the crate and every
 encoder name gained the prefix; CI's ratchet caught the divergent list, and
@@ -11,7 +11,8 @@ nothing would have caught the excludes.
 
 The check is static: `a::b::test` must name `fn test` inside the module file
 `b.rs` under some crate's tests/ directory, and an `encoder_parity::` name
-must be a module that tests/encoder_parity.rs declares.
+must be a module that tests/encoder_parity.rs declares (`dsp_parity::`:
+crates/svtav1-dsp/tests/dsp_parity.rs).
 """
 import re
 import sys
@@ -20,11 +21,13 @@ from pathlib import Path
 RUST = Path(__file__).resolve().parents[1]
 TEST_DIRS = [RUST / "crates/svtav1-encoder/tests", RUST / "crates/svtav1-dsp/tests",
              RUST / "svtav1/tests", RUST / "crates/svtav1-types/tests"]
-AGG = RUST / "crates/svtav1-encoder/tests/encoder_parity.rs"
+AGGS = {"encoder_parity": RUST / "crates/svtav1-encoder/tests/encoder_parity.rs",
+        "dsp_parity": RUST / "crates/svtav1-dsp/tests/dsp_parity.rs"}
 
 
 def main() -> int:
-    in_lib = set(re.findall(r"^mod (\w+);", AGG.read_text(), re.M))
+    owner = {m: agg for agg, path in AGGS.items()
+             for m in re.findall(r"^mod (\w+);", path.read_text(), re.M)}
     files = {}
     for d in TEST_DIRS:
         for f in d.glob("*.rs"):
@@ -36,8 +39,8 @@ def main() -> int:
             if not name or name.startswith("#"):
                 continue
             parts = name.split("::")
-            prefixed = parts[0] == "encoder_parity"
-            if prefixed:
+            prefix = parts[0] if parts[0] in AGGS else None
+            if prefix:
                 parts = parts[1:]
             if len(parts) < 2:
                 print(f"{lst.relative_to(RUST)}:{n}: `{name}` is not module::test")
@@ -45,9 +48,9 @@ def main() -> int:
                 continue
             mod, test = parts[0], parts[-1]
             where = f"{lst.relative_to(RUST)}:{n}: `{name}`"
-            if (mod in in_lib) != prefixed:
-                want = "needs" if mod in in_lib else "must not have"
-                print(f"{where} {want} the `encoder_parity::` prefix")
+            if owner.get(mod) != prefix:
+                want = f"needs the `{owner[mod]}::` prefix" if mod in owner else "must not have a prefix"
+                print(f"{where} {want}")
                 bad += 1
                 continue
             if not any(re.search(rf"\bfn {re.escape(test)}\s*\(", f.read_text())
