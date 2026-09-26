@@ -37,9 +37,15 @@
 //! caller runs this BEFORE the `funnel_chain` recode — the chain then
 //! codes the same normed levels a decoder reads.
 //!
+//! The chroma half is ported too: per leaf (after the luma txbs, matching
+//! C's per-block ordering) the encode pass re-predicts cb/cr on the ep
+//! chroma canvases — CfL subsamples the LUMA ep recon the leaf just
+//! wrote — re-quantizes through `tx_unit_gated` with `enc_pass` set (the
+//! `is_encode_pass` arm ignores `rdoq_ctrls.skip_uv`/`dct_dct_only` and
+//! gates `light_rdoq`), and stamps the ep chroma culs
+//! (`ep_cb/cr_dc_sign_level_coeff_na`).
+//!
 //! Not yet ported (same brief's measured gaps):
-//! - chroma: C's encode pass also re-quantizes cb/cr with the
-//!   `is_encode_pass` light-RDOQ arm — the port keeps MD chroma levels.
 //! - inter/IBC/palette leaves: C re-quantizes them identically; here they
 //!   keep their MD levels (their committed cul still enters the neighbour
 //!   chain, as it does in C for every coded leaf).
@@ -81,6 +87,22 @@ impl EncPassCul {
     }
 }
 
+/// Everything the chroma encode-pass arm needs per SB: the tile's chroma
+/// recon canvases (the funnel's MD recon at SB entry, evolving to ep
+/// recon leaf by leaf — `ep_cb/cr_recon_na`'s role), the chroma input
+/// planes, and the per-plane ep cul chains
+/// (`ep_cb/cr_dc_sign_level_coeff_na_update`).
+pub(crate) struct ChromaEnc<'a> {
+    pub u_recon: &'a mut [u8],
+    pub v_recon: &'a mut [u8],
+    pub u_src: &'a [u8],
+    pub v_src: &'a [u8],
+    /// Chroma plane stride (input and recon share it).
+    pub c_stride: usize,
+    pub cb_cul: &'a mut EncPassCul,
+    pub cr_cul: &'a mut EncPassCul,
+}
+
 /// Splice one encode-pass txb recon into the canvas — `commit_leaf`'s
 /// straddle clip (task #95): rows past the aligned width would wrap into
 /// the next row's low columns and corrupt an already-committed neighbour.
@@ -118,6 +140,7 @@ pub(crate) fn encode_pass_luma_sb(
     rdoq: RdoqCtrls,
     filt_modes: &crate::pipeline::EntropyCtx,
     cul: &mut EncPassCul,
+    chroma: Option<ChromaEnc<'_>>,
     sb_x: usize,
     sb_y: usize,
 ) {
@@ -126,6 +149,11 @@ pub(crate) fn encode_pass_luma_sb(
     // `qmatrix_level` resolve (`frm_hdr.quantization_params.qm[PLANE_Y]`).
     let mut qt = crate::quant::build_quant_table_sharp(frame.quant_qindex(0), frame.sharpness);
     qt.qm_level = frame.qm_levels[0];
+    let mut qt_u = crate::quant::build_quant_table_sharp(frame.quant_qindex(1), frame.sharpness);
+    qt_u.qm_level = frame.qm_levels[1];
+    let mut qt_v = crate::quant::build_quant_table_sharp(frame.quant_qindex(2), frame.sharpness);
+    qt_v.qm_level = frame.qm_levels[2];
+    let mut chroma = chroma;
     encode_pass_node(
         tree,
         sb_x,
@@ -135,11 +163,14 @@ pub(crate) fn encode_pass_luma_sb(
         src,
         src_stride,
         &qt,
+        &qt_u,
+        &qt_v,
         rdoq,
         frame,
         rates,
         filt_modes,
         cul,
+        chroma.as_mut(),
         PartitionType::None,
     );
 }
@@ -154,11 +185,14 @@ fn encode_pass_node(
     src: &[u8],
     src_stride: usize,
     qt: &crate::quant::QuantTable,
+    qt_u: &crate::quant::QuantTable,
+    qt_v: &crate::quant::QuantTable,
     rdoq: RdoqCtrls,
     frame: &FunnelFrame,
     rates: &MdRates,
     filt_modes: &crate::pipeline::EntropyCtx,
     cul: &mut EncPassCul,
+    chroma: Option<&mut ChromaEnc<'_>>,
     parent_partition: PartitionType,
 ) {
     match tree {
@@ -171,11 +205,14 @@ fn encode_pass_node(
             src,
             src_stride,
             qt,
+            qt_u,
+            qt_v,
             rdoq,
             frame,
             rates,
             filt_modes,
             cul,
+            chroma,
             parent_partition,
         ),
         PartitionTree::Split {
@@ -190,6 +227,7 @@ fn encode_pass_node(
             // shapes drop from the tail).
             let (nw, nh) = (*width as usize, *height as usize);
             let (hw, hh, qw, qh) = (nw / 2, nh / 2, nw / 4, nh / 4);
+            let mut chroma = chroma;
             let mut recurse = |child: &mut PartitionTree, cx, cy| {
                 encode_pass_node(
                     child,
@@ -200,11 +238,14 @@ fn encode_pass_node(
                     src,
                     src_stride,
                     qt,
+                    qt_u,
+                    qt_v,
                     rdoq,
                     frame,
                     rates,
                     filt_modes,
                     cul,
+                    chroma.as_deref_mut(),
                     match partition_type {
                         PartitionType::VertA => PartitionType::VertA,
                         PartitionType::VertB => PartitionType::VertB,
@@ -261,6 +302,64 @@ fn encode_pass_node(
 
 #[allow(clippy::too_many_arguments)]
 fn encode_pass_leaf(
+    d: &mut crate::partition::BlockDecision,
+    x: usize,
+    y: usize,
+    recon: &mut [u8],
+    recon_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    qt: &crate::quant::QuantTable,
+    qt_u: &crate::quant::QuantTable,
+    qt_v: &crate::quant::QuantTable,
+    rdoq: RdoqCtrls,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    filt_modes: &crate::pipeline::EntropyCtx,
+    cul: &mut EncPassCul,
+    chroma: Option<&mut ChromaEnc<'_>>,
+    parent_partition: PartitionType,
+) {
+    encode_pass_luma_leaf(
+        d,
+        x,
+        y,
+        recon,
+        recon_stride,
+        src,
+        src_stride,
+        qt,
+        rdoq,
+        frame,
+        rates,
+        filt_modes,
+        cul,
+        parent_partition,
+    );
+    // C runs the chroma txb loop after the leaf's luma txbs
+    // (coding_loop.c:881-1004) — the CfL arm below reads the ep LUMA
+    // recon this leaf just wrote.
+    if let Some(chroma) = chroma {
+        encode_pass_chroma_leaf(
+            d,
+            x,
+            y,
+            recon,
+            recon_stride,
+            chroma,
+            qt_u,
+            qt_v,
+            frame,
+            rates,
+            rdoq,
+            filt_modes,
+            parent_partition,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_pass_luma_leaf(
     d: &mut crate::partition::BlockDecision,
     x: usize,
     y: usize,
@@ -539,4 +638,284 @@ fn encode_pass_leaf(
     if !committed_zero {
         d.eob = eob_sum.min(u16::MAX as u32) as u16;
     }
+}
+
+/// The chroma half of one leaf's encode pass — the per-leaf chroma loop
+/// in `svt_aom_encode_block` (coding_loop.c:881-1004) calling
+/// `av1_encode_loop`'s chroma section (:460-590) and the
+/// `av1_encode_generate_recon` chroma arm, plus the
+/// `ep_cb/cr_dc_sign_level_coeff_na_update` stamps (:1608-1628). One txb
+/// per leaf on this path: `svt_aom_uv_tx_count` is 1 for every funnel
+/// bsize at 4:2:0 — `av1_get_max_uv_txsize` spans the whole chroma block
+/// under the 32-px transform cap.
+///
+/// `recon`/`recon_stride` is the ep LUMA canvas the luma arm just wrote —
+/// a CfL leaf's AC subsample reads it (`av1_encode_generate_cfl_prediction`
+/// reads `recon_buffer->y_buffer`, which by then holds the encode-pass
+/// luma output, not the MD recon).
+#[allow(clippy::too_many_arguments)]
+fn encode_pass_chroma_leaf(
+    d: &mut crate::partition::BlockDecision,
+    x: usize,
+    y: usize,
+    recon: &[u8],
+    recon_stride: usize,
+    chroma: &mut ChromaEnc<'_>,
+    qt_u: &crate::quant::QuantTable,
+    qt_v: &crate::quant::QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    rdoq: RdoqCtrls,
+    filt_modes: &crate::pipeline::EntropyCtx,
+    parent_partition: PartitionType,
+) {
+    // `chroma_dec` absent = `has_uv` false — C skips the whole chroma
+    // section (no pred, no NA stamps).
+    if d.chroma_dec.is_none() {
+        return;
+    }
+    let (bw, bh) = (usize::from(d.width), usize::from(d.height));
+    // ROUND_UV pair geometry — the eval path's chroma origin/dims
+    // (leaf_funnel/mod.rs): `ccx = (ROUND_UV_TO(x,1)>>1)` with the pair
+    // anchor, `cw = MAX(4,luma)/2`.
+    let cx = ((x >> 3) << 3) / 2 + if bw >= 8 { (x % 8) / 2 } else { 0 };
+    let cy = ((y >> 3) << 3) / 2 + if bh >= 8 { (y % 8) / 2 } else { 0 };
+    let (cw, chh) = (bw.max(8) / 2, bh.max(8) / 2);
+
+    if d.inter.is_some() || d.use_intrabc || d.palette.is_some() {
+        // C re-quantizes their chroma too (the inter pred path — the port
+        // keeps MD levels, same deferral as the luma arm). Their
+        // committed `quant_dc` byte still stamps the ep NAs.
+        let (u_q, v_q, _, _, _, _) = d.chroma_dec.as_ref().unwrap();
+        let (uc, vc) = (compute_cul_level(u_q), compute_cul_level(v_q));
+        chroma.cb_cul.record(cx, cy, cw, chh, uc);
+        chroma.cr_cul.record(cx, cy, cw, chh, vc);
+        return;
+    }
+
+    let uv_geom = UnitGeom {
+        partition: parent_partition,
+        mi_row: ((y >> 3) << 3) >> 2,
+        mi_col: ((x >> 3) << 3) >> 2,
+        bw_px: bw.max(8),
+        bh_px: bh.max(8),
+        ss: 1,
+        frame_w: frame.frame_w_px,
+        frame_h: frame.frame_h_px,
+        sb_mi_size: frame.sb_mi_size,
+        tile: filt_modes.tile_mi,
+    };
+    let filt_uv = filt_modes.filt_type_uv(x, y);
+    // `svt_av1_predict_intra_block` runs with `mode = uv_mode == CFL ?
+    // UV_DC_PRED : uv_mode` (coding_loop.c:932-934) — the CfL overwrite
+    // below applies alpha over that DC base.
+    let mode = if usize::from(d.uv_mode) == UV_CFL_PRED_IDX {
+        0
+    } else {
+        d.uv_mode
+    };
+    let mut u_pred = alloc::vec![0u8; cw * chh];
+    let mut v_pred = alloc::vec![0u8; cw * chh];
+    predict_unit(
+        chroma.u_recon,
+        chroma.c_stride,
+        cx,
+        cy,
+        cw,
+        chh,
+        mode,
+        d.uv_angle_delta,
+        FI_NONE,
+        &uv_geom,
+        frame.cfg.edge_filter,
+        filt_uv,
+        &mut None,
+        &mut u_pred,
+    );
+    predict_unit(
+        chroma.v_recon,
+        chroma.c_stride,
+        cx,
+        cy,
+        cw,
+        chh,
+        mode,
+        d.uv_angle_delta,
+        FI_NONE,
+        &uv_geom,
+        frame.cfg.edge_filter,
+        filt_uv,
+        &mut None,
+        &mut v_pred,
+    );
+    if usize::from(d.uv_mode) == UV_CFL_PRED_IDX {
+        // `av1_encode_generate_cfl_prediction` (coding_loop.c:198):
+        // subsample the ep luma recon, subtract the average, predict over
+        // the DC base with the COMMITTED alphas.
+        let mut lr = alloc::vec![0u8; bw * bh];
+        let wr = bw.min(recon_stride.saturating_sub(x));
+        for r in 0..bh {
+            let s = (y + r) * recon_stride + x;
+            let row = &recon[s..s + wr];
+            lr[r * bw..r * bw + wr].copy_from_slice(row);
+            if let Some(&last) = row.last() {
+                lr[r * bw + wr..r * bw + bw].fill(last);
+            }
+        }
+        let mut ac =
+            crate::vecpool::zeroed_pool::<i16>(svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1));
+        cfl_ac_subsample(recon, recon_stride, &lr, x, y, bw, bh, &mut ac);
+        svtav1_dsp::intra_pred::cfl_subtract_average(&mut ac, cw, chh);
+        let alpha_cb = cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 0);
+        let alpha_cr = cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1);
+        let mut cfl_pred = alloc::vec![0u8; cw * chh];
+        svtav1_dsp::intra_pred::cfl_predict_lbd(
+            &ac,
+            &u_pred,
+            cw,
+            &mut cfl_pred,
+            cw,
+            alpha_cb,
+            cw,
+            chh,
+        );
+        u_pred = cfl_pred;
+        let mut cfl_pred = alloc::vec![0u8; cw * chh];
+        svtav1_dsp::intra_pred::cfl_predict_lbd(
+            &ac,
+            &v_pred,
+            cw,
+            &mut cfl_pred,
+            cw,
+            alpha_cr,
+            cw,
+            chh,
+        );
+        v_pred = cfl_pred;
+    }
+
+    // `svt_aom_get_txb_ctx` on the ep chroma NAs (coding_loop.c:903-922)
+    // — single txb => block_eq_tx, coords already in chroma px.
+    let (cb_tsc, cb_dsc) = txb_ctx_from_spans(
+        chroma.cb_cul.above_span(cx, cw),
+        chroma.cb_cul.left_span(cy, chh),
+        0,
+        0,
+        cw,
+        chh,
+        true,
+    );
+    let (cr_tsc, cr_dsc) = txb_ctx_from_spans(
+        chroma.cr_cul.above_span(cx, cw),
+        chroma.cr_cul.left_span(cy, chh),
+        0,
+        0,
+        cw,
+        chh,
+        true,
+    );
+    let tt = uv_tx_type(d.uv_mode, cw, chh);
+    let aligned_dims = crate::frame_geom::FrameDims {
+        true_w: frame.frame_w_px,
+        true_h: frame.frame_h_px,
+        aligned_w: frame.frame_w_px,
+        aligned_h: frame.frame_h_px,
+        ss_x: 1,
+        ss_y: 1,
+    };
+    let uv_crop = crate::frame_geom::cropped_tx_dims_uv(&aligned_dims, cx, cy, cw, chh);
+    let u_out = tx_unit_gated(
+        chroma.u_src,
+        chroma.c_stride,
+        cy * chroma.c_stride + cx,
+        &u_pred,
+        cw,
+        0,
+        cw,
+        chh,
+        tt,
+        1,
+        cb_tsc,
+        cb_dsc,
+        0,
+        qt_u,
+        frame,
+        rates,
+        rdoq,
+        false,
+        uv_crop,
+        true,
+        RateMode::Exact,
+        TxGate {
+            enc_pass: true,
+            ..TxGate::default()
+        },
+    );
+    let v_out = tx_unit_gated(
+        chroma.v_src,
+        chroma.c_stride,
+        cy * chroma.c_stride + cx,
+        &v_pred,
+        cw,
+        0,
+        cw,
+        chh,
+        tt,
+        1,
+        cr_tsc,
+        cr_dsc,
+        0,
+        qt_v,
+        frame,
+        rates,
+        rdoq,
+        false,
+        uv_crop,
+        true,
+        RateMode::Exact,
+        TxGate {
+            enc_pass: true,
+            ..TxGate::default()
+        },
+    );
+
+    // Commit: `blk_ptr->eob.u/v`, `quant` rasters, the recon both into the
+    // ep canvases (`recon_pic`) and the stored `chroma_dec` the syntax
+    // walk copies into its own planes, then the ep cul stamps
+    // (`quant_dc.u/v` = the `(dc_sign<<6)|cul` byte).
+    {
+        let (u_q, v_q, u_eob, v_eob, u_rec, v_rec) = d.chroma_dec.as_mut().unwrap();
+        *u_eob = u_out.eob;
+        *v_eob = v_out.eob;
+        u_q.clear();
+        u_q.extend_from_slice(&u_out.qcoeff);
+        v_q.clear();
+        v_q.extend_from_slice(&v_out.qcoeff);
+        u_rec.clear();
+        u_rec.extend_from_slice(&u_out.recon);
+        v_rec.clear();
+        v_rec.extend_from_slice(&v_out.recon);
+    }
+    write_canvas(
+        chroma.u_recon,
+        chroma.c_stride,
+        cx,
+        cy,
+        cw,
+        &u_out.recon,
+        cw,
+        chh,
+    );
+    write_canvas(
+        chroma.v_recon,
+        chroma.c_stride,
+        cx,
+        cy,
+        cw,
+        &v_out.recon,
+        cw,
+        chh,
+    );
+    chroma.cb_cul.record(cx, cy, cw, chh, u_out.cul);
+    chroma.cr_cul.record(cx, cy, cw, chh, v_out.cul);
 }

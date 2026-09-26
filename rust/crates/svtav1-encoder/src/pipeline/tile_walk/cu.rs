@@ -48,6 +48,12 @@ pub(super) fn encode_coding_unit(
     // The per-tile encode-pass coefficient-neighbour chain
     // (`ep_luma_dc_sign_level_coeff_na`) — `Some` whenever the funnel ran.
     enc_cul: &mut Option<crate::leaf_funnel::EncPassCul>,
+    // The chroma twins (`ep_cb/cr_dc_sign_level_coeff_na_update`) for the
+    // chroma encode-pass arm — same lifetime as `enc_cul`.
+    enc_cul_uv: &mut Option<(
+        crate::leaf_funnel::EncPassCul,
+        crate::leaf_funnel::EncPassCul,
+    )>,
     fun_frame: &Option<crate::leaf_funnel::FunnelFrame>,
     ibc_state: &Option<Box<crate::leaf_funnel::IbcFrameState>>,
     ibc_mvp_grid: &mut Vec<crate::intrabc_mvp::MvpMiEntry>,
@@ -1643,6 +1649,22 @@ pub(super) fn encode_coding_unit(
             if let Some(tree) = sb_result.tree.as_mut() {
                 let mut ep_rdoq = frame.rdoq;
                 ep_rdoq.enabled = sb_enc_rdoq;
+                // `av1_encode_loop`'s chroma arm — absent only on mono
+                // (no chroma sources/canvases exist there anyway).
+                let chroma = match (chroma_src, enc_cul_uv.as_mut()) {
+                    (Some((u_src, v_src)), Some((cb_cul, cr_cul))) => {
+                        Some(crate::leaf_funnel::ChromaEnc {
+                            u_recon: fun_u_recon,
+                            v_recon: fun_v_recon,
+                            u_src,
+                            v_src,
+                            c_stride: cwid,
+                            cb_cul,
+                            cr_cul,
+                        })
+                    }
+                    _ => None,
+                };
                 crate::leaf_funnel::encode_pass_luma_sb(
                     tree,
                     tile_frame_recon,
@@ -1654,6 +1676,7 @@ pub(super) fn encode_coding_unit(
                     ep_rdoq,
                     fun_ectx.as_ref().unwrap(),
                     cul,
+                    chroma,
                     sb_x0,
                     sb_y0,
                 );

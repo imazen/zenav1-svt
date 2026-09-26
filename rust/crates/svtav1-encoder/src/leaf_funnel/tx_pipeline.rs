@@ -1112,7 +1112,9 @@ pub(super) fn tx_unit_inner(
     let dqcoeff: &mut [i32] = TxScratch::grown(dqcoeff_buf, pw * ph);
     // C `perform_rdoq` (full_loop.c:1765-1771): `!is_lossless_segment &&
     // (mds_do_rdoq || is_encode_pass) && rdoq_ctrls.enabled`, then the
-    // `!is_encode_pass` gates `dct_dct_only` / `skip_uv`. `rdoq.enabled`
+    // `!is_encode_pass` gates `dct_dct_only` / `skip_uv` — on the encode
+    // pass BOTH are ignored, so a chroma txb RDOQs there even under a
+    // `skip_uv` rdoq level. `rdoq.enabled`
     // IS the caller's `(mds_do_rdoq || is_encode_pass) && enabled` — a
     // caller on a stage where C has `mds_do_rdoq == false` (MDS1/MDS2)
     // passes `RdoqCtrls::DISABLED`. `frame.coded_lossless` is the port's
@@ -1120,8 +1122,9 @@ pub(super) fn tx_unit_inner(
     // `rdoq_level = 0` there — both halves kept, they are C's two facts).
     let mut perform_rdoq = rdoq.enabled
         && !frame.coded_lossless
-        && !(rdoq.dct_dct_only && tx_type != cc::DCT_DCT)
-        && !(rdoq.skip_uv && plane_type != 0);
+        && (gate.enc_pass
+            || (!(rdoq.dct_dct_only && tx_type != cc::DCT_DCT)
+                && !(rdoq.skip_uv && plane_type != 0)));
     let mut eob = if perform_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => {

@@ -428,6 +428,16 @@ pub(super) fn encode_one_tile_body(
     } else {
         None
     };
+    // `ep_cb/cr_dc_sign_level_coeff_na_update` — the chroma twins, in
+    // chroma px (4:2:0). Same reset-per-tile lifetime as `enc_cul`.
+    let mut enc_cul_uv = if use_funnel || coded_lossless {
+        Some((
+            crate::leaf_funnel::EncPassCul::new(w / 2, h / 2),
+            crate::leaf_funnel::EncPassCul::new(w / 2, h / 2),
+        ))
+    } else {
+        None
+    };
     let fun_rates = if use_funnel || coded_lossless {
         // §1s item 8: C's `init_frame_rate_tables` (md_config_process.c:292)
         // seeds `md_frame_context` from the primary reference's SAVED
@@ -1717,6 +1727,7 @@ pub(super) fn encode_one_tile_body(
                 &mut fun_v_recon,
                 &mut fun_ectx,
                 &mut enc_cul,
+                &mut enc_cul_uv,
                 &fun_frame,
                 &ibc_state,
                 &mut ibc_mvp_grid,
