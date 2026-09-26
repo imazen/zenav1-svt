@@ -1,0 +1,289 @@
+name	verdict	stage	detail	expect	checks	ok
+osg_ghost-robot_gradient_64_q20_p2_b8	DIFFERS	tile	tile payload C=654B Rust=656B	-	-	-
+osg_ghost-robot_gradient_64_q20_p4_b8	DIFFERS	FH	cdef_y_pri_strength[5] C=11 Rust=9	-	-	-
+osg_ghost-robot_gradient_64_q20_p6_b8	DIFFERS	tile	tile payload C=612B Rust=634B	-	-	-
+osg_ghost-robot_gradient_64_q20_p8_b8	DIFFERS	tile	tile payload C=609B Rust=630B	-	-	-
+osg_ghost-robot_gradient_64_q20_p10_b8	DIFFERS	tile	tile payload C=693B Rust=698B	-	-	-
+osg_ghost-robot_gradient_64_q20_p13_b8	DIFFERS	tile	tile payload C=693B Rust=698B	-	-	-
+osg_ghost-robot_gradient_64_q32_p2_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q32_p4_b8	DIFFERS	tile-op	op 2814 C=CDF4:s2 Rust=CDF4:s3	-	-	-
+osg_ghost-robot_gradient_64_q32_p6_b8	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q32_p8_b8	DIFFERS	tile-op	op 2816 C=CDF4:s2 Rust=CDF4:s3	-	-	-
+osg_ghost-robot_gradient_64_q32_p10_b8	DIFFERS	tile-op	op 523 C=CDF4:s2 Rust=CDF4:s3	-	-	-
+osg_ghost-robot_gradient_64_q32_p13_b8	DIFFERS	tile-op	op 523 C=CDF4:s2 Rust=CDF4:s3	-	-	-
+osg_ghost-robot_gradient_64_q45_p2_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q45_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q45_p6_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q45_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q45_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q45_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p2_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p6_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q55_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q20_p2_b10	DIFFERS	FH	cdef_uv_sec_strength[2] C=3 Rust=2	-	-	-
+osg_ghost-robot_gradient_64_q20_p4_b10	DIFFERS	FH	cdef_y_sec_strength[4] C=1 Rust=0	-	-	-
+osg_ghost-robot_gradient_64_q20_p6_b10	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q20_p8_b10	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q20_p10_b10	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q20_p13_b10	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_64_q32_p2_b10	DIFFERS	tile-op	op 29 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q32_p4_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q32_p6_b10	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_64_q32_p8_b10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q32_p10_b10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q32_p13_b10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_64_q45_p2_b10	DIFFERS	tile-op	op 4 C=CDF13:s11 Rust=CDF13:s0	-	-	-
+osg_ghost-robot_gradient_64_q45_p4_b10	DIFFERS	tile-op	op 128 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q45_p6_b10	DIFFERS	tile-op	op 4 C=CDF13:s0 Rust=CDF13:s2	-	-	-
+osg_ghost-robot_gradient_64_q45_p8_b10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q45_p10_b10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q45_p13_b10	DIFFERS	tile-op	op 127 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p2_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p4_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p6_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p8_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p10_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_64_q55_p13_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_128_q20_p2_b8	DIFFERS	FH	lr_type[1] C=1 Rust=0	-	-	-
+osg_ghost-robot_gradient_128_q20_p4_b8	DIFFERS	FH	cdef_y_pri_strength[5] C=14 Rust=4	-	-	-
+osg_ghost-robot_gradient_128_q20_p6_b8	DIFFERS	FH	cdef_uv_pri_strength[0] C=9 Rust=11	-	-	-
+osg_ghost-robot_gradient_128_q20_p8_b8	DIFFERS	tile	tile payload C=2389B Rust=2393B	-	-	-
+osg_ghost-robot_gradient_128_q20_p10_b8	DIFFERS	tile	tile payload C=2441B Rust=2445B	-	-	-
+osg_ghost-robot_gradient_128_q20_p13_b8	DIFFERS	tile	tile payload C=2441B Rust=2445B	-	-	-
+osg_ghost-robot_gradient_128_q32_p2_b8	DIFFERS	tile-op	op 9862 C=CDF10:s0 Rust=CDF10:s1	-	-	-
+osg_ghost-robot_gradient_128_q32_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q32_p6_b8	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q32_p8_b8	DIFFERS	tile-op	op 7090 C=CDF4:s2 Rust=CDF4:s3	-	-	-
+osg_ghost-robot_gradient_128_q32_p10_b8	DIFFERS	tile-op	op 2592 C=CDF4:s1 Rust=CDF4:s2	-	-	-
+osg_ghost-robot_gradient_128_q32_p13_b8	DIFFERS	tile-op	op 2592 C=CDF4:s1 Rust=CDF4:s2	-	-	-
+osg_ghost-robot_gradient_128_q45_p2_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q45_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q45_p6_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q45_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q45_p10_b8	DIFFERS	tile-op	op 848 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q45_p13_b8	DIFFERS	tile-op	op 848 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q55_p2_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q55_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q55_p6_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q55_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q55_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q55_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_128_q20_p2_b10	DIFFERS	FH	lr_type[1] C=0 Rust=1	-	-	-
+osg_ghost-robot_gradient_128_q20_p4_b10	DIFFERS	FH	cdef_y_pri_strength[3] C=5 Rust=4	-	-	-
+osg_ghost-robot_gradient_128_q20_p6_b10	DIFFERS	tile	tile payload C=2426B Rust=2408B	-	-	-
+osg_ghost-robot_gradient_128_q20_p8_b10	DIFFERS	tile	tile payload C=2432B Rust=2409B	-	-	-
+osg_ghost-robot_gradient_128_q20_p10_b10	DIFFERS	tile	tile payload C=2413B Rust=2391B	-	-	-
+osg_ghost-robot_gradient_128_q20_p13_b10	DIFFERS	tile	tile payload C=2413B Rust=2391B	-	-	-
+osg_ghost-robot_gradient_128_q32_p2_b10	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_128_q32_p4_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_128_q32_p6_b10	DIFFERS	tile-op	op 18 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q32_p8_b10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_128_q32_p10_b10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_128_q32_p13_b10	DIFFERS	tile-op	op 501 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_128_q45_p2_b10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q45_p4_b10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q45_p6_b10	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q45_p8_b10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s7	-	-	-
+osg_ghost-robot_gradient_128_q45_p10_b10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s7	-	-	-
+osg_ghost-robot_gradient_128_q45_p13_b10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s7	-	-	-
+osg_ghost-robot_gradient_128_q55_p2_b10	DIFFERS	tile-op	op 0 C=CDF10:s1 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q55_p4_b10	DIFFERS	tile-op	op 0 C=CDF10:s0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q55_p6_b10	DIFFERS	tile-op	op 0 C=CDF10:s0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_128_q55_p8_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9	-	-	-
+osg_ghost-robot_gradient_128_q55_p10_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9	-	-	-
+osg_ghost-robot_gradient_128_q55_p13_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s9	-	-	-
+osg_ghost-robot_gradient_256_q20_p2_b8	DIFFERS	FH	cdef_uv_pri_strength[0] C=8 Rust=10	-	-	-
+osg_ghost-robot_gradient_256_q20_p4_b8	DIFFERS	FH	loop_filter_level[2] C=33 Rust=1	-	-	-
+osg_ghost-robot_gradient_256_q20_p6_b8	DIFFERS	FH	cdef_uv_pri_strength[0] C=13 Rust=11	-	-	-
+osg_ghost-robot_gradient_256_q20_p8_b8	DIFFERS	tile	tile payload C=7354B Rust=7466B	-	-	-
+osg_ghost-robot_gradient_256_q20_p10_b8	DIFFERS	tile	tile payload C=7953B Rust=7996B	-	-	-
+osg_ghost-robot_gradient_256_q20_p13_b8	DIFFERS	tile	tile payload C=7953B Rust=7996B	-	-	-
+osg_ghost-robot_gradient_256_q32_p2_b8	DIFFERS	tile-op	op 1376 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_gradient_256_q32_p4_b8	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_gradient_256_q32_p6_b8	DIFFERS	tile-op	op 1374 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_gradient_256_q32_p8_b8	DIFFERS	tile-op	op 1373 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_gradient_256_q32_p10_b8	DIFFERS	tile-op	op 2011 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q32_p13_b8	DIFFERS	tile-op	op 2011 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p2_b8	DIFFERS	tile-op	op 7978 C=CDF13:s2 Rust=CDF13:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p4_b8	DIFFERS	tile-op	op 11539 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p6_b8	DIFFERS	tile-op	op 4 C=CDF13:s0 Rust=CDF13:s9	-	-	-
+osg_ghost-robot_gradient_256_q45_p8_b8	DIFFERS	tile-op	op 5121 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_256_q45_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_256_q55_p2_b8	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_256_q55_p4_b8	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_256_q55_p6_b8	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q55_p8_b8	DIFFERS	tile-op	op 2430 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q55_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_256_q55_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_gradient_256_q20_p2_b10	DIFFERS	FH	loop_filter_level[1] C=17 Rust=16	-	-	-
+osg_ghost-robot_gradient_256_q20_p4_b10	DIFFERS	tile	tile payload C=7330B Rust=7102B	-	-	-
+osg_ghost-robot_gradient_256_q20_p6_b10	DIFFERS	FH	cdef_uv_pri_strength[0] C=11 Rust=13	-	-	-
+osg_ghost-robot_gradient_256_q20_p8_b10	DIFFERS	tile	tile payload C=7469B Rust=7253B	-	-	-
+osg_ghost-robot_gradient_256_q20_p10_b10	DIFFERS	tile	tile payload C=7652B Rust=7651B	-	-	-
+osg_ghost-robot_gradient_256_q20_p13_b10	DIFFERS	tile	tile payload C=7652B Rust=7651B	-	-	-
+osg_ghost-robot_gradient_256_q32_p2_b10	DIFFERS	tile-op	op 16 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_256_q32_p4_b10	DIFFERS	tile-op	op 8 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q32_p6_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q32_p8_b10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_256_q32_p10_b10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_256_q32_p13_b10	DIFFERS	tile-op	op 232 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p2_b10	DIFFERS	tile-op	op 7 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_256_q45_p4_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q45_p6_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q45_p8_b10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p10_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_256_q45_p13_b10	DIFFERS	tile-op	op 112 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_gradient_256_q55_p2_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q55_p4_b10	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_gradient_256_q55_p6_b10	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_gradient_256_q55_p8_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8	-	-	-
+osg_ghost-robot_gradient_256_q55_p10_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8	-	-	-
+osg_ghost-robot_gradient_256_q55_p13_b10	DIFFERS	tile-op	op 7 C=CDF11:s10 Rust=CDF11:s8	-	-	-
+osg_ghost-robot_photo_64_q20_p2_b8	DIFFERS	FH	loop_filter_sharpness C=3 Rust=2	-	-	-
+osg_ghost-robot_photo_64_q20_p4_b8	DIFFERS	tile	tile payload C=840B Rust=924B	-	-	-
+osg_ghost-robot_photo_64_q20_p6_b8	DIFFERS	tile	tile payload C=751B Rust=868B	-	-	-
+osg_ghost-robot_photo_64_q20_p8_b8	DIFFERS	tile	tile payload C=773B Rust=872B	-	-	-
+osg_ghost-robot_photo_64_q20_p10_b8	DIFFERS	tile	tile payload C=790B Rust=795B	-	-	-
+osg_ghost-robot_photo_64_q20_p13_b8	DIFFERS	tile	tile payload C=790B Rust=795B	-	-	-
+osg_ghost-robot_photo_64_q32_p2_b8	DIFFERS	tile-op	op 25 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_64_q32_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q32_p6_b8	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_64_q32_p8_b8	DIFFERS	tile-op	op 618 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_64_q32_p10_b8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_64_q32_p13_b8	DIFFERS	tile-op	op 0 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_64_q45_p2_b8	DIFFERS	tile-op	op 1397 C=CDF14:s13 Rust=CDF14:s0	-	-	-
+osg_ghost-robot_photo_64_q45_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q45_p6_b8	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_64_q45_p8_b8	DIFFERS	tile-op	op 1 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_64_q45_p10_b8	DIFFERS	tile-op	op 221 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_64_q45_p13_b8	DIFFERS	tile-op	op 221 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_64_q55_p2_b8	DIFFERS	tile-op	op 504 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_64_q55_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q55_p6_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q55_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q55_p10_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q55_p13_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_64_q20_p2_b10	DIFFERS	FH	cdef_bits C=2 Rust=0	-	-	-
+osg_ghost-robot_photo_64_q20_p4_b10	DIFFERS	tile	tile payload C=891B Rust=891B	-	-	-
+osg_ghost-robot_photo_64_q20_p6_b10	DIFFERS	FH	cdef_y_pri_strength[1] C=4 Rust=0	-	-	-
+osg_ghost-robot_photo_64_q20_p8_b10	DIFFERS	tile	tile payload C=826B Rust=813B	-	-	-
+osg_ghost-robot_photo_64_q20_p10_b10	DIFFERS	tile	tile payload C=794B Rust=766B	-	-	-
+osg_ghost-robot_photo_64_q20_p13_b10	DIFFERS	tile	tile payload C=794B Rust=766B	-	-	-
+osg_ghost-robot_photo_64_q32_p2_b10	DIFFERS	tile-op	op 24 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_64_q32_p4_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_64_q32_p6_b10	DIFFERS	tile-op	op 24 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_64_q32_p8_b10	DIFFERS	tile-op	op 10 C=CDF9:s8 Rust=CDF9:s7	-	-	-
+osg_ghost-robot_photo_64_q32_p10_b10	DIFFERS	tile-op	op 11 C=CDF7:s6 Rust=CDF7:s5	-	-	-
+osg_ghost-robot_photo_64_q32_p13_b10	DIFFERS	tile-op	op 11 C=CDF7:s6 Rust=CDF7:s5	-	-	-
+osg_ghost-robot_photo_64_q45_p2_b10	DIFFERS	tile-op	op 1 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_64_q45_p4_b10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_64_q45_p6_b10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_64_q45_p8_b10	DIFFERS	tile-op	op 8 C=CDF11:s9 Rust=CDF11:s8	-	-	-
+osg_ghost-robot_photo_64_q45_p10_b10	DIFFERS	tile-op	op 10 C=CDF9:s7 Rust=CDF9:s5	-	-	-
+osg_ghost-robot_photo_64_q45_p13_b10	DIFFERS	tile-op	op 10 C=CDF9:s7 Rust=CDF9:s5	-	-	-
+osg_ghost-robot_photo_64_q55_p2_b10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_64_q55_p4_b10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_64_q55_p6_b10	DIFFERS	tile-op	op 9 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_64_q55_p8_b10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_64_q55_p10_b10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_64_q55_p13_b10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s0	-	-	-
+osg_ghost-robot_photo_128_q20_p2_b8	DIFFERS	FH	loop_filter_level[2] C=0 Rust=8	-	-	-
+osg_ghost-robot_photo_128_q20_p4_b8	DIFFERS	FH	loop_filter_level[1] C=17 Rust=16	-	-	-
+osg_ghost-robot_photo_128_q20_p6_b8	DIFFERS	FH	cdef_uv_pri_strength[0] C=10 Rust=8	-	-	-
+osg_ghost-robot_photo_128_q20_p8_b8	DIFFERS	tile	tile payload C=3465B Rust=3491B	-	-	-
+osg_ghost-robot_photo_128_q20_p10_b8	DIFFERS	tile	tile payload C=3231B Rust=3268B	-	-	-
+osg_ghost-robot_photo_128_q20_p13_b8	DIFFERS	tile	tile payload C=3231B Rust=3268B	-	-	-
+osg_ghost-robot_photo_128_q32_p2_b8	DIFFERS	tile-op	op 15 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q32_p4_b8	DIFFERS	tile-op	op 25 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q32_p6_b8	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q32_p8_b8	DIFFERS	tile-op	op 824 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q32_p10_b8	DIFFERS	tile-op	op 358 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q32_p13_b8	DIFFERS	tile-op	op 358 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q45_p2_b8	DIFFERS	tile-op	op 27 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q45_p4_b8	DIFFERS	tile-op	op 9 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p6_b8	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p8_b8	DIFFERS	tile-op	op 4804 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q45_p10_b8	DIFFERS	tile-op	op 2 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_128_q45_p13_b8	DIFFERS	tile-op	op 2 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_128_q55_p2_b8	DIFFERS	tile-op	op 31 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q55_p4_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_128_q55_p6_b8	DIFFERS	tile-op	op 2153 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q55_p8_b8	IDENTICAL	-	-	-	-	-
+osg_ghost-robot_photo_128_q55_p10_b8	DIFFERS	tile-op	op 1090 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q55_p13_b8	DIFFERS	tile-op	op 1090 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_128_q20_p2_b10	DIFFERS	FH	cdef_damping_minus_3 C=2 Rust=0	-	-	-
+osg_ghost-robot_photo_128_q20_p4_b10	DIFFERS	FH	loop_filter_level[1] C=16 Rust=18	-	-	-
+osg_ghost-robot_photo_128_q20_p6_b10	DIFFERS	FH	cdef_uv_pri_strength[0] C=8 Rust=10	-	-	-
+osg_ghost-robot_photo_128_q20_p8_b10	DIFFERS	tile	tile payload C=3648B Rust=3541B	-	-	-
+osg_ghost-robot_photo_128_q20_p10_b10	DIFFERS	tile	tile payload C=3389B Rust=3374B	-	-	-
+osg_ghost-robot_photo_128_q20_p13_b10	DIFFERS	tile	tile payload C=3389B Rust=3374B	-	-	-
+osg_ghost-robot_photo_128_q32_p2_b10	DIFFERS	tile-op	op 24 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q32_p4_b10	DIFFERS	tile-op	op 9 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q32_p6_b10	DIFFERS	tile-op	op 24 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_128_q32_p8_b10	DIFFERS	tile-op	op 10 C=CDF7:s1 Rust=CDF7:s3	-	-	-
+osg_ghost-robot_photo_128_q32_p10_b10	DIFFERS	tile-op	op 10 C=CDF9:s8 Rust=CDF9:s7	-	-	-
+osg_ghost-robot_photo_128_q32_p13_b10	DIFFERS	tile-op	op 10 C=CDF9:s8 Rust=CDF9:s7	-	-	-
+osg_ghost-robot_photo_128_q45_p2_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p4_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p6_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p8_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p10_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q45_p13_b10	DIFFERS	tile-op	op 10 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q55_p2_b10	DIFFERS	tile-op	op 6 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_128_q55_p4_b10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_128_q55_p6_b10	DIFFERS	tile-op	op 0 C=B:v1 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_128_q55_p8_b10	DIFFERS	tile-op	op 75 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_photo_128_q55_p10_b10	DIFFERS	tile-op	op 75 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_photo_128_q55_p13_b10	DIFFERS	tile-op	op 75 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_photo_256_q20_p2_b8	DIFFERS	tile	tile payload C=11455B Rust=11310B	-	-	-
+osg_ghost-robot_photo_256_q20_p4_b8	DIFFERS	FH	cdef_damping_minus_3 C=0 Rust=1	-	-	-
+osg_ghost-robot_photo_256_q20_p6_b8	DIFFERS	tile	tile payload C=10889B Rust=11004B	-	-	-
+osg_ghost-robot_photo_256_q20_p8_b8	DIFFERS	tile	tile payload C=10946B Rust=11015B	-	-	-
+osg_ghost-robot_photo_256_q20_p10_b8	DIFFERS	tile	tile payload C=10565B Rust=10601B	-	-	-
+osg_ghost-robot_photo_256_q20_p13_b8	DIFFERS	tile	tile payload C=10565B Rust=10601B	-	-	-
+osg_ghost-robot_photo_256_q32_p2_b8	DIFFERS	tile-op	op 17 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q32_p4_b8	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q32_p6_b8	DIFFERS	tile-op	op 37 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q32_p8_b8	DIFFERS	tile-op	op 358 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_256_q32_p10_b8	DIFFERS	tile-op	op 1 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_256_q32_p13_b8	DIFFERS	tile-op	op 1 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_256_q45_p2_b8	DIFFERS	tile-op	op 27 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q45_p4_b8	DIFFERS	tile-op	op 29 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q45_p6_b8	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q45_p8_b8	DIFFERS	tile-op	op 717 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_256_q45_p10_b8	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_256_q45_p13_b8	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_256_q55_p2_b8	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q55_p4_b8	DIFFERS	tile-op	op 29 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q55_p6_b8	DIFFERS	tile-op	op 10 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q55_p8_b8	DIFFERS	tile-op	op 421 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_256_q55_p10_b8	DIFFERS	tile-op	op 1046 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_256_q55_p13_b8	DIFFERS	tile-op	op 1046 C=CDF10:s0 Rust=CDF10:s3	-	-	-
+osg_ghost-robot_photo_256_q20_p2_b10	DIFFERS	FH	cdef_bits C=3 Rust=1	-	-	-
+osg_ghost-robot_photo_256_q20_p4_b10	DIFFERS	FH	loop_filter_level[1] C=17 Rust=16	-	-	-
+osg_ghost-robot_photo_256_q20_p6_b10	DIFFERS	FH	cdef_uv_pri_strength[0] C=12 Rust=10	-	-	-
+osg_ghost-robot_photo_256_q20_p8_b10	DIFFERS	tile	tile payload C=11302B Rust=11018B	-	-	-
+osg_ghost-robot_photo_256_q20_p10_b10	DIFFERS	tile	tile payload C=10961B Rust=12280B	-	-	-
+osg_ghost-robot_photo_256_q20_p13_b10	DIFFERS	tile	tile payload C=10961B Rust=12280B	-	-	-
+osg_ghost-robot_photo_256_q32_p2_b10	DIFFERS	tile-op	op 24 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q32_p4_b10	DIFFERS	tile-op	op 17 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q32_p6_b10	DIFFERS	tile-op	op 25 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q32_p8_b10	DIFFERS	tile-op	op 15 C=CDF11:s7 Rust=CDF11:s6	-	-	-
+osg_ghost-robot_photo_256_q32_p10_b10	DIFFERS	tile-op	op 13 C=CDF11:s7 Rust=CDF11:s3	-	-	-
+osg_ghost-robot_photo_256_q32_p13_b10	DIFFERS	tile-op	op 13 C=CDF11:s7 Rust=CDF11:s3	-	-	-
+osg_ghost-robot_photo_256_q45_p2_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q45_p4_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q45_p6_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q45_p8_b10	DIFFERS	tile-op	op 76 C=CDF10:s3 Rust=CDF10:s0	-	-	-
+osg_ghost-robot_photo_256_q45_p10_b10	DIFFERS	tile-op	op 13 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_photo_256_q45_p13_b10	DIFFERS	tile-op	op 13 C=CDF4:s1 Rust=CDF4:s0	-	-	-
+osg_ghost-robot_photo_256_q55_p2_b10	DIFFERS	tile-op	op 7 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q55_p4_b10	DIFFERS	tile-op	op 6 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q55_p6_b10	DIFFERS	tile-op	op 8 C=B:v0 Rust=B:v1	-	-	-
+osg_ghost-robot_photo_256_q55_p8_b10	DIFFERS	tile-op	op 73 C=B:v1 Rust=B:v0	-	-	-
+osg_ghost-robot_photo_256_q55_p10_b10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s7	-	-	-
+osg_ghost-robot_photo_256_q55_p13_b10	DIFFERS	tile-op	op 8 C=CDF11:s8 Rust=CDF11:s7	-	-	-

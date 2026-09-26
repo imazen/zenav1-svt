@@ -220,6 +220,12 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     `f9100ab22` is low-delay DLF (video). No remaining mainline-master
     commit reaches the still grid — the residual tile-op/FH divergence
     is fork-feature territory (items 3.3+).
+- [ ] 3.3s Ghost Robot STILLS (measured 2026-09-26,
+  `benchmarks/gr_still_grid_2026-09-26.meta`): still grid 41/288 while
+  c_parity is 854/873. First divergence: frame header 26 cells
+  (loop_filter_level, cdef_uv_pri_strength, lr_type, sharpness — start
+  here), tile op 179, tile payload 42; no 10-bit cell matches.
+
 - [ ] 3.3 Fork determinism and correctness fixes: `f0111bae`, `d6f4b170`,
   `560f7453`, `ec7e414d`, `2c66d9ea`.
   - Findings (measured 2026-09-25): the first still divergence is a

@@ -1,0 +1,21 @@
+# Ghost Robot still grid: 41/288, and where the other 247 first diverge (2026-09-26)
+
+commit:  main at 2848742f (plan 3.3a landed); unchanged by b1fffbb3
+host:    i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+tool:    SVT_ORACLE=ghost-robot OSG_JOBS=4 tools/oracle_still_grid.sh
+         (tools/cellrun.py; rows: gr_still_grid_2026-09-26.tsv)
+grid:    gradient + CID22 photo crop x {64,128,256} x bd {8,10} x qp {20,32,40,55}
+         x presets {2,4,6,8,10,13}
+
+| first divergence | cells |
+|------------------|-------|
+| identical        | 41 (all 8-bit; 0 of 144 10-bit cells) |
+| tile-op          | 179 (99 CDF-symbol, 69 bool, 11 CDF-vs-bool) |
+| tile payload     | 42 |
+| frame header     | 26 (loop_filter_level, cdef_uv_pri_strength, lr_type, loop_filter_sharpness) |
+
+Reading: function-level parity (c_parity 854/873) does not carry to stills.
+The frame-header cells are the cheapest entry point (a DLF/CDEF/LR
+derivation differs before any block is coded); the tile-op cells need the
+first differing op localised per cell (`tools/identity_diff.py` reports it).
+No 10-bit cell matches, so a bd10-specific Ghost Robot arm is likely.
