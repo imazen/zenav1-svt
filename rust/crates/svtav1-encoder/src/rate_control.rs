@@ -25,9 +25,13 @@ pub enum RcMode {
     Cqp,
     /// Constant Rate Factor — quality-targeting.
     Crf,
-    /// Variable Bit Rate — target average bitrate.
+    /// Variable Bit Rate — target average bitrate. Refused: C's arm needs
+    /// first-pass statistics, and firstpass.c is not ported.
     Vbr,
-    /// Constant Bit Rate — strict bitrate limit.
+    /// Constant Bit Rate — strict bitrate limit. Accepted under low delay
+    /// only (C's own envelope). C needs adaptive quantization on for any
+    /// rate control, so pair it with `aq_mode: 2`. Decoder-verified, not
+    /// byte-identical to C (`tools/rc_tpl_gate.sh`).
     Cbr,
 }
 
@@ -55,9 +59,9 @@ pub struct RcConfig {
     /// `qp == 63` with an offset up to 28 (`verify_settings`,
     /// enc_settings.c:270). Anything else is refused at encode time.
     pub extended_crf_qindex_offset: u8,
-    /// Target bitrate in kbps (for VBR/CBR).
+    /// Target bitrate in kbps (CBR).
     pub target_bitrate: u32,
-    /// Maximum bitrate in kbps (for VBR/CBR).
+    /// Maximum bitrate in kbps (CBR).
     pub max_bitrate: u32,
     /// Buffer size in ms.
     pub buffer_size_ms: u32,
@@ -65,12 +69,11 @@ pub struct RcConfig {
     pub framerate: f64,
     /// Number of temporal layers.
     pub temporal_layers: u8,
-    /// Adaptive-quantization mode, mirroring the C encoder's `--aq-mode`
-    /// semantics for the frame-level decision: 0 = OFF (CQP is a straight
-    /// `quantizer_to_qindex[qp]` lookup with NO content-adaptive QP shift
-    /// — the C default for `--rc 0 --aq-mode 0` matched configs), non-zero
-    /// = enable the Rust frame-level VAQ/TPL QP adjustments (a homegrown
-    /// heuristic, NOT a port of C's aq-mode 1/2 segment-based VAQ).
+    /// Adaptive-quantization mode, C's `--aq-mode`: 0 = off (CQP is a
+    /// straight `quantizer_to_qindex[qp]` lookup), 2 = C's default TPL-gated
+    /// per-SB delta-q (rc_aq.c:899), which engages under random access
+    /// (TPL is off for low delay and all-intra, as in C). 1 (variance AQ)
+    /// and 3 (complexity AQ) are refused: not ported.
     pub aq_mode: u8,
 }
 
