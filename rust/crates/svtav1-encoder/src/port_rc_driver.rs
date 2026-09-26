@@ -30,11 +30,11 @@
 //! stays unwired until first-pass statistics exist.
 
 use crate::port_rc_process::{self, RcInitInput, SliceType};
-use crate::port_rc_vbr_cbr_qpick::{RefLists, RefPicRc, TwoPassRc};
+use crate::port_rc_vbr_cbr_qpick::{RefPicRc, TwoPassRc};
 use crate::port_rc_vbr_cbr_state::{
     AomRcMode, CyclicRefresh, FrameRc, FrameType, RateControl, RateControlCfg, SeqRc,
 };
-use crate::port_rc_vbr_cbr_update::{RcIntervalParams, ResizePendingParams, RtResizeMode};
+use crate::port_rc_vbr_cbr_update::ResizePendingParams;
 
 /// The encoder-owned C rate-control state — `enc_ctx->rc`, `enc_ctx->rc_cfg`,
 /// the `scs`/`frame_info` fields RC reads, `enc_ctx->rate_control_param`, the
@@ -55,16 +55,6 @@ pub struct RcVbrCbr {
     /// C `rc->cr_sb_end` — the rolling band position `cyclic_refresh_init`
     /// reads and advances.
     pub cr_sb_end: u32,
-    /// C `ppcs->rate_control_param_ptr` (`RateControlIntervalParamContext`).
-    #[cfg_attr(test, allow(dead_code))]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
-        )
-    )]
-    pub rc_param: RcIntervalParams,
     /// C `enc_ctx->resize_pending_params`.
     pub resize_pending: ResizePendingParams,
     /// C `enc_ctx->twopass` — all zeros for one-pass CBR.
@@ -218,7 +208,6 @@ impl RcVbrCbr {
             scs,
             cr: CyclicRefresh::default(),
             cr_sb_end: 0,
-            rc_param: RcIntervalParams::default(),
             resize_pending: ResizePendingParams::default(),
             twopass: TwoPassRc::default(),
             // `static_config.vbr_max_section_pct` default (enc_settings.c:1053).
@@ -391,60 +380,5 @@ pub fn ref_pic_rc(rf: &crate::picture::ReferenceFrame) -> RefPicRc {
     }
 }
 
-/// Build both reference lists for `rc_calc_qindex_rate_control` — C's
-/// `pcs->ref_pic_ptr_array[2][4]`, resolved from `pic_decision`'s RPS against
-/// the DPB. Slots with no picture map to nothing (C would deref the null —
-/// `RefLists::get` refuses instead); `*_count_try` are the counts C loops to.
-#[must_use]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
-    )
-)]
-pub fn ref_lists<'a>(
-    pic: &crate::port_picstruct::PicParams,
-    dpb: &crate::picture::DecodedPictureBuffer,
-    l0: &'a [RefPicRc],
-    l1: &'a [RefPicRc],
-) -> RefLists<'a> {
-    let _ = (pic, dpb);
-    RefLists {
-        l0,
-        l1,
-        l0_count_try: usize::from(pic.ref_list0_count_try),
-        l1_count_try: usize::from(pic.ref_list1_count_try),
-    }
-}
 
-/// C `svt_aom_is_pic_skipped(ppcs)` — a picture the packetization path does
-/// not rate-count (`is_pic_skipped` is the alt-ref/overlay flag on LD; always
-/// false in this envelope but kept as a named check for parity with the C
-/// condition sites).
-#[must_use]
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
-    )
-)]
-pub fn is_pic_skipped(frame: &FrameRc) -> bool {
-    frame.is_overlay
-}
 
-/// The CBR resize mode — `static_config.resize_mode == RESIZE_NONE` under the
-/// port's refusal of dynamic resize; the enum still carries the other arms
-/// because `one_pass_rt_rate_alloc` pattern-matches on it.
-#[cfg_attr(test, allow(dead_code))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
-    )
-)]
-pub const RESIZE_MODE_NONE: RtResizeMode = RtResizeMode::None;
