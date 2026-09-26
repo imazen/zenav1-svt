@@ -43,7 +43,7 @@ impl enough::Stop for Flag {
 }
 
 /// Deterministic gradient content — the same recipe `perf_encode.rs` and
-/// `identity_run.rs` use, so a cell here is comparable to a cell there.
+/// `identity_run/content.rs` use, so a cell here is comparable to a cell there.
 fn gen_planes(w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut y = vec![0u8; w * h];
     for r in 0..h {

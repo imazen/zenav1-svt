@@ -178,7 +178,7 @@ fn dr_ctrls_sc_class5_level_mapping() {
     }
 }
 
-/// The identity-harness gradient content (identity_run.rs) at 64x64.
+/// The identity-harness gradient content (identity_run/content.rs) at 64x64.
 fn gradient64() -> alloc::vec::Vec<u8> {
     let (w, h) = (64usize, 64usize);
     let mut y = alloc::vec![0u8; w * h];

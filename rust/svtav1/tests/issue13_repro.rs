@@ -31,7 +31,7 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 const RESTORE_WIENER: u8 = 1;
 
-/// The identity harness's `gradient` luma (`identity_run.rs`) — the same
+/// The identity harness's `gradient` luma (`identity_run/content.rs`) — the same
 /// content `issue11_repro.rs` proved fires luma Wiener at this cell.
 fn gradient_y(w: usize, h: usize) -> Vec<u8> {
     let mut y = vec![0u8; w * h];

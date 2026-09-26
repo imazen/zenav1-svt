@@ -27,7 +27,6 @@
 #
 # Env: MB_MODE (rss|heap) MB_SIZE (2048) MB_ARM (inter) MB_ROUNDS (7) MB_QP (40)
 #      MB_PRESET (13) MB_CONTENT (gradient) MB_SHIFT (3) MB_OUT ($HOME/tmp/mem_bisect)
-#      MB_THREADS — if set, exported as SVTAV1_THREADS for every run
 set -uo pipefail
 (( BASH_VERSINFO[0] >= 4 )) || { echo "FATAL: needs bash >= 4 (this is ${BASH_VERSION})" >&2; exit 2; }
 MODE=${MB_MODE:-rss}
@@ -56,7 +55,8 @@ case "$ARM" in
   *) echo "FATAL: unknown arm $ARM" >&2; exit 2 ;;
 esac
 ev+=(SVTAV1_INTER_EXPERIMENTAL=1)
-[[ -n "${MB_THREADS:-}" ]] && ev+=("SVTAV1_THREADS=$MB_THREADS")
+# MB_THREADS used to export SVTAV1_THREADS, which perf_encode never read.
+[[ -n "${MB_THREADS:-}" ]] && { echo "mem_bisect: MB_THREADS has no effect (perf_encode has no thread knob); unset it" >&2; exit 2; }
 
 BSD_TIME=false; /usr/bin/time -l true >/dev/null 2>&1 && BSD_TIME=true
 rss_once() { # -> PEAK_KIB CMD_RC
@@ -70,7 +70,7 @@ rss_once() { # -> PEAK_KIB CMD_RC
     fi
 }
 
-echo "mem_bisect: mode=$MODE size=$SIZE arm=$ARM rounds=$ROUNDS qp=$QP preset=$PRESET content=$CONTENT host=$(hostname) threads=${MB_THREADS:-auto}"
+echo "mem_bisect: mode=$MODE size=$SIZE arm=$ARM rounds=$ROUNDS qp=$QP preset=$PRESET content=$CONTENT host=$(hostname)"
 n=${#bins[@]}
 if [[ "$MODE" == heap ]]; then
   printf 'bin\tpeak_heap_MB\trc\tobu_bytes\ttrace\n'

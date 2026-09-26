@@ -11,8 +11,10 @@
 #
 # Arms (FRONTIER_ARMS env, default "d e s"):
 #   d = default, e = SVTAV1_SCREEN_TOOLS=1 (aom-screen-tools-v1),
-#   s = SVTAV1_DEEP_SEARCH=1 (deep-search-v1), i = SVTAV1_STILL_TUNE=1
-#   (still-image-tune-v1).
+#   s = SVTAV1_DEEP_SEARCH=1 (deep-search-v1). An unknown arm is refused.
+#   (Arm i, still-image-tune-v1, was removed with that enhancement on
+#   2026-09-25; identity_run never read its variable after that, so any
+#   later "i" column measured the default encoder.)
 #
 # Output: <workdir>/frontier.tsv —
 #   class  img  preset  qp  arm  bytes  ssim2  ms
@@ -20,7 +22,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS=$(cd "$HERE/.." && pwd)
 SUBSET=${1:-/home/lilith/tmp/tune_subset.tsv}
-W=${2:-/tmp/frontier_sweep}
+W=${2:-$HOME/tmp/frontier_sweep}
 ROOT=${ZEN_CORPUS_ROOT:-/home/lilith/work/zen}
 AOMDEC=${AOMDEC:-$(command -v aomdec || true)}
 SSIM2=${SSIM2:-/home/lilith/work/zen/fast-ssim2/target/release/fast-ssim2-cli}
@@ -30,6 +32,9 @@ DIM=${FRONTIER_DIM:-512}
 QPS=${FRONTIER_QPS:-"20 32 44 56"}
 PRESETS=${FRONTIER_PRESETS:-"4 6 8 10"}
 ARMS=${FRONTIER_ARMS:-"d e s"}
+for a in $ARMS; do
+  case "$a" in d|e|s) ;; *) echo "frontier_sweep: unknown arm '$a' (d e s)" >&2; exit 2 ;; esac
+done
 
 [ -x "$AOMDEC" ] && [ -x "$SSIM2" ] || { echo "need aomdec + fast-ssim2-cli" >&2; exit 2; }
 [ -r "$SUBSET" ] || { echo "subset tsv not readable: $SUBSET" >&2; exit 2; }
@@ -49,7 +54,8 @@ cell() { # class img relpath preset qp arm
   case "$arm" in
     e) envv=(SVTAV1_SCREEN_TOOLS=1) ;;
     s) envv=(SVTAV1_DEEP_SEARCH=1) ;;
-    i) envv=(SVTAV1_STILL_TUNE=1) ;;
+    d) ;;
+    *) echo "frontier_sweep: unknown arm '$arm' (d e s)" >&2; exit 2 ;;
   esac
   local t0 t1 ms s
   t0=$(date +%s%N)

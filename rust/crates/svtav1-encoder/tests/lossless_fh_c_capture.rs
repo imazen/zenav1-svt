@@ -174,7 +174,7 @@ fn qp0_coded_lossless_frame_header_matches_c_capture() {
     );
 }
 
-/// The identity harness's `gradient` content (`svtav1/examples/identity_run.rs`:
+/// The identity harness's `gradient` content (`svtav1/examples/identity_run/content.rs`:
 /// `y[r][c] = ((r*255/h) ^ ((c*3) & 0x3f))`, flat 128 chroma) — the exact
 /// frame `capture_c_trace 64 64 <qp> 7` was fed for both committed captures.
 fn gradient_64() -> (Vec<u8>, Vec<u8>, Vec<u8>) {

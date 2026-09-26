@@ -28,8 +28,6 @@ impl EncodePipeline {
                 None => decoder_output8
                     .unwrap_or_else(|| (recon.to_vec(), u_recon.to_vec(), v_recon.to_vec())),
             };
-            self.recon_frames
-                .push_back((display_order, rec_planes.clone()));
             self.last_recon = Some(rec_planes);
             // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all
             // applied to the 10-bit canvas), normatively upscaled to the
@@ -74,6 +72,14 @@ impl EncodePipeline {
                         }
                     }
                 }
+            }
+            // Queued AFTER grain synthesis: a decoder's displayed frame
+            // carries the grain, and the multi-frame dumps read this queue.
+            // Queued before it, every grain inter frame compared the clean
+            // recon against grained decoder output (film_grain_gate's
+            // inter cells, found 2026-09-26).
+            if let Some(planes) = &self.last_recon {
+                self.recon_frames.push_back((display_order, planes.clone()));
             }
         }
     }

@@ -1,6 +1,6 @@
 use super::*;
 
-/// The identity-harness gradient content (identity_run.rs).
+/// The identity-harness gradient content (identity_run/content.rs).
 fn gradient64() -> Vec<u8> {
     let (w, h) = (64usize, 64usize);
     let mut y = vec![0u8; w * h];

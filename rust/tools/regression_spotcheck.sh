@@ -1714,7 +1714,7 @@ bd10ReconEq "bd10-tile-intra-control-4096x64-p6"    gradient 4096  64 20 6 0 0
 # boundary; clean after).
 #
 # `diag` is the content the harness documents for this predictor
-# (identity_run.rs: "D45/D135/... that gradient never selects. Used to verify
+# (identity_run/content.rs: "D45/D135/... that gradient never selects. Used to verify
 # the bd10 directional re-encode (dr_predict_hbd)").
 bd10ReconEq "bd10-tile-dir-rows-256x256-p2-diag"  diag     256 256  6 2 1 0
 bd10ReconEq "bd10-tile-dir-rows-256x256-p4"       gradient 256 256 12 4 1 0

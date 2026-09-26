@@ -28,7 +28,8 @@ change to main, and verify remote ancestry. Do not wait on CI unless requested.
 
 ## Before you push, and after
 
-Run `cargo fmt --all --check` and `tools/clippy_inventory.sh --check` (both
+Run `cargo fmt --all --check`, `tools/clippy_inventory.sh --check` and, if
+you touched a script's environment, `tools/env_names_check.py` (all
 cheap; CI's first job runs exactly these, and a red fmt step hides every step
 after it). After pushing, look at `gh run list` once the run finishes: CI was
 red from 2026-09-21 to 2026-09-25 while local gates stayed green, because

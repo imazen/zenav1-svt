@@ -359,6 +359,14 @@ jobs:
         # lines; the check keeps a split from growing back.
         run: python3 tools/file_size_check.py
 
+      - name: every SVT*/SVTAV1_* name a script sets has a reader
+        if: matrix.shard == 3
+        working-directory: rust
+        # A script that sets a variable nothing reads runs green and reports
+        # the default encoder under a feature's name: frontier_sweep's
+        # still-tune arm did exactly that after the feature was deleted.
+        run: python3 tools/env_names_check.py
+
       - name: no_std builds (each library crate, --no-default-features)
         if: matrix.shard == 3
         working-directory: rust
@@ -632,6 +640,22 @@ jobs:
           ./tools/bd10_video_selfcheck_gate.sh
           VSG_SIZE=128x128 VSG_PRESETS="-1 0 1 2 3 4 5" \
             ./tools/bd10_video_selfcheck_gate.sh
+
+      - name: mono inter, qp0 inter and film grain — port recon == decoder
+        if: matrix.shard == 3
+        working-directory: rust
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
+        # Three short gates (~16 s together on i265) that had never run in CI.
+        # film_grain_gate.py had gone red unseen: the multi-frame recon queue
+        # was filled before grain synthesis, so its inter cells compared a
+        # clean recon with grained decoder output (fixed 2026-09-26). The
+        # SB128 cells of the other two coded the derived 64 px size until
+        # identity_run applied SVTAV1_SB on its multi-frame path (same day).
+        run: |
+          ./tools/mono_inter_gate.sh
+          ./tools/qp0_inter_gate.sh
+          python3 tools/film_grain_gate.py target/film_grain_gate
 
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5

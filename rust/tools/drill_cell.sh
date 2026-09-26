@@ -28,7 +28,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # anything else is a PNG path.
 case "$IMG" in
 uniform | gradient) CONTENT=$IMG NAME=$IMG ;;
-# identity_run's own prefixes (identity_run.rs:278 raw:, :302 file:, :313 crop:)
+# identity_run's own prefixes (identity_run/content.rs: raw:, file:, crop:)
 # must pass through verbatim; wrapping them produced "file:raw:..." and a
 # guaranteed load failure.
 raw:*) CONTENT=$IMG NAME=$(basename "${IMG#raw:}" .yuv) ;;

@@ -27,7 +27,7 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 const RESTORE_WIENER: u8 = 1;
 
-/// The identity harness's `gradient` luma (`identity_run.rs`): a vertical ramp
+/// The identity harness's `gradient` luma (`identity_run/content.rs`): a vertical ramp
 /// XOR'd with a horizontal sawtooth. Enough residual texture at every block
 /// size that the frame-level Wiener RD beats RESTORE_NONE.
 fn gradient_y(w: usize, h: usize) -> Vec<u8> {

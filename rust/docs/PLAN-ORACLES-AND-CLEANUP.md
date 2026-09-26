@@ -565,8 +565,18 @@ Order, by expected size:
      `oracle_still_grid.sh` now writes its cross product as a cell list and
      calls it; on a 16-cell ghost-robot subset its output is identical to the
      old loop's, serial and at `--jobs 4`. Next: the 44 other scripts.
-  2. `identity_run`'s 41 environment variables become `CellSpec` fields
-     parsed in one place, so a cell cannot differ in how it is invoked.
+  2. Done (2026-09-26): `identity_run` is `examples/identity_run/`, and
+     `cell.rs`'s `CellSpec` parses every variable once, strictly: a value
+     that does not parse, a flag other than 0/1, and a still-only knob on a
+     multi-frame cell are refused. 32 cells, one per knob and dump, give
+     byte-identical .obu/.yuv/dumps/symtrace before and after. What it
+     exposed: `SVTAV1_SB` was ignored on the multi-frame path (the sb128
+     cells of `mono_inter_gate` and `qp0_inter_gate` coded 64 px; they now
+     code 128 and pass), `frontier_sweep.sh`'s arm `i` and `mem_bisect.sh`'s
+     `MB_THREADS` set variables nothing read (removed; the new
+     `tools/env_names_check.py`, a CI step, refuses any such name), and
+     `film_grain_gate.py` was red (see CHANGELOG). The three gates joined
+     CI shard 3.
   3. Run the ledger gates in CI. `bd10_nonflat_gate.sh` and the synthetic
      tier of `identity_full_8bit.sh` already ran there; `bd10_photo_gate.sh`
      joins shard 4 (this change; its 14 CID22 photos join the sparse corpus

@@ -95,7 +95,7 @@ use svtav1_encoder::entropy::obu::TileGrid;
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
-/// The identity harness's `gradient` luma (`identity_run.rs`).
+/// The identity harness's `gradient` luma (`identity_run/content.rs`).
 fn gradient_y(w: usize, h: usize) -> Vec<u8> {
     let mut y = vec![0u8; w * h];
     for r in 0..h {
@@ -106,7 +106,7 @@ fn gradient_y(w: usize, h: usize) -> Vec<u8> {
     y
 }
 
-/// The identity harness's `diag` luma (`identity_run.rs`): a 45-degree ramp
+/// The identity harness's `diag` luma (`identity_run/content.rs`): a 45-degree ramp
 /// whose leaves select the DIRECTIONAL intra modes (D45/D135/...) that
 /// `gradient` never picks. Its comment there names `dr_predict_hbd` as the
 /// thing it exists to exercise — which is the predictor this file's second

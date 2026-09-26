@@ -1,6 +1,6 @@
 //! Port half of the G4 performance gate (`tools/perf_gate.sh`).
 //!
-//! The timing sibling of `examples/identity_run.rs`: it generates the SAME
+//! The timing sibling of `examples/identity_run/`: it generates the SAME
 //! deterministic 4:2:0 content, writes the SAME raw I420 `.yuv` the C driver
 //! consumes (so both encoders see identical input — apples-to-apples), encodes
 //! it through `EncodePipeline` at the proven byte-identical still-picture CQP
@@ -29,7 +29,7 @@
 //! Unset, or =1, leaves EVERY byte of the still path above untouched — the
 //! whole multi-frame block is skipped, the `.yuv` layout is the same single
 //! frame, and no existing `perf_gate.sh` cell moves. This is the same
-//! opt-in shape `identity_run.rs` uses, and it reads the SAME env vars
+//! opt-in shape `identity_run/cell.rs` uses, and it reads the SAME env vars
 //! (`SVTAV1_FRAMES`, `SVTAV1_FRAME_SHIFT`, `SVTAV1_INTRA_PERIOD`,
 //! `SVTAV1_HIER_LEVELS`) so one set of variables drives the byte harness and
 //! the timing harness identically. The motion model is `identity_run`'s: a
@@ -57,7 +57,7 @@ fn gen_content(content: &str, w: usize, h: usize) -> Vec<u8> {
         for c in 0..w {
             y[r * w + c] = match content {
                 "uniform" => 128,
-                // Spec'd by the identity campaign (matches identity_run.rs).
+                // Spec'd by the identity campaign (matches identity_run/content.rs).
                 "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
                 // Diagonal-dominated texture: three tilted bands with fine
                 // cross-grain, so the intra search actually picks z1/z2/z3
@@ -206,7 +206,7 @@ fn main() {
     write_yuv(&format!("{prefix}.yuv"), &[&y, &u, &v]);
 
     // Fresh-pipeline encode at the proven byte-identical still-picture CQP
-    // config (identity_run.rs / capture_c_trace.c): bd8, 4:2:0, tiles 0/0, SB
+    // config (identity_run/cell.rs / capture_c_trace.c): bd8, 4:2:0, tiles 0/0, SB
     // derived by C's own rule. `new(w,h,preset,rc, hierarchical_levels=0,
     // intra_period=1)` == allintra/still.
     let build = || {
@@ -322,7 +322,7 @@ fn encode_still_bd10(
 }
 
 /// Translate a plane right by `dx`, replicating the left edge — the identical
-/// motion model `identity_run.rs` uses, so a timing cell and a byte cell at the
+/// motion model `identity_run/content.rs` uses, so a timing cell and a byte cell at the
 /// same `(content, size, qp, preset, frames, shift)` encode the same pixels.
 fn translate(src: &[u8], pw: usize, ph: usize, dx: usize) -> Vec<u8> {
     let mut out = vec![0u8; pw * ph];

@@ -5,7 +5,7 @@
 #
 # This mirrors tools/identity_matrix.sh but feeds REAL photographic content
 # (CID22-512 by default) instead of synthetic uniform/gradient. Both encoders
-# consume the SAME .yuv: identity_run.rs decodes the PNG, converts to I420 with
+# consume the SAME .yuv: identity_run/content.rs decodes the PNG, converts to I420 with
 # one fixed deterministic BT.601 transform, and writes the shared .yuv that the
 # C driver (tools/capture_c_trace) then encodes. Real photos exercise
 # modes / tx-types / partitions / chroma that synthetic content never does, so

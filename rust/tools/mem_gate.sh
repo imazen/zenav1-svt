@@ -60,6 +60,12 @@ FRAMES=${MEM_FRAMES:-1}
 SHIFT=${MEM_SHIFT:-3}
 VIDEO=${MEM_VIDEO:-0}
 RS_BIN=${MEM_RS_BIN:-$HERE/identity_run}
+# identity_run has no single-frame video arm and ignores SVTAV1_VIDEO, so
+# MEM_VIDEO=1 against it would measure a still under the video label.
+if [[ $VIDEO == 1 && $(basename "$RS_BIN") != perf_encode* ]]; then
+    echo "mem_gate: MEM_VIDEO=1 needs MEM_RS_BIN pointing at the perf_encode example (got $RS_BIN)" >&2
+    exit 2
+fi
 REPS=${MEM_REPS:-5}
 TSV=${MEM_TSV:-}
 W=${TMPDIR:-$HOME/tmp}/memgate.$$; mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
