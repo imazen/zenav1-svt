@@ -36,11 +36,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
+# Floors RE-PINNED 2026-09-26 (owner-approved) twice: 138/80/../62 ->
+# 118/58/12/40 when warped injection landed (606c4accd), then -> 100/50/10/22
+# when bipred 3x3 compound injection was wired (da18c6b8): the port had coded
+# 0% compound at p0 where C codes 12-22%, and the OBMC blocks it now loses go
+# to compound. Shares vs C in benchmarks/obmc_gate_counts_2026-09-26.meta.
 CELLS=(
-    "vidyo3 256x256 0 118"
-    "vidyo1 256x256 0 58"
-    "johnny 256x256 0 12"
-    "vidyo3 128x128 0 40"
+    "vidyo3 256x256 0 100"
+    "vidyo1 256x256 0 50"
+    "johnny 256x256 0 10"
+    "vidyo3 128x128 0 22"
     "vidyo3 256x256 2 0"
     "vidyo1 256x256 2 0"
 )
