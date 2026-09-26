@@ -2170,18 +2170,6 @@ pub fn choose_src_save(
     }
 }
 
-/// Which TF driver `svt_av1_init_temporal_filtering` dispatches to
-/// (temporal_filtering.c:4031).
-///
-/// `produce_temporally_filtered_pic_ld` for `LOW_DELAY`, otherwise
-/// `produce_temporally_filtered_pic`. MEASURED: `derive_tf_params`
-/// (enc_handle.c:3338-3343) returns `tf_level = 0` for all LOW_DELAY, so the
-/// `_ld` arm is not reached by the default configuration and the RANDOM_ACCESS
-/// driver is the live one.
-pub fn init_tf_driver_is_low_delay(pred_structure_is_low_delay: bool) -> bool {
-    pred_structure_is_low_delay
-}
-
 /// `decay_control[Y/U/V]` as `produce_temporally_filtered_pic` derives it
 /// (temporal_filtering.c:2667-2685). `static` in C — TIER 4.
 ///
