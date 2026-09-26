@@ -17,10 +17,10 @@ on:
 # branch. Pushes to main land every few minutes and a run takes ~40, so
 # without this the queue grew without bound and the tip's verdict came an
 # hour late (six runs queued on 2026-09-26). The tip carries every earlier
-# change, so its result is the one that matters. Scheduled runs share the
-# group but have their own ref context only on main; they are rare.
+# change, so its result is the one that matters. The nightly (coverage) run
+# gets its own group, so a push cannot cancel it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
