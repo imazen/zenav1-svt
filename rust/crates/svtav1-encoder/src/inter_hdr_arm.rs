@@ -18,13 +18,14 @@
 //! shim), not re-derived here. That function's levels 2/3/4 arm sets
 //! `r0_th = scs->tpl ? 0.1x : 0` and then tests `if (r0_th)`, so with TPL OFF
 //! it leaves the bit at 0 and never reads `r0` or the references'
-//! `is_mfmv_used` at all (`enc_mode_config.c:8853-8896`). This port's envelope
-//! is TPL-less BY CONSTRUCTION — see [`scs_tpl`] — so levels 2/3/4 are as
-//! closed a form as 0 and 1 here.
+//! `is_mfmv_used` at all (`enc_mode_config.c:8853-8896`). TPL is on only
+//! under random access with `aq_mode` 2 (see [`scs_tpl`]); everywhere else
+//! levels 2/3/4 are as closed a form as 0 and 1.
 //!
-//! What is still refused: those same levels with TPL ON, where `r0` and the
-//! reference objects' `is_mfmv_used` really are needed and this pipeline
-//! produces neither. That returns [`InterHdrError::MfmvLevelNotDerivable`]
+//! What is refused: those levels with TPL ON, where the TPL `r0` and the
+//! reference objects' `is_mfmv_used` are needed and this pipeline does not
+//! carry them to the header. Not reached by gradient 640x480 RA `aq_mode` 2
+//! at presets -1/0/2/4/8/10 (i265, 2026-09-26). That returns [`InterHdrError::MfmvLevelNotDerivable`]
 //! instead of inventing a bit.
 
 use crate::entropy::obu::InterSignal;
@@ -39,10 +40,10 @@ use crate::port_picstruct::{PicParams, REF_FRAMES, RefQueueEntry, SliceType};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterHdrError {
     /// `mfmv_level` 2, 3 or 4 **with TPL ON**: `use_ref_frame_mvs` then
-    /// depends on the TPL `r0` and on the references' `is_mfmv_used`, neither
-    /// of which this pipeline produces. With TPL off (every config this port
-    /// can reach — see [`scs_tpl`]) C's own `r0_th` is 0 and the bit is a
-    /// closed 0, so those levels are NOT refused.
+    /// depends on the TPL `r0` and on the references' `is_mfmv_used`, which
+    /// this pipeline does not carry to the header. With TPL off (everything
+    /// but random access with `aq_mode` 2 — see [`scs_tpl`]) C's own `r0_th`
+    /// is 0 and the bit is a closed 0, so those levels are NOT refused.
     MfmvLevelNotDerivable(u8),
 }
 

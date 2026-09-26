@@ -175,9 +175,8 @@ impl EncodePipeline {
                             "an inter frame header field is not implemented for this \
                              configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL \
                              r0 and the references' own is_mfmv_used (crate::inter_hdr_arm::\
-                             InterHdrError). This port's TPL is structurally off (aq_mode 0), \
-                             so reaching this means the aq_mode refusal was lifted without \
-                             porting r0 [C: accepts]",
+                             InterHdrError), which this pipeline does not carry to the header; \
+                             reached only with TPL on (random access, aq_mode 2) [C: accepts]",
                     }))
                 })?,
             )
