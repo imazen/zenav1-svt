@@ -42,8 +42,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 export SVTAV1_ASSERT_NONFLAT=1
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
-RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
-CT_BIN="$HERE/capture_c_trace/capture_c_trace"
 SCREEN_DIR="${SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
 # $RS_ROOT is rust/, so the library lives one level UP (matching
 # svtav1-cref/build.rs, which resolves Bin/Release from the REPO root).
@@ -55,56 +53,44 @@ read -r -a QPS  <<<"${SP_QPS:-5 20 32 48 63}"
 PRESET="${SP_PRESET:-6}"
 DIM="${SP_DIM:-512}"
 
-echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
-    cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
-  || { echo "port build failed" >&2; exit 2; }
-"$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
-[ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] || { echo "binaries missing" >&2; exit 2; }
-
-OUT="$RS_ROOT/target/screen_palette_gate"
+# The cells are a list for tools/cellrun.py (plan T3), run in parallel
+# (SP_JOBS, default 4). Each writes its packed tree beside its streams
+# (@CELL@), and the summary counts palette-coding cells from those files.
+# A missing screenshot FAILS (it used to print SKIP-MISSING and pass).
+OUT="${TMPDIR:-$HOME/tmp}/screen_palette.$$"
 mkdir -p "$OUT"
-pass=0; fail=0; palette_seen=0; declare -a failed=()
-
+trap 'rm -rf "$OUT"' EXIT
+LIST="$OUT/screen_palette.cells.tsv"
+printf 'name\tcontent\tw\th\tqp\tpreset\tenv_port\tenv_c\tcheck\n' >"$LIST"
 for img in "${IMGS[@]}"; do
   png="$SCREEN_DIR/${img}.png"
-  [ -f "$png" ] || { echo "  SKIP-MISSING $img (no $png)"; continue; }
+  [ -f "$png" ] || { echo "screen palette gate: missing $png (set SCREEN_DIR)" >&2; exit 2; }
   for qp in "${QPS[@]}"; do
-    tag="${img}_p${PRESET}_q${qp}"
-    d="$OUT/$tag"; mkdir -p "$d"
-    rm -f "$d/rs.ptree"
-    if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 $LOWPRI \
-          "$RUN_BIN" "$(screen_crop_spec "$png")" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs" >/dev/null 2>/dev/null; then
-      fail=$((fail+1)); failed+=("$tag[port-encode-error]"); echo "  RS-ERR   $tag"; continue
-    fi
-    if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \
-          "$CT_BIN" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs.yuv" "$d/c.obu" 8 >/dev/null 2>/dev/null; then
-      fail=$((fail+1)); failed+=("$tag[c-encode-error]"); echo "  C-ERR    $tag"; continue
-    fi
-    # anti-vacuity: did the port actually code any palette block on this cell?
-    if [ -f "$d/rs.ptree" ] && grep -qE 'pal=[1-9]' "$d/rs.ptree"; then
-      palette_seen=$((palette_seen+1))
-    fi
-    if cmp -s "$d/rs.obu" "$d/c.obu"; then
-      pass=$((pass+1)); echo "  OK       $tag ($(wc -c < "$d/rs.obu" | tr -d " ")B)"
-    else
-      fdiff=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $5}' | tr -d ,)
-      fail=$((fail+1)); failed+=("$tag[DIFF@${fdiff} port=$(wc -c < "$d/rs.obu" | tr -d " ")B C=$(wc -c < "$d/c.obu" | tr -d " ")B]")
-      echo "  DIFF     $tag  @${fdiff}"
-    fi
+    printf '%s_p%s_q%s\t%s\t%s\t%s\t%s\t%s\tSVTAV1_PACKTREE=@CELL@/rs.ptree\tSVT_NO_AUTO_CMAKE=1\tc\n' \
+      "$img" "$PRESET" "$qp" "$(screen_crop_spec "$png")" "$DIM" "$DIM" "$qp" "$PRESET" >>"$LIST"
   done
 done
-
-rm -rf "$OUT"
-total=$((pass+fail))
-echo
-echo "screen palette gate (preset ${PRESET} bd8): $pass / $total byte-identical  (palette-coding cells: ${palette_seen})"
-if [ "$fail" -gt 0 ]; then
-  printf 'FAILED: %s\n' "${failed[@]}"
-fi
-# Anti-vacuity: a palette gate that codes NO palette anywhere is meaningless.
-if [ "$palette_seen" -eq 0 ]; then
-  echo "ANTI-VACUITY FAIL: no palette block coded on any cell" >&2
-  exit 3
-fi
-[ "$fail" -eq 0 ]
+python3 "$HERE/cellrun.py" "$LIST" --out "$OUT/result.tsv" --bytes-only --jobs "${SP_JOBS:-4}"
+rc=$?
+CELLDIR="$RS_ROOT/target/cells/screen_palette.cells.${SVT_ORACLE:-default}"
+python3 - "$OUT/result.tsv" "$CELLDIR" "$PRESET" <<'PY'
+import csv, re, sys
+from pathlib import Path
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+celldir, preset = Path(sys.argv[2]), sys.argv[3]
+pal = re.compile(r"pal=[1-9]")
+seen = sum(1 for r in rows
+           if (celldir / r["name"] / "rs.ptree").exists()
+           and pal.search((celldir / r["name"] / "rs.ptree").read_text()))
+ok = [r for r in rows if r["verdict"] == "IDENTICAL"]
+print(f"screen palette gate (preset {preset} bd8): {len(ok)} / {len(rows)} byte-identical  (palette-coding cells: {seen})")
+for r in rows:
+    if r["verdict"] != "IDENTICAL":
+        print(f"FAILED: {r['name']} [{r['verdict']} {r['detail']}]")
+if seen == 0:
+    print("ANTI-VACUITY FAIL: no palette block coded on any cell", file=sys.stderr)
+    sys.exit(3)
+PY
+st=$?
+[ "$st" -eq 3 ] && exit 3
+[ "$rc" -eq 0 ] && [ "$st" -eq 0 ]
