@@ -655,9 +655,11 @@ Order, by expected size:
   (62); recon == dav1d everywhere. Bisected to `606c4accd` (wm_level-1 warp
   injection, the same commit as the GM re-pin). Frame 1 of all three is NOT
   byte-identical to C, so parity does not settle what C's OBMC count is.
-  Next: count C's motion modes on those cells (temporary C instrumentation or
-  a C-side trace of `motion_mode`), then re-pin to C's behaviour or fix the
-  port. Brief: `obmc-count`.
+  Explained 2026-09-26 (`benchmarks/obmc_gate_counts_2026-09-26.meta`):
+  before `606c4accd` the port coded NO warped block at preset 0, where C
+  codes WARPED_CAUSAL on 6-26 % of blocks; now it codes 82/24/24, the OBMC
+  count fell by 20-22 per cell, and both shares moved toward C's. Awaiting
+  the owner's decision on re-pinning the floors to 118/58/40.
 
 - [x] A red gate no longer hides the rest of its shard (2026-09-26). A
   step's default condition is `success()`, so from the day

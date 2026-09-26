@@ -1,0 +1,27 @@
+# OBMC GATE: the three red p0 cells lost OBMC blocks to WARPED_CAUSAL, which C codes too (2026-09-26)
+
+commit:  main at 9b9821bb (port "now"); 606c4accd^ (port "before")
+host:    i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+oracle:  mainline-4.2.0 (C column)
+cells:   the obmc_gate.sh p0 cells, derf rawseq clips, cli_qp 40, 2 frames,
+         flat low-delay P (port: SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0;
+         C: SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0)
+counts:  port = `mm=` lines of SVTAV1_INTERDBG; C = `mm=` lines of
+         SVT_CINTER_OUT (the motion_mode_census.sh method)
+
+| cell         | port before: obmc / warped / all | port now: obmc / warped / all | C: obmc / warped / all |
+|--------------|----------------------------------|-------------------------------|------------------------|
+| vidyo3 256   | 138 (44%) / 0 / 314              | 118 (40%) / 82 (28%) / 296    | 292 (30%) / 250 (26%) / 959 |
+| vidyo1 256   |  80 (43%) / 0 / 188              |  58 (32%) / 24 (13%) / 180    | 230 (29%) /  46 (6%) / 802  |
+| vidyo3 128   |  62 (56%) / 0 / 110              |  40 (47%) / 24 (28%) /  86    | 108 (33%) /  51 (16%) / 323 |
+
+Reading: before 606c4accd (wm_level-1 warp injection) the port coded NO
+warped block at preset 0, where C codes WARPED_CAUSAL on 6-26 % of inter
+blocks. The injection made warped reachable; the OBMC count fell by 20-22 on
+each cell as blocks moved to warped, and both shares moved toward C's.
+Recon == dav1d held 2/2 on every cell in CI run 36203734807. The port's
+partition tree still differs from C's at p0 (296 vs 959 coded blocks), so C's
+absolute counts are not the gate's contract (see the gate header).
+
+The earlier count "80" for vidyo1 256 before the change is the port's count at
+606c4accd^; the gate pinned 76 (its 2026-09-20 measurement).
