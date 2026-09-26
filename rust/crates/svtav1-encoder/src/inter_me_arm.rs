@@ -642,6 +642,14 @@ pub fn me_deriv_inputs(p: FrameMeParams, input_resolution: ResolutionRange) -> M
 /// reference — the previous frame's PA picture offered once per list, the
 /// `[1, 1]` shape a two-frame low-delay-P cell produces.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "port helper the pipeline does not call; wire or delete (plan 1.4)"
+    )
+)]
 pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) -> FrameMe {
     let ds_ref = reference.ds_ref();
     let refs = MeRefs {

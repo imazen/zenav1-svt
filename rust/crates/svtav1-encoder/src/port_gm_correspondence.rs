@@ -56,6 +56,11 @@ pub const MAX_SB64_PU_COUNT_WO_16X16: u8 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CorrespondenceMethod {
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "C variant the port never selects (plan 1.4)")
+    )]
     Mv64x64 = 0,
     Mv32x32 = 1,
     Mv16x16 = 2,

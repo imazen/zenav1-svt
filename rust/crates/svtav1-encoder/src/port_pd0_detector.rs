@@ -57,6 +57,14 @@ impl Pd0Level {
     /// C's `pd0_lvl - 1`. `None` at level 0, where C's loop bound
     /// (`pd0_lvl > PD0_LVL_0`) means the decrement can never be reached.
     #[must_use]
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+        )
+    )]
     pub fn decremented(self) -> Option<Self> {
         Self::from_index(self as usize + 1 - 1)
             .filter(|_| self != Self::Lvl0)
@@ -111,10 +119,6 @@ impl Default for Pd0Ctrls {
         }
     }
 }
-
-/// C `SliceType` — re-exported so callers of this module do not have to reach
-/// into the rate-control port for it.
-pub use crate::port_rc_process::SliceType;
 
 /// One reference list's contribution to the detector.
 ///
@@ -623,6 +627,14 @@ pub fn lpd1_detector_skip_pd0(
 /// this module re-derives — the same file-boundary rule the rest of this lane
 /// follows. `scaling_enabled == false` yields `(1, 1)`, i.e. no scaling.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub struct QpThScaling {
     pub q_weight: u32,
     pub q_weight_denom: u32,
@@ -643,6 +655,14 @@ impl QpThScaling {
     /// the exponential branch's 10000-scale weights overflows `i32` for large
     /// thresholds.
     #[must_use]
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+        )
+    )]
     pub fn scale(&self, x: i32) -> i32 {
         let num = i64::from(x) * i64::from(self.q_weight);
         let den = i64::from(self.q_weight_denom);
@@ -653,6 +673,14 @@ impl QpThScaling {
 /// C `ME_TIER_ZERO_PU_*` variance slots this detector reads: one 64x64, four
 /// 32x32 and sixteen 16x16.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub struct SbVariance {
     /// `sb_var[ME_TIER_ZERO_PU_64x64]`.
     pub var64: u32,
@@ -664,6 +692,14 @@ pub struct SbVariance {
 
 /// The normalised per-pixel variances `pd0_detector_allintra` compares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub struct NormalisedVariance {
     pub norm_v64: i32,
     pub norm_v32: i32,
@@ -681,6 +717,14 @@ pub struct NormalisedVariance {
 /// are non-negative in practice, so the two agree — but they are not the same
 /// rule and the port does not pretend they are.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub fn accumulate(var: &SbVariance) -> NormalisedVariance {
     let var64 = var.var64 as i32;
     let mut var32 = 0_i32;
@@ -710,6 +754,14 @@ pub fn accumulate(var: &SbVariance) -> NormalisedVariance {
 /// `int32_t` (which truncates TOWARD ZERO, unlike the mainline shift). NOT
 /// what a mainline build compiles — see the module header.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub fn accumulate_fork(var: &SbVariance) -> NormalisedVariance {
     let var64 = f64::from(var.var64);
     let var32: f64 = var.var32.iter().map(|&v| f64::from(v)).sum::<f64>() / 4.0;
@@ -725,6 +777,14 @@ pub fn accumulate_fork(var: &SbVariance) -> NormalisedVariance {
 
 /// C `DELTA_VAR_TH` (enc_dec_process.c:2396, a local) — the threshold below
 /// which no depth dominates.
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub const DELTA_VAR_TH: i32 = 7500;
 
 /// C `pd0_detector_allintra` (enc_dec_process.c:2341).
@@ -739,6 +799,14 @@ pub const DELTA_VAR_TH: i32 = 7500;
 /// ([`accumulate_fork`]) accumulation — see the module header for why that is
 /// the caller's choice.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C pd0 detector piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub fn pd0_detector_allintra(
     level: Pd0Level,
     norm: &NormalisedVariance,

@@ -72,6 +72,14 @@ impl FrameDims {
     /// The same geometry under an explicit [`svtav1_types::chroma::
     /// ChromaFormat`] — the 4:4:4/4:2:2 staging surface. At `Yuv420`
     /// this is IDENTICAL to [`Self::new`].
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn new_with_format(
         true_w: usize,
         true_h: usize,
@@ -84,9 +92,25 @@ impl FrameDims {
     }
 
     /// Right/bottom pad amounts (ALIGNED - TRUE).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn pad_right(&self) -> usize {
         self.aligned_w - self.true_w
     }
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn pad_bottom(&self) -> usize {
         self.aligned_h - self.true_h
     }
@@ -94,6 +118,14 @@ impl FrameDims {
     /// TRUE chroma dims, CEILING rounding — the convention used by
     /// pic_buffer_desc.c:567/:619, restoration.c:1534/:1579/:1604 and the
     /// recon output crop (app_context.c:123). (w+1)>>1 at 4:2:0.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn true_chroma_ceil(&self) -> (usize, usize) {
         (
             self.true_w.div_ceil(1usize << self.ss_x),
@@ -108,6 +140,14 @@ impl FrameDims {
     /// valid chroma column as out of bounds (under-filters). REPLICATE
     /// per-consumer; verify with the 65x65 odd-width differential vs
     /// SvtAv1EncApp before trusting either convention at odd dims.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn true_chroma_floor_dlf(&self) -> (usize, usize) {
         (self.true_w >> self.ss_x, self.true_h >> self.ss_y)
     }
@@ -116,23 +156,63 @@ impl FrameDims {
     /// shift is unambiguous; at 4:4:4 chroma == luma, and at 4:2:2 the
     /// vertical axis is unshifted — all exact because alignment pads
     /// to 8, which is divisible by every subsampling factor.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn aligned_chroma(&self) -> (usize, usize) {
         (self.aligned_w >> self.ss_x, self.aligned_h >> self.ss_y)
     }
 
     /// mi grid extent in 4x4 units (ALIGNED-based, spec MiCols/MiRows).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn mi_cols(&self) -> usize {
         self.aligned_w >> 2
     }
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn mi_rows(&self) -> usize {
         self.aligned_h >> 2
     }
 
     /// SB counts for a given sb size (loop trip-counts; each SB clamps
     /// back to ALIGNED via [`sb_geom`]).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn sb_cols(&self, sb: usize) -> usize {
         self.aligned_w.div_ceil(sb)
     }
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+        )
+    )]
     pub fn sb_rows(&self, sb: usize) -> usize {
         self.aligned_h.div_ceil(sb)
     }
@@ -156,6 +236,14 @@ impl FrameDims {
 /// Per-SB clamped geometry — C sb_geom_init (pcs.c:1535-1555):
 /// `width = MIN(aligned - org, sb)`. Because org is a multiple of sb and
 /// aligned is a multiple of 8, partial sizes are ALWAYS multiples of 8.
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+    )
+)]
 pub fn sb_geom(dims: &FrameDims, sb: usize, sb_x: usize, sb_y: usize) -> (usize, usize) {
     (
         (dims.aligned_w - sb_x).min(sb),
@@ -357,6 +445,14 @@ pub fn small_frame_disables_restoration(dims: &FrameDims) -> bool {
 
 /// LR unit-count collapse (restoration.c:71-73): units = max(round-to-
 /// nearest(size/256), 1) — any plane <= 384px gets exactly ONE unit.
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+    )
+)]
 pub fn lr_units_in_dim(plane_size: usize) -> usize {
     const UNIT: usize = 256;
     ((plane_size + UNIT / 2) / UNIT).max(1)
@@ -375,6 +471,14 @@ pub fn lr_units_in_dim(plane_size: usize) -> usize {
 /// size-bit derivation correct there. This helper is the shared definition;
 /// `obu.rs` may be routed through it in a later cleanup (kept separate for now
 /// to avoid a cross-crate dependency edit).
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C geometry-model helper not wired into the pipeline (docs/arbitrary-dims-port-map.md) (plan 1.4)"
+    )
+)]
 pub fn seq_size_bits(max_dim: usize) -> (u32, u32) {
     debug_assert!(max_dim >= 1);
     let mut bits = usize::BITS - 1 - max_dim.leading_zeros(); // floor log2

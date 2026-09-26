@@ -299,6 +299,14 @@ pub fn predict_inter_yuv(
 /// `references[0]`/`mvs[0]` pair with `ref_frame[0]` (list-0 side) and
 /// `references[1]`/`mvs[1]` with `ref_frame[1]`.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
+    )
+)]
 pub fn predict_inter_luma_compound(
     references: [&PaddedPlane; 2],
     org_x: usize,
@@ -363,6 +371,14 @@ pub fn predict_inter_luma_compound(
 /// `refs` is one reference picture's `(y, u, v)` planes, paired with `mvs`
 /// in `ref_frame` order.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
+    )
+)]
 pub fn predict_inter_yuv_compound(
     refs: [(&PaddedPlane, &PaddedPlane, &PaddedPlane); 2],
     org_x: usize,
@@ -801,6 +817,14 @@ pub fn predict_inter_yuv_warped(
 /// Chroma falls back to TRANSLATION below 8x8 on the SUBSAMPLED block,
 /// exactly like [`predict_inter_yuv_warped`] — but again per reference.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "compound predictor helper the pipeline does not call; wire or delete (plan 1.4)"
+    )
+)]
 pub fn predict_inter_yuv_warped_compound(
     refs: [(&PaddedPlane, Option<(&PaddedPlane, &PaddedPlane)>); 2],
     wm0: &mut svtav1_types::motion::WarpedMotionParams,

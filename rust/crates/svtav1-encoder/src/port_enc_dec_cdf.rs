@@ -41,8 +41,24 @@
 
 /// C `AVG_CDF_WEIGHT_LEFT` (enc_dec_process.c:2540). The LEFT neighbour is
 /// weighted 3x — it is the more recently adapted of the two.
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub const AVG_CDF_WEIGHT_LEFT: i32 = 3;
 /// C `AVG_CDF_WEIGHT_TOP` (enc_dec_process.c:2541).
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub const AVG_CDF_WEIGHT_TOP: i32 = 1;
 
 /// C `avg_cdf_symbol` (enc_dec_process.c:2543).
@@ -72,6 +88,14 @@ pub const AVG_CDF_WEIGHT_TOP: i32 = 1;
 /// # Panics
 /// When `left` or `tr` is shorter than `num_cdfs * cdf_stride`, or when
 /// `wt_left + wt_tr` is zero (C would divide by zero).
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub fn avg_cdf_symbol(
     left: &mut [u16],
     tr: &[u16],
@@ -105,6 +129,14 @@ pub fn avg_cdf_symbol(
 /// caller supplies. A port of the full `avg_cdf_symbols` should compute it the
 /// same way from its own array lengths rather than hard-coding sixty numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub struct AvgCdfPlan {
     /// C `nsymbs`.
     pub nsymbs: usize,
@@ -116,6 +148,14 @@ pub struct AvgCdfPlan {
 impl AvgCdfPlan {
     /// C `AVERAGE_CDF(l, r, nsymbs)`, whose stride is `CDF_SIZE(nsymbs)`.
     #[must_use]
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+        )
+    )]
     pub const fn average_cdf(nsymbs: usize) -> Self {
         Self {
             nsymbs,
@@ -125,17 +165,41 @@ impl AvgCdfPlan {
 
     /// C `AVG_CDF_STRIDE(l, r, nsymbs, cdf_stride)`.
     #[must_use]
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+        )
+    )]
     pub const fn with_stride(nsymbs: usize, cdf_stride: usize) -> Self {
         Self { nsymbs, cdf_stride }
     }
 
     /// C's `num_cdfs = array_size / cdf_stride`.
     #[must_use]
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+        )
+    )]
     pub const fn num_cdfs(&self, array_len: usize) -> usize {
         array_len / self.cdf_stride
     }
 
     /// Apply this plan to one array pair with the encoder's weights.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+        )
+    )]
     pub fn apply(&self, left: &mut [u16], tr: &[u16]) {
         let n = self.num_cdfs(left.len().min(tr.len()));
         avg_cdf_symbol(
@@ -160,6 +224,14 @@ impl AvgCdfPlan {
 /// LEFT context in first and then averages the top-right INTO it, so the
 /// left neighbour is both the base and the 3x-weighted term.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub enum SbCdfSource {
     /// `pcs->md_frame_context` — the frame's initial (previous-frame-adapted)
     /// context.
@@ -174,6 +246,14 @@ pub enum SbCdfSource {
 
 /// The picture-level knobs `select_sb_cdf_source` reads.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub struct SbCdfConfig {
     /// `pcs->cdf_ctrl.enabled` — 1 if mv, se or coeff CDF update is on.
     pub cdf_enabled: bool,
@@ -198,6 +278,14 @@ pub struct SbCdfConfig {
 /// TILE bounds — an SB at a tile's left edge has no left neighbour even when
 /// it has one in the picture.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub fn select_sb_cdf_source(
     cfg: &SbCdfConfig,
     sb_index: u32,
@@ -252,6 +340,14 @@ pub fn select_sb_cdf_source(
 /// indexes `table[i][MV_MAX + mv]` instead and needs no pointers, so this
 /// function returns the SELECTION and leaves the indexing to the caller.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub fn copy_mv_rate(allow_high_precision_mv: bool) -> MvRateTable {
     if allow_high_precision_mv {
         MvRateTable::HighPrecision
@@ -263,6 +359,14 @@ pub fn copy_mv_rate(allow_high_precision_mv: bool) -> MvRateTable {
 /// Which of `MdRateEstimationContext`'s two MV cost tables is live for this
 /// frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C enc_dec_process.c SB CDF selection/averaging, not wired (cdf_ctrl) (plan 1.4)"
+    )
+)]
 pub enum MvRateTable {
     /// `nmv_costs`, used when `allow_high_precision_mv` is 0.
     Regular,

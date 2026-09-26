@@ -473,7 +473,7 @@ pub fn recode_loop_decision_maker(
 ///   fifo.
 /// * `svt_av1_add_film_grain` (:2820) — a thin dispatch into
 ///   `grainsynthesis.c`; the port's film-grain synthesis is
-///   [`crate::film_grain`].
+///   [`crate::film_grain_synthesis`].
 ///
 /// **Debug-only.**
 /// * `exaustive_light_pd1_features` (:2075) — its own comment says "for

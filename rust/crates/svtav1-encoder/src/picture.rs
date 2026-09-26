@@ -20,26 +20,66 @@ use svtav1_types::reference::REF_FRAMES;
 #[derive(Debug)]
 pub struct PictureControlSet {
     /// Frame number in display order.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub display_order: u64,
     /// Frame number in decode order.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub decode_order: u64,
     /// Frame type (key, inter, intra-only, switch).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub frame_type: FrameType,
     /// Whether this frame is shown (vs. hidden alt-ref).
     pub show_frame: bool,
     /// Temporal layer index (0 = base layer).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub temporal_layer: u8,
     /// Hierarchical level within the mini-GOP.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub hierarchical_level: u8,
     /// Base QP for this picture.
     pub qp: u8,
     /// Reference frame indices into the DPB.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub ref_frame_idx: [i8; REF_FRAMES],
     /// Whether this frame refreshes a reference slot.
     pub refresh_frame_flags: u8,
     /// Picture width.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub width: u32,
     /// Picture height.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "PCS field no pipeline stage reads (plan 1.4)")
+    )]
     pub height: u32,
 }
 

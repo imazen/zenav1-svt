@@ -100,8 +100,21 @@ It was done when:
     whole-crate re-exports need `__expert`; the unimplemented
     `Encoder`/`EncoderConfig` scaffold is removed; `with_quality`,
     `with_speed` and `with_variance_boost` refuse instead of clamping.
-  - Open: `svtav1_encoder`'s own public surface (its modules are `pub` for
-    the integration tests; T2 moves those tests in-crate first).
+  - Done (2026-09-26): 23 of `svtav1_encoder`'s 108 `pub mod`s had no user
+    outside the crate and are `pub(crate)`. That let rustc see their dead
+    code: the homegrown `perceptual`, `multipass` and `film_grain` modules
+    (zenrav1e ports and placeholders, 22 tests, no caller) are deleted, as is
+    the retired `InterHdrError::GlobalMotionNotImplemented`; 55 never-used
+    items in C-translation modules carry `#[cfg_attr(not(test),
+    expect(dead_code, reason = "... (plan 1.4)"))]` — `expect` fails the
+    build once an item is used, so the annotation cannot outlive the gap.
+    Triage list (wire or delete): `port_enc_dec_cdf` (C SB CDF selection and
+    averaging, `cdf_ctrl`, 11 items), `port_pd0_detector` (allintra detector,
+    9), `frame_geom` (13), `port_rc_driver` (4), the compound predictors in
+    `inter_pred_arm` (3), `run_frame_me`, `picture::PictureControlSet`
+    fields, `port_tf_driver` counters.
+  - Open: the other 85 modules are used by integration tests; T2 moves those
+    tests in-crate first.
 
 Done when every Ghost Robot `EbSvtAv1EncConfiguration` field has either a
 typed facade setter or an explicit refusal that names it.

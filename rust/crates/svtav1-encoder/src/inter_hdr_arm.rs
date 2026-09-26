@@ -44,18 +44,6 @@ pub enum InterHdrError {
     /// can reach — see [`scs_tpl`]) C's own `r0_th` is 0 and the bit is a
     /// closed 0, so those levels are NOT refused.
     MfmvLevelNotDerivable(u8),
-    /// C's global-motion search ran and could have produced a model;
-    /// `global_motion_params()`'s type and parameter coding is not
-    /// implemented, so `is_global: [false; 7]` would be a claim rather than a
-    /// derivation.
-    ///
-    /// RETIRED 2026-09-10 and no longer constructed: global motion IS
-    /// implemented. The caller fills `InterSignal::global_motion` /
-    /// `ref_global_motion` from `crate::port_global_me::set_global_motion_field`
-    /// and `crate::port_entropy_inter::gm::write_global_motion` codes them.
-    /// The variant is kept because it is public API; the pipeline still has
-    /// its `match` arm so a future reintroduction has somewhere to land.
-    GlobalMotionNotImplemented,
 }
 
 /// C `get_tpl` (`Globals/enc_handle.c:3657`) — is TPL on for this sequence?

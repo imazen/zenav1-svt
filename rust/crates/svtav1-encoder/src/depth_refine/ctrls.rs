@@ -47,6 +47,14 @@ impl DrCtrls {
 
     /// Pre-fix entry: the !sc_class5 row (level 6 at M0-M4, 9 at M5, 10 at M6+).
     /// Retained for the unit tests, which assert the non-screen behaviour.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructor the pipeline never calls; it derives the ctrls in place (plan 1.4)"
+        )
+    )]
     pub fn for_preset(preset: i8) -> Self {
         Self::for_preset_sc(preset, false)
     }

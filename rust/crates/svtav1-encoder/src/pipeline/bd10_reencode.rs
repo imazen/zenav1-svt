@@ -285,7 +285,7 @@ pub(super) fn bd10_reencode_luma(
     // luck, and a `0` seed here is a silent wrong-pixels failure the moment one
     // does. (rust/CLAUDE.md: dead-looking translations stay, with the
     // measurement written down.)
-    let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
+    let mut recon10 = svtav1_types::try_vec![128u16 << (bd - 8); ext_w * ext_h]?;
     let mut coeff_neighbors = Bd10CoeffNeighbors::new(w, h)?;
     // C `get_filt_type` needs the neighbour MODES, which this pass used to
     // ignore (it passed `filt_type = 0`) -- correct only with the sequence

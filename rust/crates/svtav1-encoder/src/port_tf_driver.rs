@@ -412,8 +412,24 @@ fn tf_segment_block_rect(
 /// What [`ra_mctf_filter`] returns.
 pub struct RaMctfOut {
     /// `pcs->tf_tot_horz_blks` — accumulated across all segments.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C temporal-filter counter no stage reads (plan 1.4)"
+        )
+    )]
     pub tf_tot_horz_blks: u32,
     /// `pcs->tf_tot_vert_blks`.
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C temporal-filter counter no stage reads (plan 1.4)"
+        )
+    )]
     pub tf_tot_vert_blks: u32,
     /// `pcs->filt_to_unfilt_diff` when the centre is an I slice and the save
     /// ran; `None` otherwise (the inherited value stands).

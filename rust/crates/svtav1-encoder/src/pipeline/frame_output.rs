@@ -178,15 +178,6 @@ impl EncodePipeline {
                              InterHdrError). This port's TPL is structurally off (aq_mode 0), \
                              so reaching this means the aq_mode refusal was lifted without \
                              porting r0 [C: accepts]",
-                        // RETIRED: `inter_signal` no longer raises this — global
-                        // motion is coded. The arm stays because the variant is
-                        // public API and a `match` must be total.
-                        crate::inter_hdr_arm::InterHdrError::GlobalMotionNotImplemented =>
-                            "global motion is not implemented: the inter frame header writer \
-                             reached global_motion_params() with a model it could not code. \
-                             This refusal is RETIRED — `port_entropy_inter::gm::\
-                             write_global_motion` codes the frame's real models — and reaching \
-                             it means a caller constructed the variant by hand [C: accepts]",
                     }))
                 })?,
             )

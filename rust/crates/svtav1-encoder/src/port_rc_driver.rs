@@ -56,6 +56,14 @@ pub struct RcVbrCbr {
     /// reads and advances.
     pub cr_sb_end: u32,
     /// C `ppcs->rate_control_param_ptr` (`RateControlIntervalParamContext`).
+    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
+        )
+    )]
     pub rc_param: RcIntervalParams,
     /// C `enc_ctx->resize_pending_params`.
     pub resize_pending: ResizePendingParams,
@@ -388,6 +396,14 @@ pub fn ref_pic_rc(rf: &crate::picture::ReferenceFrame) -> RefPicRc {
 /// the DPB. Slots with no picture map to nothing (C would deref the null —
 /// `RefLists::get` refuses instead); `*_count_try` are the counts C loops to.
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub fn ref_lists<'a>(
     pic: &crate::port_picstruct::PicParams,
     dpb: &crate::picture::DecodedPictureBuffer,
@@ -408,6 +424,14 @@ pub fn ref_lists<'a>(
 /// false in this envelope but kept as a named check for parity with the C
 /// condition sites).
 #[must_use]
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub fn is_pic_skipped(frame: &FrameRc) -> bool {
     frame.is_overlay
 }
@@ -415,4 +439,12 @@ pub fn is_pic_skipped(frame: &FrameRc) -> bool {
 /// The CBR resize mode — `static_config.resize_mode == RESIZE_NONE` under the
 /// port's refusal of dynamic resize; the enum still carries the other arms
 /// because `one_pass_rt_rate_alloc` pattern-matches on it.
+#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "C rate-control driver piece the pipeline does not call (plan 1.4)"
+    )
+)]
 pub const RESIZE_MODE_NONE: RtResizeMode = RtResizeMode::None;
