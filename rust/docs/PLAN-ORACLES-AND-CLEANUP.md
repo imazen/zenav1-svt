@@ -433,8 +433,14 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   item, and needs the 4:4:4 chroma paths completed first (S1).
   - Ghost Robot accepts `EB_YUV444` with `profile == 1`
     (`svt_av1_verify_settings`), so 4:4:4, today a decoder-verified Zen
-    extension, can get a C byte oracle under `ghost-robot`. First blocker:
-    `capture_c_trace.c` hardcodes `EB_YUV420`. Brief: `gr-444`.
+    extension, can get a C byte oracle under `ghost-robot`.
+  - Done (`9dc4db54`): `SVT_CHROMA=444` on both encoders (C driver refuses
+    it on oracles without `ZEN_ORACLE_YUV444`, i.e. all but ghost-robot);
+    Ghost Robot's forced SB64 at 4:4:4 mirrored. First cell (gradient 64x64
+    q30 p6): C 496 B, port 495 B, first divergence the chroma loop-filter
+    level in the frame header.
+  - Next: a 4:4:4 still grid census under ghost-robot, then the chroma LF
+    derivation. Waits for 3.3s (the same DLF code for 4:2:0 stills).
 - [ ] 3.7 Retire `hybrid-3115*`: drop the registry rows, `SvtHdrMode`,
   `Hybrid3115` (a queued break), the hybrid gates, and `3115c0c1b` as the
   submodule pin.
