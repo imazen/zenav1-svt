@@ -47,7 +47,9 @@ SHIFT=${MP_SHIFT:-3}
 REPS=${MP_REPS:-5}
 SIDES=${MP_SIDES:-"port c"}
 OUT=${MP_OUT:-$HOME/tmp/mem_peak}
-PE="$RS_ROOT/target/release/examples/perf_encode"
+# Built fresh every run (tools/example --path); a timing or memory number
+# from a stale binary describes code that no longer exists.
+PE=$("$HERE/example" --path perf_encode) || exit 1
 CE="$HERE/perf_c_encode/perf_c_encode"
 mkdir -p "$OUT"
 

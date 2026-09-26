@@ -26,7 +26,9 @@ read -r -a PRESETS <<<"${DG_PRESETS:-2 6 10 13}"
 read -r -a QPS <<<"${DG_QPS:-20 40 55}"
 read -r -a CONTENTS <<<"${DG_CONTENT:-gradient uniform}"
 
-PE="$RS_ROOT/target/release/examples/perf_encode"
+# Built fresh every run (tools/example --path); a timing or memory number
+# from a stale binary describes code that no longer exists.
+PE=$("$HERE/example" --path perf_encode) || exit 1
 CE="$HERE/perf_c_encode/perf_c_encode"
 WORK="$RS_ROOT/target/decgate"; mkdir -p "$WORK"
 [[ -x "$PE" ]] || { echo "missing $PE" >&2; exit 1; }

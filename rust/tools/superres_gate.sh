@@ -94,10 +94,15 @@ AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$CELLS" --out "$OUT/result.tsv" \
 rc=$?
 python3 - "$OUT/result.tsv" <<'PY'
 import csv, sys
-rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t") if not r["name"].endswith("_ns")]
+allrows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+errored = [r for r in allrows if r["verdict"] == "ERROR"]
+rows = [r for r in allrows if not r["name"].endswith("_ns")]
 bad = [r for r in rows if r["ok"] != "yes"]
 print(f"superres identity + recon: {len(rows) - len(bad)} / {len(rows)} cells")
 for r in bad:
     print(f"  FAILED: {r['name']} [{r['verdict']} {r['detail']}; {r['checks']}]")
+for r in errored:
+    if r["name"].endswith("_ns"):
+        print(f"  ERROR (sibling {r['name']}): {r['detail']}")
 PY
 exit "$rc"

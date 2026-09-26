@@ -20,16 +20,14 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RS=$(cd "$HERE/.." && pwd)
 AOMDEC=${AOMDEC:-$(command -v aomdec || true)}
 DAV1D=${DAV1D:-$(command -v dav1d || true)}
-PROBE="$RS/target/release/examples/probe_444"
-W=$(mktemp -d /tmp/g444.XXXXXX)
+# Built fresh every run (tools/example): "build if missing" ran the previous
+# encoder after an edit.
+PROBE=$("$HERE/example" --path probe_444) || exit 1
+W=$(mktemp -d "${TMPDIR:-$HOME/tmp}/g444.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 
 if [ -z "$AOMDEC" ]; then
   echo "SKIP: aomdec not on PATH" >&2; exit 2
-fi
-if [ ! -x "$PROBE" ]; then
-  (cd "$RS" && cargo build -q --release -p zenav1-svt --example probe_444) \
-    || { echo "FAIL: probe_444 build" >&2; exit 1; }
 fi
 
 pass=0; fail=0; skipped=0; declare -a failed skipped_msgs

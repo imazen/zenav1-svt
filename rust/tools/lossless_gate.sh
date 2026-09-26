@@ -73,7 +73,9 @@ AOMDEC="$aomdec" python3 "$HERE/cellrun.py" "$CELLS" --out "$OUT/result.tsv" \
 rc=$?
 python3 - "$OUT/result.tsv" <<'PY'
 import csv, sys
-rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter="\t") if not r["name"].endswith("_q1")]
+allrows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+errored = [r for r in allrows if r["verdict"] == "ERROR"]
+rows = [r for r in allrows if not r["name"].endswith("_q1")]
 passed = [r for r in rows if r["verdict"] == "IDENTICAL" and "FAIL" not in r["checks"]]
 print(f"coded-lossless identity + lossless-decode: {len(passed)} / {len(rows)} byte-identical, all lossless")
 for r in rows:
@@ -85,5 +87,8 @@ for r in rows:
     print(f"  FAILED: {r['name']}[{'; '.join(why)}]")
     if any(c.startswith("differs_from") for c in why):
         print("  GATE PREMISE FAILED — qp-0 stream == qp-1 stream (the lossless path was not exercised)")
+for r in errored:
+    if r["name"].endswith("_q1"):
+        print(f"  ERROR (sibling {r['name']}): {r['detail']}")
 PY
 exit "$rc"

@@ -116,7 +116,7 @@ check_refusal() { # label bd|fmt size
             "$RUN" "rawseq:$clip" "$w" "$h" 0 6 "$out/p" \
             >"$out/stdout.txt" 2>"$out/trace.txt"
     else # 444 via the probe
-        "$RS/target/release/examples/probe_444_dup" "$out" "$size" 0 6 shift \
+        "$HERE/example" probe_444_dup "$out" "$size" 0 6 shift \
             >"$out/stdout.txt" 2>"$out/trace.txt"
     fi
     if grep -q "not implemented outside 8-bit" "$out/stdout.txt" "$out/trace.txt"; then

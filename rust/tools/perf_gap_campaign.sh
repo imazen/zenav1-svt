@@ -30,7 +30,9 @@ QP="${PERF_QP:-40}"
 ROUNDS="${PERF_ROUNDS:-9}"
 WARMUP="${PERF_WARMUP:-1}"
 
-PE="$RS_ROOT/target/release/examples/perf_encode"
+# Built fresh every run (tools/example --path); a timing or memory number
+# from a stale binary describes code that no longer exists.
+PE=$("$HERE/example" --path perf_encode) || exit 1
 CE="$HERE/perf_c_encode/perf_c_encode"
 WORK="$RS_ROOT/target/perf"; mkdir -p "$WORK"
 [[ -x "$PE" && -x "$CE" ]] || { echo "harness binaries missing" >&2; exit 1; }

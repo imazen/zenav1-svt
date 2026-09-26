@@ -32,8 +32,8 @@ CORPUS=${ZENAV1_CORPUS_ROOT:-/home/lilith/work/codec-corpus}
 AOMDEC=${AOMDEC:-$(command -v aomdec || true)}
 AOMENC=${AOMENC:-$(command -v aomenc || true)}
 SSIM2=${SSIM2:-/home/lilith/work/zen/fast-ssim2/target/release/fast-ssim2-cli}
-P444="$RS/target/release/examples/probe_444_file"
-PMONO="$RS/target/release/examples/probe_mono_file"
+P444=$("$HERE/example" --path probe_444_file) || exit 2
+PMONO=$("$HERE/example" --path probe_mono_file) || exit 2
 CONV="$HERE/i444_png.py"
 QPS="10 20 30 40 50 60"
 PRESET=${RD_PRESET:-8}
@@ -41,11 +41,6 @@ AOM_CPU=${AOM_CPU:-2}
 
 [ -x "$AOMDEC" ] && [ -x "$AOMENC" ] && [ -x "$SSIM2" ] || {
   echo "need aomdec + aomenc + fast-ssim2-cli (SSIM2=)" >&2; exit 2; }
-if [ ! -x "$P444" ] || [ ! -x "$PMONO" ]; then
-  (cd "$RS" && cargo build -q --release -p zenav1-svt \
-      --example probe_444_file --example probe_mono_file) || {
-    echo "probe build failed" >&2; exit 2; }
-fi
 
 TSV="$W/results.tsv"
 echo -e "mode\timg\tw\th\tqp\tleg\tbytes\tssim2\tpsnr_y\tpsnr_u\tpsnr_v" > "$TSV"

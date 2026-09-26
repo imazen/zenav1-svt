@@ -38,7 +38,9 @@ ROUNDS="${PERF_ROUNDS:-25}"
 AGENT="${POS_AGENT:-claude-perf-position}"
 ARMS="${POS_ARMS:-ctl still videokey inter photo-still photo-videokey photo-inter}"
 QUIET="$RS_ROOT/benchmarks/perf_${SUFFIX}-quiet.txt"
-PE="$RS_ROOT/target/release/examples/perf_encode"
+# Built fresh every run (tools/example --path); a timing or memory number
+# from a stale binary describes code that no longer exists.
+PE=$("$HERE/example" --path perf_encode) || exit 1
 [[ -x "$PE" ]] || { echo "build perf_encode first" >&2; exit 1; }
 
 snap() { # <label>

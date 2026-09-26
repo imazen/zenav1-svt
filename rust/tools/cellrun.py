@@ -101,6 +101,20 @@ def recon_bytes(d):
     return b"".join(p.read_bytes() for p in frames) if frames else None
 
 
+def last_line(path):
+    """A log's most useful line for an ERROR row: a panic's message, else the
+    last line that is not the backtrace hint."""
+    try:
+        lines = [l for l in path.read_text(errors="replace").splitlines() if l.strip()]
+    except OSError:
+        return "(no log)"
+    for i, l in enumerate(lines):
+        if "panicked at" in l and i + 1 < len(lines):
+            return lines[i + 1][:200]
+    lines = [l for l in lines if not l.startswith("note: run with")]
+    return lines[-1][:200] if lines else "(empty log)"
+
+
 def run_checks(row, d, env, timeout):
     """The decoder checks. Returns [(name, ok)], or raises RuntimeError."""
     want = row["checks"] & {"lossless", "recon", "dav1d"}
@@ -149,7 +163,8 @@ def run_c(row, d, env, timeout, bytes_only):
              str(d / "rs.yuv"), str(d / "c.obu"), env["SVTAV1_BD"]],
             env=cenv, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
     if r.returncode != 0:
-        return "ERROR", "C", f"capture_c_trace exited {r.returncode} (see {d}/c.stderr)"
+        return ("ERROR", "C", f"capture_c_trace exited {r.returncode}: "
+                f"{last_line(d / 'c.stderr')} ({d}/c.stderr)")
     rs, c = (d / "rs.obu").read_bytes(), (d / "c.obu").read_bytes()
     if bytes_only:
         return ("IDENTICAL", "-", "-") if rs == c else ("DIFFERS", "-", f"port {len(rs)} B, C {len(c)} B")
@@ -184,7 +199,8 @@ def run_cell(row, root, timeout, bytes_only):
                  row["preset"], str(d / "rs")],
                 env=env, stdout=subprocess.DEVNULL, stderr=err, timeout=timeout)
         if r.returncode != 0:
-            return "ERROR", "PORT", f"identity_run exited {r.returncode} (see {d}/rs.trace)", []
+            return ("ERROR", "PORT", f"identity_run exited {r.returncode}: "
+                    f"{last_line(d / 'rs.trace')} ({d}/rs.trace)", [])
         checks = run_checks(row, d, env, timeout)
         if "c" in row["checks"]:
             verdict, stage, detail = run_c(row, d, env, timeout, bytes_only)
@@ -237,14 +253,20 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
         results = list(ex.map(lambda r: run_cell(r, root, a.timeout, a.bytes_only), rows))
 
-    # Anti-vacuity, once every cell's stream exists.
+    # Anti-vacuity, once every cell's stream exists. A sibling that could
+    # not be encoded FAILS the check: skipping it would pass the cell with its
+    # premise unverified.
     by_name = {r["name"]: res for r, res in zip(rows, results)}
     for row, res in zip(rows, results):
         other = row.get("differs_from")
-        if other and res[0] != "ERROR" and by_name[other][0] != "ERROR":
-            same = (root / row["name"] / "rs.obu").read_bytes() == \
-                (root / other / "rs.obu").read_bytes()
-            res[3].append((f"differs_from:{other}", not same))
+        if not other or res[0] == "ERROR":
+            continue
+        if by_name[other][0] == "ERROR":
+            res[3].append((f"differs_from:{other}(errored)", False))
+            continue
+        same = (root / row["name"] / "rs.obu").read_bytes() == \
+            (root / other / "rs.obu").read_bytes()
+        res[3].append((f"differs_from:{other}", not same))
 
     bad = errors = 0
     with open(out, "w", newline="") as f:
@@ -259,7 +281,11 @@ def main():
             errors += verdict == "ERROR"
             wr.writerow([row["name"], verdict, stage, detail, expect or "-",
                          " ".join(f"{n}={'ok' if o else 'FAIL'}" for n, o in checks) or "-",
+                         "ERROR" if verdict == "ERROR" else
                          ("yes" if ok else "NO") if pinned else "-"])
+    for row, (verdict, stage, detail, _) in zip(rows, results):
+        if verdict == "ERROR":
+            print(f"cellrun: ERROR {row['name']} [{stage}] {detail}", file=sys.stderr)
     ident = sum(r[0] == "IDENTICAL" for r in results)
     ran_c = sum("c" in r["checks"] for r in rows)
     print(f"cellrun: {oracle}: {ident}/{ran_c} identical to C, {errors} errors, "

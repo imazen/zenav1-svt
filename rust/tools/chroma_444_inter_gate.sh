@@ -26,20 +26,16 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS=$(cd "$HERE/.." && pwd)
 AOMDEC=${AOMDEC:-$(command -v aomdec || true)}
-PDUP="$RS/target/release/examples/probe_444_dup"
-PVID="$RS/target/release/examples/probe_444_video"
-W=$(mktemp -d /tmp/g444i.XXXXXX)
+# Built fresh every run (tools/example): "build if missing" ran the previous
+# encoder after an edit.
+PDUP=$("$HERE/example" --path probe_444_dup) || exit 1
+PVID=$("$HERE/example" --path probe_444_video) || exit 1
+W=$(mktemp -d "${TMPDIR:-$HOME/tmp}/g444i.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 
 if [ -z "$AOMDEC" ]; then
   echo "SKIP: aomdec not on PATH" >&2; exit 2
 fi
-for p in probe_444_dup probe_444_video; do
-  if [ ! -x "$RS/target/release/examples/$p" ]; then
-    (cd "$RS" && cargo build -q --release -p zenav1-svt --example "$p") \
-      || { echo "FAIL: $p build" >&2; exit 1; }
-  fi
-done
 
 pass=0; fail=0; declare -a failed
 

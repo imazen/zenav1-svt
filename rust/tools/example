@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Always-fresh entry point for any zenav1-svt example: build it, then exec it.
+#
+# `target/release/examples/<name>` is directly runnable, and a script that runs
+# it without asking cargo compares against whatever build happens to be there.
+# Two ways that went wrong: qp0_inter_gate's 4:4:4 leg ran probe_444_dup, which
+# nothing built, so on a fresh CI runner the leg failed as "did not refuse";
+# and "build it if it is missing" (chroma_444_gate and friends) runs the
+# PREVIOUS encoder after an edit. cargo tracks staleness correctly; this makes
+# every call go through it. A no-op build costs well under a second.
+#
+# Build chatter is buffered and shown only on failure (a caller may be parsing
+# this process's stderr), and a failed build aborts instead of running the old
+# binary. `tools/identity_run` is the same wrapper with the symtrace feature.
+#
+# Usage: tools/example [--features F] <example> [args...]
+#        tools/example --path [--features F] <example>
+#   --path builds and prints the binary's path instead of running it: for
+#   timing and memory harnesses, which must measure the binary alone and not
+#   a cargo invocation per call (build once at the top, then run the path).
+# Env:   CARGO_BUILD_JOBS (default 8)
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+RS_ROOT=$(cd "$HERE/.." && pwd)
+feat=()
+path_only=0
+if [[ "${1:-}" == --path ]]; then
+    path_only=1
+    shift
+fi
+if [[ "${1:-}" == --features ]]; then
+    feat=(--features "$2")
+    shift 2
+fi
+name=${1:?usage: tools/example [--features F] <example> [args...]}
+shift
+_bl=$(mktemp "${TMPDIR:-$HOME/tmp}/example-build.XXXXXX")
+if ! (
+    cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" \
+        cargo build --release -p zenav1-svt "${feat[@]}" --example "$name"
+) >"$_bl" 2>&1; then
+    cat "$_bl" >&2
+    rm -f "$_bl"
+    echo "tools/example: BUILD FAILED for $name — refusing to run a possibly stale binary." >&2
+    exit 1
+fi
+rm -f "$_bl"
+if [[ $path_only == 1 ]]; then
+    echo "$RS_ROOT/target/release/examples/$name"
+    exit 0
+fi
+exec "$RS_ROOT/target/release/examples/$name" "$@"
