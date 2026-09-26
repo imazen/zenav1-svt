@@ -1,0 +1,45 @@
+Snapshot, 2026-09-26: video-mode key-frame NIC/TXT qp-scaling arm, i265,
+vs mainline-4.2.0.
+
+Change under test: `FunnelCfg::nic_txt_qp_scaling` — one bit modeling
+`qp_based_th_scaling_ctrls.{nic_max, nic_pruning, txt}_qp_based_th_scaling`
+(set_qp_based_th_scaling_ctrls_*, enc_handle.c:3785-3892; equal on every C
+arm row: 0 only on the video arm at `enc_mode <= ENC_MR`, 1 everywhere
+else). Stamped per arm by `nic_arm::apply`; consumed by
+`leaf_funnel::rate_tables::nic_counts` (stage caps), `leaf_funnel::nic`
+post_mds0/1/2 pruning thresholds, and `leaf_funnel::txt` SATD early-exit.
+Previously all three ran with the scalers unconditionally ON — the
+allintra value.
+
+First divergence it fixes (diag 72x88 q40 p-1, video key frame): C's
+committed tree keeps a 16x16 leaf at SB0 (0,0); the port split to 4x4s.
+PD0 costs, the fast lambda (15787), the SB0 rate-table seed and every
+MDS0/MDS1 fast cost were unit-equal (SVT_PD0COST_OUT/SVT_SEED_OUT/
+SVT_FASTCOST_OUT vs SVTAV1_PD0DBG/SVTAV1_SEED_DUMP/NSQDBG PFAST), but C's
+MDS3 evaluated 20 intra candidates vs the port's 13 — the qp-scaled cap
+20*40/63 ~= 13 dropped C's winner (mode=4/D135 fi=5 ang=0, full cost
+20708951 vs the port's best 30407693). With the unscaled caps the MDS3
+winner, the partition, and the downstream SGRPROJ/LR choice all match.
+
+Measured:
+
+- `tools/video_census_gate.sh` (540 cells, 8-frame low delay): 251/540
+  identical (was 248), 0 regressed, 32 promoted — the remaining preset -1
+  TU0 cells all moved; kristenandsara 128x128 qp40/qp55 and 256x256 qp40
+  reached IDENTICAL. The whole p-1 row is off TU0; what remains there is
+  inter-frame residual (plan 3.8 item b). Pins rewritten with VCG_WRITE=1
+  in the same commit.
+- `tools/video_key_matrix.sh` default grid (5 classes x presets -1..13,
+  72x88 q40 synthetic key frames): 75/75 identical — gradient, diag and
+  screenrep at p-1 all closed.
+- Regression surface: nextest 2755/2755, regression_spotcheck 147/147,
+  identity_full_8bit 1100/1100 (still path byte-neutral — allintra rows
+  keep the scalers on at every preset; pinned by
+  `nic_arm::allintra_flattening_matches_the_ladder`), real_video_inter
+  24/24, video_selfcheck 270/270, precheck clean.
+
+Open: p-1 inter frames (census TU1+); presets 0/2/3 early-inter
+divergence; `lpd0_qp_based_th_scaling` (1 on video MR where allintra is
+0) and `cap_max_size_qp_based_th_scaling`/`intra_bc_mesh_qp_scaling` are
+the remaining un-ported qp-scaler bits — lpd0 is gated to level 6 and
+measured inert on this cell (PD0 lambda and costs were already equal).

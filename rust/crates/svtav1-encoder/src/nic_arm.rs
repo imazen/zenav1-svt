@@ -257,6 +257,15 @@ pub(crate) fn apply(
     cfg.i_mds3_class_th_mult = r.i_mds3_class_th_mult;
     cfg.enable_skipping_mds1 = r.enable_skipping_mds1;
     cfg.merge_inter_cands_mult = r.merge_inter_cands_mult;
+    // `qp_based_th_scaling_ctrls.{nic_max, nic_pruning, txt}` —
+    // `set_qp_based_th_scaling_ctrls_default` (enc_handle.c:3789-3802)
+    // switches them OFF at `enc_mode <= ENC_MR` on the video arm; the
+    // allintra arm (`:3837-3892`) and rtc arm (`:3820-3835) leave them on
+    // at every preset. At MR the qp shrink would cap MDS3 at ~13/20
+    // candidates (q40: 20*40/63) — C's video key frame keeps the full 20,
+    // which is where the diag 72x88 p-1 32x32 node lost its D135 winner.
+    cfg.nic_txt_qp_scaling = !(matches!(arm, ScArm::Video { .. })
+        && enc_mode <= crate::port_enc_mode_config::enc_mode::MR);
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ fn allintra_flattening_matches_the_ladder() {
                     "merge_inter_cands_mult",
                     u64::from(c.merge_inter_cands_mult),
                 ),
+                ("nic_txt_qp_scaling", u64::from(c.nic_txt_qp_scaling)),
             ]
         };
         assert_eq!(
@@ -174,4 +175,43 @@ fn video_m6_key_frame_tightens_every_nic_stage() {
         ),
         (1200, 15, 15)
     );
+}
+
+/// `qp_based_th_scaling_ctrls.{nic_max, nic_pruning, txt}` — the one 0 in
+/// the whole set is `set_qp_based_th_scaling_ctrls_default`'s MR row
+/// (enc_handle.c:3789-3802). `nic_counts`'s qp scale and the funnel's
+/// pruning/txt scales all read this bit, so a stale `true` at video p-1
+/// caps MDS3 at `scal * qp/63` (~13 of 20 at qp 40) and drops the winner.
+#[test]
+fn video_mr_disables_the_qp_scalers() {
+    let mut saw_on = 0usize;
+    for preset in -1..=13i8 {
+        let mut cfg = FunnelCfg::for_preset(preset.max(0));
+        let video = crate::rate_arm::eff_enc_mode(ScArm::Video { is_islice: true }, preset);
+        apply(
+            &mut cfg,
+            ScArm::Video { is_islice: true },
+            video,
+            true,
+            crate::reference::SvtReference::Mainline420,
+        );
+        assert_eq!(
+            cfg.nic_txt_qp_scaling,
+            preset > -1,
+            "nic/txt qp scaling at video preset {preset}"
+        );
+        saw_on += usize::from(cfg.nic_txt_qp_scaling);
+        // The still arm is on at every preset, including -1.
+        let mut still = FunnelCfg::for_preset(preset.max(0));
+        let allintra = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
+        apply(
+            &mut still,
+            ScArm::Allintra,
+            allintra,
+            true,
+            crate::reference::SvtReference::Mainline420,
+        );
+        assert!(still.nic_txt_qp_scaling, "allintra p{preset}");
+    }
+    assert_eq!(saw_on, 14, "every video preset above MR must stay on");
 }

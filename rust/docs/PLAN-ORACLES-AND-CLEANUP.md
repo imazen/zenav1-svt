@@ -626,32 +626,31 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     the inter frame — item (b) territory), and the synthetic
     `video_key_matrix.sh` p1 row is 5/5. Preset 7's measured cell is
     identical.
-  - (a) at preset -1 is NOT the same defect and remains open. On
-    `diag 72x88 q40 p-1` (video key frame): PD0 costs are byte-equal
-    (`SVT_PD0COST_OUT` vs `SVTAV1_PD0DBG`, dist/ybits/cost and the
-    15787 fast lambda all match), the SB0 rate-table seed is byte-equal
-    (`SVT_SEED_OUT` vs `SVTAV1_SEED_DUMP`), yet the SB1 seed already
-    differs (C `part0=13636,7258,2376 kf00=17667,16273,14034` vs port
-    `13789,7804,3222 / 19410,16244,14394`) — so the first differing
-    DECISION is inside SB0's MDS walk. `SVT_FINAL_MI_OUT` vs
-    `SVTAV1_DUMP_TREE` shows leaf (0,0) 4x4: C commits mode DC +
-    FILTER_D157 (fi=3), the port D45; C's stream also carries an SGRPROJ
-    restoration unit the port omits (it searched and found RESTORE_NONE),
-    but that is downstream — the pre-DLF recon already differs (C luma SSE
-    4910 vs port 3477; the port's recon is CLOSER to source, i.e. it coded
-    more). Ruled out: partition pre-search (PD0), rate-table seeding, the
-    lambda ladder (both arms zero `lambda_weight` at `enc_mode <= ENC_MR`,
-    `enc_mode_config.c:9450`/`:10101`), and every already-armed ladder
-    (`txt`, `cfl`, `chroma`, `nic` level 1 both sides, intra, txs, part,
-    encdec, dlf, lr levels). `MdConfigSignals` is `None` on key frames —
-    `pipeline/tile_walk.rs` drives the key frame purely from the `*_arm`
-    stamps — so the next concrete step is to diff the MDS1 candidate SET on
-    SB0's first node: `SVT_FULLCOST_XY=all` st=1 rows vs the port's
-    `SVTAV1_CANDDBG` `NSQDBG PFAST` rows at `SVTAV1_DBG_MI=0,0`, looking for
-    a candidate class C carries that the port drops (or vice versa);
-    `svt_aom_sig_deriv_enc_dec_default` (`enc_mode_config.c:7842+`) fields
-    not yet mirrored per arm (e.g. `depth_early_exit_ctrls`,
-    `md_stage*_cand` composition, `uv_ctrls`) are the suspect pool.
+  - (a) at preset -1 was a THIRD defect, closed 2026-09-26 (i265). On
+    `diag 72x88 q40 p-1` (video key frame) the first differing DECISION is
+    the partition at SB0's 32x32 node (0,0): C's committed tree keeps a
+    16x16 leaf there; the port split to 4x4s. The whole MD fast loop
+    matched — PD0 costs, the 15787 fast lambda, the SB0 rate-table seed,
+    and every MDS0/1 fast cost (`SVT_FASTCOST_OUT` vs `NSQDBG PFAST`,
+    unit-equal incl. mode=4's bottom-ranked candidates) — but C's MDS3
+    carried 20 intra candidates where the port carried 13, and C's winner
+    (`mode=4/D135 fi=5 ang=0`, full cost 20708951 vs the port's best
+    30407693 for mode=0) was never evaluated. Root cause:
+    `qp_based_th_scaling_ctrls.{nic_max, nic_pruning, txt}` — the funnel
+    shrank the stage caps and prune thresholds by `qp/63` unconditionally,
+    but `set_qp_based_th_scaling_ctrls_default` (enc_handle.c:3789-3802)
+    turns all three OFF on the video arm at `enc_mode <= ENC_MR` (preset
+    -1); the allintra arm leaves them on at every preset. Ported as
+    `FunnelCfg::nic_txt_qp_scaling`, stamped by `nic_arm::apply`. With the
+    unscaled caps (80/40/20 at nic scaling 20/20/20) the MDS3 set and
+    winner match, the partition matches, and the SGRPROJ/loop-restoration
+    difference disappears with it. Measured: `video_key_matrix.sh` 75/75
+    (the three p-1 synthetic cells — gradient, diag, screenrep — all
+    closed); `video_census_gate.sh` 251/540, 0 regressed, 32 promoted —
+    the p-1 row moved off TU0 (three cells fully IDENTICAL:
+    `kristenandsara 128 q40`, `kristenandsara 128 q55`,
+    `kristenandsara 256 q40`) and the whole p-1 row is off TU0 — the
+    remaining differences are in the inter frames (item (b)).
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
   - SB128 beyond the root is unported (`pipeline/setup.rs`

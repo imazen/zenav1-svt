@@ -111,7 +111,7 @@ pub(super) fn stage_mds0_to_mds1(
     // `MD_STAGE_NICS` row is the PICTURE TYPE's — I_SLICE, REF or NON-REF
     // (`:1398`) — not always the I-slice row this funnel was written for.
     let pic_type = crate::port_md::nics::nics_pic_type(!non_i_slice, is_highest_layer);
-    let (nic1, nic2, nic3) = nic_counts(cli_qp, cfg.nic_num, pic_type);
+    let (nic1, nic2, nic3) = nic_counts(cli_qp, cfg.nic_num, pic_type, cfg.nic_txt_qp_scaling);
     // C runs md_stage_0's replacement pool PER CANDIDATE CLASS
     // (svt_aom_set_nics gives each class its own mds1_count, product_
     // coding_loop.c:1358; the pool + argmax-victim loop runs once per
@@ -168,7 +168,13 @@ pub(super) fn stage_mds0_to_mds1(
     let has_palette_lane = cands.iter().any(|c| c.palette.is_some());
 
     // -- post_mds0_nic_pruning (product_coding_loop.c:7819) --
-    let (qw, qwd) = qp_scale_factors(cli_qp);
+    // `nic_pruning_qp_based_th_scaling` (:7822) — off on the video arm at
+    // `enc_mode <= ENC_MR` only (`FunnelCfg::nic_txt_qp_scaling`).
+    let (qw, qwd) = if cfg.nic_txt_qp_scaling {
+        qp_scale_factors(cli_qp)
+    } else {
+        (1, 1)
+    };
     // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
     // cand pruning); the qp-scaled threshold stays saturated so the loop
     // below never prunes (guard avoids the base*qw overflow).

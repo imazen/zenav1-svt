@@ -657,6 +657,17 @@ pub struct FunnelCfg {
     /// (M6 lvl6: 6/6/6; M7 lvl8: 4/4/4; M8 lvl15: 0/0/0). Base counts are
     /// the I-slice class-0 {64,32,16} scaled by these / 16 then qp-scaled.
     pub nic_num: (u64, u64, u64),
+    /// `qp_based_th_scaling_ctrls.{nic_max, nic_pruning, txt}_qp_based_th_scaling`
+    /// (`set_qp_based_th_scaling_ctrls_*`, enc_handle.c:3785-3892) — whether the
+    /// funnel scales its stage caps (nic_max), NIC pruning thresholds
+    /// (nic_pruning) and TXT SATD early-exit (txt) by
+    /// `svt_aom_get_qp_based_th_scaling_factors`. The three fields are equal
+    /// on every C arm row — `0` only on the VIDEO arm at `enc_mode <= ENC_MR`
+    /// (`:3789-3802`), `1` everywhere else (allintra leaves all three on at
+    /// every preset, `:3837-3892`; rtc always on, `:3820-3835`) — so one bit
+    /// models all three. `nic_arm::apply` stamps it per arm; `for_preset`
+    /// bakes the allintra `true`.
+    pub nic_txt_qp_scaling: bool,
     /// `mds1_cand_base_th_intra` (M6/M7: 1200; M8: 1).
     pub mds1_cand_base_th: u64,
     /// `mds1_cand_base_th_inter` — the post-MDS0 candidate threshold C
@@ -1017,6 +1028,10 @@ impl FunnelCfg {
             skip_ang_delta_th: [-1, -1, -1],
             reduce_filter_intra: false,
             nic_num: (6, 6, 6),
+            // allintra keeps all three qp-based th scalers ON at every
+            // preset (enc_handle.c:3837-3892); the video arm's MR row is
+            // stamped by `nic_arm::apply`.
+            nic_txt_qp_scaling: true,
             mds1_cand_base_th: 1200,
             // nic_level 6 (case 6, enc_mode_config.c:4700-4716) — the CLASS
             // thresholds, live only on a non-I slice.
@@ -1588,10 +1603,16 @@ pub(super) fn qp_scale_factors(cli_qp: u32) -> (u64, u64) {
 ///
 /// This is a thin front on the tier-1 `port_md::nics::set_nics` (pinned to
 /// the EXPORTED C in `tests/c_parity_md_nics.rs`); the second transcription
-/// that used to live here is gone. `nic_max_qp_based_th_scaling` is `true`
-/// on both arms at every preset the port can reach (`enc_handle.c:3785` /
-/// `:3837`; the only 0 is the `default` arm at `ENC_MR`, below preset 0).
-pub(super) fn nic_counts(cli_qp: u32, num: (u64, u64, u64), pic_type: u8) -> (u32, u32, u32) {
+/// that used to live here is gone. `nic_max_qp_based_th_scaling` was `true`
+/// for every caller until 2026-09-26 — a stale claim that the only 0 is the
+/// `default` arm at `ENC_MR` (enc_handle.c:3796), which the port CAN reach:
+/// the video key frame at preset -1. Pass [`FunnelCfg::nic_txt_qp_scaling`].
+pub(super) fn nic_counts(
+    cli_qp: u32,
+    num: (u64, u64, u64),
+    pic_type: u8,
+    qp_scaling: bool,
+) -> (u32, u32, u32) {
     let c = crate::port_md::nics::set_nics(
         &crate::port_md::nics::NicScalingCtrls {
             stage1_scaling_num: num.0 as u32,
@@ -1600,7 +1621,7 @@ pub(super) fn nic_counts(cli_qp: u32, num: (u64, u64, u64), pic_type: u8) -> (u3
         },
         pic_type,
         cli_qp,
-        true,
+        qp_scaling,
     );
     (c.mds1[0], c.mds2[0], c.mds3[0])
 }

@@ -222,7 +222,13 @@ pub(super) fn txt_search(
     // the intra th for inter trials admits tx types C's screen rejects —
     // measured on the 104x104 p10 inter cell, where an IDTX trial at
     // satd-best delta 3.1% survives th=6 but not C's th=3.
-    let (qw, qwd) = qp_scale_factors(frame.cli_qp);
+    // `txt_qp_based_th_scaling` (product_coding_loop.c:4652) — off on the
+    // video arm at `enc_mode <= ENC_MR` only (`FunnelCfg::nic_txt_qp_scaling`).
+    let (qw, qwd) = if frame.cfg.nic_txt_qp_scaling {
+        qp_scale_factors(frame.cli_qp)
+    } else {
+        (1, 1)
+    };
     let satd_th = if only_dct {
         0
     } else {

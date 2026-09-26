@@ -345,14 +345,14 @@ fn cfl_idx_to_alpha_unpacks_both_planes() {
 #[test]
 fn nic_counts_match_c() {
     // M6 (nic level 6): nums 6/6/6, I-slice row.
-    assert_eq!(nic_counts(20, (6, 6, 6), 0), (8, 4, 2));
-    assert_eq!(nic_counts(40, (6, 6, 6), 0), (15, 8, 4));
-    assert_eq!(nic_counts(55, (6, 6, 6), 0), (22, 11, 5));
+    assert_eq!(nic_counts(20, (6, 6, 6), 0, true), (8, 4, 2));
+    assert_eq!(nic_counts(40, (6, 6, 6), 0, true), (15, 8, 4));
+    assert_eq!(nic_counts(55, (6, 6, 6), 0, true), (22, 11, 5));
     // M8 (nic level 11 -> scaling level 15 -> nums 0/0/0): the min-1
     // floor (scaling num == 0) pins every stage to 1 at all tracked qps.
-    assert_eq!(nic_counts(20, (0, 0, 0), 0), (1, 1, 1));
-    assert_eq!(nic_counts(40, (0, 0, 0), 0), (1, 1, 1));
-    assert_eq!(nic_counts(55, (0, 0, 0), 0), (1, 1, 1));
+    assert_eq!(nic_counts(20, (0, 0, 0), 0, true), (1, 1, 1));
+    assert_eq!(nic_counts(40, (0, 0, 0), 0, true), (1, 1, 1));
+    assert_eq!(nic_counts(55, (0, 0, 0), 0, true), (1, 1, 1));
 }
 
 /// The INTER rows, at the cells the campaign stands on — the values C's
@@ -366,18 +366,18 @@ fn nic_counts_match_c() {
 #[test]
 fn nic_counts_inter_rows_at_the_campaign_cells() {
     // p6 (video nic level 8, nums 2/1/1).
-    assert_eq!(nic_counts(55, (2, 1, 1), 1), (4, 2, 2));
-    assert_eq!(nic_counts(55, (2, 1, 1), 0), (7, 2, 2));
-    assert_eq!(nic_counts(40, (2, 1, 1), 1), (3, 2, 2));
-    assert_eq!(nic_counts(40, (2, 1, 1), 0), (5, 2, 2));
+    assert_eq!(nic_counts(55, (2, 1, 1), 1, true), (4, 2, 2));
+    assert_eq!(nic_counts(55, (2, 1, 1), 0, true), (7, 2, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 1, true), (3, 2, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 0, true), (5, 2, 2));
     // p8 (video nic level 9, nums 2/0/0): the MDS1 cap is the only stage
     // with a numerator, and the row still moves it.
-    assert_eq!(nic_counts(20, (2, 0, 0), 1), (2, 1, 1));
-    assert_eq!(nic_counts(20, (2, 0, 0), 0), (3, 1, 1));
+    assert_eq!(nic_counts(20, (2, 0, 0), 1, true), (2, 1, 1));
+    assert_eq!(nic_counts(20, (2, 0, 0), 0, true), (3, 1, 1));
     // Picture type 2 (highest temporal layer, unreachable on a flat GOP)
     // loses the minimum-of-2 as well: base 16, `16 * 2 / 16 = 2`, then
     // qp 20 scales `2 * 20 / 63` to 1 and the floor is 1, not 2.
-    assert_eq!(nic_counts(20, (2, 0, 0), 2), (1, 1, 1));
+    assert_eq!(nic_counts(20, (2, 0, 0), 2, true), (1, 1, 1));
 }
 
 /// The same function against the REAL exported C, over EVERY row of
@@ -402,11 +402,12 @@ fn nic_counts_inter_rows_at_the_campaign_cells() {
 /// runs all three `MD_STAGE_NICS` rows — the I-slice row this funnel was
 /// written for and the two inter rows it now runs on the campaign's frames.
 ///
-/// `nic_max_qp_based_th_scaling` is `true` on both arms at every preset the
-/// port can reach (`enc_handle.c:3785`/`:3837` — the only 0 is the `default`
-/// arm at `ENC_MR`, below preset 0), which is why `nic_counts` applies the qp
-/// scaling unconditionally. The `false` half is asserted DIFFERENT below so
-/// that unconditional application is a recorded decision, not an accident.
+/// `nic_max_qp_based_th_scaling` is `true` at every preset on both arms
+/// EXCEPT the video `default` arm at `ENC_MR` (enc_handle.c:3796 — preset -1,
+/// which IS reachable: `svt_aom_get_nic_level_default(MR)` = level 1). The
+/// flag is `nic_counts`'s 4th arg, fed by `FunnelCfg::nic_txt_qp_scaling`;
+/// the `false` half is asserted at the end of this test so the plumbing is a
+/// recorded decision, not an accident.
 #[test]
 fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
     // C `MD_STAGE_NICS_SCAL_NUM` (definitions.h:819), stages 1..3 of each row.
@@ -439,6 +440,7 @@ fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
                     qp,
                     (u64::from(row.0), u64::from(row.1), u64::from(row.2)),
                     pic_type,
+                    true,
                 );
                 assert_eq!(
                     (c.mds1[0], c.mds2[0], c.mds3[0]),
@@ -465,10 +467,10 @@ fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
     // The exact cell the campaign stands on, spelled out so a regression names
     // itself: video nic_level 7 (presets 4/5) and 8 (preset 6) at CLI qp 40,
     // on the I-slice row (frame 0) and the REF row (frame 1 of a flat GOP).
-    assert_eq!(nic_counts(40, (4, 4, 4), 0), (10, 5, 3));
-    assert_eq!(nic_counts(40, (2, 1, 1), 0), (5, 2, 2));
-    assert_eq!(nic_counts(40, (4, 4, 4), 1), (5, 3, 2));
-    assert_eq!(nic_counts(40, (2, 1, 1), 1), (3, 2, 2));
+    assert_eq!(nic_counts(40, (4, 4, 4), 0, true), (10, 5, 3));
+    assert_eq!(nic_counts(40, (2, 1, 1), 0, true), (5, 2, 2));
+    assert_eq!(nic_counts(40, (4, 4, 4), 1, true), (5, 3, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 1, true), (3, 2, 2));
 
     // ANTI-VACUITY on the qp axis: without the qp scaling the counts differ,
     // so a `nic_counts` that dropped it would fail the sweep above rather than
@@ -476,9 +478,23 @@ fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
     let unscaled = svtav1_cref::mode_decision::set_nics((4, 4, 4), 0, 40, false);
     assert_ne!(
         (unscaled.mds1[0], unscaled.mds2[0], unscaled.mds3[0]),
-        nic_counts(40, (4, 4, 4), 0),
+        nic_counts(40, (4, 4, 4), 0, true),
         "qp scaling must be observable at this cell"
     );
+
+    // The video-MR row: `nic_max_qp_based_th_scaling = 0` leaves the
+    // scal-derived counts UNSCALED. This is the cell that closed the p-1
+    // video key-frame divergence — C's `SVT_FULLCOST_OUT` reported
+    // `n1=66 n2=40 n3=20` (cap-clamped, not qp-shrunk) on diag 72x88 q40.
+    assert_eq!(
+        nic_counts(40, (20, 20, 20), 0, false),
+        {
+            let c = svtav1_cref::mode_decision::set_nics((20, 20, 20), 0, 40, false);
+            (c.mds1[0], c.mds2[0], c.mds3[0])
+        },
+        "the unscaled MR row must match C at the p-1 key-frame cell"
+    );
+    assert_eq!(nic_counts(40, (20, 20, 20), 0, false), (80, 40, 20));
 }
 
 /// `pd_process.c:5559-5561` as a truth table, with the flat-GOP row that two
