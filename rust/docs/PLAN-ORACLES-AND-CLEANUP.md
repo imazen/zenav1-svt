@@ -511,11 +511,65 @@ Order, by expected size:
      1.17x C at 256 p6, 1.21x at 1024 p6, 1.33x at 1024 p10 (p25 1.20);
      1024 p10 is 312M instructions to C's 199M (the port's figure includes
      about 21M of harness content generation that is not timed).
-   - Open, by excess over C at 1024 p10: the exact luma and chroma
-     coefficient rate and chroma MD reconstruction that C does not compute
-     there (about 25M; brief `coeff-rate-gap`), `optimize_b` (38.3M vs
+   - Open, by excess over C at 1024 p10: `optimize_b` (38.3M vs
      30.3M, same call count), PD0 (48.6M vs 36.7M, spread), memset
-     (14.8M vs 3.0M), memcpy (10.3M vs 3.1M).
+     (14.8M vs 3.0M), memcpy (10.3M vs 3.1M), and the residual chroma
+     `eval_uv` overhead after the coefficient-rate findings below.
+   - Item 7 (coefficient rate, investigated 2026-09-25, cell `perf_encode
+     gradient 1024 1024 40 10 <prefix> 0` vs `perf_c_encode` on the
+     mainline-4.2.0 oracle; byte-identical 18,906 B both ways; callgrind
+     port 313,858,011 Ir vs C 197,547,115 Ir, 1.589x —
+     `~/tmp/cg_coeff_before/`): classification is **(a)** — the exact rate
+     is dead or C-equivalent at every point this level reaches, not a
+     parity bug — but no code change has landed yet. Measured producer map
+     (`SVTAV1_RATEPROBE` instrumentation on `tx_unit_inner`, all 6,792
+     calls accounted for):
+     * `txt.rs:464` via `search_tx_depths`, `end_depth == 0` (C's
+       `perform_dct_dct_tx` arm): 1,312 luma calls, all `RateMode::Exact`,
+       all `eob > 0` -> `cost_coeffs_txb` (the whole 1,312-call /
+       ~12.5M-Ir finding). C computes `eob < (w*h)>>6 ? 6000+eob*1000 :
+       6000+eob*400` there at `coeff_rate_est_lvl == 0`
+       (product_coding_loop.c:5883); `svt_aom_txb_estimate_coeff_bits` is
+       absent from C's profile and `get_eob_cost` appears only under
+       `svt_av1_optimize_b`.
+     * `txt.rs:464`, `end_depth > 0` (txs_lvl6-gated SBs; C's
+       `tx_type_search` at :5540): 1,320 calls already `Lvl0Closed`.
+     * `chroma.rs:127/151` (`eval_uv`): 4,160 calls, all `eob == 0` ->
+       `cost_skip_txb`. C's `skip_chroma_rate_est` (full_loop.c:1787)
+       writes the per-plane closed form (0 at eob 0;
+       `3000+500e`/`1500+50e` otherwise); the port's computed value is
+       discarded by the replication at `mds3.rs:1225-1262` anyway.
+     * `coeff_rate_est_lvl == 0` is ALLINTRA-only: the video arm's
+       `rate_est_level` is a flat 1 (`md_config.rs RATE_EST_LEVEL_DEFAULT`),
+       so at lvl 0 there are no inter candidates (the `blk_skip_decision`
+       read of cb/cr bits at mds3.rs:1152 is unreachable), MDS3 is
+       single-candidate (nic 1/1/1, MDS1 skipped, CFL/ind-uv gated below
+       lvl 0), and NSQ/depth gates are off -> every read of the exact rate
+       is dead on the whole lvl-0 envelope. Producing C's closed forms is
+       therefore byte-inert AND value-correct.
+     * Next step (not landed): in `tx_pipeline.rs` `RateMode::Exact` arm
+       (~:1488-1541) add `plane_type==1 && lvl==0` -> per-plane
+       `skip_chroma_rate_est` form, and `plane_type==0 && lvl==0` ->
+       `eob<th ? 6000+eob*1000 : (w<=64&&h<=64 ? 6000+eob*400 :
+       3000+eob*100)` (the `w,h<=64` key reproduces the
+       sq<=64/only_dct/end==0 dct-path dispatch because txt is off at every
+       lvl-0 preset); change `mds1.rs` `lossless_mds1_txbs` to pass
+       `Lvl0Closed` at lvl 0 (C's lossless 8x8 runs the partitioning form
+       per 4x4 txb). Same chroma arm in the hbd rate section (`a.coeff_
+       rate_est_lvl`); hbd luma left exact (dct-vs-partition distinction
+       would need a TxRdArgs field touched in out-of-scope files).
+       Residuals to note: lvl-2 chroma keeps exact bits because the
+       `cb_leak + u_bits10` replication needs the raw estimator when
+       `cr_eob >= th`; the `end_depth` vs per-candidate `cand_end_depth`
+       selection at `mds3/tx_depth.rs:359` is a pre-existing video-arm
+       edge (`Lvl0Closed` vs `DctClosed` differ only at `eob >= th`).
+     * Chroma MD reconstruction is NOT removable: at this cell all 4,160
+       chroma txbs are eob==0 -> pred copy, and C does the same
+       `picture_copy` (`mds_do_spatial_sse` true at MDS3); C additionally
+       runs 2,128 `av1_perform_inverse_transform_recon` winner re-inverts
+       the port already avoids. No (b) cell was found; the leftover
+       `eval_uv` gap (~23M vs C `full_loop_uv` 11.3M) is per-call
+       predict/residual/copy overhead, not rate or recon work.
 
 ## Maintenance backlog
 
