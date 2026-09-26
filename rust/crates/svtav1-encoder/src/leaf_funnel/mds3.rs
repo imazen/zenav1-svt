@@ -1133,20 +1133,21 @@ fn eval_candidate(
         // C prices the NON-skip arm with the var-tx `tx_size` bits and the
         // skip arm with zero of them — the assert at rd_cost.c:1369 states
         // that `skip_tx_size_bits == 0` for every inter mode.
-        let non_skip_tx_bits = if block_signals_txsize(w, h) && !frame.coded_lossless {
-            crate::vartx::tx_size_bits_vartx(
-                &rates.txfm_partition_fac_bits,
-                fx.ectx.txfm_above_span(abs_x, w),
-                fx.ectx.txfm_left_span(abs_y, h),
-                w,
-                h,
-                best_depth,
-                abs_y,
-                frame.frame_h_px,
-            )
-        } else {
-            0
-        };
+        let non_skip_tx_bits =
+            if frame.tx_mode_select && block_signals_txsize(w, h) && !frame.coded_lossless {
+                crate::vartx::tx_size_bits_vartx(
+                    &rates.txfm_partition_fac_bits,
+                    fx.ectx.txfm_above_span(abs_x, w),
+                    fx.ectx.txfm_left_span(abs_y, h),
+                    w,
+                    h,
+                    best_depth,
+                    abs_y,
+                    frame.frame_h_px,
+                )
+            } else {
+                0
+            };
         let non_skip_cost = rdcost(
             lambda3,
             best_bits + u_bits10 + v_bits10 + non_skip_tx_bits + rates.skip[skip_ctx][0] as u64,
@@ -1180,7 +1181,11 @@ fn eval_candidate(
     // var-tx walk (block_has_coeff) and skip_tx_size_bits = 0
     // (rd_cost.c:1367-1377 + the `!(is_inter_tx && skip)` gate).
     let tx_size_bits_final = if cand.is_inter() {
-        if block_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
+        if block_has_coeff
+            && frame.tx_mode_select
+            && block_signals_txsize(w, h)
+            && !frame.coded_lossless
+        {
             crate::vartx::tx_size_bits_vartx(
                 &rates.txfm_partition_fac_bits,
                 fx.ectx.txfm_above_span(abs_x, w),
@@ -1194,7 +1199,7 @@ fn eval_candidate(
         } else {
             0
         }
-    } else if block_signals_txsize(w, h) && !frame.coded_lossless {
+    } else if frame.tx_mode_select && block_signals_txsize(w, h) && !frame.coded_lossless {
         rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64
     } else {
         0
@@ -1319,7 +1324,7 @@ fn eval_candidate(
     #[cfg(feature = "std")]
     if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
         eprintln!(
-            "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} ibc={} txd={} enddepth={} flr={} fcr={} coeff_rate={} dist={} full={}",
+            "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} ibc={} txd={} enddepth={} flr={} fcr={} coeff_rate={} yb={} ub={} vb={} txb={} skc={} sfr={} dist={} full={}",
             abs_y / 4,
             abs_x / 4,
             w,
@@ -1335,6 +1340,12 @@ fn eval_candidate(
             cand.flr,
             fcr_final,
             coeff_rate,
+            best_bits,
+            u_bits,
+            v_bits,
+            tx_size_bits_final,
+            skip_ctx,
+            rates.skip[skip_ctx][0] as u64,
             dist,
             full,
         );

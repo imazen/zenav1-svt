@@ -497,7 +497,11 @@ fn light_full_cost(
     // `block_has_coeff`; the inter var-tx `tx_size` coding is what
     // `block_signals_txsize` + `tx_size_bits_vartx` produce at `tx_depth 0`.
     // `skip_tx_size_bits` is 0 for every inter mode (rd_cost.c:1369).
-    let nstx = if block_signals_txsize(g.w, g.h) && !fx.frame().coded_lossless && block_has_coeff {
+    let nstx = if fx.frame().tx_mode_select
+        && block_signals_txsize(g.w, g.h)
+        && !fx.frame().coded_lossless
+        && block_has_coeff
+    {
         crate::vartx::tx_size_bits_vartx(
             &fx.rates.txfm_partition_fac_bits,
             fx.ectx.txfm_above_span(g.abs_x, g.w),

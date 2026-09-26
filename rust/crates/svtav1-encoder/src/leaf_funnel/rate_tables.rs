@@ -555,6 +555,18 @@ pub struct FunnelFrame {
     /// coded at TX_4X4 (`mimic_only_tx_4x4`, product_coding_loop.c:6734) and no
     /// tx_size bits are priced (`svt_aom_tx_size_bits`, rd_cost.c:1755).
     pub coded_lossless: bool,
+    /// `frm_hdr->tx_mode == TX_MODE_SELECT` — the outermost gate on every
+    /// `svt_aom_tx_size_bits` call (rd_cost.c:1755): at `TX_MODE_LARGEST`
+    /// the frame codes no tx-size symbols and MD prices ZERO bits for
+    /// them. NOT `cfg.txs_on`: on the allintra arm the header is SELECT
+    /// unconditionally (enc_mode_config.c:10026 — the VLPD0 per-SB
+    /// promotion can turn the search on for one SB), while the VIDEO arm
+    /// writes `txs_level != 0` (:9195) — `TX_MODE_LARGEST` at M10+, where
+    /// the missing gate over-priced every leaf by one tx-size symbol
+    /// (vidyo3 256x256 q55 p10 mi(4,0): +724 on the leaf rate, enough to
+    /// keep the qp-scaled `nsq_split_cost_th` gate from skipping the
+    /// VERT shape C never tested).
+    pub tx_mode_select: bool,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }

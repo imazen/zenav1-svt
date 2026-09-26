@@ -276,7 +276,11 @@ pub(super) fn run_mds1(
         // `!(is_inter_tx && skip)` gate) — svt_aom_full_cost prices exactly
         // that pair at MDS1 too.
         let mut coeff_rate = if cand.is_inter() {
-            let vartx_bits = if has && block_signals_txsize(w, h) && !frame.coded_lossless {
+            let vartx_bits = if has
+                && frame.tx_mode_select
+                && block_signals_txsize(w, h)
+                && !frame.coded_lossless
+            {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
                     fx.ectx.txfm_above_span(abs_x, w),
@@ -297,12 +301,14 @@ pub(super) fn run_mds1(
             }
         } else {
             // C `svt_aom_tx_size_bits` (rd_cost.c:1755): 0 on a lossless
-            // segment (no tx_size symbol is coded there).
-            let tx_size_bits = if block_signals_txsize(w, h) && !frame.coded_lossless {
-                rates.tx_size[tsz_cat][tsz_ctx][0] as u64
-            } else {
-                0
-            };
+            // segment (no tx_size symbol is coded there) and at
+            // `TX_MODE_LARGEST` — video M10+ (`txs_level == 0`).
+            let tx_size_bits =
+                if frame.tx_mode_select && block_signals_txsize(w, h) && !frame.coded_lossless {
+                    rates.tx_size[tsz_cat][tsz_ctx][0] as u64
+                } else {
+                    0
+                };
             if has {
                 dec_bits + tx_size_bits + rates.skip[skip_ctx][0] as u64
             } else {

@@ -33,10 +33,35 @@ Remaining TU0 cells (all at presets 10..13, all qp 55, all 256x256):
 vidyo1 p10; vidyo3 p10..13; kristenandsara p11..13 — a DIFFERENT defect
 class: on vidyo3 p10 the leaf eval at mi(4,0) 16x16 over-prices rate by 724
 vs C (37765 vs 37041, same dist/mode), which keeps the qp-scaled
-`nsq_split_cost_th` gate from skipping the VERT shape C never tested.
-Evidence and the next drill step are in PLAN-ORACLES-AND-CLEANUP.md 3.8.
+`nsq_split_cost_th` gate from skipping the VERT shape C never tested —
+resolved in the second landing below; evidence is in
+PLAN-ORACLES-AND-CLEANUP.md 3.8.
 
 Acceptance at this commit: cargo nextest --workspace --locked 2756/2756;
 regression_spotcheck 147/147; video_key_matrix 75/75; output pins 6/6;
 identity_full_8bit 1100/1100; real_video_inter_gate 24/24 (0 regressed);
 video_selfcheck_gate 270/270; tools/precheck.sh OK.
+
+Second landing, same session (tx_mode gate): video M10+ (and non-base
+frames at M8/M9) use `frm_hdr->tx_mode = TX_MODE_LARGEST`, so C prices
+zero tx-size bits in every `svt_aom_tx_size_bits` call (rd_cost.c:1755,
+plus the depth-sweep compares at product_coding_loop.c:5380/5395). The
+port's leaf-rate sites dropped the `tx_mode` check and over-priced every
+leaf by one tx-size symbol (+366/+724 measured at mi(0,0)/(4,0) on vidyo3
+256 q55 p10), which kept the qp-scaled `nsq_split_cost_th` gate from
+skipping the VERT shape C never tested at mi(4,0). Fixed via
+`FunnelFrame::tx_mode_select` gated into mds1/mds3/tx_depth/light rate
+terms. Allintra is byte-neutral (SELECT unconditionally).
+
+video_census_gate: 260 -> 284 IDENTICAL of 540; TU0 class now EMPTY (0
+cells diverge at the key frame). 36 pins moved, all improvements, all at
+p10..13 (e.g. vidyo3 256 q55 p10..13 TU0 -> IDENTICAL/TU6, kristenandsara
+256 q55 p11..13 TU0 -> IDENTICAL, vidyo1 256 q55 p10 TU0 -> IDENTICAL,
+plus johnny/vidyo4 rows moving to IDENTICAL at p10). Output pin moved:
+photo-64x64-b8-p4-q25-f4-ld-Hybrid3115-Mainline 5554 -> 5577 B (non-base
+frames at M4 correctly lost the tx-size rate term).
+
+Acceptance at this commit: nextest 2756/2756; spotcheck 147/147;
+video_key_matrix 75/75; pins 6/6 (regenerated, named cell);
+identity_full_8bit 1100/1100; real_video_inter_gate 24/24;
+video_selfcheck_gate 270/270; precheck OK.

@@ -784,6 +784,8 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         frame_h_px,
         frame_w_px,
         coded_lossless: false,
+        // Allintra M6: `frm_hdr->tx_mode` is always SELECT on that arm.
+        tx_mode_select: true,
         cfg: FunnelCfg::for_preset(6),
     }
 }

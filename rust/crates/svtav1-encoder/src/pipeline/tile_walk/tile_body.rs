@@ -526,6 +526,16 @@ pub(super) fn encode_one_tile_body(
             // `ext_h` SB-extent derivation above, which rounds them UP).
             frame_w_px: w,
             coded_lossless,
+            // `frm_hdr->tx_mode` for THIS arm (`crate::txs_arm` — the
+            // same ladder `frame_tx_mode_select` feeds the header writer
+            // and the pack walk): the `svt_aom_tx_size_bits` gate every
+            // MD tx-size rate read honours.
+            tx_mode_select: crate::txs_arm::tx_mode_select(
+                sc_arm,
+                md_eff_mode,
+                temporal_layer == 0,
+                u32::from(cli_qp),
+            ),
             cfg: funnel_cfg,
         })
     } else {

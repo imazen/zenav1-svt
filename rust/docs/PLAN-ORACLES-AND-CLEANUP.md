@@ -679,11 +679,14 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
   2026-09-26, i265, vs mainline-4.2.0:
   - Low delay, real video (`benchmarks/video_parity_census_2026-09-26.meta`,
     `tools/inter_byte_matrix.sh` over 6 derf clips x {128,256} x qp
-    {20,40,55} x p-1..13, 8 frames): 244/540 byte-identical through every
-    frame. In order of leverage: (a) presets 1 and -1 differ in the KEY
-    frame of a video encode (0/36 each; stills at those presets match) —
-    brief `video-key`; (b) presets 0/2/3 diverge early in inter frames
-    (5..7/36); (c) presets 4/5/7/10..13 are half to two thirds.
+    {20,40,55} x p-1..13, 8 frames): 284/540 byte-identical through every
+    frame after the two 2026-09-26 key-frame landings below (baseline was
+    244/540 before them); ZERO cells diverge at TU0 — every key frame on
+    the grid is now byte-identical. In order of leverage: (a) presets 1
+    and -1 differ in the KEY frame of a video encode (0/36 each; stills
+    at those presets match) — brief `video-key`; (b) presets 0/2/3
+    diverge early in inter frames (5..7/36); (c) presets 4/5/7/10..13
+    are half to two thirds.
   - Progress 2026-09-26 (i265, vs mainline-4.2.0): (a) closed for preset 1.
     The first differing decision on the p1 key frame (`vidyo3 128x128 q40`)
     was the uv_mode symbol at tile op 4933 — C coded `CDF14:s0`
@@ -751,35 +754,40 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     cells -> 7 IDENTICAL + `vidyo3 256 q55` TU3, plus `johnny 256 q40`
     TU2->IDENTICAL, `vidyo4 128 q40` TU6->IDENTICAL, `vidyo4 256 q40`
     TU1->TU3.
-  - (a) at presets 10..13 remains open — the 8 TU0 cells left after the
-    early-exit fix: `vidyo1 256 q55` p10; `vidyo3 256 q55` p10..13;
-    `kristenandsara 256 q55` p11..13 (`vidyo1` p11..13 read TU1 in the
-    same sweep — its key frame already matched; its p10 cell still
-    diverges at TU0). Localized on
-    `vidyo3 256x256 q55 p10` (i265, workspace vkey2): first differing
-    symbol is tile op 381, a `CDF10` partition write with the SAME
-    context (`icdf=[24843,21725,15983]`) — C wrote s=0 (NONE), the port
-    s=2 (VERT). First differing DECISION: the 16x16 node at mi(4,0),
-    SB(0,0). C's PICKPART shows partition=0 rd=22005669 with a CSQ leaf
-    cost 21702904 (rate 37041, dist 85872, mode=11 uv=13); the port's
-    SHAPE 0 part_cost=22215031 with BLK cost=21912266 (rate 37765, dist
-    85872 — same dist, +724 rate). The port then evaluated VERT
-    (part_cost 18234128) and committed it; C printed no CNSQ rows for
-    the node at all while testing H at siblings (0,4)/(4,4). The gate
-    arithmetic (nsq level 19 at video M10, `nsq_split_cost_th` 35
-    qp-scaled by 9147/10000 -> 32, minus `rate_th_offset_lte16` 15 at
-    sq<=16 -> 17): C's `part_cost(V)*1000` = 372456000 > 21702904*17 =
-    368949368 SKIPS the V shape; the port's sq_cost 21912266*17 =
-    372509522 makes the same gate pass by 0.014 % — a knife edge. So the
-    root divergence is upstream: the port's PART_N leaf eval at (4,0)
-    over-prices the rate by 724 (37765 vs 37041) with identical mode,
-    txd, nz, dist. Suspect list for the 724: the coeff-rate estimator
-    state (`md_rate_est_ctx` / `coeff_rate_est_lvl`), the skip/tx-type
-    ctx the leaf read, or `shut_fast_rate` on this arm — not the
-    partition gate machinery, which is faithful. Next concrete step:
-    `SVT_FULLCOST_XY="0,16"` (C) vs `SVTAV1_CANDDBG`+`SVTAV1_DBG_MI=0,0`
-    (port) to decompose the leaf's MDS3 winner rate at (4,0); the pfq/
-    qdc fields already differ (`dcq=[144]` C vs `qdc=[1]` port).
+  - (a) at presets 10..13 was a FIFTH defect, closed 2026-09-26 (i265,
+    workspace vkey2; this change). On `vidyo3 256x256 q55 p10` the first
+    differing symbol is tile op 381, a `CDF10` partition write with the
+    SAME context (`icdf=[24843,21725,15983]`) — C wrote s=0 (NONE), the
+    port s=2 (VERT) at the 16x16 node mi(4,0). The port's SQ-leaf rate
+    was 37765 vs C's 37041 (+724) with identical mode/dist; decomposing
+    the leaf (extended `SVTAV1_CANDDBG` to print the rate fields) showed
+    C's `ycb=28778` == the port's luma bits and `txb=724` == the whole
+    delta: the port priced a tx-size symbol where C prices none. At
+    video M10 `txs_level` is 0 (`enc_mode_config.c:9107` ladder: `<= M9
+    && is_base` gives 4, everything else 0 — including NON-BASE frames
+    at M8/M9), so `frm_hdr->tx_mode = TX_MODE_LARGEST` (:9195) and every
+    `svt_aom_tx_size_bits` returns 0 (`tx_mode == TX_MODE_SELECT` gate,
+    rd_cost.c:1755, also on the depth-sweep compares at :5380/:5395 and
+    the MDS1/light-path `non_skip_tx_size_bits`). The port's leaf-rate
+    sites dropped the `tx_mode` check; with txb=0 the leaf cost is
+    unit-equal (21702904) and the qp-scaled `nsq_split_cost_th` gate
+    (level 19 -> th 17 at sq<=16) skips VERT exactly as C — the gate
+    machinery was faithful, the inputs were not. Fixed by adding
+    `FunnelFrame::tx_mode_select` (from `txs_arm::tx_mode_select`, the
+    same ladder the header writer reads) and AND-ing it into every
+    tx-size rate site: `mds3` non-skip/final, `mds1` intra+inter,
+    `mds3/tx_depth` quadrant+depth compares, `light` LPD1 nstx. The
+    allintra arm is byte-neutral (SELECT unconditionally, :10026).
+    Measured: `video_census_gate.sh` 284/540 IDENTICAL, 0 regressed, 36
+    pins moved — the last 8 TU0 cells closed (vidyo1/vidyo3/
+    kristenandsara 256 q55 at p10..13 -> IDENTICAL or later TUs), plus
+    collateral key+inter wins at p10..13 (johnny, vidyo4, vidyo1 256 q40
+    all IDENTICAL). One output pin moved:
+    `photo-64x64-b8-p4-q25-f4-ld-Hybrid3115-Mainline` 5554 -> 5577 B —
+    non-base frames at M4 get `txs_level=0` -> LARGEST, so their inter
+    leaf rate correctly lost the tx-size term. TU0 is now an empty
+    verdict class on the 540-cell grid; what remains is inter-frame
+    work (item (b)): 256 cells diverge at TU1+ (deepest pinned: TU7).
   - Low-delay CBR: 0/34, all in the key frame's qp (`rc_tpl_gate.sh`).
   - TPL under random access: 5/8 (`rc_tpl_gate.sh`); real clips unmeasured.
   - SB128 beyond the root is unported (`pipeline/setup.rs`

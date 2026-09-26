@@ -540,7 +540,11 @@ pub(super) fn search_tx_depths(
                     // Inert at the IBC presets (quadrant_sf == 0 at
                     // txs_level 2/3) — kept faithful to
                     // svt_aom_get_tx_size_bits' inter arm regardless.
-                    if dep_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
+                    if dep_has_coeff
+                        && frame.tx_mode_select
+                        && block_signals_txsize(w, h)
+                        && !frame.coded_lossless
+                    {
                         crate::vartx::tx_size_bits_vartx(
                             &rates.txfm_partition_fac_bits,
                             fx.ectx.txfm_above_span(abs_x, w),
@@ -554,8 +558,12 @@ pub(super) fn search_tx_depths(
                     } else {
                         0
                     }
-                } else if frame.coded_lossless {
-                    0 // svt_aom_tx_size_bits: no tx_size bits on a lossless segment
+                } else if frame.coded_lossless || !frame.tx_mode_select {
+                    // svt_aom_tx_size_bits: no tx_size bits on a lossless
+                    // segment or at TX_MODE_LARGEST (the
+                    // `frm_hdr.tx_mode == TX_MODE_SELECT` gate C puts on
+                    // this compare, product_coding_loop.c:5380).
+                    0
                 } else {
                     rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
                 };
@@ -574,7 +582,11 @@ pub(super) fn search_tx_depths(
         // var-tx walk when the depth kept coeffs, 0 bits when skip
         // (`!(is_inter_tx && skip)`).
         let tx_size_bits = if cands[ci].is_inter() {
-            if dep_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
+            if dep_has_coeff
+                && frame.tx_mode_select
+                && block_signals_txsize(w, h)
+                && !frame.coded_lossless
+            {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
                     fx.ectx.txfm_above_span(abs_x, w),
@@ -588,7 +600,7 @@ pub(super) fn search_tx_depths(
             } else {
                 0
             }
-        } else if block_signals_txsize(w, h) && !frame.coded_lossless {
+        } else if frame.tx_mode_select && block_signals_txsize(w, h) && !frame.coded_lossless {
             // C `svt_aom_tx_size_bits` (rd_cost.c:1755) prices 0 bits on a
             // lossless segment — the pack writes no tx_size symbol either.
             rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
