@@ -205,11 +205,14 @@ jobs:
         # build), which would cost every shard a C build. Its directory carries
         # its own STAMP (commit + flags), so a restored entry is only reused
         # for the registry row it was built from.
+        # The key names the SET of oracles the build step below produces
+        # (v2 = mainline-4.2.0 + ghost-robot): an exact hit skips the save,
+        # so adding an oracle without bumping it left the new one unsaved.
         id: oracles-cache
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/zenav1-oracles
-          key: oracles-v1-${{ runner.os }}-${{ hashFiles('rust/oracles/oracles.tsv', 'rust/tools/oracle') }}
+          key: oracles-v2-${{ runner.os }}-${{ hashFiles('rust/oracles/oracles.tsv', 'rust/tools/oracle') }}
 
       - name: Build the pinned oracles (mainline-4.2.0, ghost-robot)
         # Here rather than lazily in the first gate that needs them, so the
