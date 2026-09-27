@@ -53,9 +53,9 @@ def parse(path):
     temporal path); falls back to the per-frame stills mean otherwise."""
     tot = None; jods = {"c": [], "rs": []}; vid = {}
     for ln in open(path):
-        m = re.match(r"f(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+([+-][0-9.]+)", ln)
+        m = re.match(r"f(\d+)\s+(?:\d+\s+\d+\s+)?([0-9.]+)\s+([0-9.]+)\s+([+-][0-9.]+)", ln)
         if m:
-            jods["c"].append(float(m.group(4))); jods["rs"].append(float(m.group(5)))
+            jods["c"].append(float(m.group(2))); jods["rs"].append(float(m.group(3)))
         m2 = re.search(r"totals bytes: C=(\d+) port=(\d+)", ln)
         if m2: tot = (int(m2.group(1)), int(m2.group(2)))
         m3 = re.search(r"cvvdp-video.*JOD_C=([0-9.]+) JOD_port=([0-9.]+)", ln)

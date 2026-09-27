@@ -1,0 +1,26 @@
+# Perceptual-RD triage tool for byte-diverging encoder cells.
+#
+# Standalone crate — the trailing `[workspace]` makes it its own root so
+# it is NOT a member of `rust/Cargo.toml`'s workspace. That is load-
+# bearing: `cvvdp` is `publish = false` inside the zenmetrics monorepo,
+# so it can only be reached as a git dep, and a git dep must never enter
+# the encoder workspace's build graph (precheck/CI would fetch it
+# unconditionally). Building here is opt-in:
+#
+#   cd tools/cvvdp_eval && cargo build --release
+#
+# or `just cvvdp-equiv …` / `just cvvdp-sweep …` (which build it).
+[package]
+name = "cvvdp_eval"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Video/still perceptual scoring — the pycvvdp v0.5.7 CPU port. Pinned to
+# the zenmetrics master commit whose `score-video` surface this tool was
+# written against; bump deliberately (the display-model requirement and
+# `VideoScorerOptions` shape have both changed across revisions).
+cvvdp = { git = "https://github.com/imazen/zenmetrics.git", rev = "a7ded4ae5fc24747ea049ad71588565c8f31937a" }

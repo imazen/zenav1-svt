@@ -173,6 +173,23 @@ arm-rowpack:
 review out="~/tmp/zenav1-review":
     tools/review/run.sh {{out}}
 
+# Perceptual-RD triage for a byte-diverging cell: encodes both encoders,
+# decodes via aomdec, scores the clip with cvvdp's video path + per-frame
+# stills (tools/cvvdp_equiv.sh + the tools/cvvdp_eval sidecar binary, which
+# this recipe builds first). Diagnostic, not a gate — dJOD within noise at
+# matched bytes = benign divergence; a materially negative dJOD = real RD
+# regression. Needs aomdec; env CVVDP_DISPLAY/CVVDP_LOW_MEM pass through.
+cvvdp-equiv CLIP SIZE QP PRESET FRAMES="8":
+    cargo build --release --quiet --manifest-path tools/cvvdp_eval/Cargo.toml
+    tools/cvvdp_equiv.sh {{CLIP}} {{SIZE}} {{QP}} {{PRESET}} {{FRAMES}}
+
+# Rate-quality sweep over a QP ladder (QPS env, default "20 32 44 55") —
+# Bjontegaard-style delta between the two (log-rate, JOD) curves. Answers
+# "does the diverging port still track C's RD frontier".
+cvvdp-sweep CLIP SIZE PRESET FRAMES="8":
+    cargo build --release --quiet --manifest-path tools/cvvdp_eval/Cargo.toml
+    tools/cvvdp_bd_sweep.sh {{CLIP}} {{SIZE}} {{PRESET}} {{FRAMES}}
+
 # Regenerate the port-output pins (svtav1/tests/output_pins.rs). Only for a
 # DELIBERATE behaviour change; the commit must say which cells moved and why.
 pins-update:

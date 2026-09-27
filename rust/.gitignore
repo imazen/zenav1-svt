@@ -32,6 +32,8 @@ tools/perf_c_encode/perf_c_encode
 .workongoing
 tools/decode_diff/target/
 tools/decode_diff/Cargo.lock
+tools/cvvdp_eval/target/
+tools/cvvdp_eval/Cargo.lock
 benchmarks/identity_full_8bit_latest.tsv
 target-heapdbg/
 target-perf-base/
