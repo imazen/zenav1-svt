@@ -415,9 +415,32 @@ pub(crate) struct FunnelCtx<'a> {
     /// the per-block value without a signature change. `None` on every
     /// other tune — [`FunnelCtx::frame`] then returns `frame` unchanged.
     pub frame_ssim: Option<alloc::sync::Arc<FunnelFrame>>,
+    /// Cooperative cancellation — the same token `with_stop` installs on
+    /// the pipeline. The default `Unstoppable`'s `may_stop()` is `false`,
+    /// so every `stop_hit` guard below is a byte-inert false branch on a
+    /// normal encode.
+    pub stop: &'a dyn enough::Stop,
+    /// Set by [`FunnelCtx::stop_hit`] once the token fires. Walks check it
+    /// at every node/leaf boundary and bail out with a discarded partial
+    /// result; the per-SB caller converts it to `EncodeError::Cancelled`
+    /// before the result is committed. Read it only after the walk —
+    /// mid-walk it is just a fast-exit latch.
+    pub cancelled: bool,
 }
 
 impl FunnelCtx<'_> {
+    /// One guarded stop check; returns `true` once cancelled (idempotent —
+    /// the flag latches so later calls never re-poll the token). A
+    /// `may_stop() == false` token makes this a single branch: nothing on
+    /// the encoder's output path can observe it.
+    #[inline]
+    pub(crate) fn stop_hit(&mut self) -> bool {
+        if !self.cancelled && self.stop.may_stop() && self.stop.check().is_err() {
+            self.cancelled = true;
+        }
+        self.cancelled
+    }
+
     /// The frame parameters this leaf evaluates with: [`FunnelCtx::frame_ssim`]
     /// when the SSIM/IQ/MS_SSIM per-block lambda override is installed, the
     /// shared `frame` otherwise.

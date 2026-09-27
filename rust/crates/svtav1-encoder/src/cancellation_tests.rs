@@ -297,3 +297,95 @@ fn restoration_search_and_apply_cancel_between_units_at_both_depths() {
     let src10: Vec<u16> = src.iter().map(|&v| u16::from(v) * 4).collect();
     restoration_checks(&src10, 10);
 }
+
+// --- MD-walk cancellation (the FunnelCtx::stop_hit latch) ------------------
+
+/// Cloneable probe token so the test can read the poll count after the
+/// pipeline owns one handle.
+#[derive(Clone)]
+struct ArcStopAfter(alloc::sync::Arc<AtomicUsize>, usize);
+impl enough::Stop for ArcStopAfter {
+    fn check(&self) -> Result<(), enough::StopReason> {
+        if self.0.fetch_add(1, Ordering::Relaxed) >= self.1 {
+            Err(enough::StopReason::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+    fn may_stop(&self) -> bool {
+        true
+    }
+}
+
+/// The funnel carries its own checkpoints: `FunnelCtx::stop_hit` inside
+/// `DepthWalk::pick`'s shape loop and `encode_fixed_tree`'s node loop. A
+/// token armed past the per-SB head check must still abort the encode —
+/// and the latched `cancelled` flag must stop the walk from polling on
+/// (the count stays at exactly n+1 once propagation runs `?` past the
+/// remaining per-SB guards).
+#[test]
+fn md_walk_cancels_inside_a_superblock() {
+    use crate::pipeline::EncodePipeline;
+    use crate::rate_control::RcConfig;
+
+    let (w, h) = (64usize, 64usize);
+    let y = pixels(w, h);
+    let uv = pixels(w / 2, h / 2);
+    // preset 8 -> the still arm's `encode_fixed_tree`; preset 0 -> the
+    // PD1 `DepthWalk`. Both funnel their leaf evals through `stop_hit`.
+    for preset in [8u8, 0] {
+        // Find where the pre-walk checkpoints end: arm past each one in
+        // turn. If a value of n lands inside the walk, the encode still
+        // returns Cancelled — that IS the test.
+        let probe = ArcStopAfter(alloc::sync::Arc::new(AtomicUsize::new(0)), usize::MAX);
+        let total = {
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                preset,
+                RcConfig {
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_stop(probe.clone());
+            p.try_encode_frame_420(&y, &uv, &uv, w)
+                .expect("unstoppable run");
+            probe.0.load(Ordering::Relaxed)
+        };
+        assert!(total > 8, "preset {preset}: only {total} checkpoints");
+        for n in [2usize, 6, 10, 24, 48, total / 2, total - 2] {
+            if n >= total {
+                continue;
+            }
+            let stop = ArcStopAfter(alloc::sync::Arc::new(AtomicUsize::new(0)), n);
+            let count = stop.clone();
+            let mut p = EncodePipeline::new(
+                w as u32,
+                h as u32,
+                preset,
+                RcConfig {
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_stop(stop);
+            let r = p.try_encode_frame_420(&y, &uv, &uv, w);
+            assert!(
+                matches!(r, Err(e) if matches!(e.error(), EncodeError::Cancelled(enough::StopReason::Cancelled))),
+                "preset {preset} checkpoint {n}/{total} ignored"
+            );
+            assert_eq!(
+                count.0.load(Ordering::Relaxed),
+                n + 1,
+                "preset {preset} n={n}: work polled the token after it fired"
+            );
+        }
+    }
+}

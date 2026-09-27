@@ -169,7 +169,7 @@ pub(crate) fn decide_sb_refined(
     aligned_w: usize,
     aligned_h: usize,
     nsq_geom_enabled: bool,
-) -> crate::partition::PartitionResult {
+) -> crate::EncodeResult<crate::partition::PartitionResult> {
     let mut walk = DepthWalk {
         // 8 slots covers sizes 1..=128 by `trailing_zeros`; only 3..=7 are used.
         snaps: (0..8).map(|_| NodeSnap::default()).collect(),
@@ -186,13 +186,19 @@ pub(crate) fn decide_sb_refined(
         aligned_h,
         nsq_geom_enabled,
     };
+    let res = walk.pick(scan, sb_x, sb_y);
+    // A cancelled walk unwound through `None`s with `fx.cancelled` latched —
+    // surface it as the real error rather than a bogus tree.
+    if walk.fx.cancelled {
+        return Err(whereat::at(crate::EncodeError::from(
+            enough::StopReason::Cancelled,
+        )));
+    }
     // The SB root is always in-frame and always splittable, so C's
     // `rdc.valid == 0` return cannot reach the top of a superblock.
-    let res = walk
-        .pick(scan, sb_x, sb_y)
-        .expect("SB root produced no valid partition");
+    let res = res.expect("SB root produced no valid partition");
     let num_blocks = res.tree.count_leaves() as u32;
-    crate::partition::PartitionResult {
+    Ok(crate::partition::PartitionResult {
         partition_type: match &res.tree {
             PartitionTree::Leaf(_) => PartitionType::None,
             _ => PartitionType::Split,
@@ -203,7 +209,7 @@ pub(crate) fn decide_sb_refined(
         decisions: alloc::vec::Vec::new(),
         tree: Some(res.tree),
         num_blocks,
-    }
+    })
 }
 
 #[cfg(test)]

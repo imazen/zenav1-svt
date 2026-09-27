@@ -1077,6 +1077,14 @@ impl DepthWalk<'_, '_> {
     /// `None` mirrors C's `pc_tree->rdc.valid == 0` return: the node produced
     /// no valid partition at all, which invalidates the parent's SPLIT.
     pub(super) fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> Option<NodeRes> {
+        // Cooperative cancellation: bail out of the walk instantly once the
+        // caller's token fired. `None` reads to the parent as "no valid
+        // partition"; the `cancelled` latch on the ctx makes every later
+        // call here return in O(1), and `decide_sb_refined` converts the
+        // flag to `EncodeError::Cancelled` before the garbage tree is used.
+        if self.fx.stop_hit() {
+            return None;
+        }
         let size = scan.sq;
         let mut split_flag = scan.split_flag;
         let (has_rows, has_cols) = edge_flags(abs_x, abs_y, size, self.aligned_w, self.aligned_h);
@@ -1120,6 +1128,11 @@ impl DepthWalk<'_, '_> {
             }
 
             for &shape in shapes {
+                // Per-shape cancellation — a single shape's full-RD eval
+                // is the smallest indivisible unit in the walk.
+                if self.fx.stop_hit() {
+                    return None;
+                }
                 // Restore the pre-shape state (C: copy [1] -> [0] at
                 // nsi == 0 when a previous shape saved it).
                 if committed_since_snap && snap_taken {

@@ -118,7 +118,12 @@ pub(super) fn encode_coding_unit(
     // The ac-bias rate adjustment is Ghost Robot-behaviour only at this
     // scope — Hybrid3115 keeps its pinned surface (plan 3.3).
     reference: crate::reference::SvtReference,
-) -> (crate::partition::PartitionResult, bool) {
+    // Cooperative cancellation — the caller's token, forwarded into each
+    // FunnelCtx below and checked at the unit loop head. Byte-inert under
+    // the default `Unstoppable` token (`may_stop()` short-circuits every
+    // guard to a false branch).
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<(crate::partition::PartitionResult, bool)> {
     let ac_bias_eff = if reference == crate::reference::SvtReference::GhostRobot {
         ac_bias_eff
     } else {
@@ -136,6 +141,7 @@ pub(super) fn encode_coding_unit(
         qm_level: qm_levels[0],
     });
     for &(x0, y0) in units.iter() {
+        crate::stop_check(stop)?;
         let cur_w = unit_size.min(w - x0);
         let cur_h = unit_size.min(h - y0);
         // C-exact partition source gate.
@@ -442,6 +448,8 @@ pub(super) fn encode_coding_unit(
                         rates: fun_rates.as_deref().unwrap(),
                         frame: fun_frame.as_ref().unwrap(),
                         frame_ssim: None,
+                        stop,
+                        cancelled: false,
                         // bd10 luma mode funnel (task #94): true 10-bit
                         // recon canvas for the per-block mode decision;
                         // None (bd8 / other presets / partial-SB) is
@@ -486,24 +494,36 @@ pub(super) fn encode_coding_unit(
                 } else {
                     None
                 };
-                crate::partition::encode_fixed_tree(
-                    sb_input,
-                    in_stride,
-                    tile_frame_recon,
-                    w,
-                    &tree,
-                    unit_size,
-                    sb_qindex,
-                    part_config,
-                    x0,
-                    y0,
-                    w,
-                    h,
-                    &sb_vars,
-                    (x0, y0),
-                    funnel_ctx.as_mut(),
-                    ref_ctx.as_ref(),
-                )
+                {
+                    let res = crate::partition::encode_fixed_tree(
+                        sb_input,
+                        in_stride,
+                        tile_frame_recon,
+                        w,
+                        &tree,
+                        unit_size,
+                        sb_qindex,
+                        part_config,
+                        x0,
+                        y0,
+                        w,
+                        h,
+                        &sb_vars,
+                        (x0, y0),
+                        funnel_ctx.as_mut(),
+                        ref_ctx.as_ref(),
+                    );
+                    // A cancelled walk returned an empty PartitionResult
+                    // with the funnel's latch set — surface it.
+                    if let Some(fx) = funnel_ctx.as_ref()
+                        && fx.cancelled
+                    {
+                        return Err(whereat::at(crate::EncodeError::from(
+                            enough::StopReason::Cancelled,
+                        )));
+                    }
+                    res
+                }
             } else {
                 // Per-SB PD0 rate tables from the chain (C rebuilds
                 // rate_est_table from ec_ctx_array[sb] BEFORE the
@@ -1084,6 +1104,8 @@ pub(super) fn encode_coding_unit(
                         rates: fun_rates.as_deref().unwrap(),
                         frame: fun_frame.as_ref().unwrap(),
                         frame_ssim: None,
+                        stop,
+                        cancelled: false,
                         // bd10 PART axis (task #94): the PD1
                         // depth-refine + NSQ walk compares LEAF block
                         // costs, and C's PD1 runs at `hbd_md = 2` (true
@@ -1245,7 +1267,7 @@ pub(super) fn encode_coding_unit(
                         // to two 8x8s -- the ONLY structural difference
                         // between the port's tree and C's on that frame.
                         nsq_geom_enabled,
-                    )
+                    )?
                 } else {
                     // Same computation as pd0_pick_sb_partition_m6
                     // (that fn is exactly _eval(min_sq=8).tree()),
@@ -1509,6 +1531,8 @@ pub(super) fn encode_coding_unit(
                             rates: fun_rates.as_deref().unwrap(),
                             frame: fun_frame.as_ref().unwrap(),
                             frame_ssim: None,
+                            stop,
+                            cancelled: false,
                             y_recon10: if bd10_plumb {
                                 Some(tile_frame_recon10)
                             } else {
@@ -1575,24 +1599,34 @@ pub(super) fn encode_coding_unit(
                     } else {
                         None
                     };
-                    crate::partition::encode_fixed_tree(
-                        sb_input,
-                        in_stride,
-                        tile_frame_recon,
-                        w,
-                        &tree,
-                        unit_size,
-                        sb_qindex,
-                        part_config,
-                        x0,
-                        y0,
-                        w,
-                        h,
-                        &sb_vars,
-                        (x0, y0),
-                        funnel_ctx.as_mut(),
-                        ref_ctx.as_ref(),
-                    )
+                    {
+                        let res = crate::partition::encode_fixed_tree(
+                            sb_input,
+                            in_stride,
+                            tile_frame_recon,
+                            w,
+                            &tree,
+                            unit_size,
+                            sb_qindex,
+                            part_config,
+                            x0,
+                            y0,
+                            w,
+                            h,
+                            &sb_vars,
+                            (x0, y0),
+                            funnel_ctx.as_mut(),
+                            ref_ctx.as_ref(),
+                        );
+                        if let Some(fx) = funnel_ctx.as_ref()
+                            && fx.cancelled
+                        {
+                            return Err(whereat::at(crate::EncodeError::from(
+                                enough::StopReason::Cancelled,
+                            )));
+                        }
+                        res
+                    }
                 }
             }
         } else {
@@ -1770,5 +1804,5 @@ pub(super) fn encode_coding_unit(
         chain_snaps.push((fc, cfc));
         debug_assert_eq!(chain_snaps.len(), local_sb_index + 1);
     }
-    (sb_result, sb_enc_rdoq)
+    Ok((sb_result, sb_enc_rdoq))
 }

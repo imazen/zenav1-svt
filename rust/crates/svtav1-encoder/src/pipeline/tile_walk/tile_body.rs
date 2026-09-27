@@ -1777,7 +1777,8 @@ pub(super) fn encode_one_tile_body(
                 sb_pd0_max_min,
                 ac_bias_eff,
                 reference,
-            );
+                stop,
+            )?;
 
             // Keep the per-SB recon list layout for downstream consumers.
             // Append this SB's rows straight from the tile canvas. The

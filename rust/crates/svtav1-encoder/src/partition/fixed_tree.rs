@@ -178,6 +178,24 @@ pub(crate) fn encode_fixed_tree(
     // 4:2:0-only), so this is the arm that carries inter there.
     ref_ctx: Option<&RefFrameCtx>,
 ) -> PartitionResult {
+    // Cooperative cancellation — checked at every tree node. Once the
+    // caller's token fired, `stop_hit` latches `cancelled` and every later
+    // node/leaf returns in O(1); the per-SB caller converts the flag into
+    // `EncodeError::Cancelled`, so the partial tree built here is never
+    // committed. Byte-inert under the default `Unstoppable` token.
+    if let Some(fx) = funnel.as_deref_mut()
+        && fx.stop_hit()
+    {
+        return PartitionResult {
+            partition_type: PartitionType::None,
+            rd_cost: 0,
+            distortion: 0,
+            rate: 0,
+            decisions: alloc::vec::Vec::new(),
+            tree: None,
+            num_blocks: 0,
+        };
+    }
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
             let src_off = abs_y * src_stride + abs_x;
