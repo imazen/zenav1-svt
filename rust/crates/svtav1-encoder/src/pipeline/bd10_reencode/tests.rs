@@ -84,35 +84,40 @@ fn run_leaf(skip_mode: bool, committed: bool) -> (BlockDecision, alloc::vec::Vec
     // The leaf is not OBMC, so the grid's contents are never read; it
     // only has to be shaped.
     let mi_grid = alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); (W / 4) * (H / 4)];
+    let cfg = super::Bd10LumaFrame {
+        coded_lossless: false,
+        sb_mi_size: 16,
+        src10: &src10,
+        src_stride: W,
+        qt: &qt,
+        allintra_rd_mult: false,
+        rates: &rates,
+        real_coeff_ctx: true,
+        edge_filter: false,
+        frame_w: W,
+        frame_h: H,
+        bd,
+        qm_level: 0,
+        inter_refs: Some(&refs),
+        mi_grid: &mi_grid,
+        mi_stride: W / 4,
+    };
+    let sb = super::Bd10Sb {
+        rdoq_level: 0,
+        lambda: 1 << 10,
+        tile_mi: crate::intra_edge::TileMi::whole_frame(W, H),
+    };
     bd10_reencode_node(
-        false,
-        16,
+        &cfg,
+        sb,
         &mut tree,
         0,
         0,
         &mut recon10,
-        W,
-        &src10,
-        W,
-        &qt,
-        0,
-        1 << 10,
-        false,
-        &rates,
-        true,
         &mut cn,
-        false,
-        W,
-        H,
-        bd,
-        0,
-        crate::intra_edge::TileMi::whole_frame(W, H),
-        svtav1_types::partition::PartitionType::None,
-        Some(&refs),
-        &mi_grid,
-        W / 4,
         &mut mn,
         &mut alloc::collections::BTreeSet::new(),
+        svtav1_types::partition::PartitionType::None,
     );
     let PartitionTree::Leaf(d) = tree else {
         panic!("a leaf in, a leaf out")

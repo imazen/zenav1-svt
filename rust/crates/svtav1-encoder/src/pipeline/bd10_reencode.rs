@@ -192,6 +192,112 @@ fn predict_inter_leaf_hbd_any(
 /// On a 64-aligned frame the extent equals the aligned dims, so the buffer and
 /// every write are byte-identical to the pre-partial-SB pass.
 #[allow(clippy::too_many_arguments)]
+/// Frame-level invariants for the bd10 LUMA re-encode walk. Every field is
+/// resolved once per frame — the per-superblock overrides live in
+/// [`Bd10Sb`]. Grouped so `bd10_reencode_node`'s recursion and the leaf
+/// helper carry one reference instead of ~19 scattered arguments.
+struct Bd10LumaFrame<'a> {
+    coded_lossless: bool,
+    /// C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
+    /// availability tables index by `mi & (sb_mi_size - 1)` (task #91).
+    sb_mi_size: usize,
+    /// The 10-bit SOURCE, padded to the SB extent at `src_stride` (the u16
+    /// twin of `sb_input` / `in_stride`): a straddling leaf's residual
+    /// gather reads the full block width, so an ALIGNED-sized source would
+    /// wrap into the next row (right edge) or run past the plane.
+    src10: &'a [u16],
+    src_stride: usize,
+    qt: &'a crate::quant::QuantTable,
+    /// C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    /// weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
+    rates: &'a crate::leaf_funnel::MdRates,
+    /// C `rate_est_ctrls.update_skip_ctx_dc_sign_ctx` — a real
+    /// `(txb_skip_ctx, dc_sign_ctx)` per TU via the neighbour arrays, vs the
+    /// hardcoded `0,0` the pass used before (full_loop.c:2286-2296).
+    real_coeff_ctx: bool,
+    edge_filter: bool,
+    frame_w: usize,
+    frame_h: usize,
+    bd: u8,
+    qm_level: u8,
+    /// The DPB's 10-bit reference pictures the INTER arm predicts from.
+    /// `None` on a key frame, where no leaf can be inter.
+    inter_refs: Option<&'a [Option<&'a crate::picture::PaddedRef>; 8]>,
+    /// The committed mode-info grid the OBMC blend's neighbour walk reads
+    /// (`stamp_inter_mi_grid`); `mi_stride` is `frame_w / 4`.
+    mi_grid: &'a [crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
+}
+
+/// Per-superblock scope for the bd10 re-encode walks — the three values
+/// `mode_decision_configure_sb` re-resolves from `sb_idx`. Kept `Copy` so a
+/// leaf helper can take it by value.
+#[derive(Clone, Copy)]
+struct Bd10Sb {
+    /// C `ctx->full_lambda_md[EB_10_BIT_MD]`, resolved per SB (`sb_lambda10`
+    /// map on inter frames, the frame lambda on key frames).
+    lambda: u64,
+    /// Per-SB `rdoq_ctrls->enabled` arm: the light-PD1 row zeroes the level
+    /// where the frame `rdoq_level` kept it.
+    rdoq_level: u8,
+    /// ISSUE #18: the tile CONTAINING this superblock, from
+    /// `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
+    tile_mi: crate::intra_edge::TileMi,
+}
+
+/// Frame-level invariants for the bd10 CHROMA re-encode walk — the luma
+/// twin of [`Bd10LumaFrame`]. Plane-indexed fields (`qt`, `qm`, recon and
+/// source canvases) are passed per-plane to the leaf helper, which is the
+/// only place the two planes diverge.
+struct Bd10ChromaFrame<'a> {
+    /// C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
+    sb_mi_size: usize,
+    u_src10: &'a [u16],
+    v_src10: &'a [u16],
+    /// Chroma-plane stride of the SB-EXTENT-padded source and recon
+    /// canvases (the right edge is replicated so a straddle TU reads edge
+    /// samples, not the next row — see `bd10_reencode_chroma`'s `u_src10`).
+    cstride: usize,
+    /// The frame's 10-bit LUMA recon — the CfL AC source for UV_CFL_PRED
+    /// leaves (`cfl_ac_from_frame_recon_hbd` reads `max(bh, 8)` rows past
+    /// the block origin, which straddles on a partial SB).
+    y_recon10: &'a [u16],
+    y_stride: usize,
+    /// Per-plane chroma quant tables (base + FH u_ac / v_ac delta). Equal
+    /// in mainline (deltas 0) -> byte-inert.
+    qt_u: &'a crate::quant::QuantTable,
+    qt_v: &'a crate::quant::QuantTable,
+    /// C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    /// weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
+    rates: &'a crate::leaf_funnel::MdRates,
+    /// C `rate_est_ctrls.update_skip_ctx_dc_sign_ctx` + the two per-plane NA
+    /// grids (`cb_`/`cr_dc_sign_level_coeff_na`) it gates
+    /// (full_loop.c:2286-2296).
+    real_coeff_ctx: bool,
+    edge_filter: bool,
+    cframe_w: usize,
+    cframe_h: usize,
+    bd: u8,
+    /// [SVT_HDR_MODE] per-plane QM levels [U, V] (15 = off) — C derives
+    /// them separately from `base_qindex + delta_q_ac[plane]`, so they can
+    /// differ between Cb and Cr (md_config_process.c:271-279).
+    qm_uv: [u8; 2],
+    /// Frame lossless (chroma_qindex == 0): `av1_get_tx_type`'s early return
+    /// forces DCT_DCT for the inter chroma-follows-luma read too.
+    lossless: bool,
+    /// The DPB's reference pictures, for the INTER arm. `None` on a key
+    /// frame.
+    inter_refs: Option<&'a [Option<&'a crate::picture::PaddedRef>; 8]>,
+    /// The committed mode-info grid (`stamp_inter_mi_grid`) a sub-8 inter
+    /// leaf's chroma stitch reads its covered cells' motion from.
+    mi_grid: &'a [crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
+    /// IN — see `bd10_reencode_luma`'s `committed_skip` (luma pass output).
+    committed_skip: &'a alloc::collections::BTreeSet<(u32, u32)>,
+}
+
 pub(super) fn bd10_reencode_luma(
     all_trees: &mut [crate::partition::PartitionTree],
     sb_cols: usize,
@@ -315,6 +421,24 @@ pub(super) fn bd10_reencode_luma(
             );
         }
     }
+    let cfg = Bd10LumaFrame {
+        coded_lossless: base_qindex == 0,
+        sb_mi_size: sb_size / 4,
+        src10,
+        src_stride,
+        qt: &qt,
+        allintra_rd_mult,
+        rates: &rates,
+        real_coeff_ctx,
+        edge_filter,
+        frame_w: w,
+        frame_h: h,
+        bd,
+        qm_level,
+        inter_refs,
+        mi_grid: &mi_grid,
+        mi_stride,
+    };
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -333,35 +457,22 @@ pub(super) fn bd10_reencode_luma(
         } else {
             0
         };
+        let sb = Bd10Sb {
+            rdoq_level,
+            lambda,
+            tile_mi,
+        };
         bd10_reencode_node(
-            base_qindex == 0,
-            sb_size / 4,
+            &cfg,
+            sb,
             tree,
             sb_col * sb_size,
             sb_row * sb_size,
             &mut recon10,
-            w,
-            src10,
-            src_stride,
-            &qt,
-            rdoq_level,
-            lambda,
-            allintra_rd_mult,
-            &rates,
-            real_coeff_ctx,
             &mut coeff_neighbors,
-            edge_filter,
-            w,
-            h,
-            bd,
-            qm_level,
-            tile_mi,
-            svtav1_types::partition::PartitionType::None,
-            inter_refs,
-            &mi_grid,
-            mi_stride,
             &mut mode_neighbors,
             committed_skip,
+            svtav1_types::partition::PartitionType::None,
         );
     }
     Ok(recon10)
@@ -369,47 +480,46 @@ pub(super) fn bd10_reencode_luma(
 
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
-    coded_lossless: bool,
-    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
-    // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
-    sb_mi_size: usize,
+    cfg: &Bd10LumaFrame<'_>,
+    sb: Bd10Sb,
     tree: &mut crate::partition::PartitionTree,
     x: usize,
     y: usize,
     recon10: &mut [u16],
-    stride: usize,
-    src10: &[u16],
-    src_stride: usize,
-    qt: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
-    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
-    allintra_rd_mult: bool,
-    rates: &crate::leaf_funnel::MdRates,
-    real_coeff_ctx: bool,
-    coeff_neighbors: &mut Bd10CoeffNeighbors,
-    edge_filter: bool,
-    frame_w: usize,
-    frame_h: usize,
-    bd: u8,
-    qm_level: u8,
-    // ISSUE #18: the tile CONTAINING this superblock, from
-    // `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
-    tile_mi: crate::intra_edge::TileMi,
-    parent_partition: svtav1_types::partition::PartitionType,
-    // The DPB's 10-bit reference pictures, for the INTER arm. `None` on a key
-    // frame, where no leaf can be inter.
-    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
-    // The committed mode-info grid the OBMC blend's neighbour walk reads
-    // (`stamp_inter_mi_grid`); `mi_stride` is `frame_w / 4`.
-    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
-    mi_stride: usize,
     // The neighbour MODE grid `get_filt_type` reads. See [`Bd10ModeNeighbors`].
+    coeff_neighbors: &mut Bd10CoeffNeighbors,
     mode_neighbors: &mut Bd10ModeNeighbors,
     // OUT — see `bd10_reencode_luma`'s `committed_skip`.
     committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
+    // The leaf's parent partition type, selecting the has_top_right /
+    // has_bottom_left availability table row.
+    parent_partition: svtav1_types::partition::PartitionType,
 ) {
+    let Bd10LumaFrame {
+        coded_lossless,
+        sb_mi_size,
+        src10,
+        src_stride,
+        qt,
+        allintra_rd_mult,
+        rates,
+        real_coeff_ctx,
+        edge_filter,
+        frame_w,
+        frame_h,
+        bd,
+        qm_level,
+        inter_refs,
+        mi_grid,
+        mi_stride,
+    } = *cfg;
+    let Bd10Sb {
+        rdoq_level,
+        lambda,
+        tile_mi,
+    } = sb;
+    // The recon canvas is frame-width — the walk's `stride` was `frame_w`.
+    let stride = frame_w;
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
     match tree {
@@ -509,33 +619,16 @@ fn bd10_reencode_node(
             }
             if d.tx_depth > 0 {
                 bd10_reencode_leaf_txs(
+                    cfg,
+                    sb,
                     d,
                     x,
                     y,
                     recon10,
-                    stride,
-                    src10,
-                    src_stride,
-                    qt,
-                    rdoq_level,
-                    lambda,
-                    allintra_rd_mult,
-                    rates,
-                    real_coeff_ctx,
                     coeff_neighbors,
-                    edge_filter,
-                    frame_w,
-                    frame_h,
-                    bd,
-                    qm_level,
-                    tile_mi,
-                    parent_partition,
-                    sb_mi_size,
-                    inter_refs,
-                    mi_grid,
-                    mi_stride,
                     mode_neighbors,
                     committed_skip,
+                    parent_partition,
                 );
                 mode_neighbors.record(
                     x,
@@ -891,40 +984,22 @@ fn bd10_reencode_node(
             // `panic!`ed on every one of those shapes.
             let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_node(
-                    coded_lossless,
-                    sb_mi_size,
+                    cfg,
+                    // Children are inside the same superblock, hence the same
+                    // lambda/rdoq/tile scope (issue #18).
+                    sb,
                     child,
                     cx,
                     cy,
                     recon10,
-                    stride,
-                    src10,
-                    src_stride,
-                    qt,
-                    rdoq_level,
-                    lambda,
-                    allintra_rd_mult,
-                    rates,
-                    real_coeff_ctx,
                     coeff_neighbors,
-                    edge_filter,
-                    frame_w,
-                    frame_h,
-                    bd,
-                    qm_level,
-                    // Children are inside the same superblock, hence the same
-                    // tile (issue #18).
-                    tile_mi,
+                    mode_neighbors,
+                    committed_skip,
                     match partition_type {
                         PT::VertA => svtav1_types::partition::PartitionType::VertA,
                         PT::VertB => svtav1_types::partition::PartitionType::VertB,
                         _ => svtav1_types::partition::PartitionType::None,
                     },
-                    inter_refs,
-                    mi_grid,
-                    mi_stride,
-                    mode_neighbors,
-                    committed_skip,
                 );
             };
             match *partition_type {
@@ -1332,6 +1407,29 @@ pub(super) fn bd10_reencode_chroma(
             );
         }
     }
+    let cfg = Bd10ChromaFrame {
+        sb_mi_size: sb_size / 4,
+        u_src10,
+        v_src10,
+        cstride,
+        y_recon10,
+        y_stride,
+        qt_u: &qt_u,
+        qt_v: &qt_v,
+        allintra_rd_mult,
+        rates: &rates,
+        real_coeff_ctx,
+        edge_filter,
+        cframe_w,
+        cframe_h,
+        bd,
+        qm_uv,
+        lossless: chroma_qindex == 0,
+        inter_refs,
+        mi_grid: &mi_grid,
+        mi_stride,
+        committed_skip,
+    };
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -1357,40 +1455,23 @@ pub(super) fn bd10_reencode_chroma(
         } else {
             0
         };
+        let sb = Bd10Sb {
+            rdoq_level,
+            lambda,
+            tile_mi: tile_mi_l,
+        };
         bd10_reencode_chroma_node(
-            sb_size / 4,
+            &cfg,
+            sb,
             tree,
             sb_col * sb_size,
             sb_row * sb_size,
             &mut recon10_u,
             &mut recon10_v,
-            cstride,
-            u_src10,
-            v_src10,
-            y_recon10,
-            y_stride,
-            &qt_u,
-            &qt_v,
-            rdoq_level,
-            lambda,
-            allintra_rd_mult,
-            &rates,
-            real_coeff_ctx,
             &mut coeff_neighbors_u,
             &mut coeff_neighbors_v,
-            edge_filter,
-            cframe_w,
-            cframe_h,
-            bd,
-            qm_uv,
-            tile_mi_l,
-            svtav1_types::partition::PartitionType::None,
-            chroma_qindex == 0,
-            inter_refs,
-            &mi_grid,
-            mi_stride,
             &mut mode_neighbors,
-            committed_skip,
+            svtav1_types::partition::PartitionType::None,
         );
     }
     // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
@@ -1406,72 +1487,103 @@ pub(super) fn bd10_reencode_chroma(
 /// walk's chroma coding (`write_chroma_txb`, `uv_tx_type`). The u8 recon is a
 /// sane truncation (`>> (bd-8)`) — it is inert (see `bd10_reencode_chroma`).
 #[allow(clippy::too_many_arguments)]
+/// How a chroma leaf's prediction is produced — the three arms are
+/// EXCLUSIVE in C, and the old `(uv_mode, uv_angle_delta, cfl, inter_pred)`
+/// parameter set let a caller silently pass both an intra mode and an
+/// `inter_pred`/`cfl` payload (the mode fields were then ignored).
+enum ChromaPred<'a> {
+    /// Intra prediction from the leaf's `uv_mode`/`uv_angle_delta`.
+    Intra { uv_mode: u8, uv_angle_delta: i8 },
+    /// UV_CFL_PRED — DC base + alpha; `predict_unit_hbd` runs at mode 0
+    /// (`cfl_prediction` regenerates DC, full_loop.c:3798-3801).
+    Cfl {
+        ac_luma_q3: &'a [i16],
+        alpha_q3: i32,
+    },
+    /// Inter — the caller already motion-compensated this plane from the
+    /// 10-bit reference; no intra prediction runs (C codes no `uv_mode` on
+    /// an inter block, so running one would price a mode the stream does
+    /// not describe).
+    Inter(&'a [u16]),
+}
+
 fn bd10_reencode_chroma_plane(
+    cfg: &Bd10ChromaFrame<'_>,
+    sb: Bd10Sb,
     recon10: &mut [u16],
     src10: &[u16],
-    cstride: usize,
     cx: usize,
     cy: usize,
     cw: usize,
     ch: usize,
-    uv_mode: u8,
-    uv_angle_delta: i8,
     uv_tt: usize,
     geom: &crate::leaf_funnel::UnitGeom,
-    edge_filter: bool,
     // C `get_filt_type(xd, 1)`. Was a hardcoded 0 — only right with the edge
     // filter off, which is why the frame gate rejected directional UV leaves.
     filt_type: i32,
     qt: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
-    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
-    allintra_rd_mult: bool,
-    rates: &crate::leaf_funnel::MdRates,
-    bd: u8,
     qm_level: u8,
-    // `Some((ac_luma_q3, alpha_q3))` for a UV_CFL_PRED leaf. C predicts CfL as
-    // `svt_cfl_predict_hbd(pred_buf_q3, dc_pred, alpha)` over a **DC** base
-    // (`cfl_prediction` regenerates DC at :3798-3801 before calling), so the
-    // mode passed to `predict_unit_hbd` is forced to UV_DC_PRED here.
-    cfl: Option<(&[i16], i32)>,
     // The per-TU `(txb_skip_ctx, dc_sign_ctx)` RDOQ contexts — C's
     // `get_txb_ctx(COMPONENT_CHROMA, ..)` output (full_loop.c:2286-2296) or
     // `0,0` when `update_skip_ctx_dc_sign_ctx` is off.
     txb_ctx: (usize, usize),
-    // An INTER leaf's motion-compensated chroma prediction, already built by
-    // the caller from the 10-bit reference. `Some` replaces the intra
-    // prediction entirely — C codes no intra `uv_mode` on an inter block, so
-    // running the intra predictor here would price and reconstruct a mode the
-    // stream does not describe.
-    inter_pred: Option<&[u16]>,
+    pred_sel: ChromaPred<'_>,
 ) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>, u8) {
+    let Bd10ChromaFrame {
+        cstride,
+        edge_filter,
+        allintra_rd_mult,
+        rates,
+        bd,
+        ..
+    } = *cfg;
+    let Bd10Sb {
+        rdoq_level, lambda, ..
+    } = sb;
     let mut pred = alloc::vec![0u16; cw * ch];
-    if let Some(p) = inter_pred {
-        // An INTER leaf: the caller already motion-compensated this plane from
-        // the 10-bit reference. Everything below the prediction is shared.
-        pred.copy_from_slice(&p[..cw * ch]);
-    } else {
-        crate::leaf_funnel::predict_unit_hbd(
-            recon10,
-            cstride,
-            cx,
-            cy,
-            cw,
-            ch,
-            if cfl.is_some() { 0 } else { uv_mode },
-            if cfl.is_some() { 0 } else { uv_angle_delta },
-            crate::leaf_funnel::FI_NONE,
-            geom,
-            edge_filter,
-            filt_type,
-            &mut pred,
-            bd,
-        );
-        if let Some((ac, alpha_q3)) = cfl {
-            let dc = pred.clone();
-            svtav1_dsp::hbd::cfl_predict_hbd(ac, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch);
+    match pred_sel {
+        ChromaPred::Inter(p) => {
+            // An INTER leaf: the caller already motion-compensated this
+            // plane from the 10-bit reference. Everything below the
+            // prediction is shared.
+            pred.copy_from_slice(&p[..cw * ch]);
+        }
+        ChromaPred::Intra { .. } | ChromaPred::Cfl { .. } => {
+            let (mode, angle) = match pred_sel {
+                ChromaPred::Intra {
+                    uv_mode,
+                    uv_angle_delta,
+                } => (uv_mode, uv_angle_delta),
+                // CFL: the DC base is predicted at UV_DC_PRED.
+                ChromaPred::Cfl { .. } => (0, 0),
+                ChromaPred::Inter(_) => unreachable!(),
+            };
+            crate::leaf_funnel::predict_unit_hbd(
+                recon10,
+                cstride,
+                cx,
+                cy,
+                cw,
+                ch,
+                mode,
+                angle,
+                crate::leaf_funnel::FI_NONE,
+                geom,
+                edge_filter,
+                filt_type,
+                &mut pred,
+                bd,
+            );
+            if let ChromaPred::Cfl {
+                ac_luma_q3,
+                alpha_q3,
+            } = pred_sel
+            {
+                let dc = pred.clone();
+                svtav1_dsp::hbd::cfl_predict_hbd(
+                    ac_luma_q3, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch,
+                );
+            }
         }
     }
     let src_off = cy * cstride + cx;
@@ -1496,7 +1608,7 @@ fn bd10_reencode_chroma_plane(
         allintra_rd_mult,
         // C `pred_mode >= NEARESTMV` — an inter leaf reached here iff the
         // caller supplied the MC prediction.
-        inter_pred.is_some(),
+        matches!(pred_sel, ChromaPred::Inter(_)),
         rates,
         rdoq_level != 0,
         bd,
@@ -1551,62 +1663,45 @@ fn bd10_chroma_skip_plane(
 
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_chroma_node(
-    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
-    sb_mi_size: usize,
+    cfg: &Bd10ChromaFrame<'_>,
+    sb: Bd10Sb,
     tree: &mut crate::partition::PartitionTree,
     x: usize,
     y: usize,
     recon10_u: &mut [u16],
     recon10_v: &mut [u16],
-    cstride: usize,
-    u_src10: &[u16],
-    v_src10: &[u16],
-    y_recon10: &[u16],
-    y_stride: usize,
-    // Per-plane chroma quant tables (base + FH u_ac / v_ac delta). Equal in
-    // mainline (deltas 0) -> byte-inert.
-    qt_u: &crate::quant::QuantTable,
-    qt_v: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
-    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
-    allintra_rd_mult: bool,
-    rates: &crate::leaf_funnel::MdRates,
-    // C `rate_est_ctrls.update_skip_ctx_dc_sign_ctx` + the two per-plane NA
-    // grids (`cb_`/`cr_dc_sign_level_coeff_na`) it gates
-    // (full_loop.c:2286-2296).
-    real_coeff_ctx: bool,
     coeff_neighbors_u: &mut Bd10CoeffNeighbors,
     coeff_neighbors_v: &mut Bd10CoeffNeighbors,
-    edge_filter: bool,
-    cframe_w: usize,
-    cframe_h: usize,
-    bd: u8,
-    qm_uv: [u8; 2],
-    // ISSUE #18: this superblock's tile, in LUMA mi units — `UnitGeom::tile`
-    // is a luma-mi bound regardless of plane; `TileMi::top_px(ss)` does the
-    // plane shift.
-    tile_mi: crate::intra_edge::TileMi,
+    // The neighbour MODE grid `get_filt_type(xd, 1)` reads.
+    mode_neighbors: &mut Bd10ModeNeighbors,
     // The leaf's parent partition type, selecting the has_top_right /
     // has_bottom_left table row — the decoder reads the LUMA partition the
     // chroma block was coded under (`xd->mi[0]->partition`), so this mirrors
     // `bd10_reencode_node`'s threading exactly.
     parent_partition: svtav1_types::partition::PartitionType,
-    // Frame lossless (chroma_qindex == 0): `av1_get_tx_type`'s early return
-    // forces DCT_DCT for the inter chroma-follows-luma read too.
-    lossless: bool,
-    // The DPB's reference pictures, for the INTER arm. `None` on a key frame.
-    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
-    // The committed mode-info grid (`stamp_inter_mi_grid`) a sub-8 inter
-    // leaf's chroma stitch reads its covered cells' motion from.
-    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
-    mi_stride: usize,
-    // The neighbour MODE grid `get_filt_type(xd, 1)` reads.
-    mode_neighbors: &mut Bd10ModeNeighbors,
-    // IN — see `bd10_reencode_luma`'s `committed_skip` (luma pass output).
-    committed_skip: &alloc::collections::BTreeSet<(u32, u32)>,
 ) {
+    let Bd10ChromaFrame {
+        sb_mi_size,
+        u_src10,
+        v_src10,
+        cstride,
+        y_recon10,
+        y_stride,
+        qt_u,
+        qt_v,
+        real_coeff_ctx,
+        cframe_w,
+        cframe_h,
+        bd,
+        qm_uv,
+        lossless,
+        inter_refs,
+        mi_grid,
+        mi_stride,
+        committed_skip,
+        ..
+    } = *cfg;
+    let Bd10Sb { tile_mi, .. } = sb;
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
     match tree {
@@ -1838,29 +1933,33 @@ fn bd10_reencode_chroma_node(
                 )
             } else {
                 bd10_reencode_chroma_plane(
+                    cfg,
+                    sb,
                     recon10_u,
                     u_src10,
-                    cstride,
                     cx,
                     cy,
                     cw,
                     ch,
-                    d.uv_mode,
-                    d.uv_angle_delta,
                     uv_tt,
                     &geom,
-                    edge_filter,
                     mode_neighbors.filt_type_uv(x, y),
                     qt_u,
-                    rdoq_level,
-                    lambda,
-                    allintra_rd_mult,
-                    rates,
-                    bd,
                     qm_uv[0],
-                    cfl_u,
                     u_ctx,
-                    inter_u.as_deref(),
+                    if let Some(p) = inter_u.as_deref() {
+                        ChromaPred::Inter(p)
+                    } else if let Some((ac, alpha_q3)) = cfl_u {
+                        ChromaPred::Cfl {
+                            ac_luma_q3: ac,
+                            alpha_q3,
+                        }
+                    } else {
+                        ChromaPred::Intra {
+                            uv_mode: d.uv_mode,
+                            uv_angle_delta: d.uv_angle_delta,
+                        }
+                    },
                 )
             };
             if real_coeff_ctx {
@@ -1884,29 +1983,33 @@ fn bd10_reencode_chroma_node(
                 )
             } else {
                 bd10_reencode_chroma_plane(
+                    cfg,
+                    sb,
                     recon10_v,
                     v_src10,
-                    cstride,
                     cx,
                     cy,
                     cw,
                     ch,
-                    d.uv_mode,
-                    d.uv_angle_delta,
                     uv_tt,
                     &geom,
-                    edge_filter,
                     mode_neighbors.filt_type_uv(x, y),
                     qt_v,
-                    rdoq_level,
-                    lambda,
-                    allintra_rd_mult,
-                    rates,
-                    bd,
                     qm_uv[1],
-                    cfl_v,
                     v_ctx,
-                    inter_v.as_deref(),
+                    if let Some(p) = inter_v.as_deref() {
+                        ChromaPred::Inter(p)
+                    } else if let Some((ac, alpha_q3)) = cfl_v {
+                        ChromaPred::Cfl {
+                            ac_luma_q3: ac,
+                            alpha_q3,
+                        }
+                    } else {
+                        ChromaPred::Intra {
+                            uv_mode: d.uv_mode,
+                            uv_angle_delta: d.uv_angle_delta,
+                        }
+                    },
                 )
             };
             if real_coeff_ctx {
@@ -1941,44 +2044,23 @@ fn bd10_reencode_chroma_node(
             let (lframe_w, lframe_h) = (cframe_w * 2, cframe_h * 2);
             let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_chroma_node(
-                    sb_mi_size,
+                    cfg,
+                    // Children share the superblock — same lambda/rdoq/tile
+                    // scope (issue #18).
+                    sb,
                     child,
                     cx,
                     cy,
                     recon10_u,
                     recon10_v,
-                    cstride,
-                    u_src10,
-                    v_src10,
-                    y_recon10,
-                    y_stride,
-                    qt_u,
-                    qt_v,
-                    rdoq_level,
-                    lambda,
-                    allintra_rd_mult,
-                    rates,
-                    real_coeff_ctx,
                     coeff_neighbors_u,
                     coeff_neighbors_v,
-                    edge_filter,
-                    cframe_w,
-                    cframe_h,
-                    bd,
-                    qm_uv,
-                    // Children share the superblock, hence the tile (issue #18).
-                    tile_mi,
+                    mode_neighbors,
                     match partition_type {
                         PT::VertA => svtav1_types::partition::PartitionType::VertA,
                         PT::VertB => svtav1_types::partition::PartitionType::VertB,
                         _ => svtav1_types::partition::PartitionType::None,
                     },
-                    lossless,
-                    inter_refs,
-                    mi_grid,
-                    mi_stride,
-                    mode_neighbors,
-                    committed_skip,
                 );
             };
             match *partition_type {
@@ -2053,37 +2135,43 @@ fn bd10_reencode_chroma_node(
 /// re-quantizes, it does not re-decide.
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_leaf_txs(
+    cfg: &Bd10LumaFrame<'_>,
+    sb: Bd10Sb,
     d: &mut crate::partition::BlockDecision,
     x: usize,
     y: usize,
     recon10: &mut [u16],
-    stride: usize,
-    src10: &[u16],
-    src_stride: usize,
-    qt: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    allintra_rd_mult: bool,
-    rates: &crate::leaf_funnel::MdRates,
-    real_coeff_ctx: bool,
     coeff_neighbors: &mut Bd10CoeffNeighbors,
-    edge_filter: bool,
-    frame_w: usize,
-    frame_h: usize,
-    bd: u8,
-    qm_level: u8,
-    tile_mi: crate::intra_edge::TileMi,
-    parent_partition: svtav1_types::partition::PartitionType,
-    sb_mi_size: usize,
-    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
-    // The committed mode-info grid the OBMC blend's neighbour walk reads;
-    // `mi_stride` is `frame_w / 4`.
-    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
-    mi_stride: usize,
     mode_neighbors: &Bd10ModeNeighbors,
     // OUT — see `bd10_reencode_luma`'s `committed_skip`.
     committed_skip: &mut alloc::collections::BTreeSet<(u32, u32)>,
+    parent_partition: svtav1_types::partition::PartitionType,
 ) {
+    let Bd10LumaFrame {
+        sb_mi_size,
+        src10,
+        src_stride,
+        qt,
+        allintra_rd_mult,
+        rates,
+        real_coeff_ctx,
+        edge_filter,
+        frame_w,
+        frame_h,
+        bd,
+        qm_level,
+        inter_refs,
+        mi_grid,
+        mi_stride,
+        coded_lossless: _,
+    } = *cfg;
+    let Bd10Sb {
+        rdoq_level,
+        lambda,
+        tile_mi,
+    } = sb;
+    // The recon canvas is frame-width — the caller's `stride` was `frame_w`.
+    let stride = frame_w;
     let bw = d.width as usize;
     let bh = d.height as usize;
     let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(bw, bh, d.tx_depth);
