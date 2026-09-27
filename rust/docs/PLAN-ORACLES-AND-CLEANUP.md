@@ -1361,6 +1361,53 @@ Order, by expected size:
     preserved verbatim (the line multiset was checked).
   - Open: cut a dated section at the next release.
 
+- [x] Maintainability pass 1 (`c7c0b971` + `421202df`, 2026-10-05):
+  measured cognitive load + cancellation latency, landed two scoped fixes.
+
+  **Measurement** (`rust-code-analysis-cli`, worst-of by cognitive
+  complexity): `leaf_funnel/inject.rs::inject_candidates` 537cog/241cy/22args,
+  `tile_walk/cu.rs::encode_coding_unit` 393/154/107,
+  `depth_refine/walk.rs::DepthWalk` 387/233,
+  `md_config::sig_deriv_mode_decision_config_default` 374/215,
+  `block_syntax::encode_block_syntax` 321/200,
+  `tile_walk/tile_body.rs::encode_one_tile_body` 205/209/69.
+
+  **Landed:**
+  - Per-leaf cancellation inside the MD walks: `FunnelCtx::stop_hit`
+    latches `cancelled`; `DepthWalk::pick` checks at node + per-shape,
+    `encode_fixed_tree` checks per tree node, the per-SB caller converts
+    the flag to `EncodeError::Cancelled`. `decide_sb_refined` and
+    `encode_coding_unit` now return `EncodeResult`. Measured
+    `cancel_latency` p0 worst-case: ~100ms → 0.84ms @512² / 1.2ms @1024²
+    (the 50ms target holds at per-leaf granularity). Byte-inert under
+    `Unstoppable` (`may_stop()==false` folds every guard to a dead
+    branch). Witness: `md_walk_cancels_inside_a_superblock` arms the
+    token past the per-SB head on both arms (p8 fixed-tree, p0 refined).
+  - Param objects in `bd10_reencode`: `Bd10LumaFrame`/`Bd10ChromaFrame`
+    (frame invariants) + `Bd10Sb` (per-SB lambda/rdoq/tile) —
+    `bd10_reencode_node` 34→10 params, `chroma_node` 55→12,
+    `leaf_txs` 28→10, `chroma_plane` 30→19. `ChromaPred` makes the
+    intra/CfL/inter arms exclusive — the old quartet let a caller pass
+    intra mode fields that were silently ignored under a non-Intra pred.
+    Verified: `bd10_video_gate` 24/24, `bd10_nonflat_gate` 309/309
+    byte-identical.
+
+  **Same pattern, next candidates (each a real refactor, verify per
+  landing):**
+  - `encode_coding_unit` (107 args) — same split applies: frame cfg vs
+    per-SB scope vs mutable canvases (`tile_frame_recon*`, `fun_*`,
+    `sim_*`, `chain_snaps`) vs per-unit (`units`, `x0`, `y0`, `sb_*`).
+  - `encode_tile_rows` (~108 args) — feeds `encode_coding_unit`; the
+    frame-level subset is a superset of `Bd10LumaFrame`'s shape.
+  - `inject_candidates` (537 cog) — candidate-table construction; the
+    `InjectCtx` field set is the natural partition point.
+  - `pd0_pick_sb_partition*` entries (~40-88 args) — the `Pd0Ctx` (163
+    cog, 53 args) struct already exists; several call sites still pass
+    fields it owns.
+  - `tx_pipeline`/`tx_depth` (20-47 args) — the tx eval ctx bundle.
+  - `block_syntax::encode_block_syntax` (12 args but 321 cog) —
+    complexity is intra-fn, not arity.
+
 ## Phase 6 — test structure
 
 - [x] T5 (`978df514`) never-panics sweep: `svtav1/tests/never_panics.rs`,
