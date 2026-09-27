@@ -129,10 +129,50 @@ for name in ("c.dec", "rs.dec"):
         write_png(f"{work}/frames/{name}_f{f}.png", i420_to_rgb(data, off))
 PY
 
-# 4. Per-frame cvvdp vs source; print the table.
-python3 - "$WORK" "$ZM" "$WORK/c.obu" "$WORK/rs.obu" <<'PY'
+# 4. Organise frames into per-clip dirs (sorted names) — needed by
+#    zenmetrics' `score-video` (the real temporal-cvvdp path) as well as
+#    the per-frame stills loop below. Source frames first.
+python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+for d in ("src", "c.dec", "rs.dec"):
+    os.makedirs(f"{work}/vdir/{d}", exist_ok=True)
+    for f in sorted(os.listdir(f"{work}/frames")):
+        if f.startswith(d.rstrip('.').replace('.', '') + "_f") or \
+           (d == "src" and f.startswith("src_f")) or \
+           (d == "c.dec" and f.startswith("c.dec_f")) or \
+           (d == "rs.dec" and f.startswith("rs.dec_f")):
+            n = f.split("_f")[1].split(".")[0]
+            dst = f"{work}/vdir/{d}/f{int(n):04d}.png"
+            if not os.path.exists(dst):
+                os.link(f"{work}/frames/{f}", dst)
+PY
+
+# 5. Headline: whole-clip cvvdp VIDEO score per side — the real temporal
+#    path (sustained + transient channels over the causal FIR window),
+#    pycvvdp v0.5.7 parity. Requires a zenmetrics build ≥ the
+#    `score-video` subcommand; absent it, the per-frame stills table
+#    below still runs (that's the pre-video fallback).
+DISPLAY="${CVVDP_DISPLAY:-standard_fhd}"
+if "$ZM" score-video --help >/dev/null 2>&1 && "$ZM" score-video --help 2>&1 | grep -q "display-model"; then
+    c_jod=$("$ZM" score-video --reference-dir "$WORK/vdir/src" \
+            --distorted-dir "$WORK/vdir/c.dec" --fps 30 --display-model "$DISPLAY" \
+            2>/dev/null | sed -n 's/.*jod=\([0-9.]*\).*/\1/p')
+    rs_jod=$("$ZM" score-video --reference-dir "$WORK/vdir/src" \
+             --distorted-dir "$WORK/vdir/rs.dec" --fps 30 --display-model "$DISPLAY" \
+             2>/dev/null | sed -n 's/.*jod=\([0-9.]*\).*/\1/p')
+    if [[ -n $c_jod && -n $rs_jod ]]; then
+        printf "cvvdp-video (%s, %sfps): JOD_C=%s JOD_port=%s dJOD=%s (clip-level, temporal)\n" \
+            "$DISPLAY" 30 "$c_jod" "$rs_jod" "$(echo "$rs_jod - $c_jod" | bc)"
+    fi
+else
+    echo "note: this zenmetrics lacks score-video — per-frame stills only" >&2
+fi
+
+# 6. Per-frame cvvdp vs source; print the table.
+python3 - "$WORK" "$ZM" "$DISPLAY" "$WORK/c.obu" "$WORK/rs.obu" <<'PY'
 import re, struct, subprocess, sys
-work, zm, c_obu, rs_obu = sys.argv[1:5]
+work, zm, display, c_obu, rs_obu = sys.argv[1:6]
 def obu_frame_sizes(path):
     data = open(path, "rb").read()
     out, i, cur = [], 0, 0
@@ -155,11 +195,20 @@ def obu_frame_sizes(path):
 c_bytes = obu_frame_sizes(c_obu); rs_bytes = obu_frame_sizes(rs_obu)
 n = min(len(c_bytes), len(rs_bytes))
 def jod(ref, dis):
-    out = subprocess.run([zm, "score", "--metric", "cvvdp",
-                          "--reference", ref, "--distorted", dis],
-                         capture_output=True, text=True)
-    m = re.search(r"cvvdp[^=]*=([0-9.]+)", out.stdout)
-    return float(m.group(1)) if m else float("nan")
+    # Newer zenmetrics builds require --display-model; older ones did not
+    # accept it. Probe once, then reuse.
+    global _need_display
+    args = [zm, "score", "--metric", "cvvdp", "--reference", ref, "--distorted", dis]
+    for extra in (["--display-model", display], []) if _need_display is None else (
+            [["--display-model", display]] if _need_display else [[]]):
+        out = subprocess.run(args[:4] + extra + args[4:],
+                             capture_output=True, text=True)
+        m = re.search(r"cvvdp[^=]*=([0-9.]+)", out.stdout)
+        if m:
+            if _need_display is None: _need_display = bool(extra)
+            return float(m.group(1))
+    return float("nan")
+_need_display = None
 print(f"frame  bytes_C  bytes_port  JOD_C     JOD_port  dJOD")
 tot_d = 0.0
 for f in range(n):

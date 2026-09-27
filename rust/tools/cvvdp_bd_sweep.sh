@@ -48,25 +48,32 @@ work = sys.argv[1]
 qps = sys.argv[2:]
 
 def parse(path):
-    tot = None; jods = {"c": [], "rs": []}
+    """Return (bytes_C, bytes_port, jod_C, jod_port). Prefers the
+    clip-level cvvdp-video JOD when the zenmetrics build has it (the
+    temporal path); falls back to the per-frame stills mean otherwise."""
+    tot = None; jods = {"c": [], "rs": []}; vid = {}
     for ln in open(path):
         m = re.match(r"f(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+([+-][0-9.]+)", ln)
         if m:
             jods["c"].append(float(m.group(4))); jods["rs"].append(float(m.group(5)))
         m2 = re.search(r"totals bytes: C=(\d+) port=(\d+)", ln)
         if m2: tot = (int(m2.group(1)), int(m2.group(2)))
-    return tot, jods
+        m3 = re.search(r"cvvdp-video.*JOD_C=([0-9.]+) JOD_port=([0-9.]+)", ln)
+        if m3: vid = {"c": float(m3.group(1)), "rs": float(m3.group(2))}
+    if vid:
+        return tot, vid["c"], vid["rs"], True
+    if jods["c"]:
+        return tot, sum(jods["c"])/len(jods["c"]), sum(jods["rs"])/len(jods["rs"]), False
+    return tot, None, None, False
 
-pts = {"c": [], "rs": []}   # list of (bytes, meanJOD)
-print(f"{'qp':>4} {'bytes_C':>9} {'bytes_port':>11} {'JOD_C':>9} {'JOD_port':>9} {'dJOD':>8}")
+pts = {"c": [], "rs": []}   # list of (bytes, JOD)
+print(f"{'qp':>4} {'bytes_C':>9} {'bytes_port':>11} {'JOD_C':>9} {'JOD_port':>9} {'dJOD':>8} kind")
 for q in qps:
-    tot, jods = parse(f"{work}/qp{q}.txt")
-    if tot is None or not jods["c"]:
+    tot, mc, mr, is_vid = parse(f"{work}/qp{q}.txt")
+    if tot is None or mc is None:
         print(f"{q:>4}  (no data)"); continue
-    mc = sum(jods["c"]) / len(jods["c"])
-    mr = sum(jods["rs"]) / len(jods["rs"])
     pts["c"].append((tot[0], mc)); pts["rs"].append((tot[1], mr))
-    print(f"{q:>4} {tot[0]:>9} {tot[1]:>11} {mc:>9.4f} {mr:>9.4f} {mr-mc:+8.4f}")
+    print(f"{q:>4} {tot[0]:>9} {tot[1]:>11} {mc:>9.4f} {mr:>9.4f} {mr-mc:+8.4f} {'video' if is_vid else 'stills-mean'}")
 
 def cubic_interp(points):
     """Least-squares cubic JOD = f(log rate). numpy-free polyfit."""
