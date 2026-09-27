@@ -389,3 +389,52 @@ fn md_walk_cancels_inside_a_superblock() {
         }
     }
 }
+
+/// A token that is armed (`may_stop() == true`, so every funnel/pipeline
+/// guard actually runs `check()`) but never fires must produce byte-identical
+/// output to no token at all — the polling path is byte-inert by
+/// construction, and this test is what makes that an empirical contract a
+/// refactor cannot silently break. The probe's poll count is also asserted
+/// nonzero, so the test cannot pass vacuously on a path nobody checks.
+#[test]
+fn armed_stop_token_is_byte_inert() {
+    use crate::pipeline::EncodePipeline;
+    use crate::rate_control::RcConfig;
+
+    let (w, h) = (96usize, 96usize);
+    let y = pixels(w, h);
+    let uv = pixels(w / 2, h / 2);
+    for preset in [8u8, 0] {
+        let build = || {
+            EncodePipeline::new(
+                w as u32,
+                h as u32,
+                preset,
+                RcConfig {
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+        };
+        let plain = build()
+            .try_encode_frame_420(&y, &uv, &uv, w)
+            .expect("plain encode");
+        let stop = ArcStopAfter(alloc::sync::Arc::new(AtomicUsize::new(0)), usize::MAX);
+        let probes = stop.clone();
+        let armed = build()
+            .with_stop(stop)
+            .try_encode_frame_420(&y, &uv, &uv, w)
+            .expect("armed-never-fires encode");
+        assert_eq!(
+            plain, armed,
+            "preset {preset}: a live stop token changed the bitstream"
+        );
+        assert!(
+            probes.0.load(Ordering::Relaxed) > 0,
+            "preset {preset}: no stop checks ran — the test proved nothing"
+        );
+    }
+}

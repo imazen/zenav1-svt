@@ -31,7 +31,17 @@ change to main, and verify remote ancestry. Do not wait on CI unless requested.
 Run `tools/precheck.sh` (`just precheck`, ~10 s): fmt, the clippy
 inventory, the refusal / PORT-NOTE / SIMD-tier / dead-code ledgers, test
 targets, the oracle test lists, duplicated function bodies, file sizes, env
-names and the CI shard partition. Each is a CI step (fmt, clippy, the
+names and the CI shard partition.
+
+For a pure refactor (signature regrouping, param objects, control-flow
+factored the same way) run `tools/refactor_gate.sh` (`just
+refactor-gate`, ~90 s) too: one pinned census cell per preset -1..13 plus a
+stills and a bd10 byte-identity slice. It exists so a refactor can prove
+byte-parity locally before the full census; a cell that improves as well
+as one that regresses fails the pin, which is the point — refactors are
+not supposed to move output at all. If the change is expected to move a
+cell, run `video_census_gate.sh` and move the pin in the same commit.
+Each is a CI step (fmt, clippy, the
 dead-code ledger, the oracle lists and the duplicate check in the first job,
 the rest in gate shard 3), and each has gone red on
 main because it was not run locally first. After pushing, look at `gh run list` once the run finishes: CI was

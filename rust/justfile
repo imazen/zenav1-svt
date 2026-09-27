@@ -199,6 +199,11 @@ pins-update:
 pins:
     cargo nextest run -p zenav1-svt --locked -E 'test(/output_pins/)'
 
+# Refactor preflight: ~90s byte-parity slice — one pinned census cell per
+# preset + stills + bd10. Run before/after signature-level refactors.
+refactor-gate:
+    tools/refactor_gate.sh
+
 # C-parity suite against a NAMED oracle (hybrid-3115, mainline-4.2.0,
 # ghost-robot — see oracles/oracles.tsv). Per-oracle tests of features the
 # oracle lacks are excluded by the CALLER via oracles/excludes/<name>.txt;
