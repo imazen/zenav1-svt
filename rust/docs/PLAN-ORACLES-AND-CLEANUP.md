@@ -1408,6 +1408,35 @@ Order, by expected size:
   - `block_syntax::encode_block_syntax` (12 args but 321 cog) —
     complexity is intra-fn, not arity.
 
+- [x] `archmage-audit` pass (`140f8094`, 2026-10-05): ran the new
+  rav1d-safe dispatch-topology linter over encoder+dsp — 409 violations
+  -> 370 with the actionable classes cleared. Landed: `#[inline]` on
+  eleven shared scalar helpers called from tier contexts (the
+  `tier-boundary` "scalar islands" — a vanilla non-inline call inside
+  v3/neon bodies), `from_context()` in `try_fwd_dct_square_impl_v4`
+  (drops a runtime detect the v4 context already proves), `_scalar` ->
+  `_default` renames for tokenless helpers, and `// audit:allow()` for
+  the intentional cases (shape-gated dispatch, incant-target
+  trampolines).
+
+  Measured, so the remaining `incant-in-vanilla` x94 is correctly
+  triaged: an `incant!` in a vanilla fn costs ~0.24 ns/call over a
+  direct token call (200M-call loop, cached summon vs a rite
+  in-context call — 0.61 vs 0.37 ns). At ~1e5-1e6 dsp calls/frame that
+  is 25-250 us, <0.05 % of encode time at any preset. The structural
+  fix — token-carrying `#[rite]` walk chains so inner incants compile
+  to direct calls — buys inlining, not dispatch speed, and belongs with
+  the `encode_coding_unit` param-object refactor (the ctx structs are
+  where a token would ride), not as a standalone churn pass.
+
+  `scalar-should-be-default` x90 is a deliberate non-migration: the
+  uniform `(ScalarToken, args)` signature is what test helpers
+  parameterize over (`f_v3(v3tok, …)` vs `f_scalar(stok, …)`).
+  `maybe-dead-variant` x80 / `missing-tier-suffix` x80 /
+  `cross-isa-twin` x26 are macro/fn-ptr resolution misses or
+  informational — verified live where spot-checked
+  (`nz_kernel16/32_v3`, the v4 `fdct*_x16` kernels).
+
 ## Phase 6 — test structure
 
 - [x] T5 (`978df514`) never-panics sweep: `svtav1/tests/never_panics.rs`,
