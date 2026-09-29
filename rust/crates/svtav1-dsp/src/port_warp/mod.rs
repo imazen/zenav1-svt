@@ -597,6 +597,7 @@ struct WarpGeom {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn warp_affine_geom(
     mat: &[i32; 6],
     j: i32,
@@ -641,6 +642,7 @@ fn warp_affine_geom(
 /// `k_end`/`l_end` clip the OUTPUT extent for partial edge sub-blocks; the
 /// input clamps handle reference-plane edges.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn warp_affine_subblock(
     g: WarpGeom,
     i: i32,

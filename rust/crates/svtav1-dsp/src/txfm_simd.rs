@@ -1340,10 +1340,9 @@ fn try_fwd_dct_square_impl_v4(
     n: usize,
 ) -> bool {
     if n == 8 {
-        let Some(t3) = Desktop64::summon() else {
-            return false;
-        };
-        return v3::fwd_dct_square(t3, input, output, input_stride, n);
+        // v3 is compile-time guaranteed inside a v4 context — from_context()
+        // mints the token with no runtime detection.
+        return v3::fwd_dct_square(Desktop64::from_context(), input, output, input_stride, n);
     }
     v4::fwd_dct_square(t, input, output, input_stride, n)
 }

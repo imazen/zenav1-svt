@@ -317,6 +317,7 @@ pub fn use_intra_edge_upsample(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -
 /// `p[start .. start + sz]` (C receives the pointer already offset — the
 /// caller passes `origin - ab_le`).
 pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
+    // audit:allow(manual-tier-select) — conditional summon after the edge-mode gate — incant! cannot express the predicate.
     if strength == 0 {
         return;
     }
@@ -801,6 +802,7 @@ pub(super) fn dr_z2_edged(
     dx: i32,
     dy: i32,
 ) {
+    // audit:allow(manual-tier-select) — conditional summon after the edgemode gate — incant! cannot express the predicate.
     debug_assert!(dx > 0 && dy > 0);
     #[cfg(target_arch = "x86_64")]
     if (4..=64).contains(&bw)
@@ -1596,6 +1598,7 @@ pub(super) fn dr_z2_8xh_neon(
 /// upsampling. Reached through [`dr_z2_edged`], which routes the flat
 /// (non-upsampled) case to a NEON arm.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(super) fn dr_z2_edged_core(
     dst: &mut [u8],
     dst_stride: usize,

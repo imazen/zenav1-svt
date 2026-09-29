@@ -195,7 +195,7 @@ fn cdef_find_dir_simd_matches_scalar_including_the_bailout_boundary() {
                             in_domain += 1;
                         }
                         let want =
-                            cdef_dir_from_partials(&cdef_dir_partials_scalar(&buf, stride, shift));
+                            cdef_dir_from_partials(&cdef_dir_partials_default(&buf, stride, shift));
                         let got = cdef_find_dir(&buf, stride, shift);
                         assert_eq!(
                             got, want,

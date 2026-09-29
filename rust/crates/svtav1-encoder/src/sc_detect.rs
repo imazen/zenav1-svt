@@ -82,6 +82,7 @@ pub fn dilate_block(
     rows: usize,
     cols: usize,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated (`rows <= 16 && cols in {8,16}`) dispatch — incant! cannot express the gate.
     let dominant_value = find_dominant_value(src, src_stride, rows, cols);
     #[cfg(target_arch = "x86_64")]
     if rows <= 16 && (cols == 8 || cols == 16) && dilated_stride >= cols {

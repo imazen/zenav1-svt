@@ -510,6 +510,7 @@ fn predict_smooth_impl_v3(
     }
 }
 
+#[inline]
 fn predict_smooth_core(
     dst: &mut [u8],
     dst_stride: usize,

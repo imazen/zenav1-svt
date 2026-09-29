@@ -271,6 +271,7 @@ pub fn convolve_2d_sr(
     subpel_y_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated (`w >= 16`) v4 dispatch — incant! cannot express the gate.
     let im_h = h + SUBPEL_TAPS - 1;
     let im_stride = w;
     let fo_vert = (SUBPEL_TAPS / 2 - 1) as i32;
@@ -541,6 +542,7 @@ pub fn convolve_y_sr(
     filter_y: &FilterParams,
     subpel_y_q4: i32,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     let fo_vert = (SUBPEL_TAPS / 2 - 1) as i32;
     let y_filter = filter_y.subpel_kernel(subpel_y_q4);
     #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
@@ -657,6 +659,7 @@ pub fn convolve_x_sr(
     subpel_x_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     let fo_horiz = (SUBPEL_TAPS / 2 - 1) as i32;
     let bits = FILTER_BITS - conv_params.round_0;
     let x_filter = filter_x.subpel_kernel(subpel_x_q4);
@@ -692,7 +695,7 @@ pub fn convolve_x_sr(
         );
         return;
     }
-    convolve_x_sr_scalar(
+    convolve_x_sr_default(
         src,
         dst,
         dst_stride,
@@ -727,7 +730,7 @@ fn convolve_x_sr_px(
 
 /// Scalar body of [`convolve_x_sr`], verbatim C.
 #[allow(clippy::too_many_arguments)]
-fn convolve_x_sr_scalar(
+fn convolve_x_sr_default(
     src: SrcView<'_>,
     dst: &mut [u8],
     dst_stride: usize,
@@ -1949,6 +1952,7 @@ pub fn jnt_convolve_2d(
     subpel_y_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
     if w >= 16
         && conv_params.dst_stride >= w
@@ -2032,6 +2036,7 @@ pub fn jnt_convolve_y(
     subpel_y_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
     if w >= 16
         && conv_params.dst_stride >= w
@@ -2103,6 +2108,7 @@ pub fn jnt_convolve_x(
     subpel_x_q4: i32,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
     if w >= 16
         && conv_params.dst_stride >= w
@@ -2174,6 +2180,7 @@ pub fn jnt_convolve_2d_copy(
     h: usize,
     conv_params: &ConvolveParams,
 ) {
+    // audit:allow(manual-tier-select) — shape-gated dispatch — incant! cannot express the gate.
     #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
     if w >= 16
         && conv_params.dst_stride >= w

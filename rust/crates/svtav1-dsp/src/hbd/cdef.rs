@@ -288,6 +288,7 @@ pub(super) fn cdef_filter_block_hbd_impl_v3(
 /// dst16 arm). The AVX2 path is proven byte-identical to this against real C in
 /// `tests/c_parity_cdef.rs`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(super) fn cdef_filter_block_hbd_core(
     dst: &mut [u16],
     doff: usize,

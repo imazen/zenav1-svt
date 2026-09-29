@@ -163,7 +163,7 @@ const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 /// The eight direction partial-sum arrays, verbatim `svt_aom_cdef_find_dir_c`'s
 /// accumulation loop. `partial[k][m]` collects every pixel whose (row, col)
 /// maps to index `m` under direction `k`'s formula.
-fn cdef_dir_partials_scalar(img: &[u16], stride: usize, coeff_shift: i32) -> [[i32; 15]; 8] {
+fn cdef_dir_partials_default(img: &[u16], stride: usize, coeff_shift: i32) -> [[i32; 15]; 8] {
     let mut partial = [[0i32; 15]; 8];
     for i in 0..8usize {
         for j in 0..8usize {
@@ -184,6 +184,7 @@ fn cdef_dir_partials_scalar(img: &[u16], stride: usize, coeff_shift: i32) -> [[i
 /// The cost/argmax/variance tail of `svt_aom_cdef_find_dir_c`, verbatim, split
 /// out so every dispatch tier shares it. Only the partial-sum ACCUMULATION is
 /// tier-specific; this half is one copy.
+#[inline]
 fn cdef_dir_from_partials(partial: &[[i32; 15]; 8]) -> (u8, i32) {
     let mut cost = [0i32; 8];
     let mut best_cost = 0i32;
@@ -231,7 +232,7 @@ fn cdef_find_dir_impl_scalar(
     stride: usize,
     coeff_shift: i32,
 ) -> (u8, i32) {
-    cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift))
+    cdef_dir_from_partials(&cdef_dir_partials_default(img, stride, coeff_shift))
 }
 
 /// NEON partial-sum accumulation for [`cdef_find_dir`].
@@ -479,7 +480,7 @@ fn cdef_find_dir_impl_neon(
 ) -> (u8, i32) {
     match cdef_dir_partials_neon(token, img, stride, coeff_shift) {
         Some(p) => cdef_dir_from_partials(&p),
-        None => cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift)),
+        None => cdef_dir_from_partials(&cdef_dir_partials_default(img, stride, coeff_shift)),
     }
 }
 
@@ -687,7 +688,7 @@ fn cdef_find_dir_impl_v3(
 ) -> (u8, i32) {
     match cdef_dir_partials_v3(token, img, stride, coeff_shift) {
         Some(p) => cdef_dir_from_partials(&p),
-        None => cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift)),
+        None => cdef_dir_from_partials(&cdef_dir_partials_default(img, stride, coeff_shift)),
     }
 }
 
@@ -1952,6 +1953,7 @@ fn cdef_store_group_v3<const COLS: usize>(
 /// (dst8 arm). The AVX2 path ([`cdef_filter_block_impl_v3`]) is proven
 /// byte-identical to this against real C in `tests/c_parity_cdef.rs`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn cdef_filter_block_core(
     dst: &mut [u8],
     doff: usize,

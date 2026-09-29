@@ -629,6 +629,7 @@ fn hadamard_transpose8_v3(token: X64V3Token, v: [HadamardV3; 8]) -> [HadamardV3;
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn aom_hadamard_8x8_impl_v3(token: X64V3Token, input: &[i16], stride: usize, output: &mut [i32]) {
+    // audit:allow(arcane-could-be-rite) — the trampoline IS the `incant!` target from `aom_hadamard_8x8`'s vanilla wrapper.
     let rows = core::array::from_fn(|r| {
         HadamardV3::load(token, input[r * stride..r * stride + 8].try_into().unwrap())
     });
@@ -660,6 +661,7 @@ fn aom_hadamard_8x8_impl_neon(
     src_stride: usize,
     coeff: &mut [i32],
 ) {
+    // audit:allow(arcane-could-be-rite) — the trampoline IS the `incant!` target from `aom_hadamard_8x8`'s vanilla wrapper.
     let mut d = [vdupq_n_s16(0); 8];
     for (row, slot) in d.iter_mut().enumerate() {
         let r: &[i16; 8] = src_diff[row * src_stride..row * src_stride + 8]

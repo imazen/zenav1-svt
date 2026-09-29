@@ -187,6 +187,7 @@ impl CsGeom {
 /// subtract; it is one pass over the region against the kernel's ~134
 /// multiply-accumulates per pixel.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(super) fn cs_prepare(
     g: &CsGeom,
     avg: i16,
@@ -653,6 +654,7 @@ impl Drop for StatsScratch {
 /// Scalar reference — verbatim `svt_av1_compute_stats_c`. The M and H
 /// accumulation order below is the byte-exactness anchor for every SIMD tier.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(super) fn compute_stats_scalar_core(
     wiener_win: usize,
     dgd: &[u8],

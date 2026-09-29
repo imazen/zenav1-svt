@@ -501,6 +501,7 @@ fn predict_smooth_hbd_impl_scalar(
     predict_smooth_hbd_core(dst, dst_stride, above, left, width, height);
 }
 
+#[inline]
 fn predict_smooth_hbd_core(
     dst: &mut [u16],
     dst_stride: usize,

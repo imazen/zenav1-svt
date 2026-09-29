@@ -1661,6 +1661,7 @@ pub fn fwd_txfm2d_core(
 /// `col_1d`/`row_1d`: 0=DCT, 1=ADST, 2=FLIPADST, 3=IDENTITY. Returns false if
 /// the (type, size) combination has no 1D kernel (e.g. ADST on 32/64 dims).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn fwd_txfm2d_c_exact(
     input: &[i16],
     output: &mut [TranLow],
