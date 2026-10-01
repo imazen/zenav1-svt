@@ -14,7 +14,7 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2040cad221332dbe816267e6f2b55032f53a297ceb4d97f8e612df471aa6dbc"
 dependencies = [
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -229,6 +229,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,6 +260,11 @@ name = "enough"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8e1bd41ecce82c300d0c84fa35b080fa6db50a5398b18f1abf0357bb067549e"
+
+[[package]]
+name = "enough"
+version = "0.4.4"
+source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
 
 [[package]]
 name = "errno"
@@ -330,6 +341,24 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "howfar"
+version = "0.1.0"
+source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
+dependencies = [
+ "enough 0.4.4 (git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22)",
+]
+
+[[package]]
+name = "howfar-along"
+version = "0.1.0"
+source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
+dependencies = [
+ "critical-section",
+ "enough 0.4.4 (git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22)",
+ "howfar",
+]
 
 [[package]]
 name = "iai-callgrind"
@@ -1129,11 +1158,14 @@ version = "0.1.0"
 dependencies = [
  "almost-enough",
  "archmage",
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "howfar",
+ "howfar-along",
  "iai-callgrind",
  "png",
  "re_mp4",
  "rusty_h264",
+ "whereat",
  "zenav1-svt-dsp",
  "zenav1-svt-encoder",
  "zenav1-svt-types",
@@ -1166,7 +1198,7 @@ version = "0.1.0"
 dependencies = [
  "almost-enough",
  "archmage",
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "magetypes",
  "smallvec",
  "whereat",
@@ -1179,7 +1211,7 @@ dependencies = [
 name = "zenav1-svt-types"
 version = "0.1.0"
 dependencies = [
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "whereat",
 ]
 
@@ -1192,7 +1224,7 @@ dependencies = [
  "arrayvec",
  "bitreader",
  "byteorder",
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "fallible_collections",
  "leb128",
  "log",
@@ -1229,7 +1261,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be4b0d4108a8f062c85090bf8d0e6dd00fea976ffacc0e4f3cb6b03284a75531"
 dependencies = [
  "almost-enough",
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "whereat",
  "zenpixels",
 ]
@@ -1241,7 +1273,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95ee7e85b931bb9930b5ba8e65c240127813410e4af5eeb285f8a651152d674e"
 dependencies = [
  "bytemuck",
- "enough",
+ "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "garb",
  "gif",
  "linear-srgb",

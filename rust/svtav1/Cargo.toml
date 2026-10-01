@@ -59,6 +59,11 @@ rusty_h264 = { version = "0.16.0", default-features = false, features = ["std", 
 archmage = { workspace = true, features = ["testable_dispatch"] }
 zenav1-svt-encoder = { workspace = true }
 iai-callgrind = "0.16.1"
+# Integration probe for the small library-facing progress interface. Neither
+# crate is linked into the production encoder by this test-only experiment.
+howfar = { git = "https://github.com/imazen/enough", rev = "cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22" }
+howfar-along = { git = "https://github.com/imazen/enough", rev = "cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22" }
+whereat = { workspace = true }
 
 [lints]
 workspace = true
@@ -100,6 +105,10 @@ path = "tests/still_policy.rs"
 [[test]]
 name = "tier_invariance"
 path = "tests/tier_invariance.rs"
+
+[[test]]
+name = "howfar_probe"
+path = "tests/howfar_probe.rs"
 
 # The GIF -> animated AVIF example needs the container muxer; without the
 # feature the `rgba` module and `encode_rgba_animation` are compiled out, so a
