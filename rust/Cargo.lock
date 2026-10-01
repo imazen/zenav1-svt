@@ -264,7 +264,7 @@ checksum = "f8e1bd41ecce82c300d0c84fa35b080fa6db50a5398b18f1abf0357bb067549e"
 [[package]]
 name = "enough"
 version = "0.4.4"
-source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
+source = "git+https://github.com/imazen/enough?rev=4b915e5beeba6dafa5830ae26cf7594ebebdf0ae#4b915e5beeba6dafa5830ae26cf7594ebebdf0ae"
 
 [[package]]
 name = "errno"
@@ -343,21 +343,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "howfar"
+name = "how-far"
 version = "0.1.0"
-source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
+source = "git+https://github.com/imazen/enough?rev=4b915e5beeba6dafa5830ae26cf7594ebebdf0ae#4b915e5beeba6dafa5830ae26cf7594ebebdf0ae"
 dependencies = [
- "enough 0.4.4 (git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22)",
+ "enough 0.4.4 (git+https://github.com/imazen/enough?rev=4b915e5beeba6dafa5830ae26cf7594ebebdf0ae)",
 ]
 
 [[package]]
-name = "howfar-along"
+name = "how-far-along"
 version = "0.1.0"
-source = "git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22#cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22"
+source = "git+https://github.com/imazen/enough?rev=4b915e5beeba6dafa5830ae26cf7594ebebdf0ae#4b915e5beeba6dafa5830ae26cf7594ebebdf0ae"
 dependencies = [
  "critical-section",
- "enough 0.4.4 (git+https://github.com/imazen/enough?rev=cef3ac1d58bf15c0b7366b19b47e9cec2ce04b22)",
- "howfar",
+ "enough 0.4.4 (git+https://github.com/imazen/enough?rev=4b915e5beeba6dafa5830ae26cf7594ebebdf0ae)",
+ "how-far",
 ]
 
 [[package]]
@@ -1159,8 +1159,8 @@ dependencies = [
  "almost-enough",
  "archmage",
  "enough 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "howfar",
- "howfar-along",
+ "how-far",
+ "how-far-along",
  "iai-callgrind",
  "png",
  "re_mp4",

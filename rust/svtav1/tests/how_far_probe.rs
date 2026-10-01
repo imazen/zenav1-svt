@@ -1,15 +1,15 @@
-//! Exercise howfar as a library author would at the public raw-encoder seam.
+//! Exercise how-far as a library author would at the public raw-encoder seam.
 //! Counts are actual completed frames; the encoder itself is not instrumented.
 //! `EncodePipeline::with_stop` owns a `'static` token, so a borrowed pulse in
 //! this probe can cancel between frames but cannot enter the inner hot loop.
 
-use howfar::{NoPulse, PhaseSpec, Pulse, RunError, Steps, Total};
-use howfar_along::{Observer, Outcome, Phase, PulseTree, Status};
+use how_far::{NoPulse, PhaseSpec, ProgressExt, Pulse, RunError, Steps, Total};
+use how_far_along::{Observer, Outcome, Phase, PulseTree, Status};
 use svtav1::pipeline::{EncodePipeline, RcConfig, RcMode};
 
 #[derive(Debug)]
 enum ProbeError {
-    Stopped(howfar::StopReason),
+    Stopped(how_far::StopReason),
     Encode(whereat::At<svtav1::pipeline::EncodeError>),
 }
 
@@ -72,7 +72,7 @@ fn encode_two_frames(
                         .try_encode_frame_420(&y, u, &uv, 64)
                         .map_err(ProbeError::Encode)?,
                 );
-                stage.advance(1);
+                stage.step(1).map_err(ProbeError::Stopped)?;
             }
             Ok::<_, ProbeError>(bytes)
         },
@@ -81,7 +81,7 @@ fn encode_two_frames(
         |error| matches!(error, ProbeError::Stopped(_)),
         |stage| {
             let tail = encoder.try_flush().map_err(ProbeError::Encode)?;
-            stage.advance(1);
+            stage.step(1).map_err(ProbeError::Stopped)?;
             Ok::<_, ProbeError>(tail)
         },
     )?);
@@ -93,7 +93,7 @@ fn encode_two_frames(
 fn typed_stage_labels_and_real_frame_counts_need_no_tracker_in_library_code() {
     let pulse = PulseTree::new(
         Phase::new("video", Total::Unknown),
-        &howfar_along::Unstoppable,
+        &how_far_along::Unstoppable,
     );
     let observer = pulse.observer();
     let with_progress = encode_two_frames(&pulse, false).unwrap();
@@ -111,10 +111,10 @@ fn typed_stage_labels_and_real_frame_counts_need_no_tracker_in_library_code() {
 
 struct CancelAfterFirstFrame(Observer);
 
-impl howfar::Stop for CancelAfterFirstFrame {
-    fn check(&self) -> Result<(), howfar::StopReason> {
+impl how_far::Stop for CancelAfterFirstFrame {
+    fn check(&self) -> Result<(), how_far::StopReason> {
         if self.0.snapshot().children[0].completed >= 1 {
-            Err(howfar::StopReason::Cancelled)
+            Err(how_far::StopReason::Cancelled)
         } else {
             Ok(())
         }
@@ -130,7 +130,7 @@ fn a_stop_between_frames_preserves_count_and_skips_flush() {
     assert!(matches!(
         encode_two_frames(&pulse, false),
         Err(RunError::Work(ProbeError::Stopped(
-            howfar::StopReason::Cancelled
+            how_far::StopReason::Cancelled
         )))
     ));
     let snapshot = observer.snapshot();
@@ -146,7 +146,7 @@ fn a_stop_between_frames_preserves_count_and_skips_flush() {
 fn a_bad_second_frame_is_failure_after_one_completed_frame() {
     let pulse = PulseTree::new(
         Phase::new("video", Total::Unknown),
-        &howfar_along::Unstoppable,
+        &how_far_along::Unstoppable,
     );
     let observer = pulse.observer();
     assert!(matches!(
