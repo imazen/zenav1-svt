@@ -111,6 +111,12 @@
 #include "global_me.h"
 #include "global_me_cost.h"
 #include "enc_warped_motion.h"
+#include "inter_prediction.h"
+
+/* `svt_aom_get_comp_group_idx_context_enc` (entropy_coding.c:80) is
+ * non-static but has no header declaration — the IFCOST compound-fields
+ * dump needs the same ctx C's get_compound_mode_rate just used. */
+int svt_aom_get_comp_group_idx_context_enc(const MacroBlockD* xd);
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -683,6 +689,18 @@ void __wrap_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_s
     for (int i = 0; i < TX_TYPES; ++i) fprintf(sf, "%s%u", i ? "," : "", fc->inter_ext_tx_cdf[1][1][i]);
     fprintf(sf, "] paly0=[%u,%u,%u]\n", fc->palette_y_mode_cdf[0][0][0], fc->palette_y_mode_cdf[0][1][0],
             fc->palette_y_mode_cdf[0][2][0]);
+    /* SEED4 (2026-09-29): the inter rows the video-arm compound-rate probe
+     * turned on — intra_inter (the flag every inter block adapts), the
+     * compound index/group rows, comp-inter and the reference cdfs whose
+     * refpair estimate feeds `estimate_ref_frames_num_bits`. */
+    fprintf(sf,
+            "SEED4 sb=%d ii=[%u,%u] cidx=[%u,%u] cg=[%u,%u] compi=[%u,%u] sref=[%u,%u] cref=[%u,%u]\n",
+            call - 1, fc->intra_inter_cdf[0][0], fc->intra_inter_cdf[0][1],
+            fc->compound_index_cdf[0][0], fc->compound_index_cdf[0][1],
+            fc->comp_group_idx_cdf[0][0], fc->comp_group_idx_cdf[0][1],
+            fc->comp_inter_cdf[0][0], fc->comp_inter_cdf[0][1],
+            fc->single_ref_cdf[0][0][0], fc->single_ref_cdf[0][0][1],
+            fc->comp_ref_cdf[0][0][0], fc->comp_ref_cdf[0][0][1]);
     /* TEMPORARY: full partition/skip/txsize ctx rows — the CDF drift on the
      * video key-frame cell is confined to NA-derived contexts. */
     fprintf(sf, "SEED3 sb=%d part=[", call - 1);
@@ -1145,10 +1163,68 @@ uint64_t __wrap_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionCont
                 f = fopen(path, "w");
             if (f) {
                 const ModeDecisionCandidate* cand = cand_bf->cand;
+                /* The compound-signalling inputs + both ctx indices C just
+                 * used inside get_compound_mode_rate — joins the port's
+                 * RSPLIT line (nbcg/nbci are the neighbor stamps the ctx
+                 * functions read). ctxj needs the same ref_order_hint pair
+                 * the cost reads. */
+                const int ctxg = svt_aom_get_comp_group_idx_context_enc(ctx->blk_ptr->av1xd);
+                int       ctxj = -1, jrate = -1, cgrate = -1;
+                if (has_second_ref(&cand->block_mi)) {
+                    if (is_any_masked_compound_used(ctx->blk_geom->bsize) &&
+                        pcs->scs->seq_header.enable_masked_compound)
+                        cgrate = ctx->md_rate_est_ctx
+                                     ->comp_group_idx_fac_bits[ctxg][cand->block_mi.comp_group_idx];
+                    if (cand->block_mi.comp_group_idx == 0 &&
+                        pcs->scs->seq_header.order_hint_info.enable_jnt_comp) {
+                        ctxj = svt_aom_get_comp_index_context_enc(
+                            pcs->ppcs, pcs->ppcs->cur_order_hint,
+                            pcs->ppcs->ref_order_hint[cand->block_mi.ref_frame[0] - 1],
+                            pcs->ppcs->ref_order_hint[cand->block_mi.ref_frame[1] - 1],
+                            ctx->blk_ptr->av1xd);
+                        jrate = ctx->md_rate_est_ctx
+                                    ->comp_idx_fac_bits[ctxj][cand->block_mi.compound_idx];
+                    }
+                }
+                /* The remaining additive terms of `luma_rate`, so the port's
+                 * RSPLIT joins field-for-field: the ref-pair estimate, the
+                 * mode symbol (mode_context shown), is_inter and skip_mode. */
+                MvReferenceFrame  rfp[2]  = {cand->block_mi.ref_frame[0], cand->block_mi.ref_frame[1]};
+                const int8_t      rftype  = av1_ref_frame_type(rfp);
+                const int16_t     mctx    = svt_aom_mode_context_analyzer(
+                    ctx->inter_mode_ctx[rftype], rfp);
+                uint64_t refpair = 0;
+                if (ctx->approx_inter_rate < 2)
+                    refpair = ctx->estimate_ref_frames_num_bits[rftype];
+                uint64_t moderate = 0;
+                const PredictionMode im = (PredictionMode)cand->block_mi.mode;
+                if (is_inter_compound_mode(im)) {
+                    moderate = ctx->md_rate_est_ctx
+                                   ->inter_compound_mode_fac_bits[mctx][INTER_COMPOUND_OFFSET(im)];
+                } else {
+                    const int16_t nctx = mctx & NEWMV_CTX_MASK;
+                    moderate += ctx->md_rate_est_ctx->new_mv_mode_fac_bits[nctx][im != NEWMV];
+                    if (im != NEWMV) {
+                        const int16_t zctx = (mctx >> GLOBALMV_OFFSET) & GLOBALMV_CTX_MASK;
+                        moderate += ctx->md_rate_est_ctx->zero_mv_mode_fac_bits[zctx][im != GLOBALMV];
+                        if (im != GLOBALMV) {
+                            const int16_t rctx = (mctx >> REFMV_OFFSET) & REFMV_CTX_MASK;
+                            moderate += ctx->md_rate_est_ctx->ref_mv_mode_fac_bits[rctx][im != NEARESTMV];
+                        }
+                    }
+                }
+                const uint32_t isinter = ctx->md_rate_est_ctx->intra_inter_fac_bits[ctx->is_inter_ctx][1];
+                const uint32_t skpm =
+                    pcs->ppcs->frm_hdr.skip_mode_params.skip_mode_flag &&
+                            is_comp_ref_allowed(ctx->blk_geom->bsize)
+                        ? ctx->md_rate_est_ctx->skip_mode_fac_bits[ctx->skip_mode_ctx][0]
+                        : 0;
                 fprintf(f,
                         "IFCOST poc=%u org=(%u,%u) %ux%u st=%d mode=%d rf=%d,%d mv0=%d,%d "
                         "pmv0=%d,%d drl=%d imc=%d interp=0x%x mm=%d iiu=%d "
-                        "flr=%u fcr=%u lambda=%llu dist=%llu cost=%llu\n",
+                        "flr=%u fcr=%u lambda=%llu dist=%llu cost=%llu "
+                        "cgi=%d cidx=%d ct=%d wi=%d ctxg=%d ctxj=%d cgrate=%d jrate=%d "
+                        "refpair=%llu mctx=%d moderate=%llu isinter=%u skpm=%u\n",
                         (unsigned)pcs->picture_number, (unsigned)ctx->blk_org_x,
                         (unsigned)ctx->blk_org_y, (unsigned)ctx->blk_geom->bwidth,
                         (unsigned)ctx->blk_geom->bheight, (int)ctx->md_stage,
@@ -1161,7 +1237,13 @@ uint64_t __wrap_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionCont
                         (int)cand->block_mi.is_interintra_used,
                         (unsigned)cand_bf->fast_luma_rate, (unsigned)cand_bf->fast_chroma_rate,
                         (unsigned long long)lambda, (unsigned long long)luma_distortion,
-                        (unsigned long long)rc);
+                        (unsigned long long)rc,
+                        (int)cand->block_mi.comp_group_idx, (int)cand->block_mi.compound_idx,
+                        (int)cand->block_mi.interinter_comp.type,
+                        (int)cand->block_mi.interinter_comp.wedge_index,
+                        ctxg, ctxj, cgrate, jrate,
+                        (unsigned long long)refpair, (int)mctx,
+                        (unsigned long long)moderate, isinter, skpm);
                 fflush(f);
             }
         }

@@ -1793,7 +1793,19 @@ pub(super) fn encode_coding_unit(
                 &mut cfc,
                 base_qindex,
                 se,
-                true,
+                // The frame's real `is_key` — `inter_md` is armed iff the
+                // frame is not a key frame. This used to hardcode `true`,
+                // which suppressed `write_is_inter`
+                // (block_syntax.rs `!skip_mode && !is_key`), the
+                // skip-mode symbol and the kf-vs-y_mode arm in the sim
+                // for every SB of an INTER frame: C's `ec_ctx_array`
+                // evolves `intra_inter_cdf`/`skip_mode_cdfs`/`y_mode_cdf`
+                // there while the chain left them at the frame-init
+                // values. MEASURED 2026-09-29 on `vidyo1 128 q20 p0`
+                // poc=1: C's `intra_inter_cdf[0]` ran 31962→32458 across
+                // the tile's SBs while the port held 31962 flat — every
+                // inter candidate's isinter term over-priced ~+12.
+                inter_md.is_none(),
                 sb_x0,
                 sb_y0,
                 &mut sim_chroma,

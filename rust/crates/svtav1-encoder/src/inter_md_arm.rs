@@ -141,6 +141,7 @@ pub struct IfsFrameKnobs {
     pub ac_bias_eff: f64,
 }
 
+#[derive(Clone)]
 pub struct InterMdFrame<'a> {
     /// The DPB reference with C's replicated margins — what the MC indexes.
     ///
@@ -316,11 +317,11 @@ pub struct InterMdFrame<'a> {
     /// per-(bsize, mode) blend weights (`init_ii_masks`,
     /// inter_prediction.c:2294). Frame-owned: C keeps them on the MD
     /// context; the port builds them once per inter frame here.
-    pub ii_masks: svtav1_dsp::port_interintra::IiMasks,
+    pub ii_masks: alloc::sync::Arc<svtav1_dsp::port_interintra::IiMasks>,
     /// The `wedge_params` master tables (`av1_init_wedge_masks`,
     /// reconinter.c) — read by the inter-intra wedge search, the
     /// masked-compound wedge pick, and the predict-time WEDGE blend.
-    pub wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks,
+    pub wedge_masks: alloc::sync::Arc<svtav1_dsp::port_wedge_masks::WedgeMasks>,
     /// C `scs->mrp_ctrls.use_best_references` — the level
     /// `get_enable_use_best_me` (product_coding_loop.c:9310-9341) reads to
     /// decide whether this block's `ref_frame_type_arr` is rebuilt by

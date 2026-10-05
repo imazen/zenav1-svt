@@ -85,6 +85,7 @@ pub const REF_LIST_MAX_DEPTH: usize = 4;
 /// base_q_idx` (rc_process.c:423-446). They live on
 /// [`BlockSearchIn`] for that reason; this struct carrying them was the
 /// defect `docs/INTER-ENCODE-PLAN.md` 1z24 fixed.
+#[derive(Clone)]
 pub struct SearchFrameCfg {
     /// C `ctx->md_pme_ctrls`.
     pub md_pme: MdPmeCtrls,

@@ -1634,6 +1634,25 @@ pub(super) fn encode_one_tile_body(
                             .collect::<Vec<_>>()
                     )
                 );
+                // SEED4 (2026-09-29): the inter rows the compound-rate probe
+                // turned on — joins the C interposer's SEED4
+                // (wrap_recon.c, SVT_SEED_OUT) field-for-field.
+                eprintln!(
+                    "SEED4 sb={} ii=[{},{}] cidx=[{},{}] cg=[{},{}] compi=[{},{}] sref=[{},{}] cref=[{},{}]",
+                    sb_index,
+                    fc.intra_inter_cdf[0][0],
+                    fc.intra_inter_cdf[0][1],
+                    fc.inter.compound_index_cdf[0][0],
+                    fc.inter.compound_index_cdf[0][1],
+                    fc.inter.comp_group_idx_cdf[0][0],
+                    fc.inter.comp_group_idx_cdf[0][1],
+                    fc.comp_inter_cdf[0][0],
+                    fc.comp_inter_cdf[0][1],
+                    fc.single_ref_cdf[0][0][0],
+                    fc.single_ref_cdf[0][0][1],
+                    fc.comp_ref_cdf[0][0][0],
+                    fc.comp_ref_cdf[0][0][1],
+                );
             }
             if funnel_chain {
                 fun_rates = Some(match &chain_base {
@@ -1645,6 +1664,40 @@ pub(super) fn encode_one_tile_body(
                     }
                 });
             }
+            // The INTER half of the same per-SB reseed. C runs
+            // `svt_aom_estimate_syntax_rate` + `svt_aom_estimate_mv_rate`
+            // per superblock on `ec_ctx_array[sb]` (the chain_base blend —
+            // enc_dec_process.c:2890-2917), but `inter_md` was seeded once
+            // per frame from `primary_ref_cdfs` (inter_md_stage.rs:58-62) —
+            // the `md_frame_context` arm, which is C's seed only for the
+            // FIRST SB of a tile (`ec_ctx_array[0] = md_frame_context`,
+            // enc_dec_process.c:2870). Every later SB's inter rate tables
+            // must come from the left×3 + top-right×1 blended ctx like the
+            // intra `fun_rates` above. Measured 2026-09-29 on
+            // `vidyo1 128 q20 p0` poc=1 blk (64,64) 32x32, mode17 {1,5}:
+            // C's IFCOST flr=1329 vs port 1512 — EVERY term over-priced
+            // (+70 refpair, +30 mode, +12 isinter, +20 cg, +51 ji), i.e.
+            // C's adapted CDFs made the whole candidate cheaper.
+            // `None` = the FrameContext/SB0 arm, where `inter_md`'s
+            // frame-level tables already hold the md_frame_context seed.
+            let inter_md_sb = match (inter_md, &chain_base) {
+                (Some(im), Some((fc, _cfc))) => {
+                    let mut sb = im.clone();
+                    let (fac, ref_fac) = crate::inter_md_arm::build_inter_rates(fc, &fc.inter);
+                    sb.fac = fac;
+                    sb.ref_fac = ref_fac;
+                    if sb.search.approx_inter_rate == 0 {
+                        let prec = crate::inter_mv_code::mv_precision(
+                            sb.allow_high_precision_mv,
+                            sb.force_integer_mv,
+                        );
+                        sb.nmv = crate::inter_md_arm::nmv_cost_table(&fc.nmvc, prec);
+                        sb.search_tables = crate::intrabc::build_nmv_cost_table(&fc.nmvc, prec);
+                    }
+                    Some(sb)
+                }
+                _ => None,
+            };
             // Per-b64 coding units (SB128: up to 4 in Z-order; SB64: the
             // SB itself — see the `units` comment above).
             let unit_results: Vec<crate::partition::PartitionResult> =
@@ -1702,7 +1755,9 @@ pub(super) fn encode_one_tile_body(
                 ref_frame_data,
                 temporal_layer,
                 ref_padded,
-                inter_md,
+                // Per-SB-reseeded rate tables when `chain_base` armed the
+                // reseed above; the frame-level `inter_md` otherwise.
+                inter_md_sb.as_ref().or(inter_md),
                 pd0_dr_res,
                 ref_min_max_sq,
                 md_frame_cdfs,

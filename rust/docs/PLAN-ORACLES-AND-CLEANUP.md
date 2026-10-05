@@ -1010,6 +1010,29 @@ C-parity witness under `SVT_ORACLE=ghost-robot`.
     wedge for (i): instrument C's inter rate terms (ref-pair bits, mode
     ctx bits, drl/mv-diff bits, comp-type bits) for one identical winner
     and diff term-by-term against the port's `flr`/`refbits` split.
+  - (i) fast-rate over-price ROOT-CAUSED + FIXED (2026-09-29, devin): the
+    MDS0 term split on `vidyo1 128 q20 p0` poc=1 blk (64,64) 32x32
+    NEAREST_NEARMV {1,5} showed EVERY term over-priced at the SAME ctx
+    index (+70 refpair, +30 mode, +12 isinter, +20 cg, +51 ji) — i.e.
+    wrong CDF source, not a ctx-formula bug. C reseeds each SB's
+    `svt_aom_estimate_syntax_rate`/`svt_aom_estimate_mv_rate` from
+    `ec_ctx_array[sb]` (the left×3+top-right×1 blended LIVE ctx,
+    enc_dec_process.c:2870-2917); the port built its inter tables ONCE
+    per frame from `primary_ref_cdfs` (= SB0's seed only). Two fixes:
+    (1) per-SB rebuild of `InterFacBits`/`RefFrameFacBits`/nmv/search
+    tables from `chain_base` in `tile_body` (`inter_md_sb`), and
+    (2) the chain sim's `is_key` hardcode → `inter_md.is_none()` — the
+    sim never ran `write_is_inter`/the skip-mode symbol/the non-kf
+    y_mode arm on inter frames, so `intra_inter_cdf` never adapted.
+    Post-fix, C's per-SB SEED4 rows join the port's field-for-field
+    (`intra_inter` 31962→32458, `comp_inter`/`comp_group_idx` identical
+    per SB) and the pinned candidate's flr joins 1329/2475/5594
+    term-for-term. Net: video census 295/540 (19 promoted, 1 moved to
+    TU1 — `vidyo4 256 55 p3`, pin moved in-commit). Remaining wedge
+    inside (i): the port's pred_mv[0]=(0,0) vs C's pmv0=(1,0) on the
+    same block — a stack/pred-selection difference that costs no bits
+    on nearest modes but marks the compound ref-mv path as the next
+    suspect (cf. the GR `find_best_ref_mvs_from_stack` allow_hp note).
   Each closed cell lands in a gate in the same change: the census itself
   is the ratchet `tools/video_census_gate.sh` (pins in
   `tools/pins/video_census.tsv`), TPL/CBR are `rc_tpl_gate.sh`.

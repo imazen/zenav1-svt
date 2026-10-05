@@ -271,8 +271,10 @@ impl EncodePipeline {
                     // smooth inter-intra blends and the master wedge
                     // table both searches and the masked compound arm
                     // read.
-                    ii_masks: svtav1_dsp::port_interintra::IiMasks::new(),
-                    wedge_masks: svtav1_dsp::port_wedge_masks::WedgeMasks::new(),
+                    ii_masks: alloc::sync::Arc::new(svtav1_dsp::port_interintra::IiMasks::new()),
+                    wedge_masks: alloc::sync::Arc::new(
+                        svtav1_dsp::port_wedge_masks::WedgeMasks::new(),
+                    ),
                     // C `ppcs->pic_obmc_level`, straight off the mode-decision
                     // signal derivation that already computes it.
                     pic_obmc_level: md_config_signals

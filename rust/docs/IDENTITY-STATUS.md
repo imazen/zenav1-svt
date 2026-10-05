@@ -21,8 +21,9 @@ that has not moved its pin, so the gate is the current number:
 - Low delay, real video: `tools/video_census_gate.sh` — 6 public-domain
   derf clips x {128,256} x qp {20,40,55} x presets -1..13, 8 frames; each
   cell's first differing temporal unit is pinned in
-  `tools/pins/video_census.tsv`. 244/540 were identical at the census; the
-  pins hold the current count. The video arm's `chroma_level` on key frames
+  `tools/pins/video_census.tsv`. 244/540 were identical at the census,
+  295/540 after the per-SB inter rate reseed (2026-09-29); the pins hold
+  the current count. The video arm's `chroma_level` on key frames
   (`801d103f`), its preset -1 qp-scaler bits (`b0e7cbe5`), the p7 split
   walk's early exit (`aae52a01`) and the tx-size rate gated on
   `TX_MODE_SELECT` (`77d4d3ce`) made every KEY frame on the grid
@@ -140,6 +141,25 @@ Measured vs C, unset `SVTAV1_HIER_LEVELS` on both sides, 256² qp40:
   ~1000 — partition geometry diverges too, so this is the non-base
   inter-MD campaign, not a GlobalMv-specific bug. The pin (22) tracks
   C's real count; do NOT re-pin it as drift.
+
+- **Per-SB inter rate seeds** (2026-09-29): the funnel's inter rate
+  tables (`InterFacBits`/`RefFrameFacBits`/nmv + search cost) were built
+  once per frame from `primary_ref_cdfs` — C's `md_frame_context`, which
+  is `ec_ctx_array[0]`'s seed only. C reseeds EVERY superblock's
+  `svt_aom_estimate_syntax_rate` + `svt_aom_estimate_mv_rate` from
+  `ec_ctx_array[sb]` — the left×3 + top-right×1 blended live-adapting
+  context (`enc_dec_process.c:2870-2917`). The port now rebuilds the
+  inter tables per-SB from the same `chain_base` the intra `fun_rates`
+  already read — after fixing the chain sim's `is_key` hardcode, which
+  suppressed `write_is_inter` (and the skip-mode symbol + the kf-vs-
+  y_mode arm) on every inter frame so `intra_inter_cdf` never adapted.
+  Measured `vidyo1 128 q20 p0` poc=1: C's per-SB seeds join the port's
+  field-for-field (SEED4 rows: `intra_inter` 31962→32458,
+  `comp_inter`/`comp_group_idx` identical at every SB), and the pinned
+  32x32 compound candidate's `fast_luma_rate` joins C term-for-term
+  (1329/2475/5594 — every sub-term identical). Net: video census 295/540
+  (19 promoted, 1 regressed to TU1 — `vidyo4 256 55 p3`, pin moved in
+  the same commit).
 
 Note the asymmetry the AUTO change intentionally removes: an
 unset-vs-unset cell comparison now means the same configuration on

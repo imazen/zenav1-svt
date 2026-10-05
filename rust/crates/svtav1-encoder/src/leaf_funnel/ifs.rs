@@ -302,7 +302,7 @@ pub(super) fn ifs_at_mds3(
                     iw10,
                     comp_data,
                     distwtd,
-                    &im.wedge_masks,
+                    im.wedge_masks.as_ref(),
                     abs_x,
                     abs_y,
                     w,
@@ -369,8 +369,8 @@ pub(super) fn ifs_at_mds3(
                         let mut inter = vec![0u16; n];
                         inter.copy_from_slice(&scratch10);
                         svtav1_dsp::port_interintra::combine_interintra_highbd(
-                            &im.ii_masks,
-                            &im.wedge_masks,
+                            im.ii_masks.as_ref(),
+                            im.wedge_masks.as_ref(),
                             mode,
                             ic.use_wedge_interintra,
                             ic.interintra_wedge_index.max(0) as usize,
@@ -487,7 +487,7 @@ pub(super) fn ifs_at_mds3(
                 iw,
                 comp_data,
                 distwtd,
-                &im.wedge_masks,
+                im.wedge_masks.as_ref(),
                 abs_x,
                 abs_y,
                 w,
@@ -531,8 +531,8 @@ pub(super) fn ifs_at_mds3(
                 let mut inter = vec![0u8; n];
                 inter.copy_from_slice(&scratch);
                 svtav1_dsp::port_interintra::combine_interintra(
-                    &im.ii_masks,
-                    &im.wedge_masks,
+                    im.ii_masks.as_ref(),
+                    im.wedge_masks.as_ref(),
                     mode,
                     ic.use_wedge_interintra,
                     ic.interintra_wedge_index.max(0) as usize,
@@ -664,7 +664,7 @@ pub(super) fn ifs_at_mds3(
                 iw,
                 comp_data,
                 distwtd,
-                &im.wedge_masks,
+                im.wedge_masks.as_ref(),
                 abs_x,
                 abs_y,
                 w,
@@ -731,8 +731,8 @@ pub(super) fn ifs_at_mds3(
             let mut inter = vec![0u8; n];
             inter.copy_from_slice(&pred[..n]);
             svtav1_dsp::port_interintra::combine_interintra(
-                &im.ii_masks,
-                &im.wedge_masks,
+                im.ii_masks.as_ref(),
+                im.wedge_masks.as_ref(),
                 mode,
                 ic.use_wedge_interintra,
                 ic.interintra_wedge_index.max(0) as usize,
@@ -756,8 +756,8 @@ pub(super) fn ifs_at_mds3(
                     let mut inter_uv = vec![0u8; cn];
                     inter_uv.copy_from_slice(&dst[..cn]);
                     svtav1_dsp::port_interintra::combine_interintra(
-                        &im.ii_masks,
-                        &im.wedge_masks,
+                        im.ii_masks.as_ref(),
+                        im.wedge_masks.as_ref(),
                         mode,
                         ic.use_wedge_interintra,
                         ic.interintra_wedge_index.max(0) as usize,
@@ -895,7 +895,7 @@ pub(super) fn ifs_at_mds3(
                         iw10,
                         comp_data,
                         distwtd,
-                        &im.wedge_masks,
+                        im.wedge_masks.as_ref(),
                         abs_x,
                         abs_y,
                         w,
@@ -989,8 +989,8 @@ pub(super) fn ifs_at_mds3(
                         let mut inter = vec![0u16; n];
                         inter.copy_from_slice(&pred10[..n]);
                         svtav1_dsp::port_interintra::combine_interintra_highbd(
-                            &im.ii_masks,
-                            &im.wedge_masks,
+                            im.ii_masks.as_ref(),
+                            im.wedge_masks.as_ref(),
                             mode,
                             ic.use_wedge_interintra,
                             ic.interintra_wedge_index.max(0) as usize,
@@ -1018,8 +1018,8 @@ pub(super) fn ifs_at_mds3(
                             let mut inter_uv = vec![0u16; cn];
                             inter_uv.copy_from_slice(&dst[..cn]);
                             svtav1_dsp::port_interintra::combine_interintra_highbd(
-                                &im.ii_masks,
-                                &im.wedge_masks,
+                                im.ii_masks.as_ref(),
+                                im.wedge_masks.as_ref(),
                                 mode,
                                 ic.use_wedge_interintra,
                                 ic.interintra_wedge_index.max(0) as usize,
