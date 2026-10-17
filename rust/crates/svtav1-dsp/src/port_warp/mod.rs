@@ -580,7 +580,7 @@ pub fn warp_affine(
             gamma,
             delta
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -816,18 +816,19 @@ fn warp_affine_impl_scalar(
     }
 }
 
-/// The vector arm of `warp_affine_impl`. Per sub-block: when the sub-block is
-/// a FULL 8x8 inside the output window, its warp source touches no reference
-/// edge (the horizontal pass reads `iy4-7 .. iy4+7` rows and `ix4-7 .. ix4+7`
-/// columns), and the single-reference (non-compound) writeback applies, the
-/// two filter passes run as [`warp_affine_subblock_v3`]. Everything else —
-/// partial sub-blocks, edge-clamped sources, the compound arms — takes the
-/// scalar sub-block unchanged.
-#[cfg(target_arch = "x86_64")]
-#[arcane]
+/// The vector arms of `warp_affine_impl` — one `#[magetypes]` body generating
+/// the v3 and neon variants, so the two tiers cannot drift. Per sub-block:
+/// when the sub-block is a FULL 8x8 inside the output window, its warp source
+/// touches no reference edge (the horizontal pass reads `iy4-7 .. iy4+7` rows
+/// and `ix4-7 .. ix4+7` columns), and the single-reference (non-compound)
+/// writeback applies, the two filter passes run as
+/// [`warp_affine_subblock_simd`]. Everything else — partial sub-blocks,
+/// edge-clamped sources, the compound arms — takes the scalar sub-block
+/// unchanged.
+#[magetypes(v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn warp_affine_impl_v3(
-    token: Desktop64,
+fn warp_affine_impl(
+    token: Token,
     mat: &[i32; 6],
     reference: &[u8],
     width: i32,
@@ -870,7 +871,7 @@ fn warp_affine_impl_v3(
             let full = i + 8 <= p_row + p_height && j + 8 <= p_col + p_width;
             let interior = g.iy4 >= 7 && g.iy4 <= height - 8 && g.ix4 >= 7 && g.ix4 <= width - 8;
             if full && interior && !conv_params.is_compound {
-                warp_affine_subblock_v3(
+                warp_affine_subblock_simd(
                     token,
                     &g,
                     i,
@@ -916,10 +917,15 @@ fn warp_affine_impl_v3(
     }
 }
 
-/// The vectorised sub-block of [`warp_affine_impl_v3`]: the same arithmetic as
-/// [`warp_affine_subblock`]'s non-compound arm, with `tmp` stored TRANSPOSED
-/// (`tmp[l][k]`, lane-major) so the vertical pass's 8-tap column dot is a
-/// contiguous `i32` slice.
+/// The vectorised sub-block of the SIMD `warp_affine_impl` variants: the same
+/// arithmetic as [`warp_affine_subblock`]'s non-compound arm, with `tmp`
+/// stored TRANSPOSED (`tmp[l][k]`, lane-major) so the vertical pass's 8-tap
+/// column dot is a contiguous `i32` slice.
+///
+/// Generic over the SIMD token — the v3 and neon driver variants monomorphise
+/// it to their backend. Every op is a magetypes generic with an aarch64
+/// backend (`u8x16::widen_low` → `ushll`, `i16x8::madd_adjacent` → the `smlal`
+/// pair accumulation, `i32x4` mul/add → `mul`/`add.4s`).
 ///
 /// Horizontal pass: one 8-tap dot per `(k, l)` — the 8 reference bytes load
 /// once and widen to `i16x8`, `madd_adjacent` against the `WARPED_FILTER` row
@@ -930,11 +936,11 @@ fn warp_affine_impl_v3(
 /// Vertical pass: per output `(k, l)`, `i32x4` pairs multiply the contiguous
 /// `tmp[l][k..k+8]` column by the widened coefficient row and `reduce_add`
 /// finishes — again identical arithmetic, different order.
-#[cfg(target_arch = "x86_64")]
-#[rite]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline]
 #[allow(clippy::too_many_arguments)]
-fn warp_affine_subblock_v3(
-    token: Desktop64,
+fn warp_affine_subblock_simd<T>(
+    token: T,
     g: &WarpGeom,
     i: i32,
     j: i32,
@@ -949,7 +955,14 @@ fn warp_affine_subblock_v3(
     beta: i16,
     gamma: i16,
     delta: i16,
-) {
+) where
+    T: SimdToken
+        + magetypes::simd::backends::U8x16Backend
+        + magetypes::simd::backends::U16x8Backend
+        + magetypes::simd::backends::I16x8Backend
+        + magetypes::simd::backends::I32x4Backend
+        + magetypes::simd::backends::I16x8Bitcast,
+{
     use magetypes::simd::generic::{i16x8, i32x4, u8x16};
     let WarpGeom { ix4, iy4, sx4, sy4 } = *g;
     let bd = 8i32;

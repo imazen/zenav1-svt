@@ -24,4 +24,3 @@ predict_smooth_v_hbd_impl	x86
 sum_abs_coeffs_wide_impl	neon
 variance_about_128_impl	x86
 variance_of_diff_impl	x86
-warp_affine_impl	neon

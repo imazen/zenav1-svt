@@ -402,6 +402,52 @@ fn bench_dsp(suite: &mut Suite) {
     }
 
     {
+        // Warped-motion prediction: the 8-bit affine kernel on a 32x32 window
+        // interior to a 64x64 reference, so every 8x8 sub-block takes the
+        // vector path. C binds `svt_av1_warp_affine` to neon/i8mm/sve on
+        // aarch64; the port's dispatch was [v3, scalar] until the shared
+        // magetypes body gained its neon tier.
+        use svtav1_dsp::port_warp::{self, WarpConvolveParams};
+        use svtav1_types::motion::WarpedMotionParams;
+        const WR: usize = 64;
+        const PW: usize = 32;
+        let wreff: &'static [u8] = Box::leak(plane8(WR * WR, 29).into_boxed_slice());
+        let prec = 1i32 << port_warp::WARPEDMODEL_PREC_BITS;
+        let mat = [0i32, 0, prec + 4000, -3000, 2500, prec - 3500];
+        let mut wm = WarpedMotionParams {
+            wmmat: mat,
+            ..Default::default()
+        };
+        assert!(port_warp::get_shear_params(&mut wm), "bench warp model");
+        let shear = [wm.alpha, wm.beta, wm.gamma, wm.delta];
+        let cp = WarpConvolveParams::simple(false, 8);
+        let warp_call = move |pred: &mut [u8]| {
+            port_warp::warp_affine(
+                &mat, wreff, WR as i32, WR as i32, WR, pred, None, 8, 8, PW as i32, PW as i32, PW,
+                0, 0, &cp, shear[0], shear[1], shear[2], shear[3],
+            );
+        };
+        assert!(set_simd(false));
+        let mut scalar_out = vec![0u8; PW * PW];
+        warp_call(&mut scalar_out);
+        assert!(set_simd(true));
+        let mut simd_out = vec![0u8; PW * PW];
+        warp_call(&mut simd_out);
+        assert_eq!(scalar_out, simd_out, "warp_affine_32x32");
+        suite.compare("warp_affine_32x32", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut pred = vec![0u8; PW * PW];
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
+                        warp_call(&mut pred);
+                        black_box(&pred);
+                    })
+                });
+            }
+        });
+    }
+
+    {
         // Transforms: the shared 8-lane kernels, now live on aarch64.
         let coef: &'static [i32] = Box::leak(
             (0..64 * 64)

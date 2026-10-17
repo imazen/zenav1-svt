@@ -123,6 +123,7 @@ fn variance_diff_random_all_tiers_match_scalar() {
 /// from a silent fall-through to v3. Covers every `pack_rows_v4` width,
 /// the >=64 chunked path, its staged remainder, and the odd-width
 /// staged path.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
 #[test]
 fn variance_diff_v4_arm_matches_scalar_when_summoned() {
     extern crate std;
