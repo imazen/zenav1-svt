@@ -382,6 +382,12 @@ pub(super) fn encode_tile_rows(
     // waves themselves advance in order, so the assembled `Vec` is in exact
     // tile-index order — byte-identical to the old all-at-once collect for any
     // `thread_count`.
+    //
+    // `limit == 1` takes the sequential fallback rather than a one-thread wave:
+    // `std::thread::spawn` panics at runtime on `wasm32-unknown-unknown`, so a
+    // single-threaded caller there needs a path that never reaches `s.spawn`.
+    // A one-element wave is sequential anyway (spawn, immediately join, in
+    // tile-index order), so the emitted bytes are identical.
     #[cfg(feature = "std")]
     if tile_grid.num_tiles() > 1 {
         let num_tiles = tile_grid.num_tiles();
@@ -390,25 +396,27 @@ pub(super) fn encode_tile_rows(
             n => n,
         }
         .clamp(1, num_tiles);
-        return std::thread::scope(|s| {
-            // Each tile's closure now yields an `EncodeResult`; collect them in
-            // tile-index order and short-circuit to the FIRST error (in tile
-            // order). On the success/default path every element is `Ok`, so the
-            // collect is byte-identical to the previous `Vec` assembly.
-            let mut results = Vec::with_capacity(num_tiles);
-            let mut start = 0;
-            while start < num_tiles {
-                let end = (start + limit).min(num_tiles);
-                let handles: Vec<_> = (start..end)
-                    .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
-                    .collect();
-                for h in handles {
-                    results.push(h.join().unwrap());
+        if limit > 1 {
+            return std::thread::scope(|s| {
+                // Each tile's closure now yields an `EncodeResult`; collect them in
+                // tile-index order and short-circuit to the FIRST error (in tile
+                // order). On the success/default path every element is `Ok`, so the
+                // collect is byte-identical to the previous `Vec` assembly.
+                let mut results = Vec::with_capacity(num_tiles);
+                let mut start = 0;
+                while start < num_tiles {
+                    let end = (start + limit).min(num_tiles);
+                    let handles: Vec<_> = (start..end)
+                        .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
+                        .collect();
+                    for h in handles {
+                        results.push(h.join().unwrap());
+                    }
+                    start = end;
                 }
-                start = end;
-            }
-            results.into_iter().collect()
-        });
+                results.into_iter().collect()
+            });
+        }
     }
 
     // Sequential fallback (single tile, or no-std build).
