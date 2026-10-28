@@ -1,0 +1,8 @@
+source-base: 339bfb4ae1262cf9752e5d5d530eee1c01a9bc85
+source-change: AVIF still 444 facade PR; source and tests committed with this record
+host: i270
+command: TMPDIR=$HOME/tmp scripts/run-heavy --mem 16G --jobs 8 -- bash tools/regression_spotcheck.sh
+result: command failed; 141 executed cells passed, six corpus cells missing
+run-heavy: done rc=1 126s | peak-RSS 0.97GiB | min-avail 25847MiB | peak-load 2.80
+missing: gb82-sc terminal.png and graph.png (six IntraBC/palette witnesses)
+not-claimed: a passing full regression spot check or performance improvement

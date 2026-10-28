@@ -61,6 +61,23 @@ fn main() {
         }
     };
 
+    // Exercise the still facade in the same independent reconstruction gate.
+    // Matching raw bytes proves that the facade retains QP, CICP and planes.
+    let quality = 1.0 + (63 - qp) as f32 * 99.0 / 63.0;
+    assert_eq!(svtav1::avif::AvifEncoder::quality_to_qp_static(quality), qp);
+    let facade = svtav1::avif::AvifEncoder::new()
+        .with_native_preset(svtav1::avif::NativePreset::new(4).unwrap())
+        .with_quality(quality)
+        .with_lossless(qp == 0)
+        .with_color_space(2, 2, 2, false)
+        .with_chroma_subsampling(svtav1::avif::ChromaSubsampling::Yuv444)
+        .encode_yuv444([&y, &u, &v], w as u32, h as u32, [w as u32; 3])
+        .expect("4:4:4 still facade");
+    assert_eq!(
+        facade.data, obu,
+        "facade must preserve the raw pipeline stream"
+    );
+
     std::fs::write(format!("{outdir}/probe.obu"), &obu).unwrap();
     std::fs::write(format!("{outdir}/src_y.raw"), &y).unwrap();
     std::fs::write(format!("{outdir}/src_u.raw"), &u).unwrap();

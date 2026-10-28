@@ -68,6 +68,12 @@ PY
   then
     fail=$((fail+1)); failed+=("$label recon!=aomdec"); return
   fi
+  if [ "$qp" -eq 0 ]; then
+    if ! cat "$W/c/src_y.raw" "$W/c/src_u.raw" "$W/c/src_v.raw" > "$W/c/source.raw" ||
+       ! cmp -s "$W/c/source.raw" "$W/c.dec"; then
+      fail=$((fail+1)); failed+=("$label source!=coded-lossless-decode"); return
+    fi
+  fi
   if [ -n "$DAV1D" ]; then
     if ! "$DAV1D" -i "$W/c/probe.obu" -o "$W/c.dd.yuv" >/dev/null 2>&1; then
       fail=$((fail+1)); failed+=("$label dav1d-reject"); return
@@ -86,6 +92,8 @@ for s in 36 44 60 64 100 120 128 200; do check "sz${s}-q30" "$s" 30; done
 # coded-lossless (qindex 0 -> WHT chroma arm) + mid/high qp spread
 check "sz64-q0"  64 0
 check "sz128-q0" 128 0
+for s in 1 7 17 65; do check "sz${s}-q0" "$s" 0; done
+check "sz67-q30" 67 30
 check "sz120-q20" 120 20
 check "sz44-q45" 44 45
 check "sz200-q35" 200 35

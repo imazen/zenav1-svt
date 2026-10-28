@@ -53,6 +53,8 @@ pub enum ChromaSubsampling {
 pub enum StillInputFormat {
     Monochrome,
     Yuv420,
+    /// Full-resolution, 8-bit color planes (Zen extension).
+    Yuv444,
 }
 
 /// Result of encoding a still image to AV1.
@@ -136,7 +138,6 @@ pub struct AvifEncoder {
     /// Bit depth (8, 10, or 12).
     bit_depth: u8,
     /// Chroma subsampling format.
-    /// Used when full YUV encoding with chroma-aware QP offsets is wired through.
     chroma_subsampling: ChromaSubsampling,
     /// Number of encoding threads (None = auto).
     threads: Option<usize>,
@@ -643,14 +644,14 @@ impl AvifEncoder {
         // deterministic bytes per count, machine-independent — while `None`,
         // `Some(0)` and `Some(1)` leave the default grid so auto-detection
         // can never make output depend on the host's core count.
-        if let Some(n) = self.threads {
-            if n > 1 {
-                let total_log2 = (usize::BITS - (n - 1).leading_zeros()) as u8;
-                let cols_log2 = total_log2.div_ceil(2);
-                pipeline = pipeline
-                    .with_tile_cols_log2(cols_log2)
-                    .with_tile_rows_log2(total_log2 - cols_log2);
-            }
+        if let Some(n) = self.threads
+            && n > 1
+        {
+            let total_log2 = (usize::BITS - (n - 1).leading_zeros()) as u8;
+            let cols_log2 = total_log2.div_ceil(2);
+            pipeline = pipeline
+                .with_tile_cols_log2(cols_log2)
+                .with_tile_rows_log2(total_log2 - cols_log2);
         }
         if let Some(stop) = &self.stop {
             pipeline = pipeline.with_stop(stop.clone());
@@ -837,6 +838,59 @@ impl AvifEncoder {
         })
     }
 
+    /// Encode full-resolution 8-bit Y/U/V planes to a profile-1 AV1 still.
+    ///
+    /// Requires `with_chroma_subsampling(ChromaSubsampling::Yuv444)`.
+    /// Each plane has its own stride, including a possibly unpadded final row.
+    /// `with_lossless(true)` preserves the supplied planes exactly; any RGB
+    /// conversion performed by the caller is outside that guarantee.
+    /// Ten-bit, film grain and SvtParity requests are refused.
+    pub fn encode_yuv444(
+        &self,
+        planes: [&[u8]; 3],
+        width: u32,
+        height: u32,
+        strides: [u32; 3],
+    ) -> Result<EncodedAvif, EncodeError> {
+        for (plane, stride) in planes.iter().zip(strides) {
+            self.validate_dimensions(plane.len(), width, height, stride)?;
+        }
+        self.validate_configuration_for_input(width, height, StillInputFormat::Yuv444)?;
+        let (w, h) = (width as usize, height as usize);
+        // The raw pipeline accepts strided Y and tight U/V. Normalize only
+        // padded chroma; the tightly packed path borrows all three planes.
+        let tighten = |plane: &[u8], stride: u32| -> Option<Vec<u8>> {
+            if stride as usize == w {
+                return None;
+            }
+            let mut tight = Vec::with_capacity(w * h);
+            for row in 0..h {
+                let start = row * stride as usize;
+                tight.extend_from_slice(&plane[start..start + w]);
+            }
+            Some(tight)
+        };
+        let u = tighten(planes[1], strides[1]);
+        let v = tighten(planes[2], strides[2]);
+        let mut pipeline = self
+            .build_pipeline(width, height)
+            .with_chroma_format(Some(svtav1_types::chroma::ChromaFormat::Yuv444));
+        let data = pipeline
+            .try_encode_frame_444(
+                planes[0],
+                u.as_deref().unwrap_or(planes[1]),
+                v.as_deref().unwrap_or(planes[2]),
+                strides[0] as usize,
+            )
+            .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
+        Ok(EncodedAvif {
+            data,
+            width,
+            height,
+            bit_depth: 8,
+        })
+    }
+
     /// Validate image dimensions against the pixel buffer.
     fn validate_dimensions(
         &self,
@@ -926,6 +980,14 @@ impl AvifEncoder {
         self.validate_configuration()?;
         // The same overflow/geometry guard used by actual raw-plane entry points.
         self.validate_dimensions(usize::MAX, width, height, width)?;
+        if format != StillInputFormat::Monochrome
+            && (format == StillInputFormat::Yuv444)
+                != (self.chroma_subsampling == ChromaSubsampling::Yuv444)
+        {
+            return Err(EncodeError::UnsupportedConfig(
+                "raw input format must match the configured chroma subsampling",
+            ));
+        }
         if format == StillInputFormat::Monochrome {
             // Monochrome is a Rust extension with no C claim; the reference
             // still selects which C decisions its shared parts follow. Only
@@ -1019,10 +1081,20 @@ impl AvifEncoder {
     ///
     /// Format-independent checks; capability guards remain in the pipeline.
     fn validate_inert_knobs(&self, _chroma_420: bool) -> Result<(), EncodeError> {
-        if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
-            return Err(EncodeError::UnsupportedConfig(
-                "only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only)",
-            ));
+        if self.chroma_subsampling == ChromaSubsampling::Yuv444 {
+            if self.bit_depth != 8 {
+                return Err(EncodeError::UnsupportedConfig(
+                    "4:4:4 stills support 8-bit planes only",
+                ));
+            }
+            if matches!(self.policy, Some(EncodingPolicy::SvtParity(_))) {
+                return Err(EncodeError::UnsupportedConfig(
+                    "SvtParity requires 4:2:0; 4:4:4 is a Zen extension",
+                ));
+            }
+            if self.film_grain.enabled() {
+                return Err(EncodeError::UnsupportedConfig("film grain requires 4:2:0"));
+            }
         }
         // `with_bit_depth` accepts a u8 and was whitelisting 12, which the
         // pipeline cannot encode: `deblock::pick_filter_levels_key_frame` hits

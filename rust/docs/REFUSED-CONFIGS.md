@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **124
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **7** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -164,15 +164,18 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `svtav1/src/animation.rs` | premultiplied animation requires alpha |
 | `svtav1/src/animation.rs` | repeated animation duration overflow |
 | `svtav1/src/animation.rs` | rotation must be 0..=3 and mirror axis must be 0..=1 |
+| `svtav1/src/avif.rs` | 4:4:4 stills support 8-bit planes only |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `svtav1/src/avif.rs` | SvtParity forbids Zen enhancements |
+| `svtav1/src/avif.rs` | SvtParity requires 4:2:0; 4:4:4 is a Zen extension |
 | `svtav1/src/avif.rs` | SvtParity: C SVT supports 4:2:0 only; monochrome is a Rust extension |
 | `svtav1/src/avif.rs` | a chroma plane is shorter than ceil(height/2) * ceil(width/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | chroma plane size overflows usize |
-| `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
+| `svtav1/src/avif.rs` | film grain requires 4:2:0 |
 | `svtav1/src/avif.rs` | parity policy conflicts with selected reference |
 | `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |
+| `svtav1/src/avif.rs` | raw input format must match the configured chroma subsampling |
 | `svtav1/src/avif.rs` | speed must be between 1 and 10 (use with_native_preset for C's preset scale) |
 | `svtav1/src/avif.rs` | stride is smaller than the width (rows would overlap) |
 | `svtav1/src/avif.rs` | strided pixel buffer size overflows usize |
