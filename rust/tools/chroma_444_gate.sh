@@ -33,8 +33,8 @@ fi
 pass=0; fail=0; skipped=0; declare -a failed skipped_msgs
 
 check() { # label size qp
-  local label=$1 w=$2 qp=$3
-  if ! "$PROBE" "$W/c" "$w" "$qp" >"$W/c.log" 2>&1; then
+  local label=$1 w=$2 qp=$3 format=${4:-}
+  if ! "$PROBE" "$W/c" "$w" "$qp" ${format:+"$format"} >"$W/c.log" 2>&1; then
     if grep -q REFUSED "$W/c.log"; then
       fail=$((fail+1)); failed+=("$label REFUSED (envelope moved?)")
     else
@@ -97,6 +97,9 @@ check "sz67-q30" 67 30
 check "sz120-q20" 120 20
 check "sz44-q45" 44 45
 check "sz200-q35" 200 35
+
+for s in 1 17 65; do check "identity-sz${s}-q0" "$s" 0 identity; done
+check "identity-sz67-q30" 67 30 identity
 
 echo "chroma_444_gate: $pass pass / $fail fail / $skipped skipped"
 for f in "${failed[@]:-}"; do [ -n "$f" ] && echo "  FAIL $f"; done

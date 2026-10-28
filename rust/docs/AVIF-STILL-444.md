@@ -20,7 +20,7 @@ Verification on 2026-10-28:
 - `just test-avif-facade`: 40 library and four still-policy tests passed.
   New tests compare facade/raw bytes and independently strided planes,
   including short final rows, and require typed configuration failures.
-- `tools/chroma_444_gate.sh`: 18/18 cells, zero skips. The existing raw-pipeline
+- `tools/chroma_444_gate.sh`: 22/22 cells, zero skips. The existing raw-pipeline
   reconstruction check also requires identical facade bytes. aomdec and
   dav1d agree exactly; QP-0 cells additionally equal the source planes,
   including sizes 1, 7, 17 and 65.
@@ -31,3 +31,9 @@ Verification on 2026-10-28:
   --test still_policy -- -D warnings`) passes. Workspace strict lint is not clean: pre-existing DSP documentation lints
   fail before the facade package. The source-generated refusal inventory is
   regenerated; the full static precheck must be re-run with its prerequisites.
+
+The identity-color extension exposed a sequence-header defect: `separate_uv_delta_q`
+was emitted only in the ordinary color branch. C `write_color_config` at the
+pinned reference 3115c0c1 writes it after both non-monochrome branches. All four
+new identity cells were rejected by aomdec before the repair; all 22 ordinary
+and identity cells pass afterward, with exact source samples in the QP-0 cells.
