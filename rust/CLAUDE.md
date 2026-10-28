@@ -204,3 +204,11 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-dsp/src/hbd/cdef.rs` | 1 |
 
 <!-- PORT-NOTE-INDEX:END -->
+
+## Known Bugs: sRGB identity sequence header (fixed on AVIF 444 review)
+
+The non-monochrome identity branch omitted `separate_uv_delta_q`. The pinned
+C `write_color_config` places it after both color branches. Four new identity
+cells failed in aomdec before the fix; the 22-cell chroma gate passes afterward
+with aomdec/dav1d agreement and source-exact QP-0 output. Fix: d0f6edc0. See
+[the still-facade record](docs/AVIF-STILL-444.md).
