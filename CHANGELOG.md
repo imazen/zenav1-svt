@@ -2625,6 +2625,7 @@ Crates are not published to crates.io yet — depend by git.
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
 
 ### Fixed
+- The animation facade refuses a 4:4:4 setting rather than accepting it and coding its 4:2:0 input silently. The new still format is not advertised as animation support.
 - sRGB identity sequence headers emit the required separate-UV-delta-Q bit after the identity color branch. The 4:4:4 gate adds identity cells rejected by independent decoders before this fix.
 - Mode decision on inter frames at presets 0-1 now injects C's bipred 3x3 NEW_NEWMV candidates (the +-2 per-list MV ring, `bipred3x3_injection`); the control was ported but never reached the injector, so the port never chose compound winners C chose. Census 284 -> 285 of 540 cells identical, 10 cells diverge later; changes the bytes of such frames (da18c6b8). The OBMC gate floors moved 118/58/12/40 -> 100/50/10/22 with it, because blocks that C also codes compound left OBMC (owner-approved, 03bab35a).
 - Ghost Robot (`HdrFork`): at non-bypass presets, noise normalization runs on the encode pass, for the MD winner only, as C does; still parity 65 -> 67 of 288 (cc845262). The encode pass's transform-block overlay now starts from the pre-pass reconstruction, as C's `ep_luma_recon_na` does, rather than from zeros (bf5e175a; no grid cell changes).

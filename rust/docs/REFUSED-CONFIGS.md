@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **124
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **125
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **7** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -151,6 +151,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/reference.rs` | max_hierarchical_levels > 0 (RTC CBR low-delay mini-GOP resizing) is not ported |
 | `crates/svtav1-encoder/src/reference.rs` | hbd_mds is not ported beyond -1 (preset-derived 8/10-bit mode decision) |
 | `crates/svtav1-encoder/src/reference.rs` | luminance_qp_bias is not ported: only 0 (off) is accepted |
+| `svtav1/src/animation.rs` | 4:4:4 is supported by the still facade only; animation accepts 4:2:0 planes |
 | `svtav1/src/animation.rs` | AVIF pixel aspect ratio must be positive and 1:1 |
 | `svtav1/src/animation.rs` | amve needs nonzero illuminance and chromaticities in 0..=50000 |
 | `svtav1/src/animation.rs` | animation duration overflow |

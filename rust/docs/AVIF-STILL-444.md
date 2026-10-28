@@ -38,3 +38,7 @@ was emitted only in the ordinary color branch. C `write_color_config` at the
 pinned reference 3115c0c1 writes it after both non-monochrome branches. All four
 new identity cells were rejected by aomdec before the repair; all 22 ordinary
 and identity cells pass afterward, with exact source samples in the QP-0 cells.
+
+The existing animation facade remains 4:2:0. Enabling the still format must not
+make a 4:4:4 animation setting silently code its 4:2:0 input; an explicit guard
+and filtered animation regression now require a named UnsupportedConfig error.
