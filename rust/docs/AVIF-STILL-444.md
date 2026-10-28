@@ -24,9 +24,10 @@ Verification on 2026-10-28:
   reconstruction check also requires identical facade bytes. aomdec and
   dav1d agree exactly; QP-0 cells additionally equal the source planes,
   including sizes 1, 7, 17 and 65.
-- `tools/regression_spotcheck.sh`: 141 executed cells passed, but the command
-  failed because six gb82-sc fixture cells were unavailable. This is partial
-  regression coverage, not a passing full spot check.
+- `SCREEN_DIR=$HOME/.cache/codec-corpus/v1/gb82-sc tools/regression_spotcheck.sh`:
+  147/147 cells passed after resolving the existing codec-corpus cache. An
+  earlier run failed on six missing fixtures because its default directory
+  did not find the cache; no cell was skipped in the completed run.
 - Scoped facade strict lint (`cargo clippy --no-deps -p zenav1-svt --lib
   --test still_policy -- -D warnings`) passes. Workspace strict lint is not clean: pre-existing DSP documentation lints
   fail before the facade package. The source-generated refusal inventory is
