@@ -39,6 +39,16 @@ decimal (ssim2 22.71→22.10; butteraugli-3n 3.882→4.202). Byte sizes moved
 with encoder development (621→641, 607→627) — the QP pair and the
 inversion direction did not.
 
+(Aside: plain RMSE-vs-source slightly *favors* q16 — 0.01752 vs 0.01776 —
+so the inversion is a perceptual-MSE divergence: q16 spends its saved bits
+on smoothing, which reads better in MSE and worse in both perceptual
+metrics.)
+
+Images (`issue19-2026-10-29/`): `source.png`, `q15.dec.png`,
+`q16.dec.png`, `issue19_montage.png` (source|q15|q16), `issue19_crop4x.png`
+(4× detail — q16 visibly flatter in the textured field),
+`issue19_errmaps.png` (|dec − src| ×8, q15 left / q16 right).
+
 ## C parity at both QPs
 
 `tools/cellrun.py` still cells (`crop:` the witness image, 512×512, preset
