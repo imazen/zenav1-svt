@@ -891,3 +891,83 @@ fn pipeline_dimension_refusals_keep_their_reason() {
     assert_eq!((width, height), (63, 65));
     assert_eq!(reason, "monochrome encode requires 8-aligned dims");
 }
+
+#[test]
+fn yuv444_still_routes_full_planes_and_preserves_strided_rows() {
+    use super::{ChromaSubsampling, StillInputFormat};
+    for (w, h) in [(1usize, 1usize), (36, 35), (65, 67), (128, 64)] {
+        let planes: [Vec<u8>; 3] = core::array::from_fn(|channel| {
+            (0..w * h)
+                .map(|i| ((i * (channel * 4 + 3) + i / w * 17) % 256) as u8)
+                .collect()
+        });
+        let encoder = AvifEncoder::new()
+            .with_speed(8)
+            .with_lossless(true)
+            .with_chroma_subsampling(ChromaSubsampling::Yuv444);
+        encoder
+            .validate_configuration_for_input(w as u32, h as u32, StillInputFormat::Yuv444)
+            .unwrap();
+        let tight = encoder
+            .encode_yuv444(
+                planes.each_ref().map(Vec::as_slice),
+                w as u32,
+                h as u32,
+                [w as u32; 3],
+            )
+            .unwrap();
+        let strides = [w + 1, w + 3, w + 5];
+        let padded: [Vec<u8>; 3] = core::array::from_fn(|p| {
+            let mut bytes = vec![229; (h - 1) * strides[p] + w];
+            for row in 0..h {
+                bytes[row * strides[p]..row * strides[p] + w]
+                    .copy_from_slice(&planes[p][row * w..row * w + w]);
+            }
+            bytes
+        });
+        let strided = encoder
+            .encode_yuv444(
+                padded.each_ref().map(Vec::as_slice),
+                w as u32,
+                h as u32,
+                strides.map(|s| s as u32),
+            )
+            .unwrap();
+        assert_eq!(strided.data, tight.data);
+        let mut pipeline = encoder
+            .build_pipeline(w as u32, h as u32)
+            .with_chroma_format(Some(svtav1_types::chroma::ChromaFormat::Yuv444));
+        assert_eq!(
+            tight.data,
+            pipeline
+                .try_encode_frame_444(&planes[0], &planes[1], &planes[2], w)
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn yuv444_still_query_and_encode_refuse_mismatched_depth_and_formats() {
+    use super::{ChromaSubsampling, StillInputFormat};
+    let p = [128u8; 64];
+    let encoder = AvifEncoder::new().with_chroma_subsampling(ChromaSubsampling::Yuv444);
+    assert!(encoder.encode_yuv420(&p, &p, &p, 8, 8, 8).is_err());
+    assert!(
+        AvifEncoder::new()
+            .encode_yuv444([&p; 3], 8, 8, [8; 3])
+            .is_err()
+    );
+    for enc in [
+        encoder.clone().with_bit_depth(10),
+        encoder.clone().with_policy(EncodingPolicy::svt_parity()),
+    ] {
+        assert!(
+            enc.validate_configuration_for_input(8, 8, StillInputFormat::Yuv444)
+                .is_err()
+        );
+        assert!(enc.encode_yuv444([&p; 3], 8, 8, [8; 3]).is_err());
+    }
+    assert!(encoder.encode_yuv444([&p; 3], 0, 8, [8; 3]).is_err());
+    assert!(encoder.encode_yuv444([&p; 3], 8, 8, [7; 3]).is_err());
+    assert!(encoder.encode_yuv444([&p[..63]; 3], 8, 8, [8; 3]).is_err());
+}

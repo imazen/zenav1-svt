@@ -33,8 +33,8 @@ fi
 pass=0; fail=0; skipped=0; declare -a failed skipped_msgs
 
 check() { # label size qp
-  local label=$1 w=$2 qp=$3
-  if ! "$PROBE" "$W/c" "$w" "$qp" >"$W/c.log" 2>&1; then
+  local label=$1 w=$2 qp=$3 format=${4:-}
+  if ! "$PROBE" "$W/c" "$w" "$qp" ${format:+"$format"} >"$W/c.log" 2>&1; then
     if grep -q REFUSED "$W/c.log"; then
       fail=$((fail+1)); failed+=("$label REFUSED (envelope moved?)")
     else
@@ -68,6 +68,12 @@ PY
   then
     fail=$((fail+1)); failed+=("$label recon!=aomdec"); return
   fi
+  if [ "$qp" -eq 0 ]; then
+    if ! cat "$W/c/src_y.raw" "$W/c/src_u.raw" "$W/c/src_v.raw" > "$W/c/source.raw" ||
+       ! cmp -s "$W/c/source.raw" "$W/c.dec"; then
+      fail=$((fail+1)); failed+=("$label source!=coded-lossless-decode"); return
+    fi
+  fi
   if [ -n "$DAV1D" ]; then
     if ! "$DAV1D" -i "$W/c/probe.obu" -o "$W/c.dd.yuv" >/dev/null 2>&1; then
       fail=$((fail+1)); failed+=("$label dav1d-reject"); return
@@ -86,9 +92,14 @@ for s in 36 44 60 64 100 120 128 200; do check "sz${s}-q30" "$s" 30; done
 # coded-lossless (qindex 0 -> WHT chroma arm) + mid/high qp spread
 check "sz64-q0"  64 0
 check "sz128-q0" 128 0
+for s in 1 7 17 65; do check "sz${s}-q0" "$s" 0; done
+check "sz67-q30" 67 30
 check "sz120-q20" 120 20
 check "sz44-q45" 44 45
 check "sz200-q35" 200 35
+
+for s in 1 17 65; do check "identity-sz${s}-q0" "$s" 0 identity; done
+check "identity-sz67-q30" 67 30 identity
 
 echo "chroma_444_gate: $pass pass / $fail fail / $skipped skipped"
 for f in "${failed[@]:-}"; do [ -n "$f" ] && echo "  FAIL $f"; done

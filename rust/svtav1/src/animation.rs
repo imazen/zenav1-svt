@@ -374,6 +374,11 @@ impl AvifEncoder {
     ) -> Result<Vec<u8>, EncodeError> {
         self.validate_quality()?;
         self.validate_inert_knobs(chroma_420)?;
+        if self.chroma_subsampling == super::ChromaSubsampling::Yuv444 {
+            return Err(EncodeError::UnsupportedConfig(
+                "4:4:4 is supported by the still facade only; animation accepts 4:2:0 planes",
+            ));
+        }
         if self.bit_depth != T::BIT_DEPTH {
             return Err(EncodeError::UnsupportedConfig(
                 "animation input sample type must match the configured bit depth",

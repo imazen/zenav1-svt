@@ -1,0 +1,16 @@
+source-base: 339bfb4ae1262cf9752e5d5d530eee1c01a9bc85
+source-change: AVIF still 444 facade PR; source and tests committed with this record
+host: i270
+command: TMPDIR=$HOME/tmp ~/work/zen/scripts/run-heavy --mem 16G --jobs 8 -- bash tools/regression_spotcheck.sh
+result: command failed; 141 executed cells passed, six corpus cells missing
+run-heavy: done rc=1 126s | peak-RSS 0.97GiB | min-avail 25847MiB | peak-load 2.80
+missing: gb82-sc terminal.png and graph.png (six IntraBC/palette witnesses)
+not-claimed: a passing full regression spot check or performance improvement
+
+source-fix: d0f6edc058c99659a73c53cf891090e80fb39ee0
+command: SCREEN_DIR=$HOME/.cache/codec-corpus/v1/gb82-sc TMPDIR=$HOME/tmp ~/work/zen/scripts/run-heavy --mem 16G --jobs 8 -- bash tools/regression_spotcheck.sh
+result: 147/147 passed, no skipped cells, rc=0
+run-heavy: done rc=0 110s | peak-RSS 0.98GiB | min-avail 25737MiB | peak-load 1.77
+command: TMPDIR=$HOME/tmp ~/work/zen/scripts/run-heavy --mem 16G --jobs 8 -- bash tools/chroma_444_gate.sh
+result: 22/22 passed, no skips; aomdec/dav1d reconstruction equality and source-exact QP0 cells
+run-heavy: done rc=0 31s | peak-RSS 0.97GiB | min-avail 26219MiB | peak-load 1.33

@@ -829,3 +829,23 @@ fn validates_whole_animation_before_encoding() {
             .is_err()
     );
 }
+
+#[test]
+fn animation_refuses_444_setting_instead_of_coding_420_silently() {
+    let y = [128u8; 64];
+    let uv = [128u8; 16];
+    let frames = [AnimationFrame {
+        y: &y,
+        u: &uv,
+        v: &uv,
+        y_stride: 8,
+        alpha: None,
+        duration: 1,
+    }];
+    let encoder =
+        AvifEncoder::new().with_chroma_subsampling(super::super::ChromaSubsampling::Yuv444);
+    let error = encoder
+        .encode_animation_yuv420(&frames, 8, 8, AnimationTiming { timescale: 1000 })
+        .unwrap_err();
+    assert!(matches!(error, EncodeError::UnsupportedConfig(reason) if reason.contains("4:4:4")));
+}
