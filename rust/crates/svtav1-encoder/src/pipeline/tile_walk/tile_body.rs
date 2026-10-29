@@ -1222,19 +1222,19 @@ pub(super) fn encode_one_tile_body(
                 is_edge_sb: sb_col == 0 || sb_row == 0,
                 left_me_8x8_cost_variance: sb_index
                     .checked_sub(1)
-                    .and_then(&pd0_me)
+                    .and_then(pd0_me)
                     .map_or(0, |o| o.me_8x8_cost_variance),
                 top_me_8x8_cost_variance: sb_index
                     .checked_sub(sb_cols)
-                    .and_then(&pd0_me)
+                    .and_then(pd0_me)
                     .map_or(0, |o| o.me_8x8_cost_variance),
                 left_me_64x64_distortion: sb_index
                     .checked_sub(1)
-                    .and_then(&pd0_me)
+                    .and_then(pd0_me)
                     .map_or(0, |o| o.me_64x64_distortion),
                 top_me_64x64_distortion: sb_index
                     .checked_sub(sb_cols)
-                    .and_then(&pd0_me)
+                    .and_then(pd0_me)
                     .map_or(0, |o| o.me_64x64_distortion),
                 left_sb_intra: sb_index
                     .checked_sub(1)
