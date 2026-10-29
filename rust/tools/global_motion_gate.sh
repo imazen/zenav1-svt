@@ -58,9 +58,22 @@ PHOTO="$PHOTO_DIR/3571065.png"
 # cells sit on that wm_level-1 ladder, so blocks that took GLOBALMV now take
 # the warped candidate C also takes. Recon == dav1d 2/2 in both cells. This
 # gate never ran in CI before 1ace7837 (its photo was not fetched).
+# RE-PINNED 2026-10-29 (2 / 3534), issue #27, measured against C before
+# touching the pin: writer-side committed-mode dump on C's own bitstream
+# (temporary `SVT_GMW` fprintf at the entropy_coding.c mode write, reverted)
+# gives C = 0 committed GLOBALMV on the 256x256 cell and 1593 on the
+# 512x512 one (3419+77 CINTER records were EXPLORED nodes from
+# update_mi_map, not commits — the count had to come from the writer).
+# The move bisects to 224c6bbb (per-SB rate-table reseed from the CDF
+# chain), which re-priced every inter candidate on SBs > 0 toward C's own
+# pricing. Port 2 vs C 0 on 256x256 is closer than the old pin suggests;
+# port 3534 vs C 1593 on 512x512 is the same class of MD divergence the
+# byte gates already track. No defect in the GM path: both cells still
+# fit a non-identity model (all_identity=0), code it, and recon == dav1d
+# 2/2. The floors pin the measured counts so the next move is loud.
 CELLS=(
-    "crop:$PHOTO 256 256 40 2 0 33 32 1 14"
-    "crop:$PHOTO 512 512 40 2 0  9  8 1 2054"
+    "crop:$PHOTO 256 256 40 2 0 33 32 1 2"
+    "crop:$PHOTO 512 512 40 2 0  9  8 1 3534"
     "crop:$PHOTO 256 256 40 2 3  1  1 0 0"
     "crop:$PHOTO 128 128 40 2 3  1  1 0 0"
 )
