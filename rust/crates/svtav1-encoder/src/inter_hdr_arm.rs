@@ -198,8 +198,17 @@ pub fn inter_signal(
     // non-I slice SINGLE_REFERENCE only on an incomplete mini-GOP.
     let reference_select = pic.reference_mode == crate::port_picstruct::ReferenceMode::Select;
 
+    // The FH `order_hint` field carries `pcs->frame_offset`, NOT
+    // `cur_order_hint` (entropy_coding.c:3395). In low delay that is the
+    // distance to the last IDR (`get_pic_idx_in_mg`, pd_process.c:4888);
+    // on random access it is `picture_number`. `pic.frame_offset` already
+    // holds both (mini_gop.rs / ra.rs). `cur_order_hint` stays the internal
+    // value the relative-dist derivations use — C makes the same split.
+    // Writing the absolute picture number desynced libaom after the second
+    // key frame in a GOP (issue #26: rav1d/libaom rejected the stream,
+    // dav1d tolerated it).
     let order_hint_mask = (1u64 << order_hint_bits) - 1;
-    let order_hint = u8::try_from(u64::from(pic.cur_order_hint) & order_hint_mask)
+    let order_hint = u8::try_from(pic.frame_offset & order_hint_mask)
         .expect("order_hint_bits <= 8 in this envelope");
 
     #[cfg(feature = "std")]

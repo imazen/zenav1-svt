@@ -388,3 +388,124 @@ fn with_reference_switches_the_target() {
         "Ghost Robot and mainline produced identical streams: the switch did nothing"
     );
 }
+
+/// MSB-first bit cursor, for the OBU/frame-header scan below.
+struct Bits<'a> {
+    buf: &'a [u8],
+    bit: usize,
+}
+impl Bits<'_> {
+    fn take(&mut self, n: usize) -> u64 {
+        let mut v = 0u64;
+        for _ in 0..n {
+            v = (v << 1) | u64::from((self.buf[self.bit / 8] >> (7 - self.bit % 8)) & 1);
+            self.bit += 1;
+        }
+        v
+    }
+}
+
+/// The `order_hint` each coded frame header in `packet` signals, in stream
+/// order. Only the fields needed to reach `order_hint` are parsed — enough to
+/// locate it on this stream's layout (no frame ids, no decoder-model info,
+/// `seq_force_screen_content_tools = SELECT`, `order_hint_bits = 7`), which is
+/// the same layout `frame_header_bits_lr` emits. Frame headers whose
+/// `show_existing_frame` is set carry no order_hint and are skipped.
+fn order_hints(packet: &[u8]) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < packet.len() {
+        let hdr = packet[pos];
+        pos += 1;
+        let obu_type = (hdr >> 3) & 0x0f;
+        if hdr & 0x04 != 0 {
+            pos += 1; // obu_extension_flag
+        }
+        let mut end = packet.len();
+        if hdr & 0x02 != 0 {
+            let (mut size, mut n) = (0u64, 0usize);
+            loop {
+                let b = packet[pos + n];
+                size |= u64::from(b & 0x7f) << (7 * n);
+                n += 1;
+                if b & 0x80 == 0 {
+                    break;
+                }
+            }
+            pos += n;
+            end = pos + size as usize;
+        }
+        if matches!(obu_type, 3 | 6) {
+            // uncompressed_header preamble (spec 5.9.2), field order matching
+            // `frame_header_bits_lr` on this stream: sef(1), frame_type(2),
+            // show(1), [showable(1)], erm(1 unless implicit), disable_cdf(1),
+            // asct(1), [fimv(1)], frame_size_override(1), order_hint(7).
+            let mut b = Bits {
+                buf: &packet[pos..end],
+                bit: 0,
+            };
+            if b.take(1) == 1 {
+                pos = end;
+                continue; // show_existing_frame: no coded header follows
+            }
+            let frame_type = b.take(2) as u8;
+            let show_frame = b.take(1) == 1;
+            if !show_frame {
+                b.take(1); // showable_frame
+            }
+            let erm_implicit = (frame_type == 0 && show_frame) || frame_type == 3;
+            if !erm_implicit {
+                b.take(1); // error_resilient_mode
+            }
+            b.take(1); // disable_cdf_update
+            if b.take(1) == 1 {
+                b.take(1); // allow_screen_content_tools -> force_integer_mv
+            }
+            b.take(1); // frame_size_override_flag
+            out.push(b.take(7)); // order_hint
+        }
+        pos = end;
+    }
+    out
+}
+
+/// Issue #26: the FH `order_hint` carries C's `frame_offset` — the distance
+/// to the last key frame — not `cur_order_hint` (C writes `pcs->frame_offset`
+/// at `entropy_coding.c:3395`; `get_pic_idx_in_mg` derives it at
+/// `pd_process.c:4888`). After a GOP's SECOND key frame the two disagree:
+/// the port emitted the absolute picture number, which desynced libaom's
+/// ref-order-hint tracking (and rav1d's) into "Failed to decode tile data"
+/// while dav1d tolerated it. A single-key stream cannot see the difference,
+/// so this cell runs the issue's own shape — keys at pocs 0, 3 and 6 — and
+/// parses the emitted order_hint fields back out of the packets.
+#[test]
+fn inter_order_hint_is_distance_since_key() {
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp: 20,
+        framerate: 30.0,
+        ..RcConfig::default()
+    };
+    let mut p =
+        EncodePipeline::new_with_preset(48, 32, NativePreset::new(10).expect("preset"), rc, 0, 3)
+            .with_image_sequence()
+            .with_chroma_420(true)
+            .with_bit_depth(8)
+            .with_thread_count(1);
+    // The issue's moving gradient, verbatim.
+    let pl = |c: usize, pw: usize, ph: usize, i: usize| -> Vec<u8> {
+        (0..ph)
+            .flat_map(|y| (0..pw).map(move |x| ((x * 3 + y * 2 + i * 4 + c * 40) % 200 + 20) as u8))
+            .collect()
+    };
+    let mut hints = Vec::new();
+    for i in 0..7usize {
+        let pkt = p
+            .try_encode_frame_420(&pl(0, 48, 32, i), &pl(1, 24, 16, i), &pl(2, 24, 16, i), 48)
+            .unwrap_or_else(|e| panic!("frame {i}: {e}"));
+        hints.extend_from_slice(&order_hints(&pkt));
+    }
+    // Keys carry 0; each inter frame carries poc - last_key_poc (1, 2). Under
+    // the defect the second GOP's inters carried 4, 5.
+    assert_eq!(hints, vec![0, 1, 2, 0, 1, 2, 0]);
+}

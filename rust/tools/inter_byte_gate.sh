@@ -342,6 +342,20 @@ add() { # expect content w h qp preset frames shift
 }
 for spec in "${PASS_CELLS[@]}"; do add IDENTICAL $spec; done
 for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do add DIFFERS $spec; done
+# Issue #26: a SECOND key frame inside the GOP. Every cell above is
+# single-key (SVTAV1_INTRA_PERIOD=64 covers the whole clip), so none could
+# see the FH `order_hint` defect — the port wrote the absolute picture number
+# where C writes `frame_offset` (distance to the last IDR,
+# `entropy_coding.c:3395` + `pd_process.c:4888`), which libaom and rav1d
+# rejected at the second inter frame after the new key. C's
+# `intra_period_length` counts the non-key frames BETWEEN keys, so the
+# port's period 3 is C's 2. Cell added identical-with-fix on 2026-10-29.
+printf 'issue26_gradient_48x32_q20_p10_f7_ip3\tgradient\t48\t32\t20\t10\t%s\t%s\tIDENTICAL\tc\n' \
+    "SVTAV1_FRAMES=7;SVTAV1_INTRA_PERIOD=3;SVTAV1_HIER_LEVELS=0;SVTAV1_FRAME_SHIFT=3" \
+    "SVT_FRAMES=7;SVT_INTRA_PERIOD=2;SVT_HIER_LEVELS=0;SVT_PRED_STRUCT=1" >>"$LIST"
+printf 'multikey_gradient_64x64_q40_p6_f7_ip3\tgradient\t64\t64\t40\t6\t%s\t%s\tIDENTICAL\tc\n' \
+    "SVTAV1_FRAMES=7;SVTAV1_INTRA_PERIOD=3;SVTAV1_HIER_LEVELS=0;SVTAV1_FRAME_SHIFT=3" \
+    "SVT_FRAMES=7;SVT_INTRA_PERIOD=2;SVT_HIER_LEVELS=0;SVT_PRED_STRUCT=1" >>"$LIST"
 echo "== inter byte gate =="
 python3 "$HERE/cellrun.py" "$LIST" --out "$work/result.tsv" --bytes-only --jobs "${IB_JOBS:-4}" 2>"$work/cellrun.err"
 python3 - "$work/result.tsv" <<'PY'
