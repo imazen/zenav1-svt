@@ -546,7 +546,10 @@ impl AvifEncoder {
     /// semantics — NOT an AV1 qindex).
     ///
     /// Quality 100 -> QP 0 (best), quality 1 -> QP 63 (worst).
-    /// The mapping is linear: QP = 63 - floor((quality - 1) * 63 / 99).
+    /// The mapping is linear: QP = 63 - round((quality - 1) * 63 / 99).
+    /// Because 99 quality steps compress onto 63 QP values, adjacent
+    /// quality values alias to one QP (e.g. q16 and q17 both -> QP 53);
+    /// callers clamp to `.max(1)` when lossless QP 0 is unwired.
     /// The pipeline maps the result through `quantizer_to_qindex` once at
     /// frame setup (e.g. quality 75 -> qp 16 -> qindex 64).
     pub fn quality_to_qp_static(quality: f32) -> u8 {
