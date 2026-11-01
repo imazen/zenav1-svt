@@ -1009,7 +1009,11 @@ fn write_sequence_header_inner(
         if ss_x == 1 && ss_y == 1 {
             wb.write_bits(u32::from(tools.chroma_sample_position & 3), 2);
         }
-        wb.write_bit(tools.separate_uv_delta_q); // separate_uv_delta_q (fork: 1)
+    }
+    // C write_color_config (reference 3115c0c1), AV1 spec 5.5.2: this
+    // follows BOTH non-monochrome branches, including sRGB identity.
+    if !monochrome {
+        wb.write_bit(tools.separate_uv_delta_q);
     }
 
     wb.write_bit(tools.film_grain_params_present); // film_grain_params_present

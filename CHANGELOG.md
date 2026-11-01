@@ -12,6 +12,7 @@ Crates are not published to crates.io yet — depend by git.
 ## [Unreleased]
 
 ### QUEUED BREAKING CHANGES
+- `StillInputFormat::Yuv444` adds an enum variant; exhaustive downstream matches need an arm (`2d81cc46`).
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 23 modules are no longer public, and the homegrown `perceptual`, `multipass` and `film_grain` modules and `InterHdrError::GlobalMotionNotImplemented` are removed (no callers) (4a860c9e).
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 59 more modules are no longer public — the C-translation modules only the parity tests used, now compiled into the crate (d04e83c4). `PictureControlSet` keeps only `show_frame`, `qp` and `refresh_frame_flags`, and its constructors take no arguments (f1d3f132).
 - `svtav1_dsp`: 11 modules only the dsp parity tests used are no longer public (`obmc`, `port_convolve_hbd`, `port_convolve_scale`, `port_diffwtd_d16`, `port_full_pd1_pred`, `port_make_pred`, `port_obmc_single_pred`, `port_pack`, `scale`, `txfm_simd`, `warp`) (6566e97d).
@@ -125,6 +126,7 @@ Crates are not published to crates.io yet — depend by git.
   break only for out-of-crate struct literals — there are none.
 
 ### Added
+- `AvifEncoder::encode_yuv444` exposes the existing 8-bit profile-1 still pipeline with a separate stride per plane and coded-lossless QP 0. The independent-decoder gate requires source-exact QP-0 output (`2d81cc46`).
 
 - `EncodePipeline::with_reference(SvtReference)`: switches the raw-OBU pipeline to a C target in one call, loading that target's fork defaults (Ghost Robot implies its fork mode), as `AvifEncoder::with_reference` already did (ae0cb4ee).
 
@@ -2623,6 +2625,8 @@ Crates are not published to crates.io yet — depend by git.
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
 
 ### Fixed
+- The animation facade refuses a 4:4:4 setting rather than accepting it and coding its 4:2:0 input silently. The new still format is not advertised as animation support.
+- sRGB identity sequence headers emit the required separate-UV-delta-Q bit after the identity color branch. The 4:4:4 gate adds identity cells rejected by independent decoders before this fix.
 - Mode decision on inter frames at presets 0-1 now injects C's bipred 3x3 NEW_NEWMV candidates (the +-2 per-list MV ring, `bipred3x3_injection`); the control was ported but never reached the injector, so the port never chose compound winners C chose. Census 284 -> 285 of 540 cells identical, 10 cells diverge later; changes the bytes of such frames (da18c6b8). The OBMC gate floors moved 118/58/12/40 -> 100/50/10/22 with it, because blocks that C also codes compound left OBMC (owner-approved, 03bab35a).
 - Ghost Robot (`HdrFork`): at non-bypass presets, noise normalization runs on the encode pass, for the MD winner only, as C does; still parity 65 -> 67 of 288 (cc845262). The encode pass's transform-block overlay now starts from the pre-pass reconstruction, as C's `ep_luma_recon_na` does, rather than from zeros (bf5e175a; no grid cell changes).
 - Ghost Robot (`HdrFork`): noise normalization is applied only where C runs it, the encode pass, which exists only without `bypass_encdec` (allintra <= M3). Normalizing at every mode-decision quantization shifted one luma level per transform block and flipped mode decisions; Ghost Robot still parity 41 -> 65 of 288 grid cells (eee60fd8). Changes the bytes of fork encodes at bypass presets.

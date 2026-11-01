@@ -225,3 +225,7 @@ cparity-oracle ORACLE:
     # root, so two checkouts produce the same artifact names.
     SVT_ORACLE={{ORACLE}} CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/oracle-{{ORACLE}}}" \
         cargo nextest run --no-fail-fast -p zenav1-svt-encoder -p zenav1-svt-dsp -E "$filt"
+
+# AVIF still facade support, strided planes, and input-query parity
+test-avif-facade:
+    cargo test --locked -p zenav1-svt --lib --test still_policy

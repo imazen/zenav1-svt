@@ -112,6 +112,7 @@ fn support_query_matches_real_grain_mono_and_reference_refusals() {
             let actual = match format {
                 StillInputFormat::Monochrome => encoder.encode_y8(&y, 17, 19, 17),
                 StillInputFormat::Yuv420 => encoder.encode_yuv420(&y, &uv, &uv, 17, 19, 17),
+                StillInputFormat::Yuv444 => encoder.encode_yuv444([&y; 3], 17, 19, [17; 3]),
             };
             assert_eq!(
                 query.is_ok(),
