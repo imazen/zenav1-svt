@@ -26,6 +26,10 @@ almost-enough = { workspace = true }
 # raw-AV1 build retains the workspace's Rust 1.98 minimum.
 zenavif-serialize = { version = "0.2.0", git = "https://github.com/imazen/zenavif", rev = "98c8a5011e1ac573770a8889a8b5a4a68587de90", optional = true }
 
+# Plane views (`AnimationFrame::as_planes`) over the zenpixels plane types.
+# Optional; default builds do not link it.
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "5bf81d640752793454802d7a94346c3c1e97c81e", default-features = false, features = ["std"], optional = true }
+
 [dev-dependencies]
 # PNG decode for the real-image identity harness (examples/identity_run/
 # `file:<path.png>` content). Example-only — not linked into the library.
@@ -67,6 +71,7 @@ workspace = true
 default = ["std"]
 avif-container = ["dep:zenavif-serialize"]
 std = []
+zenpixels = ["dep:zenpixels"]
 unsafe_encoding = ["zenav1-svt-encoder/unsafe_encoding"]
 # Per-symbol arithmetic-coder trace on stderr (identity harness:
 # tools/identity_diff.sh diffs it against the wrapped C library's trace).

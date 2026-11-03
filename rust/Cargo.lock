@@ -1140,6 +1140,7 @@ dependencies = [
  "zenavif-parse",
  "zenavif-serialize",
  "zengif",
+ "zenpixels 0.3.1",
 ]
 
 [[package]]
@@ -1231,7 +1232,7 @@ dependencies = [
  "almost-enough",
  "enough",
  "whereat",
- "zenpixels",
+ "zenpixels 0.2.16",
 ]
 
 [[package]]
@@ -1248,7 +1249,7 @@ dependencies = [
  "rgb",
  "thiserror",
  "whereat",
- "zenpixels",
+ "zenpixels 0.2.16",
 ]
 
 [[package]]
@@ -1256,6 +1257,15 @@ name = "zenpixels"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5851fd39b312749a3c367a0cd3522bd95d43276cfa613e9c18df748447cef3a8"
+dependencies = [
+ "bytemuck",
+ "whereat",
+]
+
+[[package]]
+name = "zenpixels"
+version = "0.3.1"
+source = "git+https://github.com/imazen/zenpixels?rev=5bf81d640752793454802d7a94346c3c1e97c81e#5bf81d640752793454802d7a94346c3c1e97c81e"
 dependencies = [
  "bytemuck",
  "whereat",
