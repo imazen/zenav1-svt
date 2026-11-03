@@ -733,3 +733,78 @@ fn sequence_header(data: &[u8]) -> Result<Vec<u8>, EncodeError> {
 // rustfmt resolves a bare `mod tests;` here to src/tests.rs.
 #[path = "animation/tests.rs"]
 mod tests;
+
+#[cfg(feature = "zenpixels")]
+impl<'a> AnimationFrame<'a, u8> {
+    /// Borrow the colour planes as zenpixels planes: Luma, Cb, Cr, 8-bit
+    /// codes, 4:2:0, siting unknown. The frame does not store its size, so
+    /// the caller passes it. Luma uses `y_stride`; chroma is tightly packed at
+    /// `width.div_ceil(2)` x `height.div_ceil(2)`. Alpha is not included.
+    /// `None` when a plane is too short for the given size or stride.
+    pub fn as_planes(
+        &self,
+        width: usize,
+        height: usize,
+    ) -> Option<(
+        zenpixels::plane::PlanarLayout,
+        [zenpixels::plane::AnyPlane<'a>; 3],
+    )> {
+        use zenpixels::ChannelType;
+        use zenpixels::plane::{
+            AnyPlane, PlanarLayout, PlaneEncoding, PlaneRef, PlaneRole, PlaneSpec,
+        };
+        use zenpixels::sample::{ChromaSiting, ChromaSubsampling, SampleEncoding};
+        let code = PlaneEncoding::Code(SampleEncoding::new(ChannelType::U8, 8, 0).ok()?);
+        let layout = PlanarLayout::new(
+            std::vec![
+                PlaneSpec::new(PlaneRole::Luma, code),
+                PlaneSpec::new(PlaneRole::Cb, code),
+                PlaneSpec::new(PlaneRole::Cr, code),
+            ],
+            ChromaSubsampling::Yuv420,
+            ChromaSiting::Unknown,
+        )
+        .ok()?;
+        let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+        let y = PlaneRef::new(self.y, width, height, self.y_stride).ok()?;
+        let u = PlaneRef::new(self.u, cw, ch, cw).ok()?;
+        let v = PlaneRef::new(self.v, cw, ch, cw).ok()?;
+        Some((layout, [AnyPlane::U8(y), AnyPlane::U8(u), AnyPlane::U8(v)]))
+    }
+}
+
+#[cfg(all(test, feature = "zenpixels"))]
+mod zenpixels_planes_tests {
+    use super::AnimationFrame;
+    use zenpixels::plane::AnyPlane;
+
+    #[test]
+    fn as_planes_borrows_rows_in_place() {
+        let (w, h, ys) = (5usize, 3usize, 8usize);
+        let (cw, ch) = (3usize, 2usize);
+        let y: std::vec::Vec<u8> = (0..ys * h).map(|i| i as u8).collect();
+        let u = std::vec![1u8; cw * ch];
+        let v = std::vec![2u8; cw * ch];
+        let f = AnimationFrame {
+            y: &y,
+            u: &u,
+            v: &v,
+            y_stride: ys,
+            alpha: None,
+            duration: 1,
+        };
+        let (layout, planes) = f.as_planes(w, h).expect("planes");
+        assert_eq!(layout.planes().len(), 3);
+        let src = [(&y, w, h, ys), (&u, cw, ch, cw), (&v, cw, ch, cw)];
+        for (p, (buf, pw, ph, ps)) in planes.iter().zip(src) {
+            let AnyPlane::U8(p) = p else { panic!("not u8") };
+            assert_eq!((p.width(), p.height()), (pw, ph));
+            for r in 0..ph {
+                let row = p.row(r).expect("row");
+                assert_eq!(row.len(), pw);
+                assert!(core::ptr::eq(row.as_ptr(), buf[r * ps..].as_ptr()));
+            }
+        }
+        assert!(f.as_planes(w, h + 1).is_none());
+    }
+}
