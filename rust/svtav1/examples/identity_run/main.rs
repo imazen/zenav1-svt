@@ -414,7 +414,7 @@ fn main() {
             let r = if fmt == svtav1_types::chroma::ChromaFormat::Yuv444 {
                 // 4:4:4 has no hbd entry point (the envelope is 8-bit); the
                 // u8 entry refuses a bd10 cell with the named gap.
-                pipeline.try_encode_frame_444(fy, fu, fv, w)
+                pipeline.try_encode_frame_444(fy, w, fu, w, fv, w)
             } else if bd > 8 {
                 // Widen exactly as the single-frame bd10 path does, so a
                 // multi-frame 10-bit cell differs from its 8-bit twin only in
@@ -430,12 +430,19 @@ fn main() {
                 if mono {
                     pipeline.try_encode_frame_hbd(&y16, w)
                 } else {
-                    pipeline.try_encode_frame_420_hbd(&y16, &u16v, &v16, w)
+                    pipeline.try_encode_frame_420_hbd(
+                        &y16,
+                        w,
+                        &u16v,
+                        w.div_ceil(2),
+                        &v16,
+                        w.div_ceil(2),
+                    )
                 }
             } else if mono {
                 pipeline.try_encode_frame(fy, w)
             } else {
-                pipeline.try_encode_frame_420(fy, fu, fv, w)
+                pipeline.try_encode_frame_420(fy, w, fu, w.div_ceil(2), fv, w.div_ceil(2))
             };
             match r {
                 Ok(bytes) => {
@@ -595,7 +602,7 @@ fn main() {
         // is refused inside the envelope check with the named gap, the same
         // answer the multi-frame arm gives).
         pipeline = pipeline.with_chroma_format(Some(fmt));
-        unwrap_or_refuse(pipeline.try_encode_frame_444(&y, &u, &v, y_stride))
+        unwrap_or_refuse(pipeline.try_encode_frame_444(&y, y_stride, &u, w, &v, w))
     } else if hbd_src {
         // Task #6: the native-10-bit entry points — the port sees the SAME
         // real u16 samples written to the .yuv the C oracle reads.
@@ -606,14 +613,21 @@ fn main() {
         } else {
             pipeline = pipeline.with_chroma_420(true);
             pipeline
-                .try_encode_frame_420_hbd(&y10, &u10, &v10, y_stride)
+                .try_encode_frame_420_hbd(&y10, y_stride, &u10, w.div_ceil(2), &v10, w.div_ceil(2))
                 .expect("hbd 4:2:0 encode inside the documented envelope")
         }
     } else if mono {
         unwrap_or_refuse(pipeline.try_encode_frame(&y, y_stride))
     } else {
         pipeline = pipeline.with_chroma_420(true);
-        unwrap_or_refuse(pipeline.try_encode_frame_420(&y, &u, &v, y_stride))
+        unwrap_or_refuse(pipeline.try_encode_frame_420(
+            &y,
+            y_stride,
+            &u,
+            w.div_ceil(2),
+            &v,
+            w.div_ceil(2),
+        ))
     };
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
 

@@ -12,9 +12,8 @@ impl EncodePipeline {
     pub(super) fn superres_downscale_420(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
     ) -> crate::EncodeResult<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
         let Some(_denom) = self.superres_denom else {
             return Ok(None);
@@ -35,8 +34,24 @@ impl EncodePipeline {
         let mut ud = svtav1_types::try_vec![0u8; ccw * uch]?;
         let mut vd = svtav1_types::try_vec![0u8; ccw * uch]?;
         svtav1_dsp::resize::resize_plane_horizontal(y, th, uw, y_stride, &mut yd, cw, cw);
-        svtav1_dsp::resize::resize_plane_horizontal(u, uch, ucw, ucw, &mut ud, ccw, ccw);
-        svtav1_dsp::resize::resize_plane_horizontal(v, uch, ucw, ucw, &mut vd, ccw, ccw);
+        svtav1_dsp::resize::resize_plane_horizontal(
+            chroma.u,
+            uch,
+            ucw,
+            chroma.u_stride,
+            &mut ud,
+            ccw,
+            ccw,
+        );
+        svtav1_dsp::resize::resize_plane_horizontal(
+            chroma.v,
+            uch,
+            ucw,
+            chroma.v_stride,
+            &mut vd,
+            ccw,
+            ccw,
+        );
         // Keep the ORIGINAL luma (tightened to `uw` stride) for the picture
         // statistics C derives before scaling — see `superres_stats_luma`.
         let mut orig = svtav1_types::try_vec![0u8; uw * th]?;

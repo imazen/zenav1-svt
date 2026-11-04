@@ -58,9 +58,16 @@ fn sweep(preset: i8) {
                     .with_bit_depth(bd)
                     .with_chroma_420(true);
                     if bd == 10 {
-                        p.try_encode_frame_420_hbd(&y10, &u10, &v10, w)
+                        p.try_encode_frame_420_hbd(
+                            &y10,
+                            w,
+                            &u10,
+                            w.div_ceil(2),
+                            &v10,
+                            w.div_ceil(2),
+                        )
                     } else {
-                        p.try_encode_frame_420(&y8, &u8p, &v8, w)
+                        p.try_encode_frame_420(&y8, w, &u8p, w.div_ceil(2), &v8, w.div_ceil(2))
                     }
                     .map(|b| b.len())
                     .map_err(|e| e.to_string())

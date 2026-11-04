@@ -34,7 +34,8 @@ fn table() -> crate::entropy::obu::FilmGrainParams {
     crate::noise_gen::generate_noise_table(64, 64, 25, -1, 0, 0, false)
 }
 fn encode(p: &mut EncodePipeline, s: &[Vec<u8>; 3]) -> Vec<u8> {
-    p.try_encode_frame_420(&s[0], &s[1], &s[2], 64).unwrap()
+    p.try_encode_frame_420(&s[0], 64, &s[1], 32, &s[2], 32)
+        .unwrap()
 }
 #[test]
 fn denoiser_source_replacement_and_reference_grain_are_live() {
@@ -158,12 +159,12 @@ fn native_ten_bit_denoising_preserves_low_bits() {
         ..Default::default()
     };
     let a = actual
-        .try_encode_frame_420_hbd(&s[0], &s[1], &s[2], 64)
+        .try_encode_frame_420_hbd(&s[0], 64, &s[1], 32, &s[2], 32)
         .unwrap();
     let mut expected = pipeline(10);
     expected.film_grain.table = Some(params);
     let b = expected
-        .try_encode_frame_420_hbd(&denoised[0], &denoised[1], &denoised[2], 64)
+        .try_encode_frame_420_hbd(&denoised[0], 64, &denoised[1], 32, &denoised[2], 32)
         .unwrap();
     assert_eq!(a, b);
     assert_eq!(actual.last_recon10_final, expected.last_recon10_final);
@@ -187,7 +188,10 @@ fn malformed_tables_are_rejected_before_frame_state_changes() {
     p.film_grain.table = Some(table());
     p.film_grain.table.as_mut().unwrap().num_y_points = 15;
     let s = source();
-    assert!(p.try_encode_frame_420(&s[0], &s[1], &s[2], 64).is_err());
+    assert!(
+        p.try_encode_frame_420(&s[0], 64, &s[1], 32, &s[2], 32)
+            .is_err()
+    );
     assert_eq!(p.frame_count, 0);
     assert!(p.grain_sequence_present.is_none());
 }

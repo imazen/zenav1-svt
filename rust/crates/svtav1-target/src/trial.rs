@@ -200,6 +200,10 @@ where
 
 /// bd8 4:2:0 target encode — the still-image surface.
 ///
+/// Every plane has its own stride, in samples, at least its width (chroma is
+/// `ceil(width / 2) x ceil(height / 2)`); padding is never read, and bad
+/// geometry comes back as [`TargetError::Encode`].
+///
 /// `configure` runs on every trial's pipeline between construction and
 /// the frame encode — e.g.
 /// `|p: &mut EncodePipeline| p.hdr.tune = svt_tune::SvtTune::Iq.to_raw()`
@@ -212,8 +216,11 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn encode_to_target_8bit<J, C, E>(
     y: &[u8],
+    y_stride: usize,
     u: &[u8],
+    u_stride: usize,
     v: &[u8],
+    v_stride: usize,
     width: usize,
     height: usize,
     preset: u8,
@@ -228,8 +235,9 @@ where
     let sign = spec.metric.sign();
     let mut trials: Vec<(u8, TrialOutput, Vec<MetricScore>)> = Vec::new();
     let search = search_target_qp(spec.value * sign, &spec.options, |qp| {
+        let planes = [(y, y_stride), (u, u_stride), (v, v_stride)];
         let (out, bundle) =
-            run_trial_bd8(y, u, v, width, height, preset, qp, &configure, &mut judge)?;
+            run_trial_bd8(planes, width, height, preset, qp, &configure, &mut judge)?;
         let target_score = score_of(&bundle, spec.metric).unwrap_or(f64::NAN);
         trials.push((qp, out, bundle));
         Ok::<_, TargetError<E>>(target_score * sign)
@@ -243,8 +251,11 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn encode_to_target_10bit<J, C, E>(
     y: &[u16],
+    y_stride: usize,
     u: &[u16],
+    u_stride: usize,
     v: &[u16],
+    v_stride: usize,
     width: usize,
     height: usize,
     preset: u8,
@@ -259,8 +270,9 @@ where
     let sign = spec.metric.sign();
     let mut trials: Vec<(u8, TrialOutput, Vec<MetricScore>)> = Vec::new();
     let search = search_target_qp(spec.value * sign, &spec.options, |qp| {
+        let planes = [(y, y_stride), (u, u_stride), (v, v_stride)];
         let (out, bundle) =
-            run_trial_bd10(y, u, v, width, height, preset, qp, &configure, &mut judge)?;
+            run_trial_bd10(planes, width, height, preset, qp, &configure, &mut judge)?;
         let target_score = score_of(&bundle, spec.metric).unwrap_or(f64::NAN);
         trials.push((qp, out, bundle));
         Ok::<_, TargetError<E>>(target_score * sign)
@@ -271,9 +283,7 @@ where
 /// One bd8 encode→judge cycle at `qp`.
 #[allow(clippy::too_many_arguments)]
 fn run_trial_bd8<J, C, E>(
-    y: &[u8],
-    u: &[u8],
-    v: &[u8],
+    planes: [(&[u8], usize); 3],
     width: usize,
     height: usize,
     preset: u8,
@@ -287,8 +297,9 @@ where
 {
     let mut pipe = trial_pipeline(width, height, preset, qp, 8);
     configure(&mut pipe);
+    let [(y, y_stride), (u, u_stride), (v, v_stride)] = planes;
     let bytes = pipe
-        .try_encode_frame_420(y, u, v, width)
+        .try_encode_frame_420(y, y_stride, u, u_stride, v, v_stride)
         .map_err(|e| TargetError::Encode(format!("{e:?}")))?;
     let (ry, ru, rv) = pipe
         .last_recon
@@ -311,9 +322,7 @@ where
 /// One bd10 encode→judge cycle at `qp`.
 #[allow(clippy::too_many_arguments)]
 fn run_trial_bd10<J, C, E>(
-    y: &[u16],
-    u: &[u16],
-    v: &[u16],
+    planes: [(&[u16], usize); 3],
     width: usize,
     height: usize,
     preset: u8,
@@ -327,8 +336,9 @@ where
 {
     let mut pipe = trial_pipeline(width, height, preset, qp, 10);
     configure(&mut pipe);
+    let [(y, y_stride), (u, u_stride), (v, v_stride)] = planes;
     let bytes = pipe
-        .try_encode_frame_420_hbd(y, u, v, width)
+        .try_encode_frame_420_hbd(y, y_stride, u, u_stride, v, v_stride)
         .map_err(|e| TargetError::Encode(format!("{e:?}")))?;
     let (ry, ru, rv) = pipe
         .last_recon10_final
@@ -446,9 +456,21 @@ mod tests {
     fn bd8_target_search_returns_a_real_trial() {
         let (y, u, v) = synth8();
         let spec = TargetSpec::ssim2(70.0);
-        let out =
-            encode_to_target_8bit(&y, &u, &v, 128, 128, 10, &spec, mad_judge(&y, 128), |_| {})
-                .expect("bd8 target encode");
+        let out = encode_to_target_8bit(
+            &y,
+            128,
+            &u,
+            64,
+            &v,
+            64,
+            128,
+            128,
+            10,
+            &spec,
+            mad_judge(&y, 128),
+            |_| {},
+        )
+        .expect("bd8 target encode");
         assert!(matches!(out.recon, TrialRecon::Bd8 { .. }));
         assert!(out.search.encodes_used <= 2, "{:?}", out.search);
         assert!(out.search.qp >= 1 && out.search.qp <= 63);
@@ -472,12 +494,35 @@ mod tests {
         };
         // Default tune vs tune IQ at the same qp: if the configure hook
         // does not reach the trial, the bytes are identical.
-        let def =
-            encode_to_target_8bit(&y, &u, &v, 128, 128, 10, &spec, mad_judge(&y, 128), |_| {})
-                .expect("default");
-        let iq = encode_to_target_8bit(&y, &u, &v, 128, 128, 10, &spec, mad_judge(&y, 128), |p| {
-            p.hdr.tune = zenav1_svt::encoder::tune::TUNE_IQ
-        })
+        let def = encode_to_target_8bit(
+            &y,
+            128,
+            &u,
+            64,
+            &v,
+            64,
+            128,
+            128,
+            10,
+            &spec,
+            mad_judge(&y, 128),
+            |_| {},
+        )
+        .expect("default");
+        let iq = encode_to_target_8bit(
+            &y,
+            128,
+            &u,
+            64,
+            &v,
+            64,
+            128,
+            128,
+            10,
+            &spec,
+            mad_judge(&y, 128),
+            |p| p.hdr.tune = zenav1_svt::encoder::tune::TUNE_IQ,
+        )
         .expect("iq");
         assert_ne!(
             def.bytes, iq.bytes,
@@ -505,8 +550,119 @@ mod tests {
             Ok(vec![(MetricKind::Zensim, 90.0)])
         };
         let out =
-            encode_to_target_8bit(&y, &u, &v, 128, 128, 10, &spec, judge, |_| {}).expect("encode");
+            encode_to_target_8bit(&y, 128, &u, 64, &v, 64, 128, 128, 10, &spec, judge, |_| {})
+                .expect("encode");
         assert!(!out.search.converged);
         assert!(out.search.score.is_nan());
+    }
+
+    fn with_padding<T: Copy>(src: &[T], w: usize, stride: usize, garbage: T) -> Vec<T> {
+        let h = src.len() / w;
+        let mut out = vec![garbage; (h - 1) * stride + w];
+        for (row, line) in src.chunks_exact(w).enumerate() {
+            out[row * stride..row * stride + w].copy_from_slice(line);
+        }
+        out
+    }
+
+    fn two_trials() -> TargetSpec {
+        TargetSpec {
+            metric: MetricKind::Ssimulacra2,
+            value: 80.0,
+            options: TargetOptions {
+                max_encodes: 2,
+                qp_start: Some(30),
+                tolerance: 0.1,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn strided_planes_give_the_tight_result_at_both_depths() {
+        let spec = two_trials();
+        let judge = |_: &TrialOutput| -> Result<Vec<MetricScore>, String> {
+            Ok(vec![(MetricKind::Ssimulacra2, 50.0)])
+        };
+        let (y, u, v) = synth8();
+        let plain =
+            encode_to_target_8bit(&y, 128, &u, 64, &v, 64, 128, 128, 10, &spec, judge, |_| {})
+                .expect("tight");
+        let (py, pu, pv) = (
+            with_padding(&y, 128, 135, 0xA5),
+            with_padding(&u, 64, 67, 0xA5),
+            with_padding(&v, 64, 75, 0xA5),
+        );
+        let padded = encode_to_target_8bit(
+            &py,
+            135,
+            &pu,
+            67,
+            &pv,
+            75,
+            128,
+            128,
+            10,
+            &spec,
+            judge,
+            |_| {},
+        )
+        .expect("strided");
+        assert!(plain.bytes == padded.bytes, "bd8");
+
+        let wide = |p: &[u8]| p.iter().map(|&s| u16::from(s) << 2).collect::<Vec<u16>>();
+        let (y, u, v) = (wide(&y), wide(&u), wide(&v));
+        let plain =
+            encode_to_target_10bit(&y, 128, &u, 64, &v, 64, 128, 128, 10, &spec, judge, |_| {})
+                .expect("tight");
+        let (py, pu, pv) = (
+            with_padding(&y, 128, 135, 0xFFFF),
+            with_padding(&u, 64, 67, 0xFFFF),
+            with_padding(&v, 64, 75, 0xFFFF),
+        );
+        let padded = encode_to_target_10bit(
+            &py,
+            135,
+            &pu,
+            67,
+            &pv,
+            75,
+            128,
+            128,
+            10,
+            &spec,
+            judge,
+            |_| {},
+        )
+        .expect("strided");
+        assert!(plain.bytes == padded.bytes, "bd10");
+    }
+
+    #[test]
+    fn bad_plane_geometry_is_an_encode_error() {
+        let spec = two_trials();
+        let judge = |_: &TrialOutput| -> Result<Vec<MetricScore>, String> { Ok(vec![]) };
+        let (y, u, v) = synth8();
+        for (ys, us, vs, ulen) in [
+            (127, 64, 64, u.len()),
+            (128, 63, 64, u.len()),
+            (128, 64, 64, u.len() - 1),
+        ] {
+            let r = encode_to_target_8bit(
+                &y,
+                ys,
+                &u[..ulen],
+                us,
+                &v,
+                vs,
+                128,
+                128,
+                10,
+                &spec,
+                judge,
+                |_| {},
+            );
+            assert!(matches!(r, Err(TargetError::Encode(_))), "{ys} {us} {vs}");
+        }
     }
 }

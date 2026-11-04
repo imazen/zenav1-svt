@@ -70,7 +70,7 @@ fn main() {
     let (aw, ah) = (w.div_ceil(8) * 8, h.div_ceil(8) * 8);
     for i in 0..frames {
         let (y, u, v) = frame_planes(w, h, i);
-        let obu = match pipeline.try_encode_frame_444(&y, &u, &v, w) {
+        let obu = match pipeline.try_encode_frame_444(&y, w, &u, w, &v, w) {
             Ok(obu) => obu,
             Err(e) => {
                 eprintln!("REFUSED f{i}: {e}");

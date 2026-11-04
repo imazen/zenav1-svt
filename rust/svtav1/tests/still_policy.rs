@@ -36,7 +36,7 @@ fn parity_refuses_conflicting_reference_extensions_and_mono_in_real_encoder() {
             .with_enhancement(ZenEnhancement::DeepSearch),
     ] {
         assert!(bad.resolve_still_policy().is_err());
-        assert!(bad.encode_yuv420(&y, &uv, &uv, 8, 8, 8).is_err());
+        assert!(bad.encode_yuv420(&y, 8, &uv, 4, &uv, 4, 8, 8).is_err());
     }
     assert!(encoder.encode_y8(&y, 8, 8, 8).is_err());
 }
@@ -55,10 +55,13 @@ fn effort_resolution_reaches_the_actual_encoder_and_legacy_setters_replace_it() 
             .with_native_preset(e.native_preset());
         assert_eq!(
             automatic
-                .encode_yuv420(&y, &uv, &uv, 32, 32, 32)
+                .encode_yuv420(&y, 32, &uv, 16, &uv, 16, 32, 32)
                 .unwrap()
                 .data,
-            native.encode_yuv420(&y, &uv, &uv, 32, 32, 32).unwrap().data
+            native
+                .encode_yuv420(&y, 32, &uv, 16, &uv, 16, 32, 32)
+                .unwrap()
+                .data
         );
         assert_eq!(
             automatic
@@ -111,7 +114,7 @@ fn support_query_matches_real_grain_mono_and_reference_refusals() {
             let query = encoder.validate_configuration_for_input(17, 19, format);
             let actual = match format {
                 StillInputFormat::Monochrome => encoder.encode_y8(&y, 17, 19, 17),
-                StillInputFormat::Yuv420 => encoder.encode_yuv420(&y, &uv, &uv, 17, 19, 17),
+                StillInputFormat::Yuv420 => encoder.encode_yuv420(&y, 17, &uv, 9, &uv, 9, 17, 19),
             };
             assert_eq!(
                 query.is_ok(),

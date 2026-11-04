@@ -548,6 +548,48 @@ pub(super) fn gather_rows(
     Ok(out)
 }
 
+/// The two chroma planes of one input frame, each read at its own stride in
+/// samples. Rows are `width` samples of image followed by padding the encoder
+/// never reads; only the pipeline's entry points validate the geometry.
+#[derive(Clone, Copy)]
+pub(super) struct StridedChroma<'a> {
+    pub(super) u: &'a [u8],
+    pub(super) u_stride: usize,
+    pub(super) v: &'a [u8],
+    pub(super) v_stride: usize,
+}
+
+impl<'a> StridedChroma<'a> {
+    /// Both planes tightly packed at `stride`.
+    pub(super) fn tight(u: &'a [u8], v: &'a [u8], stride: usize) -> Self {
+        Self {
+            u,
+            u_stride: stride,
+            v,
+            v_stride: stride,
+        }
+    }
+}
+
+/// Whether `len` samples hold a `w x h` plane whose rows are `stride` samples
+/// apart. The last row needs only `w`, so the requirement is
+/// `(h - 1) * stride + w`, never `h * stride`.
+pub(super) fn plane_fits(len: usize, w: usize, h: usize, stride: usize) -> bool {
+    stride >= w
+        && h.checked_sub(1)
+            .and_then(|rows| rows.checked_mul(stride))
+            .and_then(|start| start.checked_add(w))
+            .is_some_and(|needed| needed <= len)
+}
+
+/// Whether any image sample of a [`plane_fits`]-checked plane is `max` or
+/// above. Padding between rows has no sample meaning and is not read.
+pub(super) fn plane_exceeds(src: &[u16], w: usize, h: usize, stride: usize, max: u16) -> bool {
+    src.chunks(stride)
+        .take(h)
+        .any(|row| row[..w].iter().any(|&s| s >= max))
+}
+
 /// Edge-replicate a plane from a valid `sw x sh` region (read at
 /// `src_stride`) up to `dw x dh` (tightly packed at stride `dw`). The
 /// per-pixel `min`-clamp reproduces C `pad_input_picture`'s

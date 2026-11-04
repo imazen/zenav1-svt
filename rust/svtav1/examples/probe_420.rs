@@ -62,7 +62,7 @@ fn main() {
         ..RcConfig::default()
     };
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1).with_chroma_420(true);
-    let obu = pipeline.encode_frame_420(&y, &u, &v, w);
+    let obu = pipeline.encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2));
 
     std::fs::write(format!("{outdir}/probe.obu"), &obu).unwrap();
     std::fs::write(format!("{outdir}/src_y.raw"), &y).unwrap();

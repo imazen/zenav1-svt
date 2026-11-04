@@ -1052,7 +1052,7 @@ fn determinism_repeated_encodes_are_byte_identical() {
         };
         let mut p = svtav1_encoder::pipeline::EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1)
             .with_chroma_420(true);
-        p.encode_frame_420(&src, &u, &v, w)
+        p.encode_frame_420(&src, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
     };
     let a = encode420();
     let b = encode420();

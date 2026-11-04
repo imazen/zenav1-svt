@@ -470,7 +470,7 @@ fn the_real_pack_walk_writes_cs_inter_tile() {
     .with_bit_depth(8)
     .with_chroma_420(true);
     let f0 = pipeline
-        .try_encode_frame_420(&y, &uv, &uv, w)
+        .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
         .expect("the video-mode key frame encodes");
     assert_eq!(
         f0.len(),
@@ -754,7 +754,7 @@ fn the_dpb_reference_carries_cs_replicated_margin() {
     .with_bit_depth(8)
     .with_chroma_420(true);
     let f0 = pipeline
-        .try_encode_frame_420(&y, &uv, &uv, w)
+        .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
         .expect("the video-mode key frame encodes");
     assert_eq!(f0.len(), 961, "this is not the reference cell");
 

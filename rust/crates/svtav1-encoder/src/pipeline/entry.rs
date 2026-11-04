@@ -84,14 +84,22 @@ impl EncodePipeline {
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
     ///
-    /// `u`/`v` are (true_w/2 x true_h/2) planes at stride `true_w/2`, and
-    /// `y` is (true_w x true_h) at `y_stride`, where the TRUE dims are what
-    /// the caller passed to [`Self::new`]. When those differ from the
+    /// `u`/`v` are (true_w/2 x true_h/2) planes and `y` is (true_w x true_h), each
+    /// at its own stride, where the TRUE dims are what the caller passed to
+    /// [`Self::new`]. When those differ from the
     /// ALIGNED encode dims (task #95), the planes are edge-replicated up to
     /// the aligned grid here (C `pad_input_picture`, pic_operators.c:561);
     /// for 8-aligned inputs this is a zero-copy pass-through.
     /// Requires `chroma_420` to be enabled via [`Self::with_chroma_420`].
-    pub fn encode_frame_420(&mut self, y: &[u8], u: &[u8], v: &[u8], y_stride: usize) -> Vec<u8> {
+    pub fn encode_frame_420(
+        &mut self,
+        y: &[u8],
+        y_stride: usize,
+        u: &[u8],
+        u_stride: usize,
+        v: &[u8],
+        v_stride: usize,
+    ) -> Vec<u8> {
         assert!(
             self.chroma_420,
             "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
@@ -99,10 +107,9 @@ impl EncodePipeline {
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
         let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
-        let cn_true = tcw * tch;
         assert!(
-            u.len() >= cn_true && v.len() >= cn_true,
-            "u/v planes must be (true_w/2 x true_h/2)"
+            plane_fits(u.len(), tcw, tch, u_stride) && plane_fits(v.len(), tcw, tch, v_stride),
+            "u/v planes must be (true_w/2 x true_h/2) at u_stride/v_stride"
         );
         // Additive fallible core (Feature 1+3), shared with `try_encode_frame_420`.
         // KEEPS the exact panicking contract: on the default/trusted path the
@@ -111,7 +118,13 @@ impl EncodePipeline {
         // the note on `encode_frame`; a `RcMode::Vbr` or non-LOW_DELAY `Cbr`
         // pipeline panics here rather than emitting a stream C would refuse
         // or the port cannot compute honestly.
-        self.encode_frame_420_core(y, u, v, y_stride).expect(
+        let chroma = StridedChroma {
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
+        self.encode_frame_420_core(y, y_stride, chroma).expect(
             "encode_frame_420 is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
                  configuration this port refuses (e.g. RcMode::Vbr or \
@@ -127,11 +140,10 @@ impl EncodePipeline {
     pub(super) fn encode_frame_420_core(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
     ) -> EncodeResult<Vec<u8>> {
-        let result = self.encode_frame_420_prepared(y, u, v, y_stride);
+        let result = self.encode_frame_420_prepared(y, y_stride, chroma);
         // Also clear on errors before encode_frame_impl takes these fields.
         self.prepared_grain = None;
         self.hbd_source = None;
@@ -142,9 +154,8 @@ impl EncodePipeline {
     pub(super) fn encode_frame_420_prepared(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
     ) -> crate::EncodeResult<Vec<u8>> {
         // Superres chunk B.3: the caller hands in FULL-width planes; the
         // encode runs at the reduced CODED width. Downscale horizontally with
@@ -157,35 +168,40 @@ impl EncodePipeline {
         }
         self.validate_film_grain()?;
         self.prepared_grain = None;
-        let prepared = self.prepare_film_grain(y, u, v, y_stride)?;
+        let prepared = self.prepare_film_grain(y, y_stride, chroma)?;
         if self.superres_denom.is_none() {
             if let Some((planes, stride)) = prepared.as_ref() {
                 return self.encode_frame_impl(
                     &planes[0],
                     *stride,
-                    Some((&planes[1], &planes[2])),
+                    Some(StridedChroma::tight(
+                        &planes[1],
+                        &planes[2],
+                        stride.div_ceil(2),
+                    )),
                     None,
                 );
             }
         }
-        let (y, u, v, y_stride) = match prepared.as_ref() {
+        let (y, y_stride, chroma) = match prepared.as_ref() {
             Some((planes, stride)) => (
                 planes[0].as_slice(),
-                planes[1].as_slice(),
-                planes[2].as_slice(),
                 *stride,
+                StridedChroma::tight(&planes[1], &planes[2], stride.div_ceil(2)),
             ),
-            None => (y, u, v, y_stride),
+            None => (y, y_stride, chroma),
         };
-        let downscaled = self.superres_downscale_420(y, u, v, y_stride)?;
-        let (y, u, v, y_stride) = match downscaled.as_ref() {
-            Some((yd, ud, vd)) => (
-                yd.as_slice(),
-                ud.as_slice(),
-                vd.as_slice(),
-                self.true_width as usize,
-            ),
-            None => (y, u, v, y_stride),
+        let downscaled = self.superres_downscale_420(y, y_stride, chroma)?;
+        let (y, y_stride, chroma) = match downscaled.as_ref() {
+            Some((yd, ud, vd)) => {
+                let cw = self.true_width as usize;
+                (
+                    yd.as_slice(),
+                    cw,
+                    StridedChroma::tight(ud, vd, cw.div_ceil(2)),
+                )
+            }
+            None => (y, y_stride, chroma),
         };
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
@@ -210,16 +226,21 @@ impl EncodePipeline {
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // the pre-#95 path).
-            return self.encode_frame_impl(y, y_stride, Some((u, v)), None);
+            return self.encode_frame_impl(y, y_stride, Some(chroma), None);
         }
         // Pad TRUE -> ALIGNED. C replicates the last valid column, then the
         // last valid row (incl. the new right pad); the per-pixel min-clamp
         // in `pad_plane_replicate` is equivalent for a rectangular region.
         let (acw, ach) = (fmt.chroma_width(aw), fmt.chroma_height(ah));
         let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
-        let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach)?;
-        let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach)?;
-        self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)), None)
+        let u_pad = pad_plane_replicate(chroma.u, chroma.u_stride, tcw, tch, acw, ach)?;
+        let v_pad = pad_plane_replicate(chroma.v, chroma.v_stride, tcw, tch, acw, ach)?;
+        self.encode_frame_impl(
+            &y_pad,
+            aw,
+            Some(StridedChroma::tight(&u_pad, &v_pad, acw)),
+            None,
+        )
     }
 
     /// Fallible twin of [`Self::encode_frame`] (Feature 1 + 2).
@@ -237,7 +258,7 @@ impl EncodePipeline {
         // (a) Validate the true input extent. Padding is performed in
         // encode_frame_mono_core; both partition paths handle partial SBs.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        if y_plane.len() < (th - 1) * y_stride + tw {
+        if !plane_fits(y_plane.len(), tw, th, y_stride) {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
@@ -262,23 +283,56 @@ impl EncodePipeline {
     /// [`EncodeError`]s and the cancellation token is checked at entry;
     /// otherwise it delegates to the fallible core, which pads the true
     /// dimensions to the aligned canvas and calls `encode_frame_impl`.
+    ///
+    /// Every plane has its own stride, in samples, and the output depends only
+    /// on the image samples: padding between rows is never read. Each stride
+    /// must be at least its plane's width, and a plane needs `(rows - 1) * stride
+    /// + width` samples, so the last row needs no padding. The widths are the
+    /// input dims: FULL width under superres, chroma at its 4:2:0 ceiling.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::InvalidDimensions`] when a plane does not fit its geometry.
     pub fn try_encode_frame_420(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        u: &[u8],
+        u_stride: usize,
+        v: &[u8],
+        v_stride: usize,
     ) -> EncodeResult<Vec<u8>> {
+        let chroma = StridedChroma {
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
         // (a) Validate — mirror the `encode_frame_420` + impl asserts.
         if !self.chroma_420 {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)",
             )));
         }
+        // The caller hands FULL-width planes under superres, coded-width
+        // planes otherwise; `upscaled_width` is the input width either way.
+        let (iw, th) = (self.upscaled_width as usize, self.true_height as usize);
+        let (icw, ich) = (iw.div_ceil(2), th.div_ceil(2));
+        if !plane_fits(y.len(), iw, th, y_stride)
+            || !plane_fits(u.len(), icw, ich, u_stride)
+            || !plane_fits(v.len(), icw, ich, v_stride)
+        {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.upscaled_width,
+                height: self.true_height,
+                reason: "y must cover the input dims at y_stride; u/v at (w+1)/2 x (h+1)/2 at \
+                         u_stride/v_stride",
+            }));
+        }
         // Random access changes the contract: an input may produce no packet
         // until its mini-GOP completes; `try_flush` drains the tail.
         if self.pred_structure == crate::port_picstruct::PredStructure::RandomAccess {
-            return self.try_encode_frame_420_ra(y, u, v, y_stride);
+            return self.try_encode_frame_420_ra(y, y_stride, chroma);
         }
         // INTER FRAMES ARE SHIPPED HERE as of 2026-09-11. This used to be a
         // blanket "still/key frames only" refusal, lifted only by
@@ -292,16 +346,6 @@ impl EncodePipeline {
         // refused exactly as before.
         //
         // See `encode_frame_impl` for the parity claim this does NOT make.
-        let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
-        let cn_true = tcw * tch;
-        if u.len() < cn_true || v.len() < cn_true {
-            return Err(whereat::at!(EncodeError::InvalidDimensions {
-                width: self.true_width,
-                height: self.true_height,
-                reason: "u/v planes must each be at least (true_w/2 x true_h/2)",
-            }));
-        }
         // (b) Feature 1 entry stop-check (frame-granular).
         self.stop
             .check()
@@ -310,15 +354,14 @@ impl EncodePipeline {
         // (c) The fallible core (padding + encode_frame_impl), NOT the panicking
         // `encode_frame_420` wrapper — so a fallible alloc / cancellation
         // surfaces as `Err` here instead of unwinding through `.expect()`.
-        self.encode_frame_420_core(y, u, v, y_stride)
+        self.encode_frame_420_core(y, y_stride, chroma)
     }
 
     /// Native 10-bit (u16) 4:2:0 entry point — task #6 chunk 1
     /// (`rust/docs/hbd-input-port-map.md`).
     ///
     /// `y`/`u`/`v` carry REAL 10-bit samples (0..=1023) in the same TRUE-dim
-    /// layout [`Self::try_encode_frame_420`] takes for `u8` (`y` at
-    /// `y_stride`, chroma at `(true_w+1)/2`). Requires the pipeline to be
+    /// layout [`Self::try_encode_frame_420`] takes for `u8`. Requires the pipeline to be
     /// built with `with_bit_depth(10)` and `with_chroma_420(true)`.
     ///
     /// # What chunk 1 threads — and what it does not
@@ -340,12 +383,17 @@ impl EncodePipeline {
     /// source (see [`Self::hbd_source_consumed`]) — rejecting beats silently
     /// encoding the MSB-truncated content. Also propagates cancellation and
     /// fallible-allocation failures like the u8 entry points.
+    ///
+    /// The geometry rules of [`Self::try_encode_frame_420`] apply. Padding is
+    /// never read, so it need not hold valid 10-bit samples.
     pub fn try_encode_frame_420_hbd(
         &mut self,
         y: &[u16],
-        u: &[u16],
-        v: &[u16],
         y_stride: usize,
+        u: &[u16],
+        u_stride: usize,
+        v: &[u16],
+        v_stride: usize,
     ) -> EncodeResult<Vec<u8>> {
         if !self.chroma_420 {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
@@ -385,16 +433,22 @@ impl EncodePipeline {
             (tw, tw.div_ceil(2))
         };
         let ich = th.div_ceil(2);
-        if y.len() < (th - 1) * y_stride + iw || u.len() < icw * ich || v.len() < icw * ich {
+        if !plane_fits(y.len(), iw, th, y_stride)
+            || !plane_fits(u.len(), icw, ich, u_stride)
+            || !plane_fits(v.len(), icw, ich, v_stride)
+        {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: iw as u32,
                 height: self.true_height,
-                reason: "hbd planes must cover the input dims (y at y_stride, u/v at w/2; \
-                         FULL width under superres)",
+                reason: "hbd planes must cover the input dims (y at y_stride, u/v at w/2 at \
+                         u_stride/v_stride; FULL width under superres)",
             }));
         }
         let max = 1u16 << self.bit_depth;
-        if y.iter().chain(u.iter()).chain(v.iter()).any(|&s| s >= max) {
+        if plane_exceeds(y, iw, th, y_stride, max)
+            || plane_exceeds(u, icw, ich, u_stride, max)
+            || plane_exceeds(v, icw, ich, v_stride, max)
+        {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "hbd source carries a sample above the configured bit depth",
             )));
@@ -417,9 +471,11 @@ impl EncodePipeline {
                 sy[r * iw..(r + 1) * iw].copy_from_slice(&y[r * y_stride..r * y_stride + iw]);
             }
             let mut su = svtav1_types::try_vec![0u16; icw * ich]?;
-            su.copy_from_slice(&u[..icw * ich]);
             let mut sv = svtav1_types::try_vec![0u16; icw * ich]?;
-            sv.copy_from_slice(&v[..icw * ich]);
+            for r in 0..ich {
+                su[r * icw..(r + 1) * icw].copy_from_slice(&u[r * u_stride..r * u_stride + icw]);
+                sv[r * icw..(r + 1) * icw].copy_from_slice(&v[r * v_stride..r * v_stride + icw]);
+            }
             self.hbd_superres_src = Some(HbdSuperresSrc {
                 y: sy,
                 u: su,
@@ -428,7 +484,7 @@ impl EncodePipeline {
             // `encode_frame_420_core` clears `hbd_superres_src` and the
             // produced `hbd_source` unconditionally — error paths included —
             // so nothing staged can leak into the next frame.
-            return self.encode_frame_420_core(&[], &[], &[], 0);
+            return self.encode_frame_420_core(&[], 0, StridedChroma::tight(&[], &[], 0));
         }
         // Stash the ALIGNED-padded u16 planes for `encode_frame_impl` to take,
         // and drive the existing core with the MSB-truncated u8 planes — the
@@ -440,8 +496,8 @@ impl EncodePipeline {
         let (aw, ah) = (self.width as usize, self.height as usize);
         let hbd = HbdSource {
             y: pad_plane_replicate_u16(y, y_stride, tw, th, aw, ah)?,
-            u: pad_plane_replicate_u16(u, icw, icw, ich, aw / 2, ah / 2)?,
-            v: pad_plane_replicate_u16(v, icw, icw, ich, aw / 2, ah / 2)?,
+            u: pad_plane_replicate_u16(u, u_stride, icw, ich, aw / 2, ah / 2)?,
+            v: pad_plane_replicate_u16(v, v_stride, icw, ich, aw / 2, ah / 2)?,
         };
         let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
         for r in 0..th {
@@ -451,12 +507,15 @@ impl EncodePipeline {
         }
         let mut u8p = svtav1_types::try_vec![0u8; icw * ich]?;
         let mut v8p = svtav1_types::try_vec![0u8; icw * ich]?;
-        for i in 0..icw * ich {
-            u8p[i] = (u[i] >> shift) as u8;
-            v8p[i] = (v[i] >> shift) as u8;
+        for r in 0..ich {
+            for c in 0..icw {
+                u8p[r * icw + c] = (u[r * u_stride + c] >> shift) as u8;
+                v8p[r * icw + c] = (v[r * v_stride + c] >> shift) as u8;
+            }
         }
         self.hbd_source = Some(hbd);
-        let out = self.encode_frame_420_core(&y8, &u8p, &v8p, tw);
+        let chroma = StridedChroma::tight(&u8p, &v8p, icw);
+        let out = self.encode_frame_420_core(&y8, tw, chroma);
         // Never leave a stale source behind for the next frame (the happy
         // path already took it; this covers the early-error paths).
         self.hbd_source = None;
@@ -466,8 +525,8 @@ impl EncodePipeline {
     /// 4:4:4 chroma entry point — Zen extension (C refuses non-420 at
     /// `verify_settings`, `enc_settings.c:470`; no byte oracle).
     ///
-    /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`, `y`
-    /// at `y_stride`). Requires `with_chroma_format(Some(Yuv444))`.
+    /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`), each at its
+    /// own stride. Requires `with_chroma_format(Some(Yuv444))`.
     ///
     /// Support envelope (decoder-verified — C refuses non-4:2:0 at
     /// `verify_settings`, enc_settings.c:470, so no byte oracle exists):
@@ -483,13 +542,16 @@ impl EncodePipeline {
     ///
     /// # Errors
     /// [`EncodeError::UnsupportedConfig`] outside the envelope;
-    /// [`EncodeError::InvalidDimensions`] on short planes.
+    /// [`EncodeError::InvalidDimensions`] on planes that do not fit; the geometry
+    /// rules of [`Self::try_encode_frame_420`] apply.
     pub fn try_encode_frame_444(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        u: &[u8],
+        u_stride: usize,
+        v: &[u8],
+        v_stride: usize,
     ) -> EncodeResult<Vec<u8>> {
         if self.chroma_format != Some(svtav1_types::chroma::ChromaFormat::Yuv444) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
@@ -501,8 +563,10 @@ impl EncodePipeline {
             return Err(e);
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let n = tw * th;
-        if y.len() < (th - 1) * y_stride + tw || u.len() < n || v.len() < n {
+        if !plane_fits(y.len(), tw, th, y_stride)
+            || !plane_fits(u.len(), tw, th, u_stride)
+            || !plane_fits(v.len(), tw, th, v_stride)
+        {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
@@ -513,7 +577,13 @@ impl EncodePipeline {
             .check()
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
-        self.encode_frame_420_core(y, u, v, y_stride)
+        let chroma = StridedChroma {
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
+        self.encode_frame_420_core(y, y_stride, chroma)
     }
 
     /// 4:2:2 chroma entry point — Zen extension, same staging contract
@@ -525,9 +595,11 @@ impl EncodePipeline {
     pub fn try_encode_frame_422(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        u: &[u8],
+        u_stride: usize,
+        v: &[u8],
+        v_stride: usize,
     ) -> EncodeResult<Vec<u8>> {
         if self.chroma_format != Some(svtav1_types::chroma::ChromaFormat::Yuv422) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
@@ -539,20 +611,28 @@ impl EncodePipeline {
             return Err(e);
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (tcw, n) = (tw.div_ceil(2), tw.div_ceil(2) * th);
-        if y.len() < (th - 1) * y_stride + tw || u.len() < n || v.len() < n {
+        let tcw = tw.div_ceil(2);
+        if !plane_fits(y.len(), tw, th, y_stride)
+            || !plane_fits(u.len(), tcw, th, u_stride)
+            || !plane_fits(v.len(), tcw, th, v_stride)
+        {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
                 reason: "4:2:2 planes: y at y_stride over true dims, u/v at (true_w+1)/2 x true_h",
             }));
         }
-        let _ = tcw;
         self.stop
             .check()
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
-        self.encode_frame_420_core(y, u, v, y_stride)
+        let chroma = StridedChroma {
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
+        self.encode_frame_420_core(y, y_stride, chroma)
     }
 
     /// Native 10-bit (u16) monochrome entry point — the mono twin of
@@ -589,7 +669,7 @@ impl EncodePipeline {
             )));
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        if y.len() < (th - 1) * y_stride + tw {
+        if !plane_fits(y.len(), tw, th, y_stride) {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
@@ -597,7 +677,7 @@ impl EncodePipeline {
             }));
         }
         let max = 1u16 << self.bit_depth;
-        if y.iter().any(|&s| s >= max) {
+        if plane_exceeds(y, tw, th, y_stride, max) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "hbd source carries a sample above the configured bit depth",
             )));

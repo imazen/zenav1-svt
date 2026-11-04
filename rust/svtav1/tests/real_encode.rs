@@ -450,7 +450,16 @@ fn encode_yuv420_real_content() {
         .with_quality(60.0)
         .with_chroma_subsampling(ChromaSubsampling::Yuv420);
     let result = enc
-        .encode_yuv420(&y, &u, &v, width as u32, height as u32, width as u32)
+        .encode_yuv420(
+            &y,
+            width as u32,
+            &u,
+            (width as u32).div_ceil(2),
+            &v,
+            (width as u32).div_ceil(2),
+            width as u32,
+            height as u32,
+        )
         .expect("YUV420 encode should succeed");
 
     assert!(!result.data.is_empty());
@@ -1036,7 +1045,7 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
     let mut still = mk(1);
     for i in 0..3 {
         let bytes = still
-            .try_encode_frame_420(&y, &u, &v, 64)
+            .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
             .unwrap_or_else(|e| {
                 panic!("key frame {i} at hierarchical_levels=4 was refused: {e:?}")
             });
@@ -1048,7 +1057,7 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
     let mut gop = mk(64);
     for i in 0..4 {
         let bytes = gop
-            .try_encode_frame_420(&y, &u, &v, 64)
+            .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
             .unwrap_or_else(|e| panic!("frame {i} of a hierarchical GOP was refused: {e:?}"));
         assert!(!bytes.is_empty(), "frame {i} produced no bytes");
     }
@@ -1065,7 +1074,7 @@ fn a_hierarchical_gop_encodes_through_its_supported_range() {
     );
     over.chroma_420 = true;
     let err = over
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect_err("hierarchical_levels=6 is outside C's supported range");
     let EncodeError::UnsupportedConfig(why) = err.error() else {
         panic!("expected UnsupportedConfig, got {err:?}");
@@ -1119,14 +1128,14 @@ fn deep_search_refuses_everything_outside_still_420() {
         let mut p = mk(1);
         p.speed_config.preset = preset;
         let bytes = p
-            .try_encode_frame_420(&y, &u, &v, 64)
+            .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
             .unwrap_or_else(|e| panic!("still 4:2:0 at preset {preset} refused: {e:?}"));
         assert!(!bytes.is_empty());
     }
 
     // Video pipeline: refused on frame 0 already — a GOP pipeline is not a
     // still even while its first frame happens to be intra.
-    expect_refusal(mk(64).try_encode_frame_420(&y, &u, &v, 64), "video");
+    expect_refusal(mk(64).try_encode_frame_420(&y, 64, &u, 32, &v, 32), "video");
 
     // Monochrome: no chroma planes -> outside the measured envelope.
     let mut mono = mk(1);
@@ -1140,7 +1149,10 @@ fn deep_search_refuses_everything_outside_still_420() {
     c444.chroma_format = Some(svtav1_types::chroma::ChromaFormat::Yuv444);
     c444.chroma_420 = false;
     let (u444, v444) = (vec![128u8; 64 * 64], vec![128u8; 64 * 64]);
-    expect_refusal(c444.try_encode_frame_444(&y, &u444, &v444, 64), "444");
+    expect_refusal(
+        c444.try_encode_frame_444(&y, 64, &u444, 64, &v444, 64),
+        "444",
+    );
 
     // 10-bit still: the arm's bd10 post-pass knobs are unmeasured — the
     // whole encode refuses rather than partially arming.
@@ -1149,7 +1161,7 @@ fn deep_search_refuses_everything_outside_still_420() {
     let y10: Vec<u16> = y.iter().map(|&s| (s as u16) << 2).collect();
     let c10 = vec![512u16; 32 * 32];
     expect_refusal(
-        bd10.try_encode_frame_420_hbd(&y10, &c10, &c10, 64),
+        bd10.try_encode_frame_420_hbd(&y10, 64, &c10, 32, &c10, 32),
         "10-bit still",
     );
 }
@@ -1240,7 +1252,7 @@ fn avif_yuv420_encode() {
     let u = vec![128u8; 32 * 32]; // mid-gray chroma
     let v = vec![128u8; 32 * 32];
     let enc = AvifEncoder::new().with_quality(60.0);
-    let result = enc.encode_yuv420(&y, &u, &v, 64, 64, 64).unwrap();
+    let result = enc.encode_yuv420(&y, 64, &u, 32, &v, 32, 64, 64).unwrap();
     assert!(!result.data.is_empty());
 
     // YUV420 output should be 3 length-prefixed plane bitstreams

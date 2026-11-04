@@ -111,7 +111,7 @@ fn encode_8bit(
     let v = vec![128u8; cw * ch];
     let rc = cqp(qp);
     let mut pipe = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1).with_chroma_420(true);
-    pipe.try_encode_frame_420(&y, &u, &v, w)
+    pipe.try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .expect("in-envelope cell must encode")
 }
 
@@ -132,7 +132,7 @@ fn encode_10bit(
     let mut pipe = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
         .with_chroma_420(true)
         .with_bit_depth(10);
-    pipe.try_encode_frame_420_hbd(&y, &u, &v, w)
+    pipe.try_encode_frame_420_hbd(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .expect("in-envelope cell must encode")
 }
 

@@ -39,6 +39,9 @@ fn main() {
             u: &uv,
             v: &uv,
             y_stride: w,
+            u_stride: w.div_ceil(2),
+            v_stride: w.div_ceil(2),
+            alpha_stride: w,
             alpha: if std::env::var_os("AVIF_NO_ALPHA").is_some() {
                 None
             } else {
@@ -120,6 +123,7 @@ fn main() {
                 .map(|(i, f)| MonochromeAnimationFrame {
                     y: &colors[i],
                     y_stride: w,
+                    alpha_stride: w,
                     alpha: f.alpha.map(|_| alphas[i].as_slice()),
                     duration: f.duration,
                 })
@@ -140,6 +144,9 @@ fn main() {
                     u: &uv,
                     v: &uv,
                     y_stride: w,
+                    u_stride: w.div_ceil(2),
+                    v_stride: w.div_ceil(2),
+                    alpha_stride: w,
                     alpha: f.alpha.map(|_| alphas[i].as_slice()),
                     duration: f.duration,
                 })
@@ -158,6 +165,7 @@ fn main() {
             .map(|frame| MonochromeAnimationFrame {
                 y: frame.y,
                 y_stride: frame.y_stride,
+                alpha_stride: frame.alpha_stride,
                 alpha: frame.alpha,
                 duration: frame.duration,
             })

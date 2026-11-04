@@ -55,7 +55,7 @@ fn the_inter_tile_matches_c_from_cs_measured_decision() {
     .with_chroma_420(true);
 
     let f0 = pipeline
-        .try_encode_frame_420(&y, &uv, &uv, w)
+        .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
         .expect("the video-mode key frame encodes");
     // ANTI-VACUITY, and the reason it is an assertion rather than a
     // comment: everything below is read out of the frame-0 encode's

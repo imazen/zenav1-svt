@@ -60,7 +60,7 @@ fn main() {
     let (aw, ah) = (w.div_ceil(8) * 8, h.div_ceil(8) * 8);
     for i in 0..nframes {
         let (y, u, v) = mk(i);
-        match pipeline.try_encode_frame_444(&y, &u, &v, w) {
+        match pipeline.try_encode_frame_444(&y, w, &u, w, &v, w) {
             Ok(obu) => {
                 std::fs::write(format!("{outdir}/f{i}.obu"), &obu).unwrap();
                 stream.extend_from_slice(&obu);

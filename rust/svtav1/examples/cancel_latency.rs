@@ -142,12 +142,13 @@ fn main() {
         let (y, u, v) = gen_planes(n, n);
 
         // Untimed warmup, then the min of `base_reps` timed uncancelled runs.
-        let _ = build(n, n, preset, qp).encode_frame_420(&y, &u, &v, n);
+        let _ =
+            build(n, n, preset, qp).encode_frame_420(&y, n, &u, n.div_ceil(2), &v, n.div_ceil(2));
         let mut base = u128::MAX;
         for _ in 0..base_reps {
             let mut p = build(n, n, preset, qp);
             let t = Instant::now();
-            let out = p.encode_frame_420(&y, &u, &v, n);
+            let out = p.encode_frame_420(&y, n, &u, n.div_ceil(2), &v, n.div_ceil(2));
             base = base.min(t.elapsed().as_nanos());
             std::hint::black_box(out);
         }
@@ -175,7 +176,7 @@ fn main() {
                     flag_w.stop();
                 });
                 let t = Instant::now();
-                let res = p.try_encode_frame_420(&y, &u, &v, n);
+                let res = p.try_encode_frame_420(&y, n, &u, n.div_ceil(2), &v, n.div_ceil(2));
                 let ret = Instant::now();
                 hdl.join().expect("canceller thread panicked");
                 let total_ns = ret.duration_since(t).as_nanos();

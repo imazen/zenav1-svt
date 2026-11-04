@@ -228,7 +228,7 @@ fn main() {
     // Untimed warmup: fresh pipeline each time (frame_count=0 first-frame path).
     for _ in 0..warmup {
         let mut p = build();
-        let _ = p.encode_frame_420(&y, &u, &v, w);
+        let _ = p.encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2));
     }
 
     // Timed sample: fresh pipeline (setup untimed), time only encode_frame_420.
@@ -242,7 +242,7 @@ fn main() {
         );
     }
     let t = Instant::now();
-    let obu = p.encode_frame_420(&y, &u, &v, w);
+    let obu = p.encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2));
     let ns = t.elapsed().as_nanos();
 
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
@@ -303,12 +303,12 @@ fn encode_still_bd10(
 
     for _ in 0..warmup {
         let mut p = build();
-        let _ = p.try_encode_frame_420_hbd(&y10, &u10, &v10, w);
+        let _ = p.try_encode_frame_420_hbd(&y10, w, &u10, w.div_ceil(2), &v10, w.div_ceil(2));
     }
 
     let mut p = build();
     let t = Instant::now();
-    let obu = match p.try_encode_frame_420_hbd(&y10, &u10, &v10, w) {
+    let obu = match p.try_encode_frame_420_hbd(&y10, w, &u10, w.div_ceil(2), &v10, w.div_ceil(2)) {
         Ok(obu) => obu,
         Err(e) => {
             eprintln!("perf_encode: REFUSED by the encoder (bd10): {e}");
@@ -410,7 +410,9 @@ fn encode_sequence(
     for _ in 0..warmup {
         let mut p = build();
         for (fy, fu, fv) in &frames {
-            if p.try_encode_frame_420(fy, fu, fv, w).is_err() {
+            if p.try_encode_frame_420(fy, w, fu, w.div_ceil(2), fv, w.div_ceil(2))
+                .is_err()
+            {
                 break;
             }
         }
@@ -422,7 +424,7 @@ fn encode_sequence(
     let t = std::time::Instant::now();
     for (f, (fy, fu, fv)) in frames.iter().enumerate() {
         let t0 = std::time::Instant::now();
-        match p.try_encode_frame_420(fy, fu, fv, w) {
+        match p.try_encode_frame_420(fy, w, fu, w.div_ceil(2), fv, w.div_ceil(2)) {
             Ok(bytes) => {
                 per_frame_ns.push(t0.elapsed().as_nanos());
                 std::fs::write(format!("{prefix}.obu.f{f}"), &bytes).expect("write frame obu");

@@ -794,34 +794,37 @@ impl AvifEncoder {
     /// nothing in the return type said so (issue #9 item 6). That output
     /// contract is gone.
     ///
-    /// `y` is read at `y_stride`; `u` and `v` are tightly packed at
-    /// `ceil(width / 2) x ceil(height / 2)`. The pipeline handles odd and
-    /// partial sizes by padding internally and signalling the true size.
+    /// Every plane has its own stride, in samples: `u` and `v` are `ceil(width / 2)
+    /// x ceil(height / 2)`. Padding between rows is never read. Each stride must be
+    /// at least its plane's width and a plane needs `(rows - 1) * stride + width`
+    /// samples. The pipeline handles odd and partial sizes by padding internally
+    /// and signalling the true size.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_yuv420(
         &self,
         y: &[u8],
+        y_stride: u32,
         u: &[u8],
+        u_stride: u32,
         v: &[u8],
+        v_stride: u32,
         width: u32,
         height: u32,
-        y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(y.len(), width, height, y_stride)?;
 
         let chroma_w = width.div_ceil(2);
         let chroma_h = height.div_ceil(2);
-        let chroma_len_needed = (chroma_w as usize).checked_mul(chroma_h as usize).ok_or(
-            EncodeError::InvalidDimensions {
-                width,
-                height,
-                reason: "chroma plane size overflows usize",
-            },
-        )?;
-        if u.len() < chroma_len_needed || v.len() < chroma_len_needed {
+        let chroma_fits = |len: usize, stride: u32| {
+            self.validate_dimensions(len, chroma_w, chroma_h, stride)
+                .is_ok()
+        };
+        if !chroma_fits(u.len(), u_stride) || !chroma_fits(v.len(), v_stride) {
             return Err(EncodeError::InvalidDimensions {
                 width,
                 height,
-                reason: "a chroma plane is shorter than ceil(height/2) * ceil(width/2)",
+                reason: "a chroma plane is shorter than (ceil(height/2) - 1) * stride + \
+                         ceil(width/2), or its stride is below ceil(width/2)",
             });
         }
 
@@ -829,7 +832,14 @@ impl AvifEncoder {
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
-            .try_encode_frame_420(y, u, v, y_stride as usize)
+            .try_encode_frame_420(
+                y,
+                y_stride as usize,
+                u,
+                u_stride as usize,
+                v,
+                v_stride as usize,
+            )
             .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
 
         Ok(EncodedAvif {

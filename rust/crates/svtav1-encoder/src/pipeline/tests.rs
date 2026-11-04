@@ -102,26 +102,30 @@ fn invalid_builders_return_errors_instead_of_panicking() {
     let uv = vec![128; 64 * 64];
     for size in [0, 1, 32, 96, 127, 256, usize::MAX] {
         let mut p = make().with_sb_size(Some(size)).with_superres(16);
-        let e = p.try_encode_frame_420(&y, &uv, &uv, 128).unwrap_err();
+        let e = p
+            .try_encode_frame_420(&y, 128, &uv, 64, &uv, 64)
+            .unwrap_err();
         assert!(matches!(e.error(), EncodeError::UnsupportedConfig(_)));
         assert!(e.to_string().contains("64 or 128"), "{e}");
     }
     for denom in [0, 1, 8, 17, 255] {
         let mut p = make().with_superres(denom);
-        let e = p.try_encode_frame_420(&y, &uv, &uv, 128).unwrap_err();
+        let e = p
+            .try_encode_frame_420(&y, 128, &uv, 64, &uv, 64)
+            .unwrap_err();
         assert!(matches!(e.error(), EncodeError::UnsupportedConfig(_)));
         assert!(e.to_string().contains("9..=16"), "{e}");
     }
     for size in [64, 128] {
         let out = make()
             .with_sb_size(Some(size))
-            .try_encode_frame_420(&y, &uv, &uv, 128)
+            .try_encode_frame_420(&y, 128, &uv, 64, &uv, 64)
             .unwrap();
         assert!(!out.is_empty());
     }
     let out = make()
         .with_superres(16)
-        .try_encode_frame_420(&y, &uv, &uv, 128)
+        .try_encode_frame_420(&y, 128, &uv, 64, &uv, 64)
         .unwrap();
     assert!(!out.is_empty());
 }
@@ -387,7 +391,7 @@ fn qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse() {
 
     let mut p0 = mk(0).with_recon_output(true);
     let obu = p0
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect("QP 0 is encodable on the 4:2:0 still path since chunk 2");
     assert!(!obu.is_empty());
     let (ry, ru, rv) = p0.last_recon.as_ref().expect("recon_output");
@@ -399,7 +403,7 @@ fn qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse() {
     // nothing about the lossless path).
     let mut p1 = mk(1).with_recon_output(true);
     let obu1 = p1
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect("QP 1 keeps encoding");
     assert!(!obu1.is_empty());
     let (ry1, _, _) = p1.last_recon.as_ref().expect("recon_output");
@@ -416,7 +420,7 @@ fn qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse() {
     let (y10, u10, v10) = (native(&y), native(&u), native(&v));
     let mut p10 = mk(0).with_bit_depth(10).with_recon_output(true);
     assert!(
-        !p10.try_encode_frame_420_hbd(&y10, &u10, &v10, 64)
+        !p10.try_encode_frame_420_hbd(&y10, 64, &u10, 32, &v10, 32)
             .unwrap()
             .is_empty()
     );
@@ -432,7 +436,7 @@ fn qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse() {
     fork.hdr = crate::hdr_mode::HdrForkConfig::hdr_fork();
     fork.hdr.enable_variance_boost = false;
     let err = fork
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect_err("QP 0 in fork mode (base_q_idx 0, chroma deltas) is not CodedLossless");
     assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
 }
@@ -474,7 +478,7 @@ fn superres_hbd_still_encodes_and_outputs_upscaled_recon() {
     let coded_w = p.true_width as usize;
     assert!(coded_w < uw, "superres must reduce the coded width");
     let obu = p
-        .try_encode_frame_420_hbd(&y10, &u10, &v10, uw)
+        .try_encode_frame_420_hbd(&y10, uw, &u10, uw.div_ceil(2), &v10, uw.div_ceil(2))
         .expect("bd10 superres still is inside the verified envelope");
     assert!(!obu.is_empty());
     let (ry, ru, rv) = p.last_recon10_final.as_ref().expect("bd10 final recon");
@@ -510,10 +514,10 @@ fn superres_refuses_mono_inter_and_hbd_denoise() {
     let mut gop = EncodePipeline::new(64, 64, 13, RcConfig::default(), 0, 64)
         .with_superres(16)
         .with_chroma_420(true);
-    gop.try_encode_frame_420(&y, &u, &v, 64)
+    gop.try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect("a key frame under superres still encodes in a GOP pipeline");
     let err = gop
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect_err("inter + superres must refuse");
     assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
 
@@ -526,7 +530,7 @@ fn superres_refuses_mono_inter_and_hbd_denoise() {
         .with_chroma_420(true);
     g.film_grain.denoise_strength = 25;
     let err = g
-        .try_encode_frame_420_hbd(&y10, &c10, &c10, 64)
+        .try_encode_frame_420_hbd(&y10, 64, &c10, 32, &c10, 32)
         .expect_err("bd10 superres + denoise must refuse");
     assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
 }
@@ -840,7 +844,7 @@ fn pipeline_encode_420_single_frame() {
         u[i] = (64 + (i / 32) * 3) as u8;
         v[i] = (64 + (i % 32) * 5) as u8;
     }
-    let bs_420 = pipeline.encode_frame_420(&y, &u, &v, 64);
+    let bs_420 = pipeline.encode_frame_420(&y, 64, &u, 32, &v, 32);
     assert!(!bs_420.is_empty());
     assert_eq!(pipeline.frame_count, 1);
 
@@ -859,7 +863,7 @@ fn pipeline_encode_420_requires_flag() {
     let y = vec![0u8; 64 * 64];
     let u = vec![128u8; 32 * 32];
     let v = vec![128u8; 32 * 32];
-    let _ = pipeline.encode_frame_420(&y, &u, &v, 64);
+    let _ = pipeline.encode_frame_420(&y, 64, &u, 32, &v, 32);
 }
 
 /// Task #91: the partition alphabet the entropy ctx derives must agree
@@ -996,7 +1000,7 @@ fn variance_boost_rederives_sb64_at_encode_time() {
     assert_eq!(p.derived_sb_size, 128);
     p.hdr.tune = crate::tune::TUNE_IQ;
     let out = p
-        .try_encode_frame_420(&y, &u, &v, 512)
+        .try_encode_frame_420(&y, 512, &u, 256, &v, 256)
         .expect("tune IQ at preset -1 must encode");
     assert!(!out.is_empty());
     assert_eq!(

@@ -95,6 +95,9 @@ fn three_frame_real_video_sequence_round_trips_with_motion_intact() {
             u: &us[f],
             v: &vs[f],
             y_stride: w,
+            u_stride: w.div_ceil(2),
+            v_stride: w.div_ceil(2),
+            alpha_stride: w,
             alpha: None,
             duration: [100, 200, 300][f],
         })
@@ -197,6 +200,9 @@ fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
                 u: &uv,
                 v: &uv,
                 y_stride: w,
+                u_stride: w.div_ceil(2),
+                v_stride: w.div_ceil(2),
+                alpha_stride: w,
                 alpha: has_alpha.then_some(alphas[f].as_slice()),
                 duration: [100, 200, 300][f],
             })
@@ -289,7 +295,9 @@ fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
             .with_image_sequence()
             .with_recon_output(true);
         for (i, source) in colors.iter().enumerate() {
-            let raw = pipe.try_encode_frame_420(source, &uv, &uv, w).unwrap();
+            let raw = pipe
+                .try_encode_frame_420(source, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+                .unwrap();
             fs::write(out.join("color.obu"), raw).unwrap();
             let mut pre = Vec::new();
             let (py, pu, pv) = pipe.last_recon_unfiltered.as_ref().unwrap();
@@ -376,6 +384,9 @@ fn native_ten_bit_animation_matches_color_and_alpha_reconstruction() {
                         u: &u,
                         v: &v,
                         y_stride: stride,
+                        u_stride: w.div_ceil(2),
+                        v_stride: w.div_ceil(2),
+                        alpha_stride: w,
                         alpha: has_alpha.then_some(alphas[i].as_slice()),
                         duration: [17, 29][i],
                     })
@@ -425,10 +436,24 @@ fn native_ten_bit_animation_matches_color_and_alpha_reconstruction() {
                 pipe_no_recon.rc_config.framerate = fps;
                 for i in 0..2 {
                     let raw = pipe
-                        .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                        .try_encode_frame_420_hbd(
+                            &colors[i],
+                            stride,
+                            &u,
+                            w.div_ceil(2),
+                            &v,
+                            w.div_ceil(2),
+                        )
                         .unwrap();
                     let without_recon = pipe_no_recon
-                        .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                        .try_encode_frame_420_hbd(
+                            &colors[i],
+                            stride,
+                            &u,
+                            w.div_ceil(2),
+                            &v,
+                            w.div_ceil(2),
+                        )
                         .unwrap();
                     assert_eq!(
                         raw, without_recon,
@@ -561,7 +586,7 @@ fn monochrome_animation_decodes_with_exact_luma_and_alpha() {
                                 (0..w*h).map(|i| ((i*3+f*47) as u32 & max) as $sample).collect()
                             }).collect();
                             let frames: Vec<_> = (0..2).map(|i| MonochromeAnimationFrame {
-                                y: &colors[i], y_stride: stride,
+                                y: &colors[i], y_stride: stride, alpha_stride: w,
                                 alpha: has_alpha.then_some(alphas[i].as_slice()), duration: [17, 29][i],
                             }).collect();
                             let enc = AvifEncoder::new().with_bit_depth($depth).with_speed($speed).with_quality(quality);
@@ -679,12 +704,14 @@ fn validates_whole_monochrome_animation_before_encoding() {
         MonochromeAnimationFrame {
             y: &plane,
             y_stride: 65,
+            alpha_stride: 65,
             alpha: None,
             duration: 1,
         },
         MonochromeAnimationFrame {
             y: &plane,
             y_stride: 65,
+            alpha_stride: 65,
             alpha: None,
             duration: 0,
         },
@@ -713,6 +740,9 @@ fn validates_crop_before_encoding() {
         u: &plane,
         v: &plane,
         y_stride: 64,
+        u_stride: 32,
+        v_stride: 32,
+        alpha_stride: 64,
         alpha: None,
         duration: 1,
     }];
@@ -753,6 +783,9 @@ fn validates_orientation_before_encoding() {
         u: &plane,
         v: &plane,
         y_stride: 64,
+        u_stride: 32,
+        v_stride: 32,
+        alpha_stride: 64,
         alpha: None,
         duration: 1,
     }];
@@ -785,6 +818,9 @@ fn validates_pixel_aspect_ratio_before_encoding() {
         u: &plane,
         v: &plane,
         y_stride: 64,
+        u_stride: 32,
+        v_stride: 32,
+        alpha_stride: 64,
         alpha: None,
         duration: 1,
     }];
@@ -821,6 +857,9 @@ fn validates_whole_animation_before_encoding() {
         u: &p,
         v: &p,
         y_stride: 64,
+        u_stride: 32,
+        v_stride: 32,
+        alpha_stride: 64,
         alpha: None,
         duration: 0,
     };

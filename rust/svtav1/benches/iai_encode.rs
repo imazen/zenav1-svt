@@ -69,7 +69,14 @@ fn setup_cell() -> (Vec<u8>, Vec<u8>, Vec<u8>, EncodePipeline) {
 #[library_benchmark]
 #[bench::cell(setup_cell())]
 fn encode_still_1014((y, u, v, mut p): (Vec<u8>, Vec<u8>, Vec<u8>, EncodePipeline)) -> Vec<u8> {
-    black_box(p.encode_frame_420(black_box(&y), black_box(&u), black_box(&v), W))
+    black_box(p.encode_frame_420(
+        black_box(&y),
+        W,
+        black_box(&u),
+        W.div_ceil(2),
+        black_box(&v),
+        W.div_ceil(2),
+    ))
 }
 
 library_benchmark_group!(name = still; benchmarks = encode_still_1014);

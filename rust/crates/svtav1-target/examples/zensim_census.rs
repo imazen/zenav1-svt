@@ -289,8 +289,21 @@ fn main() {
                     ..Default::default()
                 },
             };
-            let out = encode_to_target_10bit(&sy, &su, &sv, w, h, 6, &spec, judge, |_pipe| {})
-                .unwrap_or_else(|e| panic!("{scene} t{t}: {e:?}"));
+            let out = encode_to_target_10bit(
+                &sy,
+                w,
+                &su,
+                w.div_ceil(2),
+                &sv,
+                w.div_ceil(2),
+                w,
+                h,
+                6,
+                &spec,
+                judge,
+                |_pipe| {},
+            )
+            .unwrap_or_else(|e| panic!("{scene} t{t}: {e:?}"));
             let res = &out.search;
             let secs = t0.elapsed().as_secs_f64();
             writeln!(

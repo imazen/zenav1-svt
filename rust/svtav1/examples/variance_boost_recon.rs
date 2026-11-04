@@ -156,7 +156,7 @@ fn main() {
                     p.hdr.tune = svtav1_encoder::tune::TUNE_IQ;
                     assert!(!p.hdr.is_fork(), "witness must exercise the MAINLINE arm");
 
-                    let obu = p.encode_frame_420(&y, &u, &v, w);
+                    let obu = p.encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2));
 
                     let (base, res, sbq) = parse_plan(&std::fs::read_to_string(&dump).unwrap());
                     assert!(

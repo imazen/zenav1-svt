@@ -53,7 +53,7 @@ fn encode_with(hdr: Option<HdrForkConfig>, qp: u8, preset: u8) -> Vec<u8> {
         p.reference = svtav1_encoder::reference::SvtReference::Hybrid3115;
         p.hdr = cfg;
     }
-    p.encode_frame_420(&y, &u, &v, 128)
+    p.encode_frame_420(&y, 128, &u, 64, &v, 64)
 }
 
 #[test]

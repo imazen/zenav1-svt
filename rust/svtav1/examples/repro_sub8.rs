@@ -35,7 +35,7 @@ fn main() {
     let mut p = EncodePipeline::new(pw as u32, ph as u32, 3, rc, 0, 1).with_chroma_420(true);
     let u = vec![128u8; pw * ph / 4];
     let v = vec![128u8; pw * ph / 4];
-    let obu = p.encode_frame_420(&src, &u, &v, pw);
+    let obu = p.encode_frame_420(&src, pw, &u, pw.div_ceil(2), &v, pw.div_ceil(2));
     std::fs::write("/tmp/repro48.obu", &obu).unwrap();
     // I420 for the C capture driver (identical bytes).
     let mut yuv = src.clone();

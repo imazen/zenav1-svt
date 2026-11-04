@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **121
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **120
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **7** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **2** carry no
@@ -107,7 +107,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | 4:4:4 planes must each cover the true dims (u/v full-resolution) |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | hbd luma plane must cover the true dims at y_stride |
-| `crates/svtav1-encoder/src/pipeline/entry.rs` | hbd planes must cover the input dims (y at y_stride, u/v at w/2; FULL width under superres) |
+| `crates/svtav1-encoder/src/pipeline/entry.rs` | hbd planes must cover the input dims (y at y_stride, u/v at w/2 at u_stride/v_stride; FULL width under superres) |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | hbd source carries a sample above the configured bit depth |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | monochrome luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | native 10-bit input needs a bd10 consumer: either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |
@@ -118,7 +118,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | try_encode_frame_444 requires the pipeline to be built with with_chroma_format(Some(ChromaFormat::Yuv444)) |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline/entry.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
-| `crates/svtav1-encoder/src/pipeline/entry.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `crates/svtav1-encoder/src/pipeline/entry.rs` | y must cover the input dims at y_stride; u/v at (w+1)/2 x (h+1)/2 at u_stride/v_stride |
 | `crates/svtav1-encoder/src/pipeline/frame_output.rs` | an inter frame reached header signalling without a picture decision — unreachable since run_picture_decision covers every intra_period != 1 config (defensive; remove the caller's is_key guard instead of emitting a header that disagrees with the encode) |
 | `crates/svtav1-encoder/src/pipeline/frame_output.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
 | `crates/svtav1-encoder/src/pipeline/grain.rs` | C film grain requires 8/10-bit 4:2:0 |
@@ -167,9 +167,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `svtav1/src/avif.rs` | SvtParity forbids Zen enhancements |
 | `svtav1/src/avif.rs` | SvtParity: C SVT supports 4:2:0 only; monochrome is a Rust extension |
-| `svtav1/src/avif.rs` | a chroma plane is shorter than ceil(height/2) * ceil(width/2) |
+| `svtav1/src/avif.rs` | a chroma plane is shorter than (ceil(height/2) - 1) * stride + ceil(width/2), or its stride is below ceil(width/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
-| `svtav1/src/avif.rs` | chroma plane size overflows usize |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
 | `svtav1/src/avif.rs` | parity policy conflicts with selected reference |
 | `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |

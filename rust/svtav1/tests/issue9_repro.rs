@@ -41,7 +41,8 @@ fn encode(qp: u8, mutate: impl FnOnce(&mut EncodePipeline)) -> Vec<u8> {
         "these assertions are about MAINLINE mode"
     );
     mutate(&mut p);
-    p.try_encode_frame_420(&y, &u, &v, w).expect("encode")
+    p.try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
+        .expect("encode")
 }
 
 #[test]

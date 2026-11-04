@@ -157,6 +157,9 @@ impl AvifEncoder {
                 u: &p.u,
                 v: &p.v,
                 y_stride: w,
+                u_stride: w.div_ceil(2),
+                v_stride: w.div_ceil(2),
+                alpha_stride: w,
                 alpha: any_alpha.then(|| p.alpha.as_deref().unwrap_or(&opaque)),
                 duration: f.duration_ms.max(1),
             })

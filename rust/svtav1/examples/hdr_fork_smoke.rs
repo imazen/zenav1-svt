@@ -61,7 +61,14 @@ fn run(mode: &str, qp: u8, preset: u8, out_prefix: &str) {
     if mode == "fork" {
         p.hdr = HdrForkConfig::hdr_fork();
     }
-    let bs = p.encode_frame_420(&y, &u, &v, w as usize);
+    let bs = p.encode_frame_420(
+        &y,
+        w as usize,
+        &u,
+        (w as usize).div_ceil(2),
+        &v,
+        (w as usize).div_ceil(2),
+    );
     let (ry, ru, rv) = p.last_recon.clone().expect("recon");
     std::fs::File::create(format!("{out_prefix}.ivf"))
         .unwrap()
