@@ -707,13 +707,8 @@ macro_rules! animation_sample {
         }
     };
 }
-animation_sample!(u8, 8, try_encode_frame_420_strided, try_encode_frame);
-animation_sample!(
-    u16,
-    10,
-    try_encode_frame_420_hbd_strided,
-    try_encode_frame_hbd
-);
+animation_sample!(u8, 8, try_encode_frame_420, try_encode_frame);
+animation_sample!(u16, 10, try_encode_frame_420_hbd, try_encode_frame_hbd);
 
 /// Whether an image sample of a validated plane is out of range. Padding
 /// between rows has no sample meaning and is not read.

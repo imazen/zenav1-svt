@@ -53,7 +53,7 @@ fn main() {
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1)
         .with_chroma_format(Some(ChromaFormat::Yuv444))
         .with_recon_output(true);
-    let obu = match pipeline.try_encode_frame_444(&y, &u, &v, w) {
+    let obu = match pipeline.try_encode_frame_444(&y, w, &u, w, &v, w) {
         Ok(obu) => obu,
         Err(e) => {
             eprintln!("REFUSED: {e}");

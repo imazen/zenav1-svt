@@ -84,14 +84,22 @@ impl EncodePipeline {
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
     ///
-    /// `u`/`v` are (true_w/2 x true_h/2) planes at stride `true_w/2`, and
-    /// `y` is (true_w x true_h) at `y_stride`, where the TRUE dims are what
-    /// the caller passed to [`Self::new`]. When those differ from the
+    /// `u`/`v` are (true_w/2 x true_h/2) planes and `y` is (true_w x true_h), each
+    /// at its own stride, where the TRUE dims are what the caller passed to
+    /// [`Self::new`]. When those differ from the
     /// ALIGNED encode dims (task #95), the planes are edge-replicated up to
     /// the aligned grid here (C `pad_input_picture`, pic_operators.c:561);
     /// for 8-aligned inputs this is a zero-copy pass-through.
     /// Requires `chroma_420` to be enabled via [`Self::with_chroma_420`].
-    pub fn encode_frame_420(&mut self, y: &[u8], u: &[u8], v: &[u8], y_stride: usize) -> Vec<u8> {
+    pub fn encode_frame_420(
+        &mut self,
+        y: &[u8],
+        y_stride: usize,
+        u: &[u8],
+        u_stride: usize,
+        v: &[u8],
+        v_stride: usize,
+    ) -> Vec<u8> {
         assert!(
             self.chroma_420,
             "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
@@ -99,10 +107,9 @@ impl EncodePipeline {
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
         let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
-        let cn_true = tcw * tch;
         assert!(
-            u.len() >= cn_true && v.len() >= cn_true,
-            "u/v planes must be (true_w/2 x true_h/2)"
+            plane_fits(u.len(), tcw, tch, u_stride) && plane_fits(v.len(), tcw, tch, v_stride),
+            "u/v planes must be (true_w/2 x true_h/2) at u_stride/v_stride"
         );
         // Additive fallible core (Feature 1+3), shared with `try_encode_frame_420`.
         // KEEPS the exact panicking contract: on the default/trusted path the
@@ -111,7 +118,12 @@ impl EncodePipeline {
         // the note on `encode_frame`; a `RcMode::Vbr` or non-LOW_DELAY `Cbr`
         // pipeline panics here rather than emitting a stream C would refuse
         // or the port cannot compute honestly.
-        let chroma = StridedChroma::tight(u, v, self.upscaled_width.div_ceil(2) as usize);
+        let chroma = StridedChroma {
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
         self.encode_frame_420_core(y, y_stride, chroma).expect(
             "encode_frame_420 is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
@@ -271,31 +283,17 @@ impl EncodePipeline {
     /// [`EncodeError`]s and the cancellation token is checked at entry;
     /// otherwise it delegates to the fallible core, which pads the true
     /// dimensions to the aligned canvas and calls `encode_frame_impl`.
-    pub fn try_encode_frame_420(
-        &mut self,
-        y: &[u8],
-        u: &[u8],
-        v: &[u8],
-        y_stride: usize,
-    ) -> EncodeResult<Vec<u8>> {
-        let tight = self.upscaled_width.div_ceil(2) as usize;
-        self.try_encode_frame_420_strided(y, y_stride, u, tight, v, tight)
-    }
-
-    /// [`Self::try_encode_frame_420`] with every plane at its own stride, in
-    /// samples.
     ///
-    /// Byte-identical to the tight form for the same image samples: padding
-    /// between rows is never read. Each stride must be at least its plane's
-    /// width, and a plane needs `(rows - 1) * stride + width` samples, so the
-    /// last row needs no padding. The widths are the input dims: FULL width
-    /// under superres, chroma at its 4:2:0 ceiling.
+    /// Every plane has its own stride, in samples, and the output depends only
+    /// on the image samples: padding between rows is never read. Each stride
+    /// must be at least its plane's width, and a plane needs `(rows - 1) * stride
+    /// + width` samples, so the last row needs no padding. The widths are the
+    /// input dims: FULL width under superres, chroma at its 4:2:0 ceiling.
     ///
     /// # Errors
     ///
-    /// As [`Self::try_encode_frame_420`]; [`EncodeError::InvalidDimensions`]
-    /// when a plane does not fit its geometry.
-    pub fn try_encode_frame_420_strided(
+    /// [`EncodeError::InvalidDimensions`] when a plane does not fit its geometry.
+    pub fn try_encode_frame_420(
         &mut self,
         y: &[u8],
         y_stride: usize,
@@ -363,8 +361,7 @@ impl EncodePipeline {
     /// (`rust/docs/hbd-input-port-map.md`).
     ///
     /// `y`/`u`/`v` carry REAL 10-bit samples (0..=1023) in the same TRUE-dim
-    /// layout [`Self::try_encode_frame_420`] takes for `u8` (`y` at
-    /// `y_stride`, chroma at `(true_w+1)/2`). Requires the pipeline to be
+    /// layout [`Self::try_encode_frame_420`] takes for `u8`. Requires the pipeline to be
     /// built with `with_bit_depth(10)` and `with_chroma_420(true)`.
     ///
     /// # What chunk 1 threads — and what it does not
@@ -386,26 +383,10 @@ impl EncodePipeline {
     /// source (see [`Self::hbd_source_consumed`]) — rejecting beats silently
     /// encoding the MSB-truncated content. Also propagates cancellation and
     /// fallible-allocation failures like the u8 entry points.
+    ///
+    /// The geometry rules of [`Self::try_encode_frame_420`] apply. Padding is
+    /// never read, so it need not hold valid 10-bit samples.
     pub fn try_encode_frame_420_hbd(
-        &mut self,
-        y: &[u16],
-        u: &[u16],
-        v: &[u16],
-        y_stride: usize,
-    ) -> EncodeResult<Vec<u8>> {
-        let tight = self.upscaled_width.div_ceil(2) as usize;
-        self.try_encode_frame_420_hbd_strided(y, y_stride, u, tight, v, tight)
-    }
-
-    /// [`Self::try_encode_frame_420_hbd`] with every plane at its own stride,
-    /// in samples; the geometry rules of
-    /// [`Self::try_encode_frame_420_strided`] apply. Padding is never read, so
-    /// it need not hold valid 10-bit samples.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::try_encode_frame_420_hbd`].
-    pub fn try_encode_frame_420_hbd_strided(
         &mut self,
         y: &[u16],
         y_stride: usize,
@@ -544,8 +525,8 @@ impl EncodePipeline {
     /// 4:4:4 chroma entry point — Zen extension (C refuses non-420 at
     /// `verify_settings`, `enc_settings.c:470`; no byte oracle).
     ///
-    /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`, `y`
-    /// at `y_stride`). Requires `with_chroma_format(Some(Yuv444))`.
+    /// `y`/`u`/`v` are all FULL-resolution (each `true_w × true_h`), each at its
+    /// own stride. Requires `with_chroma_format(Some(Yuv444))`.
     ///
     /// Support envelope (decoder-verified — C refuses non-4:2:0 at
     /// `verify_settings`, enc_settings.c:470, so no byte oracle exists):
@@ -561,25 +542,9 @@ impl EncodePipeline {
     ///
     /// # Errors
     /// [`EncodeError::UnsupportedConfig`] outside the envelope;
-    /// [`EncodeError::InvalidDimensions`] on short planes.
+    /// [`EncodeError::InvalidDimensions`] on planes that do not fit; the geometry
+    /// rules of [`Self::try_encode_frame_420`] apply.
     pub fn try_encode_frame_444(
-        &mut self,
-        y: &[u8],
-        u: &[u8],
-        v: &[u8],
-        y_stride: usize,
-    ) -> EncodeResult<Vec<u8>> {
-        let tight = self.true_width as usize;
-        self.try_encode_frame_444_strided(y, y_stride, u, tight, v, tight)
-    }
-
-    /// [`Self::try_encode_frame_444`] with every plane at its own stride, in
-    /// samples; the geometry rules of
-    /// [`Self::try_encode_frame_420_strided`] apply.
-    ///
-    /// # Errors
-    /// As [`Self::try_encode_frame_444`].
-    pub fn try_encode_frame_444_strided(
         &mut self,
         y: &[u8],
         y_stride: usize,
@@ -628,23 +593,6 @@ impl EncodePipeline {
     /// # Errors
     /// As [`Self::try_encode_frame_444`].
     pub fn try_encode_frame_422(
-        &mut self,
-        y: &[u8],
-        u: &[u8],
-        v: &[u8],
-        y_stride: usize,
-    ) -> EncodeResult<Vec<u8>> {
-        let tight = self.true_width.div_ceil(2) as usize;
-        self.try_encode_frame_422_strided(y, y_stride, u, tight, v, tight)
-    }
-
-    /// [`Self::try_encode_frame_422`] with every plane at its own stride, in
-    /// samples; the geometry rules of
-    /// [`Self::try_encode_frame_420_strided`] apply.
-    ///
-    /// # Errors
-    /// As [`Self::try_encode_frame_444`].
-    pub fn try_encode_frame_422_strided(
         &mut self,
         y: &[u8],
         y_stride: usize,

@@ -20,7 +20,8 @@
 //! let rc = RcConfig { mode: RcMode::Cqp, qp: 32, ..RcConfig::default() };
 //! let mut p = EncodePipeline::new(w, h, 8, rc, 0, 1).with_chroma_420(true);
 //! let (y, u, v) = (vec![128u8; 64 * 64], vec![128u8; 32 * 32], vec![128u8; 32 * 32]);
-//! let obu = p.try_encode_frame_420(&y, &u, &v, w as usize).expect("encode");
+//! let (ys, cs) = (w as usize, (w as usize).div_ceil(2));
+//! let obu = p.try_encode_frame_420(&y, ys, &u, cs, &v, cs).expect("encode");
 //! assert!(!obu.is_empty());
 //! ```
 //!

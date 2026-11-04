@@ -12,6 +12,7 @@ Crates are not published to crates.io yet — depend by git.
 ## [Unreleased]
 
 ### QUEUED BREAKING CHANGES
+- `EncodePipeline::try_encode_frame_420`, `try_encode_frame_420_hbd`, `try_encode_frame_422`, `try_encode_frame_444` and `encode_frame_420` now take `(y, y_stride, u, u_stride, v, v_stride)`; `AvifEncoder::encode_yuv420` takes `(y, y_stride, u, u_stride, v, v_stride, width, height)`. A tight plane passes its width as the stride. The `*_strided` names from earlier in this branch are gone (see this PR's top commit).
 - `AnimationFrame` gains `u_stride`, `v_stride` and `alpha_stride`; `MonochromeAnimationFrame` gains `alpha_stride`. Struct literals must set them; the width is the tight value (50f0881a).
 - `svtav1_target::encode_to_target_8bit` and `encode_to_target_10bit` take a stride after each plane (eb98c3e0).
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 23 modules are no longer public, and the homegrown `perceptual`, `multipass` and `film_grain` modules and `InterHdrError::GlobalMotionNotImplemented` are removed (no callers) (4a860c9e).
@@ -127,7 +128,7 @@ Crates are not published to crates.io yet — depend by git.
   break only for out-of-crate struct literals — there are none.
 
 ### Added
-- Every input plane can carry its own stride, in samples: `EncodePipeline::try_encode_frame_420_strided`, `try_encode_frame_420_hbd_strided`, `try_encode_frame_422_strided`, `try_encode_frame_444_strided` (e6d14804) and `AvifEncoder::encode_yuv420_strided` (50f0881a). Output is byte-identical to the tight forms (`tests/strided_planes.rs`); a strided frame costs the same internal copies as a tight one. Tight-path cost: `benchmarks/strided_planes_tight_path_2026-11-03.md`.
+- Every input plane carries its own stride, in samples, on every pipeline and still entry point (see QUEUED BREAKING CHANGES). Output is byte-identical to tightly packed planes (`tests/strided_planes.rs`); a strided frame costs the same internal copies as a tight one. Tight-path cost: `benchmarks/strided_planes_tight_path_2026-11-03.md`.
 
 - `EncodePipeline::with_reference(SvtReference)`: switches the raw-OBU pipeline to a C target in one call, loading that target's fork defaults (Ghost Robot implies its fork mode), as `AvifEncoder::with_reference` already did (ae0cb4ee).
 

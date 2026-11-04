@@ -156,7 +156,7 @@ fn main() {
                     let obu = if chroma_mode {
                         pipeline = pipeline.with_chroma_420(true);
                         let (u, v) = make_chroma(cname, pw / 2, ph / 2);
-                        pipeline.encode_frame_420(&src, &u, &v, pw)
+                        pipeline.encode_frame_420(&src, pw, &u, pw.div_ceil(2), &v, pw.div_ceil(2))
                     } else {
                         pipeline.encode_frame(&src, pw)
                     };
@@ -194,7 +194,16 @@ fn avif_corpus(outdir: &str) {
                 let y = make_gradient(sz, sz);
                 let (u, v) = make_chroma("color", sz / 2, sz / 2);
                 let obu = enc
-                    .encode_yuv420(&y, &u, &v, sz as u32, sz as u32, sz as u32)
+                    .encode_yuv420(
+                        &y,
+                        sz as u32,
+                        &u,
+                        (sz as u32).div_ceil(2),
+                        &v,
+                        (sz as u32).div_ceil(2),
+                        sz as u32,
+                        sz as u32,
+                    )
                     .expect("AvifEncoder::encode_yuv420")
                     .data;
                 let name = format!("avif420_{sz}x{sz}_q{q}_s{speed}.obu");

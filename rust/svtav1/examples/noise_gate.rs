@@ -60,7 +60,14 @@ fn main() {
         p.chroma_420 = true;
         p.hdr = HdrForkConfig::hdr_fork();
         p.hdr.noise_strength = strength;
-        let bs = p.encode_frame_420(&y, &u, &v, w as usize);
+        let bs = p.encode_frame_420(
+            &y,
+            w as usize,
+            &u,
+            (w as usize).div_ceil(2),
+            &v,
+            (w as usize).div_ceil(2),
+        );
         let (ry, ru, rv) = p.last_recon.clone().expect("recon");
         let pre = format!("{dir}/n{strength}_q{qp}");
         std::fs::File::create(format!("{pre}.ivf"))

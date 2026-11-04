@@ -49,7 +49,7 @@ fn encode(tile_cols_log2: u8, thread_count: usize) -> Vec<u8> {
         .with_tile_cols_log2(tile_cols_log2)
         .with_thread_count(thread_count);
     let (y, u, v) = make_420();
-    p.encode_frame_420(&y, &u, &v, W)
+    p.encode_frame_420(&y, W, &u, W.div_ceil(2), &v, W.div_ceil(2))
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn encode_at(
         .with_tile_cols_log2(cols_log2)
         .with_thread_count(thread_count);
     let (y, u, v) = make_420_at(w, h);
-    p.encode_frame_420(&y, &u, &v, w)
+    p.encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
 }
 
 /// NON-DIVISOR thread counts, tile ROWS, and a larger grid.

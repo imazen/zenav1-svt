@@ -77,8 +77,8 @@ s=s[:a]+'''        Backend::Svt => {
             if let Some(tune)=cfg.tune {p.hdr.tune=tune;}
             if let Some(scm)=cfg.scm {p.hdr.screen_content_mode=Some(scm);}
             let r=if cfg.bit_depth==8 {
-                if cfg.chroma==Chroma::Mono {p.try_encode_frame(y,w)} else {p.try_encode_frame_420(y,u,v,w)}
-            } else {let s=samples();if cfg.chroma==Chroma::Mono {p.try_encode_frame_hbd(&s[0],w)}else{p.try_encode_frame_420_hbd(&s[0],&s[1],&s[2],w)}};
+                if cfg.chroma==Chroma::Mono {p.try_encode_frame(y,w)} else {p.try_encode_frame_420(y,w,u,w.div_ceil(2),v,w.div_ceil(2))}
+            } else {let s=samples();if cfg.chroma==Chroma::Mono {p.try_encode_frame_hbd(&s[0],w)}else{p.try_encode_frame_420_hbd(&s[0],w,&s[1],w.div_ceil(2),&s[2],w.div_ceil(2))}};
             r.map_err(|e|e.to_string())
         }
 '''+s[b:]

@@ -102,6 +102,6 @@ fn ld_auto_resolves_three_at_first_encode() {
         vec![0x80u8; W * H / 4],
         vec![0x80u8; W * H / 4],
     );
-    p.encode_frame_420(&y, &u, &v, W);
+    p.encode_frame_420(&y, W, &u, W.div_ceil(2), &v, W.div_ceil(2));
     assert_eq!(p.gop.hierarchical_levels, 3);
 }

@@ -110,9 +110,18 @@ fn run(c: Case) -> Result<(), String> {
         let wide = |p: &[u8]| -> Vec<u16> { p.iter().map(|&s| u16::from(s) << 2).collect() };
         let r = match (c.bd > 8, c.mono) {
             (false, true) => p.try_encode_frame(&y, c.w),
-            (false, false) => p.try_encode_frame_420(&y, &u, &v, c.w),
+            (false, false) => {
+                p.try_encode_frame_420(&y, c.w, &u, c.w.div_ceil(2), &v, c.w.div_ceil(2))
+            }
             (true, true) => p.try_encode_frame_hbd(&wide(&y), c.w),
-            (true, false) => p.try_encode_frame_420_hbd(&wide(&y), &wide(&u), &wide(&v), c.w),
+            (true, false) => p.try_encode_frame_420_hbd(
+                &wide(&y),
+                c.w,
+                &wide(&u),
+                c.w.div_ceil(2),
+                &wide(&v),
+                c.w.div_ceil(2),
+            ),
         };
         r.map_err(|e| e.to_string())?;
     }

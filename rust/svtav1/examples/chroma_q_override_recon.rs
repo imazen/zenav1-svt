@@ -183,7 +183,7 @@ fn main() {
                 _ => {}
             }
             p.chroma_q_override = ov.map(|(a, b)| ChromaQOverride::new(a, b));
-            let obu = match p.try_encode_frame_420(&y, &u, &v, w) {
+            let obu = match p.try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2)) {
                 Ok(o) => o,
                 Err(e) => {
                     fail += 1;
@@ -264,9 +264,9 @@ fn main() {
     // Key frame then inter (intra_period 0 = key once, then inter).
     let mut flip = EncodePipeline::new(128, 128, 6, rc.clone(), 0, 0).with_chroma_420(true);
     flip.chroma_q_override = Some(ChromaQOverride::new(10, 10));
-    let first = flip.try_encode_frame_420(&y, &u, &v, 128);
+    let first = flip.try_encode_frame_420(&y, 128, &u, 64, &v, 64);
     flip.chroma_q_override = Some(ChromaQOverride::new(10, 0));
-    let second = flip.try_encode_frame_420(&y, &u, &v, 128);
+    let second = flip.try_encode_frame_420(&y, 128, &u, 64, &v, 64);
     if first.is_ok() && second.is_err() {
         pass += 1;
     } else {
@@ -279,9 +279,9 @@ fn main() {
     }
     let mut same = EncodePipeline::new(128, 128, 6, rc, 0, 0).with_chroma_420(true);
     same.chroma_q_override = Some(ChromaQOverride::new(10, 10));
-    let a = same.try_encode_frame_420(&y, &u, &v, 128);
+    let a = same.try_encode_frame_420(&y, 128, &u, 64, &v, 64);
     same.chroma_q_override = Some(ChromaQOverride::new(24, 24));
-    let b = same.try_encode_frame_420(&y, &u, &v, 128);
+    let b = same.try_encode_frame_420(&y, 128, &u, 64, &v, 64);
     match (a, b) {
         (Ok(a), Ok(b)) => {
             let path = format!("{outdir}/cq_same_sep_2frame.obu");

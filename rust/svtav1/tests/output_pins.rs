@@ -270,13 +270,22 @@ impl Cell {
             let f = frame(self.content, self.w, self.h, i);
             let bytes = match (self.bd > 8, self.mono) {
                 (false, true) => p.try_encode_frame(&f.y, self.w),
-                (false, false) => p.try_encode_frame_420(&f.y, &f.u, &f.v, self.w),
+                (false, false) => p.try_encode_frame_420(
+                    &f.y,
+                    self.w,
+                    &f.u,
+                    self.w.div_ceil(2),
+                    &f.v,
+                    self.w.div_ceil(2),
+                ),
                 (true, true) => p.try_encode_frame_hbd(&widen(&f.y, self.bd), self.w),
                 (true, false) => p.try_encode_frame_420_hbd(
                     &widen(&f.y, self.bd),
-                    &widen(&f.u, self.bd),
-                    &widen(&f.v, self.bd),
                     self.w,
+                    &widen(&f.u, self.bd),
+                    self.w.div_ceil(2),
+                    &widen(&f.v, self.bd),
+                    self.w.div_ceil(2),
                 ),
             }
             .map_err(|e| e.to_string())?;

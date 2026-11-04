@@ -94,12 +94,12 @@ fn assert_420_identical(label: &str, build: impl Fn() -> EncodePipeline, frames:
     let mut b = build();
     let (mut sa, mut sb) = (Vec::new(), Vec::new());
     for f in frames {
-        sa.extend(a.try_encode_frame_420(&f.y, &f.u, &f.v, f.w).unwrap());
-        let [(y, ys), (u, us), (v, vs)] = f.padded(0xA5);
-        sb.extend(
-            b.try_encode_frame_420_strided(&y, ys, &u, us, &v, vs)
+        sa.extend(
+            a.try_encode_frame_420(&f.y, f.w, &f.u, f.w.div_ceil(2), &f.v, f.w.div_ceil(2))
                 .unwrap(),
         );
+        let [(y, ys), (u, us), (v, vs)] = f.padded(0xA5);
+        sb.extend(b.try_encode_frame_420(&y, ys, &u, us, &v, vs).unwrap());
     }
     sa.extend(a.try_flush().unwrap());
     sb.extend(b.try_flush().unwrap());
@@ -194,12 +194,9 @@ fn four_four_four_is_byte_identical() {
         let (mut sa, mut sb) = (Vec::new(), Vec::new());
         for n in 0..3 {
             let f = Frame::new(w, h, w, h, n, |v| v as u8);
-            sa.extend(a.try_encode_frame_444(&f.y, &f.u, &f.v, w).unwrap());
+            sa.extend(a.try_encode_frame_444(&f.y, w, &f.u, w, &f.v, w).unwrap());
             let [(y, ys), (u, us), (v, vs)] = f.padded(0xA5);
-            sb.extend(
-                b.try_encode_frame_444_strided(&y, ys, &u, us, &v, vs)
-                    .unwrap(),
-            );
+            sb.extend(b.try_encode_frame_444(&y, ys, &u, us, &v, vs).unwrap());
         }
         assert!(!sa.is_empty());
         assert!(sa == sb, "{w}x{h} 4:4:4");
@@ -218,18 +215,18 @@ fn four_two_two_refuses_alike_and_validates_strides() {
     let cw = w.div_ceil(2);
     let f = Frame::new(w, h, cw, h, 0, |v| v as u8);
     let tight = build()
-        .try_encode_frame_422(&f.y, &f.u, &f.v, w)
+        .try_encode_frame_422(&f.y, w, &f.u, w.div_ceil(2), &f.v, w.div_ceil(2))
         .unwrap_err();
     let [(y, ys), (u, us), (v, vs)] = f.padded(0xA5);
     let padded = build()
-        .try_encode_frame_422_strided(&y, ys, &u, us, &v, vs)
+        .try_encode_frame_422(&y, ys, &u, us, &v, vs)
         .unwrap_err();
     assert_eq!(tight.error().to_string(), padded.error().to_string());
     assert!(matches!(
         tight.error(),
         svtav1::pipeline::EncodeError::UnsupportedConfig(_)
     ));
-    let short = build().try_encode_frame_422_strided(&y, ys, &u[..u.len() - 1], us, &v, vs);
+    let short = build().try_encode_frame_422(&y, ys, &u[..u.len() - 1], us, &v, vs);
     assert!(matches!(
         short.unwrap_err().error(),
         svtav1::pipeline::EncodeError::InvalidDimensions { .. }
@@ -244,13 +241,13 @@ fn assert_hbd_identical(label: &str, build: impl Fn() -> EncodePipeline, frames:
     let (mut a, mut b) = (build(), build());
     let (mut sa, mut sb) = (Vec::new(), Vec::new());
     for f in frames {
-        sa.extend(a.try_encode_frame_420_hbd(&f.y, &f.u, &f.v, f.w).unwrap());
-        // 0xFFFF exceeds 10 bits: only padding may hold it.
-        let [(y, ys), (u, us), (v, vs)] = f.padded(0xFFFF);
-        sb.extend(
-            b.try_encode_frame_420_hbd_strided(&y, ys, &u, us, &v, vs)
+        sa.extend(
+            a.try_encode_frame_420_hbd(&f.y, f.w, &f.u, f.w.div_ceil(2), &f.v, f.w.div_ceil(2))
                 .unwrap(),
         );
+        // 0xFFFF exceeds 10 bits: only padding may hold it.
+        let [(y, ys), (u, us), (v, vs)] = f.padded(0xFFFF);
+        sb.extend(b.try_encode_frame_420_hbd(&y, ys, &u, us, &v, vs).unwrap());
     }
     assert!(!sa.is_empty(), "{label}: empty stream");
     assert!(sa == sb, "{label}: strided stream differs from tight");
@@ -327,7 +324,7 @@ fn hbd_image_samples_out_of_range_are_still_refused_on_every_plane() {
         assert!(
             matches!(
                 build()
-                    .try_encode_frame_420_hbd_strided(&y, ys, &u, us, &v, vs)
+                    .try_encode_frame_420_hbd(&y, ys, &u, us, &v, vs)
                     .unwrap_err()
                     .error(),
                 svtav1::pipeline::EncodeError::UnsupportedConfig(_)
@@ -356,38 +353,38 @@ fn bad_geometry_is_an_error_on_every_entry_point() {
     let [(y, ys), (u, us), (v, vs)] = f8.padded(0);
     // A stride below the width, on each plane.
     invalid(
-        p420().try_encode_frame_420_strided(&y, w - 1, &u, us, &v, vs),
+        p420().try_encode_frame_420(&y, w - 1, &u, us, &v, vs),
         "y stride",
     );
     invalid(
-        p420().try_encode_frame_420_strided(&y, ys, &u, cw - 1, &v, vs),
+        p420().try_encode_frame_420(&y, ys, &u, cw - 1, &v, vs),
         "u stride",
     );
     invalid(
-        p420().try_encode_frame_420_strided(&y, ys, &u, us, &v, cw - 1),
+        p420().try_encode_frame_420(&y, ys, &u, us, &v, cw - 1),
         "v stride",
     );
     // One sample short of the minimum, on each plane.
     invalid(
-        p420().try_encode_frame_420_strided(&y[..y.len() - 1], ys, &u, us, &v, vs),
+        p420().try_encode_frame_420(&y[..y.len() - 1], ys, &u, us, &v, vs),
         "short y",
     );
     invalid(
-        p420().try_encode_frame_420_strided(&y, ys, &u[..u.len() - 1], us, &v, vs),
+        p420().try_encode_frame_420(&y, ys, &u[..u.len() - 1], us, &v, vs),
         "short u",
     );
     invalid(
-        p420().try_encode_frame_420_strided(&y, ys, &u, us, &v[..v.len() - 1], vs),
+        p420().try_encode_frame_420(&y, ys, &u, us, &v[..v.len() - 1], vs),
         "short v",
     );
     // A stride whose offset arithmetic overflows.
     invalid(
-        p420().try_encode_frame_420_strided(&y, usize::MAX, &u, us, &v, vs),
+        p420().try_encode_frame_420(&y, usize::MAX, &u, us, &v, vs),
         "overflow",
     );
     // The tight entry point validates luma too.
     invalid(
-        p420().try_encode_frame_420(&y[..w], &f8.u, &f8.v, w),
+        p420().try_encode_frame_420(&y[..w], w, &f8.u, w.div_ceil(2), &f8.v, w.div_ceil(2)),
         "short tight y",
     );
 
@@ -399,11 +396,11 @@ fn bad_geometry_is_an_error_on_every_entry_point() {
     let f10 = Frame::new(w, h, cw, ch, 0, wide);
     let [(y, ys), (u, us), (v, vs)] = f10.padded(0);
     invalid(
-        p10().try_encode_frame_420_hbd_strided(&y, ys, &u, cw - 1, &v, vs),
+        p10().try_encode_frame_420_hbd(&y, ys, &u, cw - 1, &v, vs),
         "hbd u stride",
     );
     invalid(
-        p10().try_encode_frame_420_hbd_strided(&y, ys, &u, us, &v[..v.len() - 1], vs),
+        p10().try_encode_frame_420_hbd(&y, ys, &u, us, &v[..v.len() - 1], vs),
         "hbd short v",
     );
 
@@ -414,11 +411,11 @@ fn bad_geometry_is_an_error_on_every_entry_point() {
     let f444 = Frame::new(w, h, w, h, 0, |v| v as u8);
     let [(y, ys), (u, us), (v, vs)] = f444.padded(0);
     invalid(
-        p444().try_encode_frame_444_strided(&y, ys, &u, w - 1, &v, vs),
+        p444().try_encode_frame_444(&y, ys, &u, w - 1, &v, vs),
         "444 u stride",
     );
     invalid(
-        p444().try_encode_frame_444_strided(&y, ys, &u, us, &v[..v.len() - 1], vs),
+        p444().try_encode_frame_444(&y, ys, &u, us, &v[..v.len() - 1], vs),
         "444 short v",
     );
 
@@ -435,7 +432,7 @@ fn bad_geometry_is_an_error_on_every_entry_point() {
     .with_pred_structure(PredStructure::RandomAccess);
     let [(y, ys), (u, us), (v, vs)] = f8.padded(0);
     invalid(
-        ra.try_encode_frame_420_strided(&y, ys, &u[..1], us, &v, vs),
+        ra.try_encode_frame_420(&y, ys, &u[..1], us, &v, vs),
         "RA short u",
     );
 }
@@ -447,16 +444,18 @@ fn facade_still_is_byte_identical_and_validates() {
         let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
         let f = Frame::new(w, h, cw, ch, 0, |v| v as u8);
         let (wu, hu, cwu) = (w as u32, h as u32, cw as u32);
-        let plain = encoder.encode_yuv420(&f.y, &f.u, &f.v, wu, hu, wu).unwrap();
+        let plain = encoder
+            .encode_yuv420(&f.y, wu, &f.u, wu.div_ceil(2), &f.v, wu.div_ceil(2), wu, hu)
+            .unwrap();
         let [(y, ys), (u, us), (v, vs)] = f.padded(0xA5);
         let padded = encoder
-            .encode_yuv420_strided(&y, ys as u32, &u, us as u32, &v, vs as u32, wu, hu)
+            .encode_yuv420(&y, ys as u32, &u, us as u32, &v, vs as u32, wu, hu)
             .unwrap();
         assert!(plain.data == padded.data, "{w}x{h}");
         for r in [
-            encoder.encode_yuv420_strided(&y, wu - 1, &u, us as u32, &v, vs as u32, wu, hu),
-            encoder.encode_yuv420_strided(&y, ys as u32, &u, cwu - 1, &v, vs as u32, wu, hu),
-            encoder.encode_yuv420_strided(&y, ys as u32, &u, us as u32, &v[..1], vs as u32, wu, hu),
+            encoder.encode_yuv420(&y, wu - 1, &u, us as u32, &v, vs as u32, wu, hu),
+            encoder.encode_yuv420(&y, ys as u32, &u, cwu - 1, &v, vs as u32, wu, hu),
+            encoder.encode_yuv420(&y, ys as u32, &u, us as u32, &v[..1], vs as u32, wu, hu),
         ] {
             assert!(
                 matches!(r, Err(EncodeError::InvalidDimensions { .. })),

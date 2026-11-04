@@ -143,7 +143,7 @@ fn preset7_screen_encode_runs_and_differs_from_the_nonscreen_preset() {
         let mut p = EncodePipeline::new(W as u32, H as u32, preset, rc, 0, 1)
             .with_chroma_420(true)
             .with_thread_count(1);
-        let obu = p.encode_frame_420(&y, &chroma, &chroma, W);
+        let obu = p.encode_frame_420(&y, W, &chroma, W.div_ceil(2), &chroma, W.div_ceil(2));
         assert!(!obu.is_empty(), "preset {preset} produced no bitstream");
         bytes.push(obu);
     }
@@ -198,7 +198,7 @@ fn pipeline_signals_the_screen_arm_on_an_sc_class5_frame() {
         let mut p = EncodePipeline::new(W as u32, H as u32, 7, rc, 0, 1)
             .with_chroma_420(true)
             .with_thread_count(1);
-        let obu = p.encode_frame_420(&plane, &chroma, &chroma, W);
+        let obu = p.encode_frame_420(&plane, W, &chroma, W.div_ceil(2), &chroma, W.div_ceil(2));
         assert!(!obu.is_empty(), "{label} plane produced no bitstream");
         let got = p
             .last_cdef_signaled

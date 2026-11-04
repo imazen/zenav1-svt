@@ -84,7 +84,7 @@ fn encode(case: Case) -> Vec<u8> {
     for f in 0..FRAMES {
         let (y, u, v) = frame(f);
         let bytes = p
-            .try_encode_frame_420(&y, &u, &v, W)
+            .try_encode_frame_420(&y, W, &u, W.div_ceil(2), &v, W.div_ceil(2))
             .unwrap_or_else(|e| panic!("{case:?} frame {f}: {e}"));
         out.extend_from_slice(&bytes);
     }
@@ -251,9 +251,16 @@ fn video_sweep_never_panics(preset: i8) {
                 let r = if bd == 10 {
                     let wide =
                         |s: &[u8]| s.iter().map(|&x| u16::from(x) << 2).collect::<Vec<u16>>();
-                    p.try_encode_frame_420_hbd(&wide(&y), &wide(&u), &wide(&v), w)
+                    p.try_encode_frame_420_hbd(
+                        &wide(&y),
+                        w,
+                        &wide(&u),
+                        w.div_ceil(2),
+                        &wide(&v),
+                        w.div_ceil(2),
+                    )
                 } else {
-                    p.try_encode_frame_420(&y, &u, &v, w)
+                    p.try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
                 };
                 r.map_err(|e| e.to_string())?;
             }
@@ -324,7 +331,7 @@ fn mono_and_lossless_video_never_panic() {
                         let r = if mono {
                             p.try_encode_frame(&y, w)
                         } else {
-                            p.try_encode_frame_420(&y, &u, &v, w)
+                            p.try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
                         };
                         r.map_err(|e| e.to_string())?;
                     }
@@ -373,7 +380,7 @@ fn with_reference_switches_the_target() {
         for f in 0..2 {
             let (y, u, v) = frame(f);
             out.extend(
-                p.try_encode_frame_420(&y, &u, &v, W)
+                p.try_encode_frame_420(&y, W, &u, W.div_ceil(2), &v, W.div_ceil(2))
                     .unwrap_or_else(|e| panic!("{r:?} frame {f}: {e}")),
             );
         }
@@ -501,7 +508,14 @@ fn inter_order_hint_is_distance_since_key() {
     let mut hints = Vec::new();
     for i in 0..7usize {
         let pkt = p
-            .try_encode_frame_420(&pl(0, 48, 32, i), &pl(1, 24, 16, i), &pl(2, 24, 16, i), 48)
+            .try_encode_frame_420(
+                &pl(0, 48, 32, i),
+                48,
+                &pl(1, 24, 16, i),
+                24,
+                &pl(2, 24, 16, i),
+                24,
+            )
             .unwrap_or_else(|e| panic!("frame {i}: {e}"));
         hints.extend_from_slice(&order_hints(&pkt));
     }

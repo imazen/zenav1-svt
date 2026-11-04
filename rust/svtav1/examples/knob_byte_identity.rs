@@ -188,7 +188,7 @@ fn main() {
                         HdrForkConfig::mainline()
                     };
                     (a.apply)(&mut p.hdr);
-                    let bs = p.encode_frame_420(&y, &u, &v, DIM);
+                    let bs = p.encode_frame_420(&y, DIM, &u, DIM.div_ceil(2), &v, DIM.div_ceil(2));
                     let h = fnv1a64(&bs);
                     tsv.push_str(&format!(
                         "{kind}\t{preset}\t{qp}\t{}\t{}\t{}\t{:016x}\n",

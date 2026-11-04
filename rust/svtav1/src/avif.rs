@@ -794,29 +794,13 @@ impl AvifEncoder {
     /// nothing in the return type said so (issue #9 item 6). That output
     /// contract is gone.
     ///
-    /// `y` is read at `y_stride`; `u` and `v` are tightly packed at
-    /// `ceil(width / 2) x ceil(height / 2)`. The pipeline handles odd and
-    /// partial sizes by padding internally and signalling the true size.
-    pub fn encode_yuv420(
-        &self,
-        y: &[u8],
-        u: &[u8],
-        v: &[u8],
-        width: u32,
-        height: u32,
-        y_stride: u32,
-    ) -> Result<EncodedAvif, EncodeError> {
-        let tight = width.div_ceil(2);
-        self.encode_yuv420_strided(y, y_stride, u, tight, v, tight, width, height)
-    }
-
-    /// [`Self::encode_yuv420`] with every plane at its own stride, in samples.
-    ///
-    /// Byte-identical to the tight form for the same image samples: padding
-    /// between rows is never read. Each stride must be at least its plane's
-    /// width and a plane needs `(rows - 1) * stride + width` samples.
+    /// Every plane has its own stride, in samples: `u` and `v` are `ceil(width / 2)
+    /// x ceil(height / 2)`. Padding between rows is never read. Each stride must be
+    /// at least its plane's width and a plane needs `(rows - 1) * stride + width`
+    /// samples. The pipeline handles odd and partial sizes by padding internally
+    /// and signalling the true size.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_yuv420_strided(
+    pub fn encode_yuv420(
         &self,
         y: &[u8],
         y_stride: u32,
@@ -848,7 +832,7 @@ impl AvifEncoder {
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
-            .try_encode_frame_420_strided(
+            .try_encode_frame_420(
                 y,
                 y_stride as usize,
                 u,

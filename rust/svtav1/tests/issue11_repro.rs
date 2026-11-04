@@ -85,7 +85,7 @@ fn issue11_bd10_420_383x512_luma_unit_walk_stays_in_the_grid() {
 
     let mut p = pipeline(w, h, 40, 10);
     let bytes = p
-        .try_encode_frame_420_hbd(&y, &u, &v, w)
+        .try_encode_frame_420_hbd(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .expect("383x512 bd10 4:2:0 preset 6 must encode, not panic (issue #11)");
     assert!(!bytes.is_empty(), "encode produced no bytes");
 
@@ -111,7 +111,7 @@ fn issue11_766x128_chroma_unit_walk_stays_in_the_grid() {
 
     let mut p = pipeline(w, h, 40, 8);
     let bytes = p
-        .try_encode_frame_420(&y, &u, &v, w)
+        .try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .expect("766x128 4:2:0 preset 6 must encode, not panic (issue #11)");
     assert!(!bytes.is_empty(), "encode produced no bytes");
 
@@ -144,7 +144,7 @@ fn issue11_alignment_crossing_widths_encode() {
         let v = textured_uv(cw, ch, 41);
         let mut p = pipeline(w, h, 40, 8);
         let bytes = p
-            .try_encode_frame_420(&y, &u, &v, w)
+            .try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
             .unwrap_or_else(|e| panic!("{w}x{h} must encode: {e:?}"));
         assert!(!bytes.is_empty(), "{w}x{h} produced no bytes");
     }

@@ -76,12 +76,12 @@ fn pipeline(preset: u8, qp: u8) -> EncodePipeline {
 }
 
 fn encode_u8(preset: u8, qp: u8, y: &[u8], u: &[u8], v: &[u8]) -> Vec<u8> {
-    pipeline(preset, qp).encode_frame_420(y, u, v, W)
+    pipeline(preset, qp).encode_frame_420(y, W, u, W.div_ceil(2), v, W.div_ceil(2))
 }
 
 fn encode_hbd(preset: u8, qp: u8, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
     pipeline(preset, qp)
-        .try_encode_frame_420_hbd(y, u, v, W)
+        .try_encode_frame_420_hbd(y, W, u, W.div_ceil(2), v, W.div_ceil(2))
         .expect("hbd entry point inside its documented envelope")
 }
 
@@ -165,7 +165,8 @@ fn hbd_rejects_configs_with_no_bd10_consumer() {
     };
     let mut bd8 = EncodePipeline::new(W as u32, H as u32, 9, rc, 0, 1).with_chroma_420(true);
     assert!(
-        bd8.try_encode_frame_420_hbd(&y10, &u10, &v10, W).is_err(),
+        bd8.try_encode_frame_420_hbd(&y10, W, &u10, W.div_ceil(2), &v10, W.div_ceil(2))
+            .is_err(),
         "an 8-bit pipeline must reject a native 10-bit source"
     );
 
@@ -173,7 +174,8 @@ fn hbd_rejects_configs_with_no_bd10_consumer() {
     let mut mono = pipeline(9, 32);
     mono.chroma_420 = false;
     assert!(
-        mono.try_encode_frame_420_hbd(&y10, &u10, &v10, W).is_err(),
+        mono.try_encode_frame_420_hbd(&y10, W, &u10, W.div_ceil(2), &v10, W.div_ceil(2))
+            .is_err(),
         "the 4:2:0 hbd entry point must reject a monochrome pipeline"
     );
 
@@ -182,7 +184,7 @@ fn hbd_rejects_configs_with_no_bd10_consumer() {
     too_wide[7] = 1 << 10;
     assert!(
         pipeline(9, 32)
-            .try_encode_frame_420_hbd(&too_wide, &u10, &v10, W)
+            .try_encode_frame_420_hbd(&too_wide, W, &u10, W.div_ceil(2), &v10, W.div_ceil(2))
             .is_err(),
         "a sample above the configured bit depth must be rejected"
     );

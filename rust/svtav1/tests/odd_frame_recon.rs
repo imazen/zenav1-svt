@@ -70,16 +70,25 @@ fn pristine_and_hybrid_chroma_reference_matches_c() {
             p.reference = reference;
             let (obu, expected) = if depth == 8 {
                 let obu = p
-                    .try_encode_frame_420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64)
+                    .try_encode_frame_420(
+                        &raw8[..4096],
+                        64,
+                        &raw8[4096..5120],
+                        32,
+                        &raw8[5120..],
+                        32,
+                    )
                     .unwrap();
                 (obu, crop(p.last_recon.as_ref().unwrap(), 64, 64, 64))
             } else {
                 let obu = p
                     .try_encode_frame_420_hbd(
                         &raw10[..4096],
-                        &raw10[4096..5120],
-                        &raw10[5120..],
                         64,
+                        &raw10[4096..5120],
+                        32,
+                        &raw10[5120..],
+                        32,
                     )
                     .unwrap();
                 let recon = crop(p.last_recon10_final.as_ref().unwrap(), 64, 64, 64)
@@ -104,7 +113,16 @@ fn pristine_and_hybrid_chroma_reference_matches_c() {
                 assert_eq!(encoder.reference(), reference);
                 assert_eq!(
                     encoder
-                        .encode_yuv420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64, 64, 64)
+                        .encode_yuv420(
+                            &raw8[..4096],
+                            64,
+                            &raw8[4096..5120],
+                            32,
+                            &raw8[5120..],
+                            32,
+                            64,
+                            64
+                        )
                         .unwrap()
                         .data,
                     golden
@@ -136,7 +154,7 @@ fn pristine_and_hybrid_chroma_reference_matches_c() {
     incompatible.hdr.tx_bias = 1;
     assert!(
         incompatible
-            .try_encode_frame_420(&gray, &gray[..1024], &gray[..1024], 64)
+            .try_encode_frame_420(&gray, 64, &gray[..1024], 32, &gray[..1024], 32)
             .is_err()
     );
 }
@@ -215,10 +233,17 @@ fn cached_chroma_at_partial_right_edge() {
         .map(|i| (100 + i * 7 % 60) as u8)
         .collect();
     let mut p = pipeline(w, h, 1, 75.0, 8);
-    let obu = p.try_encode_frame_420(&y, &uv, &uv, w).unwrap();
+    let obu = p
+        .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+        .unwrap();
     let expected = crop(p.last_recon.as_ref().unwrap(), p.width as usize, w, h);
     let mut no_recon = pipeline(w, h, 1, 75.0, 8).with_recon_output(false);
-    assert_eq!(obu, no_recon.try_encode_frame_420(&y, &uv, &uv, w).unwrap());
+    assert_eq!(
+        obu,
+        no_recon
+            .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+            .unwrap()
+    );
     decode_eq("cached-chroma", &obu, &expected);
 }
 
@@ -238,7 +263,9 @@ fn native_odd_chroma_filter_bounds() {
         .map(|i| (500 + i % 32) as u16)
         .collect();
     let mut p = pipeline(w, w, 9, 40.0, 10);
-    let obu = p.try_encode_frame_420_hbd(&y, &u, &v, stride).unwrap();
+    let obu = p
+        .try_encode_frame_420_hbd(&y, stride, &u, w.div_ceil(2), &v, w.div_ceil(2))
+        .unwrap();
     let expected: Vec<u8> = crop(
         p.last_recon10_final.as_ref().unwrap(),
         p.width as usize,
@@ -252,7 +279,7 @@ fn native_odd_chroma_filter_bounds() {
     assert_eq!(
         obu,
         no_recon
-            .try_encode_frame_420_hbd(&y, &u, &v, stride)
+            .try_encode_frame_420_hbd(&y, stride, &u, w.div_ceil(2), &v, w.div_ceil(2))
             .unwrap()
     );
     decode_eq("native-chroma", &obu, &expected);
@@ -270,12 +297,19 @@ fn superresolution_odd_chroma_reconstruction() {
                 for preset in [7, 9] {
                     for quality in [5.0, 40.0, 75.0, 98.0] {
                         let mut p = pipeline(w, h, preset, quality, 8).with_superres(denom);
-                        let obu = p.try_encode_frame_420(&y, &uv, &uv, w).unwrap();
+                        let obu = p
+                            .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+                            .unwrap();
                         let expected = crop(p.last_recon.as_ref().unwrap(), w, w, h);
                         let mut no_recon = pipeline(w, h, preset, quality, 8)
                             .with_superres(denom)
                             .with_recon_output(false);
-                        assert_eq!(obu, no_recon.try_encode_frame_420(&y, &uv, &uv, w).unwrap());
+                        assert_eq!(
+                            obu,
+                            no_recon
+                                .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+                                .unwrap()
+                        );
                         decode_eq(
                             &format!("superres-{w}x{h}-{denom}-p{preset}-q{quality}"),
                             &obu,
@@ -412,7 +446,15 @@ fn lossless_quantization_options_match_source() {
                                 if mono {
                                     p.try_encode_frame_hbd(&y, stride).unwrap()
                                 } else {
-                                    p.try_encode_frame_420_hbd(&y, &u, &v, stride).unwrap()
+                                    p.try_encode_frame_420_hbd(
+                                        &y,
+                                        stride,
+                                        &u,
+                                        w.div_ceil(2),
+                                        &v,
+                                        w.div_ceil(2),
+                                    )
+                                    .unwrap()
                                 }
                             } else {
                                 let y8: Vec<u8> = y.iter().map(|v| *v as u8).collect();
@@ -421,7 +463,15 @@ fn lossless_quantization_options_match_source() {
                                 if mono {
                                     p.try_encode_frame(&y8, stride).unwrap()
                                 } else {
-                                    p.try_encode_frame_420(&y8, &u8, &v8, stride).unwrap()
+                                    p.try_encode_frame_420(
+                                        &y8,
+                                        stride,
+                                        &u8,
+                                        w.div_ceil(2),
+                                        &v8,
+                                        w.div_ceil(2),
+                                    )
+                                    .unwrap()
                                 }
                             }
                         };
@@ -495,7 +545,15 @@ fn native_lossless_matches_source() {
                         if mono {
                             p.try_encode_frame_hbd(&y, stride).unwrap()
                         } else {
-                            p.try_encode_frame_420_hbd(&y, &u, &v, stride).unwrap()
+                            p.try_encode_frame_420_hbd(
+                                &y,
+                                stride,
+                                &u,
+                                w.div_ceil(2),
+                                &v,
+                                w.div_ceil(2),
+                            )
+                            .unwrap()
                         }
                     };
                     let mut p = make();
@@ -593,7 +651,16 @@ fn research_wrapper_partial_frame_matches_decoder() {
             .with_bit_depth(depth)
             .with_native_preset(NativePreset::RESEARCH);
         let obu = enc
-            .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+            .encode_yuv420(
+                &y,
+                w as u32,
+                &u,
+                (w as u32).div_ceil(2),
+                &v,
+                (w as u32).div_ceil(2),
+                w as u32,
+                h as u32,
+            )
             .unwrap()
             .data;
         let mut direct = EncodePipeline::new_with_preset(
@@ -617,7 +684,12 @@ fn research_wrapper_partial_frame_matches_decoder() {
             matrix_coefficients: 1,
             full_range: false,
         };
-        assert_eq!(obu, direct.try_encode_frame_420(&y, &u, &v, w).unwrap());
+        assert_eq!(
+            obu,
+            direct
+                .try_encode_frame_420(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
+                .unwrap()
+        );
         let expected = if depth == 8 {
             crop(
                 direct.last_recon.as_ref().unwrap(),

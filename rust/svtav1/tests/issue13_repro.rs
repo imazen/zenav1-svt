@@ -149,7 +149,7 @@ fn issue13_bd10_final_recon_matches_aomdec_when_wiener_is_signalled() {
         .with_chroma_420(true)
         .with_recon_output(true);
     let obu = p
-        .try_encode_frame_420_hbd(&y, &u, &v, w)
+        .try_encode_frame_420_hbd(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .expect("383x512 bd10 4:2:0 preset 6 must encode");
     assert!(!obu.is_empty());
 

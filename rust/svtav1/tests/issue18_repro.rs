@@ -263,7 +263,7 @@ fn assert_bd10_recon_matches_decoder_content(
         .with_chroma_420(true)
         .with_recon_output(true);
     let obu = p
-        .try_encode_frame_420_hbd(&y, &u, &v, w)
+        .try_encode_frame_420_hbd(&y, w, &u, w.div_ceil(2), &v, w.div_ceil(2))
         .unwrap_or_else(|e| panic!("{tag}: {w}x{h} bd10 4:2:0 preset {preset} must encode: {e:?}"));
     assert!(!obu.is_empty(), "{tag}: empty stream");
 

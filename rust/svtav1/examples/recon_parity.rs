@@ -148,7 +148,7 @@ fn main() {
                             v = (0..(enc / 2) * (enc / 2))
                                 .map(|i| (((i * 5) & 0x7F) + 64) as u8)
                                 .collect::<Vec<u8>>();
-                            p.encode_frame_420(&y, &u, &v, enc)
+                            p.encode_frame_420(&y, enc, &u, enc.div_ceil(2), &v, enc.div_ceil(2))
                         } else {
                             p.encode_frame(&y, enc)
                         };

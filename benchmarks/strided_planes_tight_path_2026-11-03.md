@@ -37,3 +37,20 @@ direction across cells, and the one cycle count that moved most went down. Those
 timing differences are not attributed to any cause; code layout under fat LTO was
 not investigated. Gradient content only. The strided path itself and the 10-bit
 entry points have no timing here: not measured.
+
+## After removing the tight forms (one strided form per entry point)
+
+The numbers above measure the first form of this branch, where the tight entry
+points were wrappers. These measure the single strided form against the same
+base, with the same harness and the planes still tightly packed, n = 31 per cell:
+
+| cell | base median ms | change median ms | ratio | base min ms | change min ms | ratio | bytes equal |
+|---|---|---|---|---|---|---|---|
+| gradient-512x512-q32-p6 | 19.503 | 19.471 | 0.9983 | 19.288 | 19.289 | 1.0001 | True |
+| gradient-512x512-q32-p10 | 5.445 | 5.420 | 0.9954 | 5.357 | 5.331 | 0.9951 | True |
+| gradient-64x64-q32-p10 | 0.126 | 0.126 | 0.9946 | 0.124 | 0.123 | 0.9927 | True |
+| gradient-72x40-q32-p10 | 0.130 | 0.129 | 0.9939 | 0.127 | 0.127 | 0.9985 | True |
+| gradient-1024x1024-q32-p10 | 17.287 | 17.247 | 0.9977 | 16.990 | 16.991 | 1.0001 | True |
+
+`perf stat -e instructions:u`, one run each: 512x512 p6 754,052,936 -> 754,026,794;
+512x512 p10 182,626,644 -> 182,608,412; 1024x1024 p10 615,158,992 -> 615,101,991.

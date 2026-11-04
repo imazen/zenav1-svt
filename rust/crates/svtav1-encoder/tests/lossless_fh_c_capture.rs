@@ -201,7 +201,7 @@ fn encode_gradient_64(qp: u8) -> (Vec<u8>, svtav1_encoder::pipeline::EncodePipel
         .with_recon_output(true);
     let (y, u, v) = gradient_64();
     let obu = p
-        .try_encode_frame_420(&y, &u, &v, 64)
+        .try_encode_frame_420(&y, 64, &u, 32, &v, 32)
         .expect("gradient 64x64 preset 7 encodes");
     (obu, p)
 }
@@ -290,7 +290,9 @@ fn qp0_low_preset_partition_search_matches_c_captures() {
             })
             .collect();
         let uv = vec![128; w * w / 4];
-        let obu = p.try_encode_frame_420(&y, &uv, &uv, w).unwrap();
+        let obu = p
+            .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+            .unwrap();
         assert_eq!(obu.as_slice(), capture, "{w}x{w} p{preset} diag={diag}");
         let (ry, ru, rv) = p.last_recon.as_ref().unwrap();
         assert_eq!(ry, &y);

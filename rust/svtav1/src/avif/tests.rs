@@ -87,14 +87,32 @@ fn stop_token_reaches_the_pipeline() {
     let v = vec![128u8; w * h / 4];
 
     let expired = AvifEncoder::new().with_timeout(core::time::Duration::ZERO);
-    match expired.encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32) {
+    match expired.encode_yuv420(
+        &y,
+        w as u32,
+        &u,
+        (w as u32).div_ceil(2),
+        &v,
+        (w as u32).div_ceil(2),
+        w as u32,
+        h as u32,
+    ) {
         Err(EncodeError::Cancelled(enough::StopReason::TimedOut)) => {}
         other => panic!("expired deadline must surface Cancelled(TimedOut), got {other:?}"),
     }
 
     AvifEncoder::new()
         .with_timeout(core::time::Duration::from_secs(60))
-        .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+        .encode_yuv420(
+            &y,
+            w as u32,
+            &u,
+            (w as u32).div_ceil(2),
+            &v,
+            (w as u32).div_ceil(2),
+            w as u32,
+            h as u32,
+        )
         .expect("a 60s budget must not fire on a 64x64 encode");
 }
 
@@ -127,9 +145,18 @@ fn yuv420(size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 
 fn enc420(enc: &AvifEncoder, size: usize) -> Vec<u8> {
     let (y, u, v) = yuv420(size);
-    enc.encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
-        .expect("4:2:0 encode")
-        .data
+    enc.encode_yuv420(
+        &y,
+        size as u32,
+        &u,
+        (size as u32).div_ceil(2),
+        &v,
+        (size as u32).div_ceil(2),
+        size as u32,
+        size as u32,
+    )
+    .expect("4:2:0 encode")
+    .data
 }
 
 /// Issue #24: `with_num_threads` was inert below the forced-tile
@@ -158,7 +185,16 @@ fn num_threads_derives_a_tile_grid() {
             .with_quality(60.0)
             .with_speed(6)
             .with_num_threads(t)
-            .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+            .encode_yuv420(
+                &y,
+                w as u32,
+                &u,
+                (w as u32).div_ceil(2),
+                &v,
+                (w as u32).div_ceil(2),
+                w as u32,
+                h as u32,
+            )
             .expect("4:2:0 encode")
             .data
     };
@@ -187,7 +223,16 @@ fn encode_yuv420_is_the_mainline_420_path_byte_for_byte() {
     let (y, u, v) = yuv420(size);
     let enc = AvifEncoder::new().with_quality(60.0).with_speed(6);
     let via_avif = enc
-        .encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
+        .encode_yuv420(
+            &y,
+            size as u32,
+            &u,
+            (size as u32).div_ceil(2),
+            &v,
+            (size as u32).div_ceil(2),
+            size as u32,
+            size as u32,
+        )
         .expect("4:2:0 encode")
         .data;
 
@@ -208,7 +253,8 @@ fn encode_yuv420_is_the_mainline_420_path_byte_for_byte() {
     .with_chroma_420(true);
     direct.bit_depth = 8;
     direct.color_description = enc.color_description();
-    let via_pipeline = direct.encode_frame_420(&y, &u, &v, size);
+    let via_pipeline =
+        direct.encode_frame_420(&y, size, &u, size.div_ceil(2), &v, size.div_ceil(2));
 
     assert_eq!(
         via_avif, via_pipeline,
@@ -232,7 +278,16 @@ fn encode_y8_is_monochrome_not_the_luma_of_a_colour_image() {
         .expect("mono encode")
         .data;
     let colour = enc
-        .encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
+        .encode_yuv420(
+            &y,
+            size as u32,
+            &u,
+            (size as u32).div_ceil(2),
+            &v,
+            (size as u32).div_ceil(2),
+            size as u32,
+            size as u32,
+        )
         .expect("4:2:0 encode")
         .data;
     assert_ne!(mono, colour);
@@ -249,7 +304,7 @@ fn tune_knob_changes_bytes() {
     let enc_t = |t: SvtTune| {
         base.clone()
             .with_tune(t)
-            .encode_yuv420(&y, &u, &v, 128, 128, 128)
+            .encode_yuv420(&y, 128, &u, 64, &v, 64, 128, 128)
             .expect("4:2:0 encode")
             .data
     };
@@ -306,7 +361,7 @@ fn variance_boost_knob_changes_bytes() {
     let enc_s = |st: u8| {
         base.clone()
             .with_variance_boost(true, st)
-            .encode_yuv420(&y, &u, &v, 128, 128, 128)
+            .encode_yuv420(&y, 128, &u, 64, &v, 64, 128, 128)
             .expect("4:2:0 encode")
             .data
     };
@@ -349,7 +404,7 @@ fn lossless_is_qp0_on_color_and_monochrome() {
     let enc = AvifEncoder::new().with_speed(8).with_lossless(true);
     let (y, u, v) = yuv420(64);
     let ll = enc
-        .encode_yuv420(&y, &u, &v, 64, 64, 64)
+        .encode_yuv420(&y, 64, &u, 32, &v, 32, 64, 64)
         .expect("coded-lossless 4:2:0 encode")
         .data;
     let lossy = enc420(&AvifEncoder::new().with_speed(8), 64);
@@ -472,7 +527,7 @@ fn research_wrapper_reaches_native_pipeline_and_changes_output() {
             .with_quality(40.0)
             .with_bit_depth(bit_depth)
             .with_native_preset(NativePreset::RESEARCH);
-        let wrapped = enc.encode_yuv420(&y, &u, &v, 64, 64, 64).unwrap();
+        let wrapped = enc.encode_yuv420(&y, 64, &u, 32, &v, 32, 64, 64).unwrap();
         let rc = svtav1_encoder::rate_control::RcConfig {
             mode: svtav1_encoder::rate_control::RcMode::Cqp,
             qp: AvifEncoder::quality_to_qp(40.0),
@@ -490,10 +545,13 @@ fn research_wrapper_reaches_native_pipeline_and_changes_output() {
         .with_bit_depth(bit_depth)
         .with_thread_count(0);
         direct.color_description = enc.color_description();
-        assert_eq!(wrapped.data, direct.encode_frame_420(&y, &u, &v, 64));
+        assert_eq!(
+            wrapped.data,
+            direct.encode_frame_420(&y, 64, &u, 32, &v, 32)
+        );
         let normal = enc
             .with_speed(1)
-            .encode_yuv420(&y, &u, &v, 64, 64, 64)
+            .encode_yuv420(&y, 64, &u, 32, &v, 32, 64, 64)
             .unwrap();
         assert_ne!(
             wrapped.data, normal.data,
@@ -647,7 +705,7 @@ fn encode_yuv420_16x16() {
     let y = vec![128u8; 16 * 16];
     let u = vec![128u8; 8 * 8];
     let v = vec![128u8; 8 * 8];
-    let result = enc.encode_yuv420(&y, &u, &v, 16, 16, 16).unwrap();
+    let result = enc.encode_yuv420(&y, 16, &u, 8, &v, 8, 16, 16).unwrap();
     assert!(!result.data.is_empty());
     assert_eq!(result.width, 16);
     assert_eq!(result.height, 16);
@@ -660,10 +718,10 @@ fn encode_yuv420_validates_rounded_up_chroma_for_odd_dimensions() {
     let u = vec![0u8; 8 * 8];
     let v = vec![0u8; 8 * 8];
     assert!(matches!(
-        enc.encode_yuv420(&y, &u[..7 * 8], &v, 15, 16, 15),
+        enc.encode_yuv420(&y, 15, &u[..7 * 8], 8, &v, 8, 15, 16),
         Err(EncodeError::InvalidDimensions { .. })
     ));
-    let out = enc.encode_yuv420(&y, &u, &v, 15, 16, 15).unwrap();
+    let out = enc.encode_yuv420(&y, 15, &u, 8, &v, 8, 15, 16).unwrap();
     assert_eq!((out.width, out.height), (15, 16));
 }
 
@@ -802,7 +860,7 @@ fn every_dimension_rejection_names_its_own_rule() {
         ),
         (
             "short chroma plane",
-            enc.encode_yuv420(&buf, &chroma[..3], &chroma, 16, 16, 16)
+            enc.encode_yuv420(&buf, 16, &chroma[..3], 8, &chroma, 8, 16, 16)
                 .unwrap_err(),
         ),
     ];

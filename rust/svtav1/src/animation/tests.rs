@@ -295,7 +295,9 @@ fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
             .with_image_sequence()
             .with_recon_output(true);
         for (i, source) in colors.iter().enumerate() {
-            let raw = pipe.try_encode_frame_420(source, &uv, &uv, w).unwrap();
+            let raw = pipe
+                .try_encode_frame_420(source, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
+                .unwrap();
             fs::write(out.join("color.obu"), raw).unwrap();
             let mut pre = Vec::new();
             let (py, pu, pv) = pipe.last_recon_unfiltered.as_ref().unwrap();
@@ -434,10 +436,24 @@ fn native_ten_bit_animation_matches_color_and_alpha_reconstruction() {
                 pipe_no_recon.rc_config.framerate = fps;
                 for i in 0..2 {
                     let raw = pipe
-                        .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                        .try_encode_frame_420_hbd(
+                            &colors[i],
+                            stride,
+                            &u,
+                            w.div_ceil(2),
+                            &v,
+                            w.div_ceil(2),
+                        )
                         .unwrap();
                     let without_recon = pipe_no_recon
-                        .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                        .try_encode_frame_420_hbd(
+                            &colors[i],
+                            stride,
+                            &u,
+                            w.div_ceil(2),
+                            &v,
+                            w.div_ceil(2),
+                        )
                         .unwrap();
                     assert_eq!(
                         raw, without_recon,

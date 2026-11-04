@@ -352,7 +352,7 @@ fn md_walk_cancels_inside_a_superblock() {
             )
             .with_chroma_420(true)
             .with_stop(probe.clone());
-            p.try_encode_frame_420(&y, &uv, &uv, w)
+            p.try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
                 .expect("unstoppable run");
             probe.0.load(Ordering::Relaxed)
         };
@@ -376,7 +376,7 @@ fn md_walk_cancels_inside_a_superblock() {
             )
             .with_chroma_420(true)
             .with_stop(stop);
-            let r = p.try_encode_frame_420(&y, &uv, &uv, w);
+            let r = p.try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2));
             assert!(
                 matches!(r, Err(e) if matches!(e.error(), EncodeError::Cancelled(enough::StopReason::Cancelled))),
                 "preset {preset} checkpoint {n}/{total} ignored"
@@ -420,13 +420,13 @@ fn armed_stop_token_is_byte_inert() {
             .with_chroma_420(true)
         };
         let plain = build()
-            .try_encode_frame_420(&y, &uv, &uv, w)
+            .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
             .expect("plain encode");
         let stop = ArcStopAfter(alloc::sync::Arc::new(AtomicUsize::new(0)), usize::MAX);
         let probes = stop.clone();
         let armed = build()
             .with_stop(stop)
-            .try_encode_frame_420(&y, &uv, &uv, w)
+            .try_encode_frame_420(&y, w, &uv, w.div_ceil(2), &uv, w.div_ceil(2))
             .expect("armed-never-fires encode");
         assert_eq!(
             plain, armed,

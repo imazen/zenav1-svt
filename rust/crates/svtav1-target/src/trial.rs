@@ -299,7 +299,7 @@ where
     configure(&mut pipe);
     let [(y, y_stride), (u, u_stride), (v, v_stride)] = planes;
     let bytes = pipe
-        .try_encode_frame_420_strided(y, y_stride, u, u_stride, v, v_stride)
+        .try_encode_frame_420(y, y_stride, u, u_stride, v, v_stride)
         .map_err(|e| TargetError::Encode(format!("{e:?}")))?;
     let (ry, ru, rv) = pipe
         .last_recon
@@ -338,7 +338,7 @@ where
     configure(&mut pipe);
     let [(y, y_stride), (u, u_stride), (v, v_stride)] = planes;
     let bytes = pipe
-        .try_encode_frame_420_hbd_strided(y, y_stride, u, u_stride, v, v_stride)
+        .try_encode_frame_420_hbd(y, y_stride, u, u_stride, v, v_stride)
         .map_err(|e| TargetError::Encode(format!("{e:?}")))?;
     let (ry, ru, rv) = pipe
         .last_recon10_final

@@ -42,7 +42,7 @@ fn main() {
             p.chroma_420 = true;
             p.hdr = HdrForkConfig::hdr_fork();
             p.hdr.tune = tune;
-            let bs = p.encode_frame_420(&y, &u, &v, 128);
+            let bs = p.encode_frame_420(&y, 128, &u, 64, &v, 64);
             let (ry, ru, rv) = p.last_recon.clone().unwrap();
             let pre = format!("{dir}/t{tune}_q{qp}");
             let mut ivf = Vec::new();
