@@ -28,5 +28,6 @@ mod never_panics;
 mod output_pins;
 mod real_encode;
 mod still_paths;
+mod strided_planes;
 mod thread_determinism;
 mod video_paths;

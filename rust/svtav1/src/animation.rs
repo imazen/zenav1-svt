@@ -134,24 +134,35 @@ impl Default for AnimationOptions {
 
 /// One planar 4:2:0 image with an optional full-resolution alpha plane.
 /// Use `u8` for 8-bit samples or `u16` for native 10-bit samples.
-/// Chroma and alpha are tightly packed; luma may have a larger stride.
+///
+/// Every plane has its own stride, in samples, at least its width: the
+/// encoder reads only the image samples, so padding between rows may hold
+/// anything. A plane needs `(rows - 1) * stride + width` samples. Chroma is
+/// `ceil(width / 2) x ceil(height / 2)`; tightly packed planes pass their
+/// width as the stride.
 pub struct AnimationFrame<'a, T = u8> {
     pub y: &'a [T],
     pub u: &'a [T],
     pub v: &'a [T],
     pub y_stride: usize,
+    pub u_stride: usize,
+    pub v_stride: usize,
     pub alpha: Option<&'a [T]>,
+    /// Ignored when `alpha` is `None`.
+    pub alpha_stride: usize,
     /// Duration in the animation's timescale ticks, strictly positive.
     pub duration: u32,
 }
 
 /// One grayscale image with optional full-resolution alpha. Use `u8` for
-/// 8-bit samples or `u16` for native 10-bit samples. Alpha is tightly packed;
-/// luma may have a larger stride. No chroma planes are required or encoded.
+/// 8-bit samples or `u16` for native 10-bit samples. Strides follow
+/// [`AnimationFrame`]'s rules. No chroma planes are required or encoded.
 pub struct MonochromeAnimationFrame<'a, T = u8> {
     pub y: &'a [T],
     pub y_stride: usize,
     pub alpha: Option<&'a [T]>,
+    /// Ignored when `alpha` is `None`.
+    pub alpha_stride: usize,
     /// Duration in the animation's timescale ticks, strictly positive.
     pub duration: u32,
 }
@@ -338,7 +349,10 @@ impl AvifEncoder {
                 u: &[],
                 v: &[],
                 y_stride: frame.y_stride,
+                u_stride: 0,
+                v_stride: 0,
                 alpha: frame.alpha,
+                alpha_stride: frame.alpha_stride,
                 duration: frame.duration,
             })
             .collect();
@@ -456,26 +470,14 @@ impl AvifEncoder {
             }
         }
 
-        let n = width as usize * height as usize;
-        let cn = if chroma_420 {
-            (width as usize).div_ceil(2) * (height as usize).div_ceil(2)
-        } else {
-            0
+        let (w, h) = (width as usize, height as usize);
+        let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+        let plane_fits = |plane: &[T], pw: u32, ph: u32, stride: usize| {
+            u32::try_from(stride)
+                .is_ok_and(|s| self.validate_dimensions(plane.len(), pw, ph, s).is_ok())
         };
         // Validate the entire submission before encoding any picture.
         for frame in frames {
-            if frame
-                .y
-                .iter()
-                .chain(frame.u)
-                .chain(frame.v)
-                .chain(frame.alpha.unwrap_or(&[]))
-                .any(|&sample| !T::in_range(sample))
-            {
-                return Err(EncodeError::UnsupportedConfig(
-                    "animation sample exceeds the configured bit depth",
-                ));
-            }
             let stride =
                 u32::try_from(frame.y_stride).map_err(|_| EncodeError::InvalidDimensions {
                     width,
@@ -484,16 +486,32 @@ impl AvifEncoder {
                 })?;
             self.validate_dimensions(frame.y.len(), width, height, stride)?;
             if frame.duration == 0
-                || frame.u.len() < cn
-                || frame.v.len() < cn
+                || (chroma_420
+                    && !(plane_fits(frame.u, cw, ch, frame.u_stride)
+                        && plane_fits(frame.v, cw, ch, frame.v_stride)))
                 || frame.alpha.is_some() != has_alpha
-                || frame.alpha.is_some_and(|a| a.len() < n)
+                || frame
+                    .alpha
+                    .is_some_and(|a| !plane_fits(a, width, height, frame.alpha_stride))
             {
                 return Err(EncodeError::InvalidDimensions {
                     width,
                     height,
                     reason: "animation frame needs non-zero duration, complete chroma and alpha planes, and consistent alpha presence",
                 });
+            }
+            let (ucw, uch) = (cw as usize, ch as usize);
+            if plane_exceeds_depth(frame.y, w, h, frame.y_stride)
+                || (chroma_420
+                    && (plane_exceeds_depth(frame.u, ucw, uch, frame.u_stride)
+                        || plane_exceeds_depth(frame.v, ucw, uch, frame.v_stride)))
+                || frame
+                    .alpha
+                    .is_some_and(|a| plane_exceeds_depth(a, w, h, frame.alpha_stride))
+            {
+                return Err(EncodeError::UnsupportedConfig(
+                    "animation sample exceeds the configured bit depth",
+                ));
             }
         }
         // Monochrome animations inter-code on the same eligibility terms as
@@ -535,7 +553,7 @@ impl AvifEncoder {
                 T::encode_mono(&mut color, frame.y, frame.y_stride)?
             });
             if let Some(a) = frame.alpha {
-                alphas.push(T::encode_mono(&mut alpha, a, width as usize)?);
+                alphas.push(T::encode_mono(&mut alpha, a, frame.alpha_stride)?);
             }
         }
         let color_seq = sequence_header(&colors[0])?;
@@ -668,8 +686,15 @@ macro_rules! animation_sample {
                 pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
                 frame: &AnimationFrame<'_, Self>,
             ) -> Result<Vec<u8>, EncodeError> {
-                pipe.$color(frame.y, frame.u, frame.v, frame.y_stride)
-                    .map_err(|e| AvifEncoder::from_pipeline_error(e.error(), || e.to_string()))
+                pipe.$color(
+                    frame.y,
+                    frame.y_stride,
+                    frame.u,
+                    frame.u_stride,
+                    frame.v,
+                    frame.v_stride,
+                )
+                .map_err(|e| AvifEncoder::from_pipeline_error(e.error(), || e.to_string()))
             }
             fn encode_mono(
                 pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
@@ -682,8 +707,27 @@ macro_rules! animation_sample {
         }
     };
 }
-animation_sample!(u8, 8, try_encode_frame_420, try_encode_frame);
-animation_sample!(u16, 10, try_encode_frame_420_hbd, try_encode_frame_hbd);
+animation_sample!(u8, 8, try_encode_frame_420_strided, try_encode_frame);
+animation_sample!(
+    u16,
+    10,
+    try_encode_frame_420_hbd_strided,
+    try_encode_frame_hbd
+);
+
+/// Whether an image sample of a validated plane is out of range. Padding
+/// between rows has no sample meaning and is not read.
+fn plane_exceeds_depth<T: AnimationSample>(
+    plane: &[T],
+    width: usize,
+    height: usize,
+    stride: usize,
+) -> bool {
+    plane
+        .chunks(stride)
+        .take(height)
+        .any(|row| row[..width].iter().any(|&sample| !T::in_range(sample)))
+}
 
 fn sequence_header(data: &[u8]) -> Result<Vec<u8>, EncodeError> {
     let mut pos = 0;

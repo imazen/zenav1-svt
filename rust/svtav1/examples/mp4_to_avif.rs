@@ -147,6 +147,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             u: &f.u,
             v: &f.v,
             y_stride: f.width,
+            u_stride: f.width.div_ceil(2),
+            v_stride: f.width.div_ceil(2),
+            alpha_stride: f.width,
             alpha: None,
             duration: u32::try_from(d).unwrap_or(1).max(1),
         })

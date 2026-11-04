@@ -806,22 +806,41 @@ impl AvifEncoder {
         height: u32,
         y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
+        let tight = width.div_ceil(2);
+        self.encode_yuv420_strided(y, y_stride, u, tight, v, tight, width, height)
+    }
+
+    /// [`Self::encode_yuv420`] with every plane at its own stride, in samples.
+    ///
+    /// Byte-identical to the tight form for the same image samples: padding
+    /// between rows is never read. Each stride must be at least its plane's
+    /// width and a plane needs `(rows - 1) * stride + width` samples.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_yuv420_strided(
+        &self,
+        y: &[u8],
+        y_stride: u32,
+        u: &[u8],
+        u_stride: u32,
+        v: &[u8],
+        v_stride: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(y.len(), width, height, y_stride)?;
 
         let chroma_w = width.div_ceil(2);
         let chroma_h = height.div_ceil(2);
-        let chroma_len_needed = (chroma_w as usize).checked_mul(chroma_h as usize).ok_or(
-            EncodeError::InvalidDimensions {
-                width,
-                height,
-                reason: "chroma plane size overflows usize",
-            },
-        )?;
-        if u.len() < chroma_len_needed || v.len() < chroma_len_needed {
+        let chroma_fits = |len: usize, stride: u32| {
+            self.validate_dimensions(len, chroma_w, chroma_h, stride)
+                .is_ok()
+        };
+        if !chroma_fits(u.len(), u_stride) || !chroma_fits(v.len(), v_stride) {
             return Err(EncodeError::InvalidDimensions {
                 width,
                 height,
-                reason: "a chroma plane is shorter than ceil(height/2) * ceil(width/2)",
+                reason: "a chroma plane is shorter than (ceil(height/2) - 1) * stride + \
+                         ceil(width/2), or its stride is below ceil(width/2)",
             });
         }
 
@@ -829,7 +848,14 @@ impl AvifEncoder {
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
-            .try_encode_frame_420(y, u, v, y_stride as usize)
+            .try_encode_frame_420_strided(
+                y,
+                y_stride as usize,
+                u,
+                u_stride as usize,
+                v,
+                v_stride as usize,
+            )
             .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
 
         Ok(EncodedAvif {
