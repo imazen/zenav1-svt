@@ -46,13 +46,15 @@ impl EncodePipeline {
     //
     // `ra_input` is the port's pre-assignment buffer.
 
-    /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
-    /// path; `None` is the unchanged monochrome path.
+    /// Shared frame encode body. `chroma = Some(..)` selects the 4:2:0
+    /// path; `None` is the unchanged monochrome path. Both sources may be
+    /// strided: `gather_rows` and `build_sb_chroma` each make the one tight
+    /// copy this body already keeps, and every later reader takes that copy.
     fn encode_frame_impl(
         &mut self,
         y_plane: &[u8],
         y_stride: usize,
-        chroma: Option<(&[u8], &[u8])>,
+        chroma: Option<StridedChroma<'_>>,
         decided: Option<FrameDecision>,
     ) -> crate::EncodeResult<Vec<u8>> {
         // An AUTO `hierarchical_levels` that survived to encode time (no
@@ -591,6 +593,13 @@ impl EncodePipeline {
         let sb_input: &[u8] = sb_input_owned.as_deref().unwrap_or(&encode_input);
         let in_stride = if sb_input_owned.is_some() { ext_w } else { w };
         let sb_chroma_owned = build_sb_chroma(chroma, fmt, acw, ach, ext_w, ext_h)?;
+        // The aligned-extent prefix of the tight chroma copy just made: what
+        // every later chroma reader takes, at stride `acw`, instead of the
+        // caller's possibly strided planes.
+        let chroma: Option<(&[u8], &[u8])> = sb_chroma_owned.as_ref().map(|(u, v)| {
+            let n = acw * ach;
+            (&u[..n], &v[..n])
+        });
         let hbd_sb_owned = build_hbd_sb(
             &hbd_source,
             w,
@@ -2090,7 +2099,7 @@ impl EncodePipeline {
             pcs,
             n,
             encode_input,
-            sb_chroma_owned,
+            &sb_chroma_owned,
             pa_cur,
             frame_me,
             cbr_frame_rc,

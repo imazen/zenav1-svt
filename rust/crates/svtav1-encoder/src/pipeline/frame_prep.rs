@@ -44,7 +44,7 @@ pub(super) fn derive_stale_vars(
 
 #[inline(always)]
 pub(super) fn build_sb_chroma(
-    chroma: Option<(&[u8], &[u8])>,
+    chroma: Option<StridedChroma<'_>>,
     fmt: svtav1_types::chroma::ChromaFormat,
     acw: usize,
     ach: usize,
@@ -53,12 +53,15 @@ pub(super) fn build_sb_chroma(
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>, whereat::prelude::At<EncodeError>> {
     let sb_chroma_owned: Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = chroma
         .map(
-            |(u, v)| -> crate::EncodeResult<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
+            |c| -> crate::EncodeResult<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
                 let (ext_cw, ext_ch_h) = (fmt.chroma_width(ext_w), fmt.chroma_height(ext_h));
                 Ok(if ext_ch_h == ach && ext_cw == acw {
                     // Full-SB (or 64-aligned) frame: exact aligned chroma,
                     // byte-identical to the pre-#95 source.
-                    (u.to_vec(), v.to_vec())
+                    (
+                        gather_rows(c.u, c.u_stride, acw, ach)?,
+                        gather_rows(c.v, c.v_stride, acw, ach)?,
+                    )
                 } else {
                     // Partial SB: `acw`-strided rows, edge-replicating the last
                     // real chroma row. Enough rows to cover BOTH a height-
@@ -73,8 +76,9 @@ pub(super) fn build_sb_chroma(
                     let mut vp = svtav1_types::try_vec![0u8; cap]?;
                     for r in 0..n_rows {
                         let sr = r.min(ach - 1);
-                        up[r * acw..(r + 1) * acw].copy_from_slice(&u[sr * acw..(sr + 1) * acw]);
-                        vp[r * acw..(r + 1) * acw].copy_from_slice(&v[sr * acw..(sr + 1) * acw]);
+                        let (us, vs) = (sr * c.u_stride, sr * c.v_stride);
+                        up[r * acw..(r + 1) * acw].copy_from_slice(&c.u[us..us + acw]);
+                        vp[r * acw..(r + 1) * acw].copy_from_slice(&c.v[vs..vs + acw]);
                     }
                     (up, vp)
                 })

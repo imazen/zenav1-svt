@@ -76,9 +76,8 @@ impl EncodePipeline {
     pub(super) fn prepare_film_grain(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
     ) -> EncodeResult<Option<([Vec<u8>; 3], usize)>> {
         if self.film_grain.table.is_some()
             || (self.hdr.is_fork() && self.hdr.noise_strength > 0)
@@ -103,16 +102,16 @@ impl EncodePipeline {
             let padded = [
                 pad_plane_replicate(y, y_stride, tw, th, w, h)?,
                 pad_plane_replicate(
-                    u,
-                    tw.div_ceil(2),
+                    chroma.u,
+                    chroma.u_stride,
                     tw.div_ceil(2),
                     th.div_ceil(2),
                     w / 2,
                     h / 2,
                 )?,
                 pad_plane_replicate(
-                    v,
-                    tw.div_ceil(2),
+                    chroma.v,
+                    chroma.v_stride,
                     tw.div_ceil(2),
                     th.div_ceil(2),
                     w / 2,

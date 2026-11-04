@@ -232,9 +232,8 @@ impl EncodePipeline {
     pub(super) fn try_encode_frame_420_ra(
         &mut self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
     ) -> EncodeResult<Vec<u8>> {
         if let Some(why) = self.ra_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
@@ -251,7 +250,7 @@ impl EncodePipeline {
         // release (`svt_aom_is_delayed_intra` → `ctx->prev_delayed_intra`,
         // `pd_process.c:3620-3635, 5103-5131`).
         let is_key = self.gop.is_key_frame(display_order);
-        let frame = self.pack_ra_frame(y, u, v, y_stride, display_order, is_key);
+        let frame = self.pack_ra_frame(y, y_stride, chroma, display_order, is_key)?;
         let stats = self.gather_tf_stats_frame(&frame);
         self.ra_input.push(frame);
         self.ra_stats.push(Some(alloc::boxed::Box::new(stats)));
@@ -292,26 +291,21 @@ impl EncodePipeline {
     pub(super) fn pack_ra_frame(
         &self,
         y: &[u8],
-        u: &[u8],
-        v: &[u8],
         y_stride: usize,
+        chroma: StridedChroma<'_>,
         display_order: u64,
         is_key: bool,
-    ) -> RaBufferedFrame {
+    ) -> EncodeResult<RaBufferedFrame> {
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
-        let mut yb = alloc::vec::Vec::with_capacity(tw * th);
-        for r in 0..th {
-            yb.extend_from_slice(&y[r * y_stride..r * y_stride + tw]);
-        }
-        RaBufferedFrame {
-            y: yb,
-            u: u[..cw * ch].to_vec(),
-            v: v[..cw * ch].to_vec(),
+        Ok(RaBufferedFrame {
+            y: gather_rows(y, y_stride, tw, th)?,
+            u: gather_rows(chroma.u, chroma.u_stride, cw, ch)?,
+            v: gather_rows(chroma.v, chroma.v_stride, cw, ch)?,
             display_order,
             is_key,
             is_eos: false,
-        }
+        })
     }
 
     /// The `enhanced_pic` + `pa_ref_pic_wrapper` pair one buffered input
@@ -617,16 +611,31 @@ impl EncodePipeline {
                 let y_f = tf_pic.extract_luma();
                 let u_f = tf_pic.extract_u();
                 let v_f = tf_pic.extract_v();
-                self.encode_frame_impl(&y_f, aw, Some((&u_f, &v_f)), decided)?
+                self.encode_frame_impl(
+                    &y_f,
+                    aw,
+                    Some(StridedChroma::tight(&u_f, &v_f, aw.div_ceil(2))),
+                    decided,
+                )?
             } else if aw == tw && ah == th {
-                self.encode_frame_impl(&frame.y, tw, Some((&frame.u, &frame.v)), decided)?
+                self.encode_frame_impl(
+                    &frame.y,
+                    tw,
+                    Some(StridedChroma::tight(&frame.u, &frame.v, tw.div_ceil(2))),
+                    decided,
+                )?
             } else {
                 let (cw, ch) = (tw.div_ceil(2), th.div_ceil(2));
                 let (acw, ach) = (aw.div_ceil(2), ah.div_ceil(2));
                 let y_pad = pad_plane_replicate(&frame.y, tw, tw, th, aw, ah)?;
                 let u_pad = pad_plane_replicate(&frame.u, cw, cw, ch, acw, ach)?;
                 let v_pad = pad_plane_replicate(&frame.v, cw, cw, ch, acw, ach)?;
-                self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)), decided)?
+                self.encode_frame_impl(
+                    &y_pad,
+                    aw,
+                    Some(StridedChroma::tight(&u_pad, &v_pad, acw)),
+                    decided,
+                )?
             };
             // `encode_frame_impl` prepends the sequential path's
             // one-TU-per-frame TD; an RA TU spans hidden+shown frames, so the
@@ -1385,7 +1394,7 @@ impl EncodePipeline {
         self.encode_frame_impl(
             &y_f,
             aw,
-            Some((&u_f, &v_f)),
+            Some(StridedChroma::tight(&u_f, &v_f, aw.div_ceil(2))),
             Some(FrameDecision {
                 display_order: pic.picture_number,
                 pic,
