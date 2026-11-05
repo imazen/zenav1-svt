@@ -412,13 +412,13 @@ impl EncodePipeline {
             // truncate-then-filter order. The u8 arguments are unused on
             // this arm (film-grain denoise + bd10 + superres is refused in
             // `validate_film_grain` before the planes are read).
-            let mut sy = svtav1_types::try_vec![0u16; iw * th]?;
+            let mut sy = crate::vecpool::try_zeroed_vec::<u16>(iw * th)?;
             for r in 0..th {
                 sy[r * iw..(r + 1) * iw].copy_from_slice(&y[r * y_stride..r * y_stride + iw]);
             }
-            let mut su = svtav1_types::try_vec![0u16; icw * ich]?;
+            let mut su = crate::vecpool::try_zeroed_vec::<u16>(icw * ich)?;
             su.copy_from_slice(&u[..icw * ich]);
-            let mut sv = svtav1_types::try_vec![0u16; icw * ich]?;
+            let mut sv = crate::vecpool::try_zeroed_vec::<u16>(icw * ich)?;
             sv.copy_from_slice(&v[..icw * ich]);
             self.hbd_superres_src = Some(HbdSuperresSrc {
                 y: sy,
@@ -443,14 +443,14 @@ impl EncodePipeline {
             u: pad_plane_replicate_u16(u, icw, icw, ich, aw / 2, ah / 2)?,
             v: pad_plane_replicate_u16(v, icw, icw, ich, aw / 2, ah / 2)?,
         };
-        let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
+        let mut y8 = crate::vecpool::try_zeroed_vec::<u8>(tw * th)?;
         for r in 0..th {
             for c in 0..tw {
                 y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;
             }
         }
-        let mut u8p = svtav1_types::try_vec![0u8; icw * ich]?;
-        let mut v8p = svtav1_types::try_vec![0u8; icw * ich]?;
+        let mut u8p = crate::vecpool::try_zeroed_vec::<u8>(icw * ich)?;
+        let mut v8p = crate::vecpool::try_zeroed_vec::<u8>(icw * ich)?;
         for i in 0..icw * ich {
             u8p[i] = (u[i] >> shift) as u8;
             v8p[i] = (v[i] >> shift) as u8;
@@ -607,7 +607,7 @@ impl EncodePipeline {
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
         let shift = u32::from(self.bit_depth - 8);
-        let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
+        let mut y8 = crate::vecpool::try_zeroed_vec::<u8>(tw * th)?;
         for r in 0..th {
             for c in 0..tw {
                 y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;

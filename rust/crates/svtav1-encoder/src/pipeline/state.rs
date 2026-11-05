@@ -541,7 +541,7 @@ pub(super) fn gather_rows(
         // an addition, never a cost on the packed case.
         return Ok(src[..w * h].to_vec());
     }
-    let mut out = svtav1_types::try_vec![0u8; w * h]?;
+    let mut out = crate::vecpool::try_zeroed_vec::<u8>(w * h)?;
     for r in 0..h {
         out[r * w..r * w + w].copy_from_slice(&src[r * src_stride..r * src_stride + w]);
     }
@@ -562,7 +562,7 @@ pub(super) fn pad_plane_replicate(
     dw: usize,
     dh: usize,
 ) -> crate::EncodeResult<alloc::vec::Vec<u8>> {
-    let mut out = svtav1_types::try_vec![0u8; dw * dh]?;
+    let mut out = crate::vecpool::try_zeroed_vec::<u8>(dw * dh)?;
     // Interior columns are a verbatim row copy; only the replicated right
     // edge needs the clamp. `c.min(sw - 1)` for c < sw is just `c`.
     let cw = sw.min(dw);
@@ -588,7 +588,7 @@ pub(super) fn pad_plane_replicate_u16(
     dw: usize,
     dh: usize,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
-    let mut out = svtav1_types::try_vec![0u16; dw * dh]?;
+    let mut out = crate::vecpool::try_zeroed_vec::<u16>(dw * dh)?;
     let cw = sw.min(dw);
     for r in 0..dh {
         let sr = r.min(sh - 1);

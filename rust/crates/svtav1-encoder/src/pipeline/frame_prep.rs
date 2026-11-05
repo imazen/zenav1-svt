@@ -69,8 +69,8 @@ pub(super) fn build_sb_chroma(
                     // decodable (the boundary chroma differs from C's crop).
                     let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
                     let cap = n_rows * acw;
-                    let mut up = svtav1_types::try_vec![0u8; cap]?;
-                    let mut vp = svtav1_types::try_vec![0u8; cap]?;
+                    let mut up = crate::vecpool::try_zeroed_vec::<u8>(cap)?;
+                    let mut vp = crate::vecpool::try_zeroed_vec::<u8>(cap)?;
                     for r in 0..n_rows {
                         let sr = r.min(ach - 1);
                         up[r * acw..(r + 1) * acw].copy_from_slice(&u[sr * acw..(sr + 1) * acw]);
@@ -108,8 +108,8 @@ pub(super) fn build_hbd_sb(
             } else {
                 let (ext_cw, ext_ch_h) = (fmt.chroma_width(ext_w), fmt.chroma_height(ext_h));
                 let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
-                let mut up = svtav1_types::try_vec![0u16; n_rows * acw]?;
-                let mut vp = svtav1_types::try_vec![0u16; n_rows * acw]?;
+                let mut up = crate::vecpool::try_zeroed_vec::<u16>(n_rows * acw)?;
+                let mut vp = crate::vecpool::try_zeroed_vec::<u16>(n_rows * acw)?;
                 for r in 0..n_rows {
                     let sr = r.min(ach - 1);
                     up[r * acw..(r + 1) * acw].copy_from_slice(&hbd.u[sr * acw..(sr + 1) * acw]);

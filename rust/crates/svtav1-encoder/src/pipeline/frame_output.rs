@@ -420,7 +420,7 @@ impl EncodePipeline {
             };
             let upscale_frame =
                 |y: &[u8], u: &[u8], v: &[u8]| -> EncodeResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-                    let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
+                    let mut y_up = crate::vecpool::try_zeroed_vec::<u8>(uw * hh)?;
                     upscale(y, cw, self.true_width as usize, &mut y_up, uw, hh);
                     let (mut u_up, mut v_up) = (alloc::vec::Vec::new(), alloc::vec::Vec::new());
                     if chroma.is_some() {
@@ -430,8 +430,8 @@ impl EncodePipeline {
                             fmt.chroma_height(hh),
                         );
                         let coded = fmt.chroma_width(self.true_width as usize);
-                        u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                        v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                        u_up = crate::vecpool::try_zeroed_vec::<u8>(cuw * chh)?;
+                        v_up = crate::vecpool::try_zeroed_vec::<u8>(cuw * chh)?;
                         upscale(u, ccw, coded, &mut u_up, cuw, chh);
                         upscale(v, ccw, coded, &mut v_up, cuw, chh);
                     }
@@ -461,7 +461,7 @@ impl EncodePipeline {
                         svtav1_dsp::superres::upscale_convolve_step(coded as i32, out as i32);
                     let x0 =
                         svtav1_dsp::superres::upscale_convolve_x0(coded as i32, out as i32, step);
-                    let mut dst = svtav1_types::try_vec![0u16; out * rows]?;
+                    let mut dst = crate::vecpool::try_zeroed_vec::<u16>(out * rows)?;
                     for r in 0..rows {
                         svtav1_dsp::superres::highbd_upscale_normative_row(
                             &src[r * stride..],

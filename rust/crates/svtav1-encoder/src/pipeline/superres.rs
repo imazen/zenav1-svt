@@ -31,15 +31,15 @@ impl EncodePipeline {
         let cw = self.true_width as usize;
         let (ucw, uch) = (uw.div_ceil(2), th.div_ceil(2));
         let ccw = cw.div_ceil(2);
-        let mut yd = svtav1_types::try_vec![0u8; cw * th]?;
-        let mut ud = svtav1_types::try_vec![0u8; ccw * uch]?;
-        let mut vd = svtav1_types::try_vec![0u8; ccw * uch]?;
+        let mut yd = crate::vecpool::try_zeroed_vec::<u8>(cw * th)?;
+        let mut ud = crate::vecpool::try_zeroed_vec::<u8>(ccw * uch)?;
+        let mut vd = crate::vecpool::try_zeroed_vec::<u8>(ccw * uch)?;
         svtav1_dsp::resize::resize_plane_horizontal(y, th, uw, y_stride, &mut yd, cw, cw);
         svtav1_dsp::resize::resize_plane_horizontal(u, uch, ucw, ucw, &mut ud, ccw, ccw);
         svtav1_dsp::resize::resize_plane_horizontal(v, uch, ucw, ucw, &mut vd, ccw, ccw);
         // Keep the ORIGINAL luma (tightened to `uw` stride) for the picture
         // statistics C derives before scaling — see `superres_stats_luma`.
-        let mut orig = svtav1_types::try_vec![0u8; uw * th]?;
+        let mut orig = crate::vecpool::try_zeroed_vec::<u8>(uw * th)?;
         for r in 0..th {
             orig[r * uw..(r + 1) * uw].copy_from_slice(&y[r * y_stride..r * y_stride + uw]);
         }
@@ -76,9 +76,9 @@ impl EncodePipeline {
         let ccw = cw.div_ceil(2);
         let bd = i32::from(self.bit_depth);
         // The filtered coded-width u16 planes.
-        let mut yd = svtav1_types::try_vec![0u16; cw * th]?;
-        let mut ud = svtav1_types::try_vec![0u16; ccw * uch]?;
-        let mut vd = svtav1_types::try_vec![0u16; ccw * uch]?;
+        let mut yd = crate::vecpool::try_zeroed_vec::<u16>(cw * th)?;
+        let mut ud = crate::vecpool::try_zeroed_vec::<u16>(ccw * uch)?;
+        let mut vd = crate::vecpool::try_zeroed_vec::<u16>(ccw * uch)?;
         svtav1_dsp::port_resize_hbd::highbd_resize_plane_horizontal(
             &src.y, th, uw, uw, &mut yd, cw, cw, bd,
         );
@@ -99,12 +99,12 @@ impl EncodePipeline {
         // The u8 canvas, unpacked AFTER filtering (C's MSB plane of the
         // resized packed picture).
         let shift = u32::from(self.bit_depth - 8);
-        let mut y8 = svtav1_types::try_vec![0u8; cw * th]?;
+        let mut y8 = crate::vecpool::try_zeroed_vec::<u8>(cw * th)?;
         for (d, &s) in y8.iter_mut().zip(yd.iter()) {
             *d = (s >> shift) as u8;
         }
-        let mut u8p = svtav1_types::try_vec![0u8; ccw * uch]?;
-        let mut v8p = svtav1_types::try_vec![0u8; ccw * uch]?;
+        let mut u8p = crate::vecpool::try_zeroed_vec::<u8>(ccw * uch)?;
+        let mut v8p = crate::vecpool::try_zeroed_vec::<u8>(ccw * uch)?;
         for ((du, dv), (&su, &sv)) in u8p
             .iter_mut()
             .zip(v8p.iter_mut())
@@ -115,7 +115,7 @@ impl EncodePipeline {
         }
         // Full-resolution luma for the pre-scaling picture statistics —
         // the same u8-truncated canvas the 8-bit arm stores.
-        let mut orig = svtav1_types::try_vec![0u8; uw * th]?;
+        let mut orig = crate::vecpool::try_zeroed_vec::<u8>(uw * th)?;
         for r in 0..th {
             for c in 0..uw {
                 orig[r * uw + c] = (src.y[r * uw + c] >> shift) as u8;
