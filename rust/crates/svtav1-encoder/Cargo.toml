@@ -12,6 +12,7 @@ repository.workspace = true
 name = "svtav1_encoder"
 
 [dependencies]
+bytemuck = { version = "1.25.2", default-features = false, features = ["extern_crate_alloc"] }
 zenav1-svt-types = { workspace = true }
 zenav1-svt-dsp = { workspace = true }
 # The range coder / CDF tables / OBU writer live in `src/entropy/` (folded in

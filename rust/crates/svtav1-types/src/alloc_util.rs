@@ -1,16 +1,9 @@
-//! Fallible-allocation foundation (Feature 3 — foundation only).
+//! Allocation helpers for arbitrary Clone fills and capacity-only requests.
 //!
-//! [`try_vec!`] is the drop-in replacement for `vec![val; len]` that becomes
-//! fallible under the `fallible-alloc` feature and otherwise stays the fast
-//! infallible `vec![..]` (which LLVM lowers to a single `calloc` for a
-//! zero-fill). It always evaluates to `Result<Vec<_>, EncodeError>`, so a
-//! call site can be written once and gain OOM-safety purely by flipping the
-//! feature.
-//!
-//! FOUNDATION ONLY: no encoder call site is converted yet. The conversions
-//! need `encode_frame_impl` to become fallible (which would collide with the
-//! concurrent bd10 work), so they are deferred and listed in `DEFER.md` at
-//! the workspace root.
+//! The exported macros retain arbitrary values, including nonzero sentinels.
+//! With `fallible-alloc`, they reserve before filling and return structured
+//! errors. The encoder routes known-zero fresh buffers through its private
+//! `vecpool::try_zeroed_vec`; existing recycling paths remain in vecpool.
 
 /// Allocate a `Vec<T>` of `len` copies of `val`, returning
 /// [`EncodeError::AllocFailed`](crate::error::EncodeError::AllocFailed)

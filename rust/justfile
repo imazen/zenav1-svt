@@ -225,3 +225,11 @@ cparity-oracle ORACLE:
     # root, so two checkouts produce the same artifact names.
     SVT_ORACLE={{ORACLE}} CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/oracle-{{ORACLE}}}" \
         cargo nextest run --no-fail-fast -p zenav1-svt-encoder -p zenav1-svt-dsp -E "$filt"
+
+# Fresh zero-only buffers retain feature policy, error payloads and pool behavior.
+zeroed-alloc-check:
+    cargo test --locked -p zenav1-svt-encoder --lib vecpool::
+    cargo test --locked -p zenav1-svt-encoder --features fallible-alloc --lib vecpool::
+    cargo test --locked -p zenav1-svt-types --features fallible-alloc --lib alloc_util::
+    cargo clippy --locked -p zenav1-svt-encoder --lib -- -D warnings
+    cargo check --locked -p zenav1-svt-encoder --no-default-features --features fallible-alloc

@@ -35,6 +35,25 @@
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 
+/// Fresh, zero-only buffers that are not participants in the recycling pool.
+/// Existing pooled and dirty-buffer paths retain their size classes and reuse.
+/// Both policies request zeroed storage; the feature controls only failure.
+/// Keep the shared macro's saturating byte count and empty error context.
+pub(crate) fn try_zeroed_vec<T: bytemuck::Zeroable>(
+    len: usize,
+) -> Result<Vec<T>, svtav1_types::EncodeError> {
+    bytemuck::allocation::try_zeroed_vec(len).map_err(|()| {
+        if !cfg!(feature = "fallible-alloc") {
+            let layout = core::alloc::Layout::array::<T>(len).expect("capacity overflow");
+            alloc::alloc::handle_alloc_error(layout);
+        }
+        svtav1_types::EncodeError::AllocFailed {
+            requested_bytes: (len as u64).saturating_mul(core::mem::size_of::<T>() as u64),
+            context: "",
+        }
+    })
+}
+
 /// Number of SIZE CLASSES. Class `k` holds buffers whose capacity is in
 /// `[2^k, 2^(k+1))`, so a request for `n` elements is served from class
 /// `ceil(log2(n))` and every member of that class is guaranteed to be big
@@ -358,6 +377,45 @@ mod tests {
 
     /// The point of the type: a dropped buffer is the next one handed out, so
     /// a loop that allocates one buffer per iteration allocates ONCE.
+    #[test]
+    fn fresh_zeroed_buffers_preserve_values_and_pool_reuse() {
+        for len in [0, 1, 4095, 4096, 4097] {
+            let mut bytes = try_zeroed_vec::<u8>(len).unwrap();
+            assert_eq!(bytes, svtav1_types::try_vec![0u8; len].unwrap());
+            bytes.fill(0xAB);
+            bytes.push(0xCD);
+            assert!(bytes[..len].iter().all(|&v| v == 0xAB));
+            let words = try_zeroed_vec::<u16>(len).unwrap();
+            assert_eq!(words, svtav1_types::try_vec![0u16; len].unwrap());
+            let floats = try_zeroed_vec::<f32>(len).unwrap();
+            assert!(floats.iter().all(|v| v.to_bits() == 0));
+        }
+        let zst = try_zeroed_vec::<()>(usize::MAX).unwrap();
+        assert_eq!(zst.len(), usize::MAX);
+        assert_eq!(zst.capacity(), usize::MAX);
+        let recon = svtav1_types::try_vec![128u8; 17].unwrap();
+        assert!(recon.iter().all(|&v| v == 128));
+        let negative = svtav1_types::try_vec![-0.0f32; 17].unwrap();
+        assert!(negative.iter().all(|v| v.to_bits() == (-0.0f32).to_bits()));
+    }
+
+    #[cfg(feature = "fallible-alloc")]
+    #[test]
+    fn fresh_zeroed_failure_keeps_requested_bytes_and_context() {
+        let error = try_zeroed_vec::<u16>(usize::MAX).unwrap_err();
+        let expected = (usize::MAX as u64).saturating_mul(2);
+        assert!(
+            matches!(error, svtav1_types::EncodeError::AllocFailed { requested_bytes, context: "" } if requested_bytes == expected)
+        );
+    }
+
+    #[cfg(not(feature = "fallible-alloc"))]
+    #[test]
+    #[should_panic(expected = "capacity overflow")]
+    fn fresh_zeroed_infallible_overflow_panics() {
+        let _ = try_zeroed_vec::<u16>(usize::MAX);
+    }
+
     #[test]
     fn drop_parks_the_buffer_for_the_next_take() {
         drain_i32();

@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+- Fresh zero-only encoder buffers request allocator-zeroed storage with the existing fallible feature and structured error payload. Generic fills, nonzero reconstruction values and vector-pool reuse remain intact. No new public API. On r7900x, 1,772 encoder unit tests and the 147/147 regression spot-check pass; focused pool tests pass with both allocation policies. Strict clippy reproduces the unchanged baseline findings.
+
 ### QUEUED BREAKING CHANGES
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 23 modules are no longer public, and the homegrown `perceptual`, `multipass` and `film_grain` modules and `InterHdrError::GlobalMotionNotImplemented` are removed (no callers) (4a860c9e).
 - `svtav1_encoder` (internal; re-exported only under `__expert`): 59 more modules are no longer public — the C-translation modules only the parity tests used, now compiled into the crate (d04e83c4). `PictureControlSet` keeps only `show_frame`, `qp` and `refresh_frame_flags`, and its constructors take no arguments (f1d3f132).

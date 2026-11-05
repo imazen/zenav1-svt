@@ -1540,7 +1540,7 @@ pub(crate) fn cdef_search_still_with_stop(
     // 1397-1412): min over gi of luma+uv candidate-slot mse; skip fbs
     // keep index 0 (never transmitted or applied).
     let nb = 1usize << bits;
-    let mut fb_idx = svtav1_types::try_vec![0u8; nvfb * nhfb]?;
+    let mut fb_idx = crate::vecpool::try_zeroed_vec::<u8>(nvfb * nhfb)?;
     for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
         let mut best_gi = 0usize;
         let mut best_mse = u64::MAX;
@@ -1805,7 +1805,7 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
         eprintln!("RS_CDEF_PICK bits={bits} lev0={lev0:?} lev1={lev1:?}");
     }
     let nb = 1usize << bits;
-    let mut fb_idx = svtav1_types::try_vec![0u8; nvfb * nhfb]?;
+    let mut fb_idx = crate::vecpool::try_zeroed_vec::<u8>(nvfb * nhfb)?;
     for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
         let mut best_gi = 0usize;
         let mut best_mse = u64::MAX;
