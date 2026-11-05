@@ -608,8 +608,8 @@ pub(super) struct Bd10CoeffNeighbors {
 impl Bd10CoeffNeighbors {
     pub(super) fn new(w: usize, h: usize) -> crate::EncodeResult<Self> {
         Ok(Self {
-            above: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
-            left: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
+            above: crate::vecpool::try_zeroed_vec::<u8>(w.div_ceil(4))?,
+            left: crate::vecpool::try_zeroed_vec::<u8>(h.div_ceil(4))?,
         })
     }
 
@@ -750,10 +750,10 @@ pub(crate) struct Bd10ModeNeighbors {
 impl Bd10ModeNeighbors {
     pub(super) fn new(w: usize, h: usize) -> crate::EncodeResult<Self> {
         Ok(Self {
-            above: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
-            left: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
-            above_uv: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
-            left_uv: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
+            above: crate::vecpool::try_zeroed_vec::<u8>(w.div_ceil(4))?,
+            left: crate::vecpool::try_zeroed_vec::<u8>(h.div_ceil(4))?,
+            above_uv: crate::vecpool::try_zeroed_vec::<u8>(w.div_ceil(4))?,
+            left_uv: crate::vecpool::try_zeroed_vec::<u8>(h.div_ceil(4))?,
             tile_top_px: 0,
             tile_left_px: 0,
         })

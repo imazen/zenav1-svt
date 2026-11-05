@@ -740,7 +740,7 @@ pub(super) fn encode_one_tile_body(
     // value (0 / 1), the "not yet coded" state — C's own cross-tile read
     // is a thread race, and the single-tile case this is verified on is
     // exact.
-    let mut sb_intra_acc = svtav1_types::try_vec![0u8; sb_cols * sb_rows]?;
+    let mut sb_intra_acc = crate::vecpool::try_zeroed_vec::<u8>(sb_cols * sb_rows)?;
     let mut sb_skip_acc = svtav1_types::try_vec![1u8; sb_cols * sb_rows]?;
     let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
     // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas

@@ -581,7 +581,7 @@ impl EncodePipeline {
         let sb_input_owned: Option<alloc::vec::Vec<u8>> = if ext_w == w && ext_h == h {
             None
         } else {
-            let mut buf = svtav1_types::try_vec![0u8; ext_w * ext_h]?;
+            let mut buf = crate::vecpool::try_zeroed_vec::<u8>(ext_w * ext_h)?;
             for r in 0..h {
                 buf[r * ext_w..r * ext_w + w].copy_from_slice(&encode_input[r * w..r * w + w]);
             }

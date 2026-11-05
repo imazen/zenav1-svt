@@ -212,9 +212,9 @@ impl EncodePipeline {
             .and_then(|t| t.2.as_ref())
             .map(|_| -> crate::EncodeResult<(Vec<u16>, Vec<u16>, Vec<u16>)> {
                 Ok((
-                    svtav1_types::try_vec![0u16; w * h]?,
-                    svtav1_types::try_vec![0u16; acw * ach]?,
-                    svtav1_types::try_vec![0u16; acw * ach]?,
+                    crate::vecpool::try_zeroed_vec::<u16>(w * h)?,
+                    crate::vecpool::try_zeroed_vec::<u16>(acw * ach)?,
+                    crate::vecpool::try_zeroed_vec::<u16>(acw * ach)?,
                 ))
             })
             .transpose()?;

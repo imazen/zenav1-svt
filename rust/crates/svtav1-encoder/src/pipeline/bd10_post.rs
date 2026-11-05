@@ -375,8 +375,8 @@ impl EncodePipeline {
                     // `w*h` and `(w>>ss_x)*(h>>ss_y)` sources at the ALIGNED stride).
                     // The canvases are `cstride`-strided (== `acw` on a
                     // 64-aligned frame, where the crop degenerates to a prefix).
-                    let mut cu = svtav1_types::try_vec![0u16; acw * ach]?;
-                    let mut cv = svtav1_types::try_vec![0u16; acw * ach]?;
+                    let mut cu = crate::vecpool::try_zeroed_vec::<u16>(acw * ach)?;
+                    let mut cv = crate::vecpool::try_zeroed_vec::<u16>(acw * ach)?;
                     for r in 0..ach {
                         cu[r * acw..(r + 1) * acw]
                             .copy_from_slice(&uv10.0[r * cstride..r * cstride + acw]);
